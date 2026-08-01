@@ -36,6 +36,12 @@ struct Args {
     /// HTTP API 监听端口
     #[arg(long, default_value = "8081")]
     api_port: u16,
+
+    /// 认证 token（evorule-server 启用认证时必需）
+    ///
+    /// N4：设置后所有发往 evorule-server 的请求会携带 Bearer token
+    #[arg(long, env = "EVORULE_AUTH_TOKEN")]
+    auth_token: Option<String>,
 }
 
 #[tokio::main]
@@ -50,6 +56,7 @@ async fn main() -> Result<(), String> {
         rules_dir: args.rules_dir.clone(),
         evorule_server_url: args.server_url.clone(),
         session_id: args.session_id,
+        auth_token: args.auth_token.clone(),
         poll_interval_ms: 1000,
         auto_start: true,
     };

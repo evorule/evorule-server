@@ -42,6 +42,15 @@
   - 旧实现仅 `warn!` 不阻止启动，公网部署时若用户漏看日志，所有 session 数据完全暴露
   - loopback 地址（127.0.0.1 / [::1]）仍允许无认证启动供本地开发；地址解析失败视为非 loopback（安全侧失败）
 
+### 🐛 修复
+
+- **N1: AuthConfig 过滤空字符串 token** — `evorule-server/src/auth.rs` `new()` 过滤空 token，防止空 Bearer token 通过认证（`ct_eq("", "")` 返回 true）
+- **N2: ServiceRegistry 校验 URL scheme** — `core/io_handlers/src/service_registry.rs` `parse_service_entry()` 解析时校验 scheme 为 http/https，拒绝 file:///data:// 等
+- **N3: http_requests_total 指标接入中间件** — `evorule-server/src/api/server.rs` 添加 `http_metrics_middleware`，用 `normalize_path_for_metrics` 把数字段归一化为 `{id}` 防止 Prometheus 基数爆炸
+- **N4: hot_reload 支持 auth_token 配置** — `core/hot_reload/src/config.rs` 增加 `auth_token` 字段，`create_session`/`send_rules` 注入 `Authorization: Bearer` 头；bin 加 `--auth-token` CLI 参数
+- **N5: HttpHandler::new_dev_allow_loopback 保留不改** — 评估后跳过：evorule-io-handlers 是 `publish = false` 内部 crate，main.rs 的 `--allow-loopback` 已有"生产环境永远不要启用"文档警告
+- **N6: MemoryHandler 限制 key 长度** — `core/io_handlers/src/memory_handler.rs` `execute()` 检查 key ≤ 255 字节，防止超长 key 触发 OS 文件名错误
+
 ## [0.1.0] - 2026-07-30
 
 **evorule-server 仓首次建立** — 走神 9 决策:evorule 仓必须独立 release,evorule-server 仓也必须独立 release。

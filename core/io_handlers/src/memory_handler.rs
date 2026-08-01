@@ -62,6 +62,17 @@ impl IoHandler for MemoryHandler {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "missing required param: key".to_string())?;
 
+        // N6 修复：限制 key 长度，防止超长 key 触发 OS 文件名错误
+        //（大多数文件系统限制单个文件名 ≤ 255 字节）
+        const MAX_KEY_LEN: usize = 255;
+        if key.len() > MAX_KEY_LEN {
+            return Err(format!(
+                "key too long: {} bytes (max {})",
+                key.len(),
+                MAX_KEY_LEN
+            ));
+        }
+
         let path = self.resolve_path(key);
 
         // 根据 value 是否存在区分写/读模式

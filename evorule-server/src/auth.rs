@@ -19,6 +19,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
+use tracing::warn;
 
 /// 认证配置
 #[derive(Debug, Clone)]
@@ -36,9 +37,18 @@ impl AuthConfig {
     ///
     /// - `tokens`：合法 token 列表（设为 current_tokens，previous_tokens 为空）
     /// - `enabled`：是否启用认证
+    ///
+    /// N1 修复：过滤空字符串 token。`ct_eq("", "")` 返回 true，
+    /// 若不过滤，攻击者发送 `Authorization: Bearer `（空 token）即可通过认证。
     pub fn new(tokens: Vec<String>, enabled: bool) -> Self {
+        let filtered: Vec<String> = tokens.into_iter().filter(|t| !t.is_empty()).collect();
+        if enabled && filtered.is_empty() {
+            warn!(
+                "AuthConfig::new() 启用认证但无有效 token（全部为空或未提供），所有请求将被拒绝"
+            );
+        }
         Self {
-            current_tokens: Arc::new(tokens),
+            current_tokens: Arc::new(filtered),
             previous_tokens: Arc::new(Vec::new()),
             enabled,
         }

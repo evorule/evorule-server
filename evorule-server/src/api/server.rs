@@ -848,6 +848,43 @@ async fn auth_middleware_wrapper(
     crate::auth::auth_middleware(State(auth_config), req, next).await
 }
 
+/// HTTP 请求计数中间件（N3：接入 http_requests_total 指标）
+///
+/// 用 method + 归一化 path + status 作为 label。
+/// path 归一化：把纯数字段替换为 `{id}`，避免 /api/sessions/42/command 与
+/// /api/sessions/43/command 产生不同 label 导致 Prometheus 基数爆炸。
+async fn http_metrics_middleware(
+    State(metrics): State<SharedMetrics>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let response = next.run(req).await;
+    let status_code = response.status();
+    let normalized = normalize_path_for_metrics(&path);
+    metrics.inc_http_requests(method.as_str(), &normalized, status_code.as_str());
+    response
+}
+
+/// 归一化 path 用于 metrics label，防止基数爆炸
+///
+/// 把纯数字段替换为 `{id}`：
+/// - `/api/sessions/42/command` → `/api/sessions/{id}/command`
+/// - `/api/sessions/42/audit/100` → `/api/sessions/{id}/audit/{id}`
+fn normalize_path_for_metrics(path: &str) -> String {
+    path.split('/')
+        .map(|seg| {
+            if !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()) {
+                "{id}"
+            } else {
+                seg
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// 提交命令 handler
 async fn submit_command(
     State(api): State<GovernanceApi>,
@@ -2447,6 +2484,10 @@ impl GovernanceServer {
         let router = Router::new()
             .merge(public_routes)
             .merge(protected_routes)
+            .layer(axum::middleware::from_fn_with_state(
+                self.state.metrics.clone(),
+                http_metrics_middleware,
+            ))
             .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BODY_BYTES))
             .layer(tower::limit::ConcurrencyLimitLayer::new(MAX_CONCURRENCY))
             .layer(cors);

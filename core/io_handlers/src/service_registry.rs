@@ -135,11 +135,22 @@ fn parse_service_entry(
         .as_object()
         .ok_or_else(|| format!("service '{}' value must be JSON object", name))?;
 
-    let url = obj
+    let url_str = obj
         .get("url")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("service '{}' missing required field 'url'", name))?
-        .to_string();
+        .ok_or_else(|| format!("service '{}' missing required field 'url'", name))?;
+    // N2 修复：校验 URL scheme 为 http/https，防止 file://、data:// 等危险 scheme。
+    // HttpHandler 最终也会校验，但早期校验给出更清晰的配置错误诊断。
+    let parsed_url = url::Url::parse(url_str)
+        .map_err(|e| format!("service '{}' has invalid url '{}': {}", name, url_str, e))?;
+    let scheme = parsed_url.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!(
+            "service '{}' url scheme '{}' is not allowed (only http/https): {}",
+            name, scheme, url_str
+        ));
+    }
+    let url = url_str.to_string();
 
     let method = obj
         .get("method")

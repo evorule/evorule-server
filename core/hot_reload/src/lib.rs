@@ -58,7 +58,11 @@ impl HotReloadService {
     /// 若 `config.session_id` 为 `None`，会向 evorule-server 请求创建新会话。
     pub async fn new(mut config: HotReloadConfig) -> Result<Self, String> {
         if config.session_id.is_none() {
-            let sid = Self::create_session(&config.evorule_server_url).await?;
+            let sid = Self::create_session(
+                &config.evorule_server_url,
+                config.auth_token.as_deref(),
+            )
+            .await?;
             info!(session_id = sid, "创建新会话");
             config.session_id = Some(sid);
         }
@@ -69,13 +73,21 @@ impl HotReloadService {
     }
 
     /// 创建 evorule 会话
-    async fn create_session(server_url: &str) -> Result<u64, String> {
+    ///
+    /// N4：`auth_token` 设置后会携带 `Authorization: Bearer <token>` 头
+    async fn create_session(
+        server_url: &str,
+        auth_token: Option<&str>,
+    ) -> Result<u64, String> {
         let client = reqwest::Client::new();
         let url = format!("{}/api/sessions", server_url);
 
-        let resp = client
-            .post(&url)
-            .json(&serde_json::json!({}))
+        let mut req = client.post(&url).json(&serde_json::json!({}));
+        if let Some(token) = auth_token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("创建会话失败: {}", e))?;
@@ -91,10 +103,13 @@ impl HotReloadService {
     }
 
     /// 发送规则到 evorule-server
+    ///
+    /// N4：`auth_token` 设置后会携带 `Authorization: Bearer <token>` 头
     pub async fn send_rules(
         server_url: &str,
         session_id: u64,
         rules: &[serde_json::Value],
+        auth_token: Option<&str>,
     ) -> Result<(), String> {
         let client = reqwest::Client::new();
         let url = format!("{}/api/sessions/{}/command", server_url, session_id);
@@ -107,9 +122,12 @@ impl HotReloadService {
                 }
             });
 
-            let resp = client
-                .post(&url)
-                .json(&command)
+            let mut req = client.post(&url).json(&command);
+            if let Some(token) = auth_token {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+
+            let resp = req
                 .send()
                 .await
                 .map_err(|e| format!("发送规则失败: {}", e))?;
@@ -125,12 +143,13 @@ impl HotReloadService {
     /// 重载规则
     pub async fn reload_rules(&self) -> Result<usize, String> {
         // 在 await 之前获取配置并释放锁
-        let (server_url, session_id, rules_dir) = {
+        let (server_url, session_id, rules_dir, auth_token) = {
             let config = self.lock_config();
             (
                 config.evorule_server_url.clone(),
                 config.session_id,
                 config.rules_dir.clone(),
+                config.auth_token.clone(),
             )
         };
 
@@ -142,7 +161,7 @@ impl HotReloadService {
 
         let session_id = session_id.ok_or_else(|| "未设置会话 ID".to_string())?;
 
-        Self::send_rules(&server_url, session_id, &rules).await?;
+        Self::send_rules(&server_url, session_id, &rules, auth_token.as_deref()).await?;
 
         Ok(rules.len())
     }
@@ -168,12 +187,13 @@ impl HotReloadService {
                 info!(path = %change.path, event = ?change.event_type, "检测到文件变化");
 
                 // 先获取配置（在 await 之前释放锁）
-                let (server_url, session_id, rules_dir) = {
+                let (server_url, session_id, rules_dir, auth_token) = {
                     let config = svc_clone.lock_config();
                     (
                         config.evorule_server_url.clone(),
                         config.session_id,
                         config.rules_dir.clone(),
+                        config.auth_token.clone(),
                     )
                 };
 
@@ -190,7 +210,14 @@ impl HotReloadService {
                 }
 
                 if let Some(session_id) = session_id {
-                    if let Err(e) = Self::send_rules(&server_url, session_id, &rules).await {
+                    if let Err(e) = Self::send_rules(
+                        &server_url,
+                        session_id,
+                        &rules,
+                        auth_token.as_deref(),
+                    )
+                    .await
+                    {
                         warn!(error = %e, "发送规则失败");
                     } else {
                         info!(count = rules.len(), "规则自动重载成功");
@@ -324,6 +351,7 @@ mod tests {
             rules_dir,
             evorule_server_url: server_url,
             session_id: Some(42),
+            auth_token: None,
             poll_interval_ms: 1000,
             auto_start: false,
         };
@@ -495,6 +523,7 @@ mod tests {
             rules_dir: "./rules".to_string(),
             evorule_server_url: "http://127.0.0.1:1".to_string(),
             session_id: Some(99),
+            auth_token: None,
             poll_interval_ms: 1000,
             auto_start: false,
         };
@@ -520,6 +549,7 @@ mod tests {
             rules_dir: "./rules".to_string(),
             evorule_server_url: server.url(),
             session_id: None,
+            auth_token: None,
             poll_interval_ms: 1000,
             auto_start: false,
         };
@@ -541,6 +571,7 @@ mod tests {
             rules_dir: "./rules".to_string(),
             evorule_server_url: server.url(),
             session_id: None,
+            auth_token: None,
             poll_interval_ms: 1000,
             auto_start: false,
         };
@@ -564,7 +595,7 @@ mod tests {
             .await;
 
         let rules = vec![serde_json::json!({"name": "rule1"})];
-        HotReloadService::send_rules(&server.url(), 42, &rules)
+        HotReloadService::send_rules(&server.url(), 42, &rules, None)
             .await
             .expect("发送应成功");
     }
@@ -579,7 +610,7 @@ mod tests {
             .await;
 
         let rules = vec![serde_json::json!({"name": "rule1"})];
-        let err = HotReloadService::send_rules(&server.url(), 42, &rules)
+        let err = HotReloadService::send_rules(&server.url(), 42, &rules, None)
             .await
             .expect_err("上游 500 应报错");
         assert!(err.contains("服务器返回错误"), "实际错误: {err}");
