@@ -44,7 +44,7 @@ pub mod watcher;
 
 use config::HotReloadConfig;
 use loader::load_rules;
-use watcher::create_watcher;
+use watcher::{create_watcher, ChangeType};
 
 /// 热重载服务
 #[derive(Clone, Debug)]
@@ -185,6 +185,15 @@ impl HotReloadService {
         task::spawn(async move {
             while let Ok(change) = rx.recv() {
                 info!(path = %change.path, event = ?change.event_type, "检测到文件变化");
+
+                // S1：删除规则文件不会从 server 移除已有规则
+                if matches!(change.event_type, ChangeType::Remove) {
+                    warn!(
+                        path = %change.path,
+                        "规则文件被删除。注意：hot_reload 仅支持增量添加规则，\
+                         删除文件不会从 server 移除已有规则。如需清除旧规则，请重启 session。"
+                    );
+                }
 
                 // 先获取配置（在 await 之前释放锁）
                 let (server_url, session_id, rules_dir, auth_token) = {

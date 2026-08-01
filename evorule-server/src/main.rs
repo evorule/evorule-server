@@ -293,6 +293,12 @@ struct Cli {
     /// 生产环境永远不要启用——SSRF 防护会因此放行 127.0.0.0/8 和私有 IP 段。
     #[arg(long, env = "EVORULE_ALLOW_LOOPBACK")]
     allow_loopback: bool,
+
+    /// 启用 /metrics 端点认证（S2：默认关闭，Prometheus scraper 通常不带 token）
+    ///
+    /// 启用后 /metrics 端点也需要 Authorization: Bearer <token> 头。
+    #[arg(long, env = "EVORULE_METRICS_AUTH")]
+    metrics_auth: bool,
 }
 
 /// 合并后的最终配置（CLI > env > file > default）
@@ -331,6 +337,8 @@ struct ResolvedConfig {
     allowed_origins: Vec<String>,
     /// 是否允许 HTTP handler 访问 loopback（仅本地开发）
     allow_loopback: bool,
+    /// S2：/metrics 端点是否需要认证
+    metrics_auth: bool,
 }
 
 impl ResolvedConfig {
@@ -393,6 +401,8 @@ impl ResolvedConfig {
                 .or(file.paths.statement_whitelist),
             allowed_origins,
             allow_loopback: cli.allow_loopback,
+            // S2：从 CLI/环境变量读取 metrics_auth 配置
+            metrics_auth: cli.metrics_auth,
         };
         cfg
     }
@@ -987,6 +997,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.rate_limit_per_sec,
         200,
         cfg.allowed_origins.clone(),
+        // S2：/metrics 端点是否需要认证（--metrics-auth 控制）
+        cfg.metrics_auth,
     );
 
     info!(

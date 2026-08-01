@@ -881,7 +881,7 @@ mod tests {
     fn test_local_rewind_sparse_version_returns_none() {
         // 版本间隙:history 跳过 version 3,请求 version 3 应返回 None
         // (version 0 的 ST → snapshot version=1;version 5 的 ST → snapshot version=6)
-        // 当前实现存在 bug:循环结束后只检查 `version < target`,漏掉 `version > target` 的间隙情况
+        // S4: 循环结束后检查 `version != target_version`,正确处理 `version > target` 的间隙情况
         let history = vec![
             make_state_transition(0, serde_json::json!({"a": 1})),
             make_state_transition(5, serde_json::json!({"a": 2})),
@@ -892,6 +892,153 @@ mod tests {
             "稀疏版本间隙应返回 None,但实际返回了 {:?}",
             result
         );
+    }
+
+    // ===== S4: 版本间隙补充测试 =====
+    //
+    // 以下测试覆盖 local_rewind / local_diff / build_version_tree 在版本间隙
+    // (version gap)场景下的行为。版本间隙指 history 中 entry.version 不连续,
+    // 导致某些 snapshot version (= entry.version + 1) 不存在。
+    // 契约:请求间隙中的 version 必须返回 None,不能静默返回相邻快照(否则回放错位)。
+
+    #[test]
+    fn test_local_rewind_gap_before_first_entry() {
+        // 间隙在首条记录之前:第一个 ST 的 version=5 → snapshot version=6
+        // 请求 version 1(在 6 之前)应返回 None
+        let history = vec![make_state_transition(5, serde_json::json!({"a": 1}))];
+        assert!(
+            local_rewind(&history, 1).is_none(),
+            "首条记录之前的版本间隙应返回 None"
+        );
+    }
+
+    #[test]
+    fn test_local_rewind_gap_created_by_ignored_command() {
+        // Command 类型被 local_rewind 忽略(不递增 version),造成版本间隙
+        // history: ST(0) → snap v1; Command(2) 被忽略(version 仍为 1); ST(3) → snap v4
+        // 请求 version 2(Command 的 version+1)应返回 None,因为 Command 不产生快照
+        let history = vec![
+            make_state_transition(0, serde_json::json!({"a": 1})),
+            make_command(2),
+            make_state_transition(3, serde_json::json!({"a": 2})),
+        ];
+        assert!(
+            local_rewind(&history, 2).is_none(),
+            "Command 不产生快照,version 2 是间隙,应返回 None"
+        );
+        // 但边界 snapshot version 1 和 4 仍应存在
+        assert!(local_rewind(&history, 1).is_some());
+        assert!(local_rewind(&history, 4).is_some());
+    }
+
+    #[test]
+    fn test_local_rewind_gap_between_st_and_io_response() {
+        // ST 和 IoResponse 之间的版本间隙
+        // history: ST(0) → snap v1; IoResponse(5) → snap v6
+        // 请求 version 3(在 1 和 6 之间)应返回 None
+        let history = vec![
+            make_state_transition(0, serde_json::json!({"amount": 50})),
+            make_io_response(5),
+        ];
+        assert!(
+            local_rewind(&history, 3).is_none(),
+            "ST 与 IoResponse 之间的间隙应返回 None"
+        );
+        // IoResponse 之后的 snapshot version=6 应存在且 payload 继承自前一个 ST
+        let snap = local_rewind(&history, 6).expect("version 6 应存在");
+        assert_eq!(snap.payload, serde_json::json!({"amount": 50}));
+    }
+
+    #[test]
+    fn test_local_rewind_multiple_gaps_all_return_none() {
+        // 多个间隙:ST 在 version 0, 5, 10 → snapshot versions = 1, 6, 11
+        // 间隙中的 version 2,3,4,7,8,9 都应返回 None
+        let history = vec![
+            make_state_transition(0, serde_json::json!({"step": 1})),
+            make_state_transition(5, serde_json::json!({"step": 2})),
+            make_state_transition(10, serde_json::json!({"step": 3})),
+        ];
+        for gap_version in [2u64, 3, 4, 7, 8, 9] {
+            assert!(
+                local_rewind(&history, gap_version).is_none(),
+                "间隙 version {} 应返回 None",
+                gap_version
+            );
+        }
+    }
+
+    #[test]
+    fn test_local_rewind_gap_boundaries_return_some() {
+        // 验证间隙边界(有效的 snapshot version)仍正常返回
+        // ST 在 version 0, 5 → snapshot versions = 1, 6
+        let history = vec![
+            make_state_transition(0, serde_json::json!({"a": 1})),
+            make_state_transition(5, serde_json::json!({"a": 2})),
+        ];
+        let snap1 = local_rewind(&history, 1).expect("snapshot v1 应存在");
+        assert_eq!(snap1.version, 1);
+        assert_eq!(snap1.payload, serde_json::json!({"a": 1}));
+
+        let snap6 = local_rewind(&history, 6).expect("snapshot v6 应存在");
+        assert_eq!(snap6.version, 6);
+        assert_eq!(snap6.payload, serde_json::json!({"a": 2}));
+    }
+
+    #[test]
+    fn test_local_diff_gap_version_a_treats_as_empty() {
+        // v_a 落在版本间隙 → local_rewind 返回 None → payload 退化为空对象
+        // → v_b 的所有字段报为 added
+        let history = vec![
+            make_state_transition(0, serde_json::json!({"a": 1})),
+            make_state_transition(5, serde_json::json!({"a": 1, "b": 2})),
+        ];
+        // v_a=3 在间隙中(1 < 3 < 6),v_b=6 存在
+        let diff = local_diff(&history, 3, 6);
+        assert_eq!(diff.added.len(), 2, "v_a 为空对象,v_b 的 a 和 b 都应报 added");
+        assert!(diff.removed.is_empty());
+        assert!(diff.changed.is_empty());
+    }
+
+    #[test]
+    fn test_local_diff_both_versions_in_gap_returns_empty() {
+        // v_a 和 v_b 都在版本间隙 → 两个 payload 都退化为空对象 → 空 diff
+        let history = vec![
+            make_state_transition(0, serde_json::json!({"a": 1})),
+            make_state_transition(10, serde_json::json!({"a": 2})),
+        ];
+        // v_a=3, v_b=5 都在间隙中(1 < 3 < 5 < 11)
+        let diff = local_diff(&history, 3, 5);
+        assert!(diff.is_empty(), "两个间隙版本都退化为空对象,diff 应为空");
+    }
+
+    #[test]
+    fn test_build_version_tree_sparse_versions() {
+        // 稀疏版本:total_versions 取最后一条记录的 version(而非条目数)
+        let history = vec![
+            make_state_transition(0, serde_json::json!({"a": 1})),
+            make_state_transition(10, serde_json::json!({"a": 2})),
+        ];
+        let tree = build_version_tree(&history, 42);
+        assert_eq!(tree.total_versions, 10, "total_versions 应为最后一条的 version");
+        assert_eq!(tree.nodes.len(), 2, "节点数应为实际条目数");
+        assert_eq!(tree.state_transition_count, 2);
+        assert_eq!(tree.session_id, 42);
+    }
+
+    #[test]
+    fn test_build_batch_diff_spans_version_gap() {
+        // 批量 diff 跨越版本间隙:ST 在 0 和 5,from=0, to=10
+        // 应只对 (0,5) 这一对计算 diff,间隙不影响配对
+        let history = vec![
+            make_state_transition(0, serde_json::json!({"a": 1})),
+            make_state_transition(5, serde_json::json!({"a": 1, "b": 2})),
+        ];
+        let resp = build_batch_diff(&history, 42, 0, 10);
+        assert_eq!(resp.diffs.len(), 1, "只有一对 ST,应只产生 1 个 diff");
+        assert_eq!(resp.diffs[0].from_version, 0);
+        assert_eq!(resp.diffs[0].to_version, 5);
+        assert_eq!(resp.diffs[0].added, 1, "v_b 比 v_a 多了 b 字段");
+        assert_eq!(resp.total_changes, 1);
     }
 
     #[test]

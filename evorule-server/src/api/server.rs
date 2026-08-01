@@ -2238,6 +2238,8 @@ pub struct GovernanceServer {
     /// - 空列表：只允许同源请求（`AllowOrigin::default()` 不允许任何跨域）
     /// - 非空列表：只允许列表中的 Origin 通过。列表元素示例：`"http://localhost:3000"`
     allowed_origins: Arc<Vec<String>>,
+    /// S2：/metrics 端点是否需要认证（默认 false，Prometheus scraper 通常不带 token）
+    metrics_requires_auth: bool,
 }
 
 impl GovernanceServer {
@@ -2258,6 +2260,7 @@ impl GovernanceServer {
         rate_limit_per_sec: u64,
         rate_limit_burst: u32,
         allowed_origins: Vec<String>,
+        metrics_requires_auth: bool,
     ) -> Self {
         Self {
             state,
@@ -2266,6 +2269,7 @@ impl GovernanceServer {
             rate_limit_per_sec,
             rate_limit_burst,
             allowed_origins: Arc::new(allowed_origins),
+            metrics_requires_auth,
         }
     }
 
@@ -2283,6 +2287,7 @@ impl GovernanceServer {
                 "https://localhost:3000".to_string(),
                 "http://127.0.0.1:3000".to_string(),
             ],
+            false,
         )
     }
 
@@ -2290,7 +2295,7 @@ impl GovernanceServer {
     #[allow(dead_code)]
     pub fn bench(state: AppState, addr: String) -> Self {
         // per_sec=0 触发 build_router() 完全跳过 GovernorLayer（真正禁用限速）
-        Self::new(state, AuthConfig::disabled(), addr, 0, 0, vec![])
+        Self::new(state, AuthConfig::disabled(), addr, 0, 0, vec![], false)
     }
 
     /// 构建路由（公开，供 bin 自定义启动流程使用）
@@ -2334,7 +2339,6 @@ impl GovernanceServer {
             .route("/api/health", get(health))
             .route("/api/health/liveness", get(liveness))
             .route("/api/health/readiness", get(readiness))
-            .route("/metrics", get(metrics_handler))
             .route("/api/rules/validate", post(validate_rules_handler));
 
         // 受保护路由（需认证）
@@ -2436,6 +2440,14 @@ impl GovernanceServer {
         // - 列表非空 → 只允许列表中的 Origin（精确匹配）
         // - 列表为空 → 严格拒绝跨域（不允许任何外部 Origin）
         let origins_cloned: Vec<String> = (*self.allowed_origins).clone();
+        // S3：检测通配符 origin，warn 提示浏览器兼容性问题
+        if origins_cloned.iter().any(|o| o == "*") {
+            tracing::warn!(
+                "CORS 配置包含通配符 '*'。结合 allow_credentials(true)，\
+                 浏览器会拒绝此响应（CORS 规范禁止通配符 + credentials）。\
+                 请使用精确 Origin 列表（如 https://app.example.com）替代。"
+            );
+        }
         let cors = if origins_cloned.is_empty() {
             // 严格同源模式：不暴露任何 CORS 响应头，浏览器自动拒绝跨域。
             // 仍显式声明 methods/headers 以防空 Origin 的边缘场景。
@@ -2481,9 +2493,23 @@ impl GovernanceServer {
 
         // 合并路由 + 全局安全层（从内到外：body limit → concurrency → cors → rate limit）
         // 修复：当 resolve_governor_config() 返回 None 时，完全跳过 GovernorLayer（真正禁用限速）
+        // S2：/metrics 根据 metrics_requires_auth 决定是否需要认证
+        // 独立构建 metrics_router，避免改动 public/protected 路由分组的结构
+        let metrics_router = Router::<AppState>::new()
+            .route("/metrics", get(metrics_handler));
+        let metrics_router = if self.metrics_requires_auth {
+            metrics_router.layer(axum::middleware::from_fn_with_state(
+                self.auth.clone(),
+                auth_middleware_wrapper,
+            ))
+        } else {
+            metrics_router
+        };
+
         let router = Router::new()
             .merge(public_routes)
             .merge(protected_routes)
+            .merge(metrics_router)
             .layer(axum::middleware::from_fn_with_state(
                 self.state.metrics.clone(),
                 http_metrics_middleware,
@@ -3520,6 +3546,8 @@ mod tests {
             0,
             0,
             vec![],
+            // S2：测试中 /metrics 无需认证
+            false,
         )
         .build_router();
         // 受保护路由未带 token → 401
@@ -3538,6 +3566,8 @@ mod tests {
             0,
             0,
             vec![],
+            // S2：测试中 /metrics 无需认证
+            false,
         )
         .build_router();
         let request = axum::http::Request::builder()
@@ -3561,6 +3591,8 @@ mod tests {
             0,
             0,
             vec![],
+            // S2：测试中 /metrics 无需认证
+            false,
         )
         .build_router();
         // /api/health 是公开路由，即使启用认证也无需 token
