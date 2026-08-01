@@ -1,0 +1,8 @@
+# EvoRule Server 项目 Clippy 配置
+# 阈值类配置在此文件中，开关类配置在 Cargo.toml [workspace.lints.clippy] 中
+
+# F9: 函数长度阈值
+# 允许 150 行以内的函数，以容纳配置加载、路由构建、WAL 恢复等集中式逻辑
+# 这些函数虽然较长，但逻辑线性、职责单一，强行拆分会降低可读性
+# 豁免登记见 GATE_REFERENCE.md
+too-many-lines-threshold = 150

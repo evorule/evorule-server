@@ -12,8 +12,8 @@
 
 ## 行为准则
 
-本项目采用 [Contributor Covenant](https://www.contributor-covenant.org/) v2.0 行为准则。
-见 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)(后续补充)。
+本项目采用 [Contributor Covenant](https://www.contributor-covenant.org/) v2.1 行为准则。
+见 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)。
 
 ---
 

@@ -53,7 +53,7 @@
 
 | 关注点 | 说明 |
 |---|---|
-| HTTP 路由 100+ 条 | 重点审 `src/api/server.rs` |
+| HTTP 路由 47 条 | 重点审 `src/api/server.rs` |
 | Bearer token 认证 | `core/auth` + `evorule-server/src/auth.rs`,看是否所有敏感路由都走认证 |
 | 时间机器(rewind/diff/fork) | `core/time_machine`,防越权回滚 |
 | 调试 API (`/debug/*`) | 默认不暴露?需要单独端口? |
