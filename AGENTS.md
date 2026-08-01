@@ -102,7 +102,9 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 
 ## 四、CI / CD 纪律
 
-- **必须通过**:`cargo build --workspace` + `cargo test --workspace` + `cargo clippy --workspace --all-targets`
+- **必须通过**:`cargo build --workspace` + `cargo test --workspace` + `cargo clippy --workspace --all-targets -- -D warnings`
+- **编译时门禁**:`evorule-server/build.rs` + `core/io_handlers/build.rs` 自动扫描 S1 (panic-prone) 模式; `#![forbid(unsafe_code)]` 编译器级强制; 详见 [GATE_REFERENCE.md](GATE_REFERENCE.md)
+- **发布门禁脚本**:`scripts/_cargo_gate.ps1` (test + build + clippy, 不跑 cargo package)
 - **不要在子 crate 目录**:`cd core/auth && cargo test` 这种,会绕过 workspace 共享 lock,导致版本漂移
 - **CI 假设**:兄弟仓 `evorule/` 存在(本地开发用,相对路径 `../evorule`)/ crates.io 拉到(用户 clone)
 - **Docker 假设**:build context 是 evorule-server 仓根,不是 evorule-application 仓
