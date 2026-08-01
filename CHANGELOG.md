@@ -22,6 +22,26 @@
 
 ---
 
+## [Unreleased]
+
+### 🔒 安全
+
+- **B1: HttpHandler 禁用 HTTP 重定向跟随（SSRF 绕过防护）**
+  - `core/io_handlers/src/http_handler.rs` `build_client()` 加 `.redirect(reqwest::redirect::Policy::none())`
+  - 旧实现 reqwest 默认跟随最多 10 次重定向，SSRF 防护只校验原始 URL 的 DNS 解析结果，
+    重定向后的目标 IP 不再校验。攻击者可配置公网 URL → 302 → 169.254.169.254（云元数据）绕过 SSRF 防护
+  - 禁用后 3xx 响应作为 Err 返回上层，由调用方决定处理方式（行业最佳实践）
+
+- **B2: `POST /api/rules/reload` 移入认证保护**
+  - `evorule-server/src/api/server.rs` 将 reload 路由从 `public_routes` 移到 `protected_routes`
+  - 旧实现该端点无认证，攻击者可反复触发规则重载造成 DoS，或当 rules_dir 可写时注入恶意规则
+  - 现在需要 `Authorization: Bearer <token>` 头，无认证返回 401
+
+- **B3: 无认证 + 非 loopback 地址时 fail-closed 拒绝启动**
+  - `evorule-server/src/main.rs` 无 token 且绑定非 loopback 地址时 `error!` + `exit(1)`
+  - 旧实现仅 `warn!` 不阻止启动，公网部署时若用户漏看日志，所有 session 数据完全暴露
+  - loopback 地址（127.0.0.1 / [::1]）仍允许无认证启动供本地开发；地址解析失败视为非 loopback（安全侧失败）
+
 ## [0.1.0] - 2026-07-30
 
 **evorule-server 仓首次建立** — 走神 9 决策:evorule 仓必须独立 release,evorule-server 仓也必须独立 release。

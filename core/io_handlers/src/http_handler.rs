@@ -121,6 +121,15 @@ impl HttpHandler {
             .pool_max_idle_per_host(pool_max_idle_per_host)
             .connect_timeout(connect_timeout)
             .tcp_keepalive(tcp_keepalive)
+            // B1 修复（SSRF 绕过防护）：禁用 HTTP 重定向跟随。
+            //
+            // reqwest 默认跟随最多 10 次重定向。SSRF 防护只在原始 URL 的 DNS 解析
+            // 结果上做 IP 黑名单检查，重定向后的目标 IP 不再校验。攻击者可配置
+            // 公网 URL → 302 → 169.254.169.254（云元数据）绕过 SSRF 防护。
+            //
+            // 禁用后，3xx 响应会作为结果返回给上层（非 2xx → Err），由调用方决定
+            // 如何处理。这是 SSRF 防护的行业最佳实践。
+            .redirect(reqwest::redirect::Policy::none())
             .build()
         {
             Ok(c) => c,

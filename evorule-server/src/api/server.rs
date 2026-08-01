@@ -2298,8 +2298,7 @@ impl GovernanceServer {
             .route("/api/health/liveness", get(liveness))
             .route("/api/health/readiness", get(readiness))
             .route("/metrics", get(metrics_handler))
-            .route("/api/rules/validate", post(validate_rules_handler))
-            .route("/api/rules/reload", post(reload_rules_handler));
+            .route("/api/rules/validate", post(validate_rules_handler));
 
         // 受保护路由（需认证）
         let protected_routes = Router::new()
@@ -2384,6 +2383,10 @@ impl GovernanceServer {
                 "/api/sessions/{id}/audit/auto_verify",
                 post(session_auto_verify_post),
             )
+            // B2 修复：reload 从 public_routes 移到 protected_routes。
+            // 该端点会重新加载 core_eval.json + rules_dir，是运营操作，
+            // 未认证用户不应触发（DoS 风险 + rules_dir 可写时注入恶意规则）。
+            .route("/api/rules/reload", post(reload_rules_handler))
             // rewind/diff 已移至 application/core/time_machine（本地实现）
             .layer(axum::middleware::from_fn_with_state(
                 auth,

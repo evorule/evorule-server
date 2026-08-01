@@ -950,24 +950,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth = match &cfg.auth_token {
         Some(token) => AuthConfig::new(vec![token.clone()], true),
         None => {
-            // H3 修复: 旧代码用字符串前缀匹配判断 loopback,
-            // 漏掉了 IPv6 loopback ([::1]) 和 IPv6 非 loopback ([::]/[::0]),
-            // 且 `cfg.addr != "0.0.0.0:0"` 的特殊判断无意义(默认地址 0.0.0.0:18080
-            // 不等于 "0.0.0.0:0",所以仍会触发警告,但 IPv6 地址完全无法识别)。
-            // 现在用 std::net::SocketAddr 解析后判断 IP 是否 loopback,
-            // 覆盖 IPv4/IPv6 所有情况。
+            // B3 修复（fail-closed 安全策略）：无 token + 非 loopback 地址时拒绝启动。
+            //
+            // 旧实现仅 warn 不阻止启动，公网部署时若用户漏看日志，所有 session
+            // 数据完全暴露。改为 fail-closed：非 loopback + 无 token → error + exit(1)。
+            //
+            // loopback 地址（127.0.0.1 / [::1]）仍允许无认证启动，供本地开发使用。
+            // 地址解析失败也视为非 loopback（安全侧失败）。
+            //
+            // H3 修复（保留）：用 std::net::SocketAddr 解析判断 loopback，
+            // 覆盖 IPv4/IPv6 所有情况（旧代码用字符串前缀匹配漏掉 IPv6）。
             let is_non_loopback = cfg
                 .addr
                 .parse::<std::net::SocketAddr>()
                 .map(|socket| !socket.ip().is_loopback())
                 .unwrap_or(true); // 解析失败视为非 loopback(安全侧失败)
             if is_non_loopback {
-                warn!(
-                    "🔓 认证已禁用,但服务器绑定到 {} (非 loopback)。\n\
-                     生产环境必须设置 --auth-token 或 EVORULE_AUTH_TOKEN 环境变量!\n\
-                     否则任何能访问该地址的进程都能读/写所有 session 数据。",
+                error!(
+                    "🛑 拒绝启动：服务器绑定到非 loopback 地址 {} 但未设置认证 token。\n\
+                     这是 fail-closed 安全策略（B3 修复）。\n\
+                     生产环境必须设置 --auth-token 或 EVORULE_AUTH_TOKEN 环境变量。\n\
+                     本地开发请绑定到 loopback 地址（如 --addr 127.0.0.1:18080）。",
                     cfg.addr
                 );
+                std::process::exit(1);
             } else {
                 info!("🔓 认证已禁用 (loopback 模式,仅适合开发)");
             }
