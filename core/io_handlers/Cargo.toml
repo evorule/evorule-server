@@ -1,0 +1,39 @@
+[package]
+name = "evorule-io-handlers"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "EvoRule I/O Handler 实现 — DB/HTTP/Memory (evorule-server 仓配套 lib)"
+repository = "https://gitee.com/evo-rule-lab/evorule-server"
+publish = false
+
+[dependencies]
+# 核心层 (P0-2 修复: crates.io 版本依赖)
+# 本地开发用顶层 Cargo.toml 的 [patch.crates-io] 自动 path 覆盖
+# H5: 仅依赖 evorule-reactor,不依赖 evorule-governance,避免循环
+evorule-tcb = { version = "0.1.1" }
+evorule-reactor = { version = "0.1.1" }
+
+# I/O SDK
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] } # SQLite
+reqwest = { version = "0.12", features = ["json"] }                # HTTP 客户端
+url = "2"                                                          # URL 解析（SSRF 防护用）
+
+# JSON 解析（service_registry.json / statement_whitelist.json / DB 返回 JSON）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 异步运行时
+tokio = { version = "1", features = ["fs", "time"] }
+
+# 日志
+tracing = "0.1"
+
+# H5: IoHandler trait object-safety
+async-trait = "0.1"
+
+[dev-dependencies]
+# 测试用 async runtime（#[tokio::test] 需要 macros + rt）
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# HttpHandler 测试用 mock HTTP server
+mockito = "1"

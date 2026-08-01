@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "core/auth",
+    "core/debug_control",
+    "core/hot_reload",
+    "core/io_handlers",
+    "core/metrics",
+    "core/rule_tools",
+    "core/semantic_invariants",
+    "core/time_machine",
+    "evorule-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+authors = ["EvoRule Project"]
+repository = "https://gitee.com/evo-rule-lab/evorule-server"
+homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+rust-version = "1.74"
+
+
+[workspace.lints.rust]
+# kani cfg 由 kani 工具链注入, Cargo 不识别, 显式声明以抑制 warning
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[workspace.lints.clippy]
+# G1: panic-prone
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+# F8: 嵌套复杂度
+cognitive_complexity = { level = "warn", priority = -1 }
+# F9: 函数长度
+too_many_lines = { level = "warn", priority = -1 }
+# F10 部分: 类型复杂度
+type_complexity = { level = "warn", priority = -1 }
+# F6 部分: 模块导入图
+module_inception = "warn"
+# 通用代码质量
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+# === 本地开发 override (P0-2 修复) ===
+# 兄弟仓 evorule/ 在 ../evorule 平级,本地开发用 path 覆盖。
+# 用户 clone 后不需要此段 — 自动从 crates.io 拉取 evorule-tcb/reactor/governance 0.1.1。
+# 本地开发时取消注释下面 4 行:
+# [patch.crates-io]
+# evorule-tcb = { path = "../evorule/evorule-tcb" }
+# evorule-reactor = { path = "../evorule/evorule-reactor" }
+# evorule-governance = { path = "../evorule/evorule-governance" }

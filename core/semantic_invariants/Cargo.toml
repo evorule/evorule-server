@@ -1,0 +1,37 @@
+﻿[package]
+name = "evorule-semantic-invariants"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "EvoRule 语义不变式引擎 —— JSON 驱动的业务约束检查"
+repository = "https://gitee.com/evo-rule-lab/evorule-server"
+publish = false
+homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+
+[[bin]]
+name = "evorule-semantic-invariants"
+path = "src/bin/evorule-semantic-invariants.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# 服务层 HTTP 错误路径测试需要 async runtime + mock HTTP server
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+mockito = "1"
+# handler 层 oneshot 测试
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+http = "1"
+
+[lints]
+# 继承顶层 [workspace.lints] (C4 forbid unsafe / C5 unwrap·expect·panic = deny)
+workspace = true

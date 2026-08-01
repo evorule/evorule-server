@@ -1,0 +1,69 @@
+# === Rust 构建产物 ===
+target/
+**/target/
+.build/
+
+# === Cargo.lock ===
+# workspace 顶层 Cargo.lock 保留(锁依赖版本,workspace 设计要求共享)
+# 但子 crate 目录下的 Cargo.lock 是冗余的(workspace 共享一个 lock),
+# 用 `**/Cargo.lock` 配合 !/Cargo.lock 排除所有子 crate 的,只保留顶层
+**/Cargo.lock
+!/Cargo.lock
+
+# === 环境变量(可能含密钥) ===
+.env
+.env.*
+!.env.example
+
+# === 数据文件 ===
+data/
+*.db
+*.sqlite
+*.db-journal
+*.wal
+*.fact-log
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sln
+*.sw?
+.trae/
+
+# === 操作系统 ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === 临时文件 ===
+*.tmp
+*.log
+*.bak
+*~
+
+# === Windows 构建产物 ===
+*.exe
+*.pdb
+
+# === 构建/安装日志 ===
+install_log.txt
+install_llvm_cov_log.txt
+
+# === Docker 构建临时目录(由 build-docker.ps1 创建) ===
+.docker-build/
+
+# === Kani 形式化验证产物(预留,本仓暂未使用) ===
+kani-results/
+*.kani
+.kani-logs/
+
+# === Proptest 失败持久化 ===
+*.proptest-regressions
+
+# === 内部审计/文档（绝不发布）===
+# wendang/ 存放内部审计报告、安全漏洞复盘等，含攻击面细节，
+# 推送公开仓前必须确保此处目录被忽略。
+wendang/
+wendang/**

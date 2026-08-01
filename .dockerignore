@@ -1,0 +1,44 @@
+# === Git ===
+.git/
+.gitignore
+.github/
+.gitee-ci/
+.gitee/
+
+# === Rust 构建产物(关键:大幅减小 context 体积) ===
+**/target/
+**/.build/
+
+# === 文档(非运行时依赖) ===
+**/*.md
+
+# === 临时文件 ===
+**/*.tmp
+**/*.log
+**/*.bak
+**/*~
+
+# === IDE ===
+**/.vscode/
+**/.idea/
+**/*.swp
+
+# === OS ===
+**/.DS_Store
+**/Thumbs.db
+
+# === 数据文件 ===
+**/data/
+**/*.db
+**/*.sqlite
+
+# === Trae ===
+**/.trae/
+
+# === Kani / TLA+ 验证产物(不进镜像) ===
+**/kani-results/
+**/*.kani
+**/.kani-logs/
+
+# === 内部审计文档(绝不进镜像) ===
+wendang/

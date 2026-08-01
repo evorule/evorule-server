@@ -1,0 +1,83 @@
+# Gitee Go pipeline for evorule-server
+# Parity with .github/workflows/ci.yml
+#
+# Gitee Go does not support actions/checkout, so we use git clone explicitly.
+# evorule-server 仓独立 release,evorule 核心从 crates.io 拉取,不需要兄弟仓 checkout.
+
+stages:
+  - lint
+  - test
+  - build
+  - docker
+
+variables:
+  GIT_DEPTH: "20"
+
+# === 1. Clippy + fmt ===
+lint:
+  stage: lint
+  image: rust:1.92-slim
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
+    - cargo fmt --all -- --check
+    - cargo clippy --workspace --all-targets -- -D warnings
+  rules:
+    - changes:
+        - "**/*.rs"
+        - "**/Cargo.toml"
+        - "**/Cargo.lock"
+        - ".gitee-ci/**"
+
+# === 2. Rust tests ===
+test:
+  stage: test
+  image: rust:1.92-slim
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
+    - cargo test --workspace --all-features
+  rules:
+    - changes:
+        - "**/*.rs"
+        - "**/Cargo.toml"
+        - "**/Cargo.lock"
+
+# === 3. Release build ===
+build:
+  stage: build
+  image: rust:1.92-slim
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
+    - cargo build --release --bin evorule-server
+  artifacts:
+    name: "evorule-server-linux-x86_64"
+    paths:
+      - target/release/evorule-server
+    expire_in: 7 days
+  rules:
+    - changes:
+        - "**/*.rs"
+        - "**/Cargo.toml"
+        - "**/Cargo.lock"
+
+# === 4. Docker image build (no push) ===
+docker:
+  stage: docker
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  dependencies:
+    - build
+  script:
+    - docker build -t evorule-server:gitee-$CI_COMMIT_SHORT_SHA .
+    - docker run --rm -d -p 18080:18080 -e EVORULE_ADDR=127.0.0.1:18080 --name evorule-smoke evorule-server:gitee-$CI_COMMIT_SHORT_SHA
+    - sleep 5
+    - wget -qO- http://127.0.0.1:18080/api/health || (docker logs evorule-smoke; exit 1)
+    - docker stop evorule-smoke || true
+  rules:
+    - changes:
+        - "Dockerfile"
+        - ".dockerignore"
+        - "evorule-server/**"
+        - "core/**"
+        - "resources/**"
+        - ".gitee-ci/**"

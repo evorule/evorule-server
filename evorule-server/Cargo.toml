@@ -1,0 +1,92 @@
+[package]
+name = "evorule-server"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "EvoRule 框架官方 HTTP server 实现 — 把 evorule-tcb/reactor 暴露为远程 API"
+repository = "https://gitee.com/evo-rule-lab/evorule-server"
+homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+readme = "../README.md"
+publish = false
+
+[lib]
+name = "evorule_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "evorule-server"
+path = "src/main.rs"
+
+[dependencies]
+# 核心层 (P0-2 修复: crates.io 版本依赖)
+# 本地开发用顶层 Cargo.toml 的 [patch.crates-io] 自动 path 覆盖
+evorule-tcb = { version = "0.1.1" }
+evorule-reactor = { version = "0.1.1", features = ["persistence"] }
+# H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
+evorule-governance = { version = "0.1.1", features = ["persistence"] }
+
+# I/O handler(H5: 应用层,从 evorule-governance 迁出; 新位置: core/io_handlers)
+evorule-io-handlers = { path = "../core/io_handlers" }
+
+# 异步运行时
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "fs",
+    "time",
+    "signal",
+] }
+
+# HTTP API(直接使用 axum 类型)
+axum = "0.8"
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
+tower_governor = "0.8"
+governor = "0.10"
+# H6: async-stream 和 futures-core 从 evorule-governance 迁移（server.rs 的 SSE stream! 宏需要）
+async-stream = "0.3"
+futures-core = "0.3"
+
+# Prometheus 指标（H6: 从 evorule-governance 迁移到应用层）
+# Phase 3: 升级到 0.14 修复 RUSTSEC-2024-0437（protobuf 2.28.0 不受控递归 DoS）
+prometheus = "0.14"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 错误处理
+thiserror = "2"
+
+# CLI 参数解析
+clap = { version = "4", features = ["derive", "env"] }
+
+# 安全(P1-5:恒定时间比较)
+subtle = "2"
+
+[dev-dependencies]
+# H6: benchmarks 迁移到应用层后需要的依赖
+# bench_determinism/long_session/throughput 通过 HTTP 调用 evorule-server 进行压测
+reqwest = { version = "0.12", features = ["json"] }
+# bench_determinism 用 blake3 计算 payload hash 对比确定性
+blake3 = "1"
+# 配置解析测试需要临时文件
+tempfile = "3"
+# handler oneshot 测试需要 ServiceExt::oneshot（util feature）
+tower = { version = "0.5", features = ["util"] }
+
+[features]
+# H6: metrics feature 已移除（Prometheus 实现始终启用，由 metrics_impl.rs 提供）
+# evorule-governance 不再有 metrics feature（IoMetrics trait 总是可用）
+default = ["persistence"]
+persistence = ["evorule-governance/persistence", "evorule-reactor/persistence"]
+
+[lints]
+# 继承顶层 [workspace.lints] (C4 forbid unsafe / C5 unwrap·expect·panic = deny)
+workspace = true

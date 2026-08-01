@@ -1,0 +1,388 @@
+{
+  "rule_id": "core.eval",
+  "version": "0.1.0",
+  "description": "TCB 宪法 - 将业务指令映射为元指令(反应式执行器版)",
+  "metadata": {
+    "author": "evorule-core",
+    "license": "CC0-1.0 Universal (Public Domain)",
+    "public_domain_notice": "本文件(core_eval.json,即 EvoRule 宪法)以 CC0 1.0 公共领域奉献。任何人都可以自由使用、修改、再分发,无需保留版权声明。EvoRule 代码本身采用 AGPL-3.0-or-later,但本解释器规范是公共领域 —— 任何人都可以实现兼容的 EvoRule 引擎。",
+    "spdx_license_id": "CC0-1.0",
+    "sections": [
+      "1. 原子计算指令: increment, decrement, set",
+      "2. 控制流指令: sequence, conditional, while_loop",
+      "3. I/O 指令映射: call_external, query_db, http_get, save_memory, call_service",
+      "4. 默认处理: 所有未匹配指令 -> noop (all([]) 兜底规则)"
+    ],
+    "constraints": [
+      "每条 transform 规则中最多包含一个 io_request 元指令",
+      "原因: __io_result__ 是全局字段，多个 io_request 会冲突",
+      "io_request 必须是 branch 的叶子节点（on_false 分支），之前不能有 set/push 操作",
+      "未来如需多 I/O 支持，需改为按 request_id 隔离结果存储"
+    ]
+  },
+  "transform": [
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "increment"
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "__exec__.instruction.params.attr",
+              "operation": "add",
+              "value": "__exec__.instruction.params.delta"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "decrement"
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "__exec__.instruction.params.attr",
+              "operation": "sub",
+              "value": "__exec__.instruction.params.delta"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "set"
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "__exec__.instruction.params.attr",
+              "operation": "set",
+              "value": "__exec__.instruction.params.value"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "sequence"
+        },
+        "on_true": [
+          {
+            "type": "push",
+            "params": {
+              "instructions": "__exec__.instruction.params.instructions"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "conditional"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": "__exec__.instruction.params.domain",
+              "on_true": [
+                {
+                  "type": "push",
+                  "params": {
+                    "instructions": [
+                      "__exec__.instruction.params.then"
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "push",
+                  "params": {
+                    "instructions": [
+                      "__exec__.instruction.params.else"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "while_loop"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": "__exec__.instruction.params.condition",
+              "on_true": [
+                {
+                  "type": "push",
+                  "params": {
+                    "instructions": [
+                      "__exec__.instruction.params.body",
+                      "__exec__.instruction"
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "push",
+                  "params": {
+                    "instructions": [
+                      {
+                        "type": "noop"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "call_external"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "exists", "path": "__exec__.payload.__io_result__" },
+              "on_true": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "llm_response",
+                    "operation": "set",
+                    "value": "__exec__.payload.__io_result__"
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "io_request",
+                  "params": {
+                    "io_type": "call_external",
+                    "prompt": "__exec__.instruction.params.prompt",
+                    "system": "__exec__.instruction.params.system",
+                    "messages": "__exec__.instruction.params.messages",
+                    "tools": "__exec__.instruction.params.tools",
+                    "model": "__exec__.instruction.params.model",
+                    "temperature": "__exec__.instruction.params.temperature",
+                    "max_tokens": "__exec__.instruction.params.max_tokens",
+                    "tool_choice": "__exec__.instruction.params.tool_choice"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "query_db"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "exists", "path": "__exec__.payload.__io_result__" },
+              "on_true": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "db_result",
+                    "operation": "set",
+                    "value": "__exec__.payload.__io_result__"
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "io_request",
+                  "params": {
+                    "io_type": "query_db",
+                    "query": "__exec__.instruction.params.query",
+                    "params": "__exec__.instruction.params.params"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "http_get"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "exists", "path": "__exec__.payload.__io_result__" },
+              "on_true": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "http_response",
+                    "operation": "set",
+                    "value": "__exec__.payload.__io_result__"
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "io_request",
+                  "params": {
+                    "io_type": "http_get",
+                    "url": "__exec__.instruction.params.url",
+                    "headers": "__exec__.instruction.params.headers",
+                    "timeout_ms": "__exec__.instruction.params.timeout_ms"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "save_memory"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "exists", "path": "__exec__.payload.__io_result__" },
+              "on_true": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "memory_result",
+                    "operation": "set",
+                    "value": "__exec__.payload.__io_result__"
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "io_request",
+                  "params": {
+                    "io_type": "save_memory",
+                    "key": "__exec__.instruction.params.key",
+                    "value": "__exec__.instruction.params.value"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "call_service"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "exists", "path": "__exec__.payload.__io_result__" },
+              "on_true": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "service_result",
+                    "operation": "set",
+                    "value": "__exec__.payload.__io_result__"
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "io_request",
+                  "params": {
+                    "io_type": "call_service",
+                    "service_name": "__exec__.instruction.params.service_name",
+                    "args": "__exec__.instruction.params.args"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "noop"
+        },
+        "on_true": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "all",
+          "inner": []
+        },
+        "on_true": []
+      }
+    }
+  ]
+}

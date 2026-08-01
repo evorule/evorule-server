@@ -1,0 +1,27 @@
+[package]
+name = "evorule-auth"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "EvoRule 认证模块 — Bearer + 速率限制 + 恒定时间比较 (evorule-server 仓配套 lib)"
+repository = "https://gitee.com/evo-rule-lab/evorule-server"
+homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+publish = false
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+subtle = "2"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+hex = "0.4"
+
+[lints]
+# 继承顶层 [workspace.lints] (C4 forbid unsafe / C5 unwrap·expect·panic = deny)
+workspace = true
+
