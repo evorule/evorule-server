@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use evorule_reactor::{IoHandler, IoResult};
 use evorule_tcb::JsonValue;
 
-/// 单次文件 I/O 超时（P0-2：Memory 5s，防止 NFS/网络文件系统卡住）
+/// 单次文件 I/O 超时（Memory 5s，防止 NFS/网络文件系统卡住）
 const MEMORY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Memory 处理器
@@ -82,7 +82,7 @@ impl IoHandler for MemoryHandler {
                 .as_str()
                 .ok_or_else(|| "param 'value' must be a string".to_string())?;
 
-            // 确保父目录存在（P0-2：5s 超时）
+            // 确保父目录存在（5s 超时）
             if let Some(parent) = path.parent() {
                 tokio::time::timeout(MEMORY_TIMEOUT, tokio::fs::create_dir_all(parent))
                     .await
@@ -92,7 +92,7 @@ impl IoHandler for MemoryHandler {
                     .map_err(|e| format!("create dir failed: {e}"))?;
             }
 
-            // 写入文件（P0-2：5s 超时）
+            // 写入文件（5s 超时）
             tokio::time::timeout(MEMORY_TIMEOUT, tokio::fs::write(&path, content))
                 .await
                 .map_err(|_| format!("write file timed out after {}s", MEMORY_TIMEOUT.as_secs()))?
@@ -100,7 +100,7 @@ impl IoHandler for MemoryHandler {
 
             Ok(JsonValue::Bool(true))
         } else {
-            // 读模式（P0-2：5s 超时）
+            // 读模式（5s 超时）
             // 区分 NotFound 与其他 I/O 错误，便于上层做"键不存在则用默认值"模式。
             // 旧实现把 NotFound 混入通用 "read file failed: ..."，上层无法判断。
             let read_result =

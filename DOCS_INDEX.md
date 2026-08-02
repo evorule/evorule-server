@@ -8,7 +8,7 @@
 
 # EvoRule Server 文档总索引
 
-> **最后更新**:2026-08-01
+> **最后更新**:2026-08-02
 > **版本对齐**:与 `Cargo.toml` 中 `version = "0.1.0"` 同步
 
 ---
@@ -18,8 +18,7 @@
 | 文档 | 用途 | 一句话说明 |
 |:---|:---|:---|
 | [README.md](README.md) | 项目总览 | evorule-server 是什么、快速开始、架构概览、API 概览 — **新用户首读** |
-| [AGENTS.md](AGENTS.md) | 贡献者规则 | 人类 + AI agent 的硬性贡献规则(被动越界 / 边界判断 / 强制行为)— **贡献者首读** |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 | 如何提交 issue / PR / 编译 / 测试 / 提 PR 检查清单 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 | 如何提交 issue / PR / 编译 / 测试 / 提 PR 检查清单 — **贡献者首读** |
 | [SECURITY.md](SECURITY.md) | 安全报告 | 漏洞披露流程 + 安全联系人 + 本仓特有安全关注点 |
 
 ---
@@ -30,8 +29,7 @@
 
 | 文档 | 主题 | 说明 |
 |:---|:---|:---|
-| [VERSION_STRATEGY.md](VERSION_STRATEGY.md) | 版本策略 | 语义化版本规则、与 evorule 主仓的版本关系、发布清单 |
-| [ROADMAP.md](ROADMAP.md) | 路线图 | v0.1.x → v1.0 各阶段规划里程碑 |
+| [VERSION_STRATEGY.md](VERSION_STRATEGY.md) | 版本策略 | 语义化版本规则、发布清单 |
 | [CHANGELOG.md](CHANGELOG.md) | 更新日志 | Keep a Changelog v1.0 格式;每版所有重大变更(B1-B3 / N1-N6 / S1-S4) |
 | [GATE_REFERENCE.md](GATE_REFERENCE.md) | 门控参考 | build.rs 编译时门禁 + Clippy workspace lints + 豁免索引 |
 
@@ -45,12 +43,6 @@
 | [TRADEMARK.md](TRADEMARK.md) | 商标政策 | "EvoRule" / "EvoRule Server" / "元则" / "则灵" 商标使用规范 |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 行为准则 | 贡献者行为守则(Contributor Covenant 2.1) |
 
-### 2.3 机器可读
-
-| 文档 | 主题 | 说明 |
-|:---|:---|:---|
-| [AGENTS.schema.json](AGENTS.schema.json) | AGENTS.md 结构化 | LLM/agent 程序化消费的 JSON Schema(双轨制:人类读 .md,agent 读 .json) |
-
 ---
 
 ## 三、开发文档（`docs/` 目录）
@@ -60,6 +52,7 @@
 | [docs/INTEGRATION_GUIDE.md](docs/INTEGRATION_GUIDE.md) | 集成指南 — 如何将 evorule-server 集成到应用中 |
 | [docs/PITFALLS.md](docs/PITFALLS.md) | 已知坑 — 开发/部署中遇到的陷阱及解决方案 |
 | [docs/PITFALLS.json](docs/PITFALLS.json) | 已知坑(机器可读格式) — 供工具消费的结构化版本 |
+| [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md) | 发布流程 — 发布前就绪检查、打 tag、Docker 镜像构建、回滚流程 |
 
 ---
 
@@ -96,7 +89,7 @@ evorule-server/
 │       ├── main.rs        # 启动入口(B3: fail-closed启动)
 │       └── metrics_impl.rs # Prometheus 指标收集(N3: 指标基数防护)
 ├── resources/
-│   └── core_eval.json     # EvoRule 宪法(CC0-1.0,从主仓同步)
+│   └── core_eval.json     # EvoRule 宪法(CC0-1.0,从核心仓同步)
 └── docs/                  # 开发文档
 ```
 
@@ -107,4 +100,4 @@ evorule-server/
 1. **加新 L1 公开文档必登索引**:新根目录 md 或 `docs/**` md 创建时,必须同步在本 DOCS_INDEX 登记
 2. **版本号单一真相源**:所有文档写死的版本号字符串必须与 `Cargo.toml` 顶层 `version` 一致(CHANGELOG 历史段除外)
 3. **文档被取代必标废弃**:新版文档生效时,旧版顶部加 `[已废弃]` 横幅,注明"被 `<新文件名>` 于 `<日期>` 取代"
-4. **与 evorule 主仓的关系**:本仓文档只覆盖 server 仓范围;核心机制文档(TCB/REACTOR/GOVERNANCE SPEC)见 [evorule 主仓 DOCS_INDEX](https://gitee.com/evo-rule-lab/evorule/blob/main/DOCS_INDEX.md)
+4. **文档范围**:本仓文档只覆盖 server 仓范围;核心机制文档(TCB/REACTOR/GOVERNANCE SPEC)见核心仓 DOCS_INDEX

@@ -557,7 +557,7 @@ curl http://127.0.0.1:18080/api/sessions/1/audit
 
 - [README.md](../README.md) — 架构概览、配置参数、API 简表
 - [PITFALLS.md](PITFALLS.md) — 15 个踩坑记录与避坑指南
-- [AGENTS.md](../AGENTS.md) — 仓库开发规则
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — 贡献指南与架构原则
 - 源码 `evorule-server/src/api/server.rs` — 约 50 条路由的完整定义
 - 源码 `core/io_handlers/src/` — HttpHandler / ServiceRegistryHandler / DbHandler / MemoryHandler 实现
 

@@ -994,7 +994,11 @@ mod tests {
         ];
         // v_a=3 在间隙中(1 < 3 < 6),v_b=6 存在
         let diff = local_diff(&history, 3, 6);
-        assert_eq!(diff.added.len(), 2, "v_a 为空对象,v_b 的 a 和 b 都应报 added");
+        assert_eq!(
+            diff.added.len(),
+            2,
+            "v_a 为空对象,v_b 的 a 和 b 都应报 added"
+        );
         assert!(diff.removed.is_empty());
         assert!(diff.changed.is_empty());
     }
@@ -1019,7 +1023,10 @@ mod tests {
             make_state_transition(10, serde_json::json!({"a": 2})),
         ];
         let tree = build_version_tree(&history, 42);
-        assert_eq!(tree.total_versions, 10, "total_versions 应为最后一条的 version");
+        assert_eq!(
+            tree.total_versions, 10,
+            "total_versions 应为最后一条的 version"
+        );
         assert_eq!(tree.nodes.len(), 2, "节点数应为实际条目数");
         assert_eq!(tree.state_transition_count, 2);
         assert_eq!(tree.session_id, 42);

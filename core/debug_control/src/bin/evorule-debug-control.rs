@@ -21,7 +21,11 @@ use tracing_subscriber::EnvFilter;
 
 /// 调试控制服务参数
 #[derive(Parser, Debug)]
-#[command(name = "evorule-debug-control", version, about = "EvoRule 调试控制服务")]
+#[command(
+    name = "evorule-debug-control",
+    version,
+    about = "EvoRule 调试控制服务"
+)]
 struct Args {
     /// HTTP API 监听端口
     #[arg(long = "api-port", default_value = "8086")]

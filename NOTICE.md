@@ -30,7 +30,7 @@
 | 资产 | 协议 | 说明 |
 |---|---|---|
 | **本仓所有代码** | AGPL-3.0-or-later | 详见 [LICENSE](LICENSE) |
-| **`resources/core_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法（解释器规范）——从 [evorule 主仓](https://gitee.com/evo-rule-lab/evorule)同步，任何人可自由使用 |
+| **`resources/core_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法（解释器规范）——从 [核心仓](https://gitee.com/evo-rule-lab/evorule)同步，任何人可自由使用 |
 
 ## 依赖说明
 
@@ -38,11 +38,11 @@
 
 | 依赖 | 来源 | 说明 |
 |---|---|---|
-| `evorule-tcb` | [evorule 主仓](https://gitee.com/evo-rule-lab/evorule) | TCB 基础层（JSON 状态机 / 路径解析 / 域评估） |
+| `evorule-tcb` | [核心仓](https://gitee.com/evo-rule-lab/evorule) | TCB 基础层（JSON 状态机 / 路径解析 / 域评估） |
 | `evorule-reactor` | 同上 | 反应器层（主循环 / Fact 日志 / WAL） |
 | `evorule-governance` | 同上 | 治理层机制（会话管理 / 审计链 / IoDispatcher 框架） |
 
-本地开发通过 `path` 依赖引用兄弟仓 `../evorule/`；发布时通过 `crates.io` 拉取。
+本地开发通过 `path` 依赖引用核心仓 `../evorule/`；发布时通过 `crates.io` 拉取。
 
 ## 第三方依赖
 

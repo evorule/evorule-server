@@ -8,7 +8,7 @@ repository = "https://gitee.com/evo-rule-lab/evorule-server"
 publish = false
 
 [dependencies]
-# 核心层 (P0-2 修复: crates.io 版本依赖)
+# 核心层 (crates.io 版本依赖)
 # 本地开发用顶层 Cargo.toml 的 [patch.crates-io] 自动 path 覆盖
 # H5: 仅依赖 evorule-reactor,不依赖 evorule-governance,避免循环
 evorule-tcb = { version = "0.1.1" }

@@ -54,14 +54,14 @@ cargo clippy --all-targets -- -D warnings
 
 ---
 
-## 架构原则(来自走神 6 + 走神 9)
+## 架构原则
 
-1. **本仓不改 evorule 核心** —— 所有核心变更走 `evorule` 主仓的 release 流程
-2. **本仓不绑 evorule-application 仓** —— 两个仓独立 release,独立版本号
+1. **本仓不改 evorule 核心** —— 所有核心变更走核心仓的 release 流程
+2. **本仓独立 release**,独立版本号
 3. **核心 vs server 配套的边界**
-   - 核心 (在 evorule 主仓):`evorule-tcb` / `evorule-reactor` / `evorule-governance`
+   - 核心 (在核心仓):`evorule-tcb` / `evorule-reactor` / `evorule-governance`
    - server 配套 (在本仓):`core/auth` / `core/io_handlers` / `core/metrics` / `core/hot_reload` / `core/debug_control` / `core/semantic_invariants` / `core/time_machine` / `core/rule_tools`
-   - 决策问题:某项改动"放核心"还是"放 server 配套"?参考 evorule 主仓的 `STRATEGIC_DIRECTION.md` 〇 节
+   - 决策问题:某项改动"放核心"还是"放 server 配套"?参考核心仓的 `STRATEGIC_DIRECTION.md`
 
 4. **新增依赖**:必须先在 PR 中说明为什么这个依赖必要,以及不依赖的方案为何不可行
 

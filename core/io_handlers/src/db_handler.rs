@@ -23,7 +23,7 @@ use sqlx::sqlite::{
 };
 use sqlx::{Column, Row};
 
-/// 单次 DB 查询超时（P0-2：DB 5s）
+/// 单次 DB 查询超时（DB 5s）
 const DB_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 连接池最大连接数
@@ -58,7 +58,7 @@ impl DbHandler {
     ///
     /// # 参数
     /// - `database_url`: SQLite 连接字符串（如 `sqlite://./data/demo.sqlite`
-    ///   或 `sqlite::memory:`）。
+    /// 或 `sqlite::memory:`）。
     ///
     /// # 错误
     /// `database_url` 解析失败时返回 `sqlx::Error`，**不会静默回退到内存库**。
@@ -136,7 +136,7 @@ impl IoHandler for DbHandler {
         let is_query = is_query_statement(query_str);
 
         if is_query {
-            // P0-2：5s 超时，防止 DB 卡住导致会话僵死
+            // 5s 超时，防止 DB 卡住导致会话僵死
             let rows: Vec<SqliteRow> =
                 tokio::time::timeout(DB_TIMEOUT, query.fetch_all(&self.pool))
                     .await
@@ -237,19 +237,19 @@ fn strip_leading_sql_comments(sql: &str) -> &str {
 }
 
 // ============================================================================
-// P0-6：SQL 语句模板白名单机制 —— StatementWhitelist + WhitelistedDbHandler
+// SQL 语句模板白名单机制 —— StatementWhitelist + WhitelistedDbHandler
 //
-//   机制-策略分离：SQL 模板是"策略"（运维/业务写在 JSON 配置里），模板名 + 参数
-//   是"机制"（IoHandler 只允许调用白名单模板，不允许直接执行任意 SQL）。
+// 机制-策略分离：SQL 模板是"策略"（运维/业务写在 JSON 配置里），模板名 + 参数
+// 是"机制"（IoHandler 只允许调用白名单模板，不允许直接执行任意 SQL）。
 //
-//   statement_whitelist.json 格式：
-//   {
-//     "find_user_by_id": {
-//       "sql": "SELECT id, name FROM users WHERE id = ?",
-//       "param_names": ["id"],
-//       "description": "按用户 ID 查询（可选，仅做文档）"
-//     }
-//   }
+// statement_whitelist.json 格式：
+// {
+// "find_user_by_id": {
+// "sql": "SELECT id, name FROM users WHERE id = ?",
+// "param_names": ["id"],
+// "description": "按用户 ID 查询（可选，仅做文档）"
+// }
+// }
 // ============================================================================
 
 /// 单个 SQL 白名单条目
@@ -376,8 +376,8 @@ fn has_multiple_statements(mut sql: &str) -> bool {
 /// IoParams 协议：
 /// ```json
 /// {
-///   "name": "find_user_by_id",
-///   "params": [123]        // 数组（按位置绑定）或 { "id": 123 }（按名字绑定，模板需声明 param_names）
+/// "name": "find_user_by_id",
+/// "params": [123]        // 数组（按位置绑定）或 { "id": 123 }（按名字绑定，模板需声明 param_names）
 /// }
 /// ```
 pub struct WhitelistedDbHandler {
@@ -393,11 +393,9 @@ impl WhitelistedDbHandler {
     /// 解析最终传给 DbHandler 的 params：{ query: String, params: Array }
     fn resolve(&self, params: &JsonValue) -> Result<JsonValue, String> {
         if self.whitelist.is_empty() {
-            return Err(
-                "QUERY_DB disabled: no statement_whitelist loaded; \
+            return Err("QUERY_DB disabled: no statement_whitelist loaded; \
                  set --statement-whitelist <path> to enable"
-                    .to_string(),
-            );
+                .to_string());
         }
         // 显式禁止 params.query（防止绕过白名单）
         if params.get("query").is_some() {
@@ -430,18 +428,13 @@ impl WhitelistedDbHandler {
                 }
                 let mut arr = Vec::with_capacity(entry.param_names.len());
                 for pn in &entry.param_names {
-                    let v = obj
-                        .get(pn)
-                        .cloned()
-                        .unwrap_or(JsonValue::Null);
+                    let v = obj.get(pn).cloned().unwrap_or(JsonValue::Null);
                     arr.push(v);
                 }
                 arr
             }
             Some(_) => {
-                return Err(
-                    "QUERY_DB 'params' must be an array or object".to_string(),
-                );
+                return Err("QUERY_DB 'params' must be an array or object".to_string());
             }
         };
 
@@ -484,18 +477,13 @@ mod whitelist_tests {
 
     #[test]
     fn test_empty_whitelist_blocks() {
-        let db_path = std::env::temp_dir().join(format!(
-            "evorule_wl_empty_{}.sqlite",
-            std::process::id()
-        ));
+        let db_path =
+            std::env::temp_dir().join(format!("evorule_wl_empty_{}.sqlite", std::process::id()));
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let db = DbHandler::connect_file(&db_path).await.unwrap();
             let w = WhitelistedDbHandler::new(db, StatementWhitelist::empty());
-            let params = JsonValue::object_from_pairs(&[(
-                "query",
-                JsonValue::string("SELECT 1"),
-            )]);
+            let params = JsonValue::object_from_pairs(&[("query", JsonValue::string("SELECT 1"))]);
             let err = w.execute(&params).await.unwrap_err();
             assert!(err.contains("no statement_whitelist loaded"));
         });
@@ -509,10 +497,8 @@ mod whitelist_tests {
         .unwrap();
         // 先构造一个临时 WhitelistedDbHandler 用于 resolve
         // 这里直接 new 一个空内存 DB 就行
-        let db_path = std::env::temp_dir().join(format!(
-            "evorule_wl_resolve_{}.sqlite",
-            std::process::id()
-        ));
+        let db_path =
+            std::env::temp_dir().join(format!("evorule_wl_resolve_{}.sqlite", std::process::id()));
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let db = DbHandler::connect_file(&db_path).await.unwrap();
@@ -538,10 +524,8 @@ mod whitelist_tests {
             r#"{"f":{"sql":"SELECT * FROM t WHERE a = ? AND b = ?","param_names":["b","a"]}}"#,
         )
         .unwrap();
-        let db_path = std::env::temp_dir().join(format!(
-            "evorule_wl_obj_{}.sqlite",
-            std::process::id()
-        ));
+        let db_path =
+            std::env::temp_dir().join(format!("evorule_wl_obj_{}.sqlite", std::process::id()));
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let db = DbHandler::connect_file(&db_path).await.unwrap();
@@ -566,24 +550,16 @@ mod whitelist_tests {
 
     #[test]
     fn test_resolve_rejects_direct_query_field() {
-        let w = StatementWhitelist::load_from_str(
-            r#"{"f":{"sql":"SELECT 1"}}"#,
-        )
-        .unwrap();
-        let db_path = std::env::temp_dir().join(format!(
-            "evorule_wl_bypass_{}.sqlite",
-            std::process::id()
-        ));
+        let w = StatementWhitelist::load_from_str(r#"{"f":{"sql":"SELECT 1"}}"#).unwrap();
+        let db_path =
+            std::env::temp_dir().join(format!("evorule_wl_bypass_{}.sqlite", std::process::id()));
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let db = DbHandler::connect_file(&db_path).await.unwrap();
             let wl = WhitelistedDbHandler::new(db, w);
             let params = JsonValue::object_from_pairs(&[
                 ("name", JsonValue::string("f")),
-                (
-                    "query",
-                    JsonValue::string("DROP TABLE t"),
-                ),
+                ("query", JsonValue::string("DROP TABLE t")),
             ]);
             let err = wl.execute(&params).await.unwrap_err();
             assert!(err.contains("direct 'query' field is forbidden"));
@@ -592,27 +568,19 @@ mod whitelist_tests {
 
     #[test]
     fn test_has_multiple_statements_detected() {
-        assert!(has_multiple_statements(
-            "SELECT 1; SELECT 2"
-        ));
+        assert!(has_multiple_statements("SELECT 1; SELECT 2"));
         assert!(has_multiple_statements(
             "INSERT INTO t(a) VALUES (1); DROP TABLE t"
         ));
         // 注释+空白在分号后的也算多语句
-        assert!(has_multiple_statements(
-            "SELECT 1; -- trailing\nSELECT 2"
-        ));
+        assert!(has_multiple_statements("SELECT 1; -- trailing\nSELECT 2"));
     }
 
     #[test]
     fn test_has_multiple_statements_semicolon_in_string_ignored() {
         // 分号在字符串字面量里不算多语句
-        assert!(!has_multiple_statements(
-            "SELECT 'a;b' AS x"
-        ));
-        assert!(!has_multiple_statements(
-            "INSERT INTO t VALUES (\";\")"
-        ));
+        assert!(!has_multiple_statements("SELECT 'a;b' AS x"));
+        assert!(!has_multiple_statements("INSERT INTO t VALUES (\";\")"));
     }
 
     #[test]
@@ -625,10 +593,8 @@ mod whitelist_tests {
 
     #[test]
     fn test_multiple_statements_blocked_on_load() {
-        let err = StatementWhitelist::load_from_str(
-            r#"{"bad":{"sql":"SELECT 1; DROP TABLE t"}}"#,
-        )
-        .unwrap_err();
+        let err = StatementWhitelist::load_from_str(r#"{"bad":{"sql":"SELECT 1; DROP TABLE t"}}"#)
+            .unwrap_err();
         assert!(err.contains("multiple SQL statements"));
     }
 }

@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! evorule-server —— 独立二进制服务入口(应用层)
 //!
-//! H5: 从 evorule-governance/src/bin/ 迁移到 evorule-application/core/evorule-server/,
+//! H5: 从核心层迁出到独立仓,
 //! 因为核心层不应依赖具体 I/O handler 实现(策略)。
 //!
 //! 启动 GovernanceServer（HTTP API + SSE 事件流 + 多会话管理），
@@ -15,10 +15,10 @@
 //! evorule-server --config evorule.json --log-format json
 //! ```
 //!
-//! # 配置加载优先级（P2-9）
+//! # 配置加载优先级
 //! CLI 参数 > 环境变量（前缀 `EVORULE_`）> JSON 配置文件 > 内置默认值
 //!
-//! # 优雅退出（P2-8）
+//! # 优雅退出
 //! - 监听 SIGTERM（Docker 停止信号）和 SIGINT（Ctrl+C）
 //! - 收到信号后：readiness 设为 false（负载均衡器切走流量）→ 等待进行中请求 → 30s 超时强制退出
 //! - `GET /api/health/liveness` 始终 200；`GET /api/health/readiness` 在退出期间返回 503
@@ -34,9 +34,9 @@ use std::time::Duration;
 
 use clap::Parser;
 use evorule_reactor::{FactsLog, IoType, Reactor};
-use std::time::Instant;
 #[cfg(test)]
 use evorule_tcb::JsonValue;
+use std::time::Instant;
 // H6: AuthConfig 和 API server 从 lib 导入（应用层模块已迁至 src/lib.rs）
 use evorule_governance::auditor::Auditor;
 use evorule_server::api::server::{AppState, GovernanceApi, GovernanceServer, SessionApi};
@@ -55,34 +55,34 @@ use evorule_server::metrics_impl::shared_prometheus_metrics;
 use tracing::{error, info, warn};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
-/// 优雅退出超时（P2-8：等待进行中请求的最长时间）
+/// 优雅退出超时（等待进行中请求的最长时间）
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
-// ===== P2-9：JSON 配置文件结构 =====
+// ===== JSON 配置文件结构 =====
 
 /// JSON 配置文件顶层结构
 ///
 /// 示例文件 (`evorule.json`)：
 /// ```json
 /// {
-///   "server": {
-///     "addr": "0.0.0.0:18080",
-///     "max_rounds": 1000
-///   },
-///   "auth": {
-///     "token": "secret123"
-///   },
-///   "paths": {
-///     "core_eval": "./evorule-tcb/core_eval.json",
-///     "rules_dir": "./rules",
-///     "db_path": "./data/evorule.db",
-///     "memory_dir": "./data/memory"
-///   },
-///   "log": {
-///     "level": "info",
-///     "format": "json",
-///     "file": "./logs/evorule.log"
-///   }
+/// "server": {
+/// "addr": "0.0.0.0:18080",
+/// "max_rounds": 1000
+/// },
+/// "auth": {
+/// "token": "secret123"
+/// },
+/// "paths": {
+/// "core_eval": "./evorule-tcb/core_eval.json",
+/// "rules_dir": "./rules",
+/// "db_path": "./data/evorule.db",
+/// "memory_dir": "./data/memory"
+/// },
+/// "log": {
+/// "level": "info",
+/// "format": "json",
+/// "file": "./logs/evorule.log"
+/// }
 /// }
 /// ```
 ///
@@ -132,7 +132,7 @@ struct FilePathsConfig {
 #[derive(Debug, Default, serde::Deserialize)]
 struct FileLogConfig {
     level: Option<String>,
-    /// `plain` 或 `json`（P2-7）
+    /// `plain` 或 `json`
     format: Option<String>,
     /// 日志文件路径（生产环境持久化，可选）
     file: Option<PathBuf>,
@@ -191,7 +191,7 @@ fn load_config_file(path: &Option<PathBuf>) -> FileConfig {
 #[derive(Parser, Debug)]
 #[command(name = "evorule-server", version, about = "EvoRule 治理层 HTTP 服务")]
 struct Cli {
-    /// JSON 配置文件路径（P2-9，可选，例: ./evorule.json）
+    /// JSON 配置文件路径（可选，例: ./evorule.json）
     #[arg(long, env = "EVORULE_CONFIG")]
     config: Option<PathBuf>,
 
@@ -230,7 +230,7 @@ struct Cli {
     #[arg(long, env = "EVORULE_LOG_LEVEL")]
     log_level: Option<String>,
 
-    /// 日志格式（P2-7：`plain` 或 `json`，默认 `plain`）
+    /// 日志格式（`plain` 或 `json`，默认 `plain`）
     #[arg(long, env = "EVORULE_LOG_FORMAT")]
     log_format: Option<String>,
 
@@ -329,9 +329,9 @@ struct ResolvedConfig {
     auto_verify_interval: usize,
     /// 是否禁用速率限制（仅 benchmark 使用）
     rate_limit_per_sec: u64,
-    /// service_name→URL 映射文件（P0-1：ServiceRegistry）
+    /// service_name→URL 映射文件（ServiceRegistry）
     service_registry: Option<PathBuf>,
-    /// SQL 模板白名单文件（P0-6：未设置则 QUERY_DB 全部拒绝）
+    /// SQL 模板白名单文件（未设置则 QUERY_DB 全部拒绝）
     statement_whitelist: Option<PathBuf>,
     /// CORS 白名单；若 CLI 指定了 "*" 则为全放行模式（仅限开发）
     allowed_origins: Vec<String>,
@@ -360,7 +360,7 @@ impl ResolvedConfig {
             core_eval: cli
                 .core_eval
                 .or(file.paths.core_eval)
-                // P1-1 修复: 默认指向本仓 resources/, 不再依赖兄弟仓 evorule 仓
+                // 默认指向本仓 resources/
                 .unwrap_or_else(|| PathBuf::from("./resources/core_eval.json")),
             rules_dir: cli
                 .rules_dir
@@ -396,9 +396,7 @@ impl ResolvedConfig {
             // --no-rate-limit 设为 0 → build_router() 完全跳过 GovernorLayer（真正禁用限速）
             rate_limit_per_sec: if cli.no_rate_limit { 0 } else { 1 },
             service_registry: cli.service_registry.or(file.paths.service_registry),
-            statement_whitelist: cli
-                .statement_whitelist
-                .or(file.paths.statement_whitelist),
+            statement_whitelist: cli.statement_whitelist.or(file.paths.statement_whitelist),
             allowed_origins,
             allow_loopback: cli.allow_loopback,
             // S2：从 CLI/环境变量读取 metrics_auth 配置
@@ -439,10 +437,8 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     }
 }
 
-/// 加载 SQL 语句白名单（P0-6：statement_whitelist.json）
-fn load_statement_whitelist(
-    path: Option<&std::path::Path>,
-) -> Result<StatementWhitelist, String> {
+/// 加载 SQL 语句白名单（statement_whitelist.json）
+fn load_statement_whitelist(path: Option<&std::path::Path>) -> Result<StatementWhitelist, String> {
     StatementWhitelist::load_from_file(path)
 }
 
@@ -487,7 +483,7 @@ fn load_core_eval(path: &PathBuf) -> Result<Vec<JsonValue>, String> {
     Ok(transform)
 }
 
-/// 初始化日志订阅器（P2-7：支持 plain 和 json 两种格式，支持文件持久化）
+/// 初始化日志订阅器（支持 plain 和 json 两种格式，支持文件持久化）
 ///
 /// # 参数
 /// - `level`: 日志级别（error/warn/info/debug/trace）
@@ -683,14 +679,14 @@ async fn log_cleanup_task(log_dir: PathBuf, max_days: u32, max_size_mb: u64) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // P2-9: 加载 JSON 配置文件（若指定）
+    // 加载 JSON 配置文件（若指定）
     // M3 修复: 注释原本写"TOML",但实际加载的是 JSON(serde_json::from_str)。
     let file_config = load_config_file(&cli.config);
 
     // 按 CLI > env > file > default 优先级解析
     let cfg = ResolvedConfig::resolve(cli, file_config);
 
-    // 1. 初始化日志（P2-7: 支持 JSON 结构化日志，支持文件持久化）
+    // 1. 初始化日志（支持 JSON 结构化日志，支持文件持久化）
     // C2 修复: 必须持有 _log_guard 直到进程退出,否则 tracing_appender 后台线程
     // 会被 drop,导致文件日志写入全部丢失。
     let _log_guard = init_logging(&cfg.log_level, &cfg.log_format, cfg.log_file.as_ref());
@@ -761,8 +757,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 2. 加载规则（TCB 宪法 core_eval.json + rules_dir 业务规则合并）
-    //    P0-2：cfg.rules_dir 之前被解析但从未消费，现在真正合并。
-    //    复用 SessionApi::load_merged_transforms_from_fs（统一一份合并逻辑，避免双份代码漂移）
+    // cfg.rules_dir 之前被解析但从未消费，现在真正合并。
+    // 复用 SessionApi::load_merged_transforms_from_fs（统一一份合并逻辑，避免双份代码漂移）
     let step_start = Instant::now();
     let core_eval = SessionApi::load_merged_transforms_from_fs(&cfg.core_eval, &cfg.rules_dir)?;
     info!(
@@ -795,7 +791,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         step_start.elapsed().as_millis()
     );
 
-    // P0-1：加载 service_registry.json（call_service/call_external 的 service_name→URL 映射）
+    // 加载 service_registry.json（call_service/call_external 的 service_name→URL 映射）
     let step_start = Instant::now();
     let registry = match &cfg.service_registry {
         Some(path) => ServiceRegistry::load_from_file(path)
@@ -810,13 +806,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // P0-6：加载 SQL 语句白名单（statement_whitelist.json）
-    let statement_whitelist =
-        load_statement_whitelist(cfg.statement_whitelist.as_deref())?;
-    info!(
-        "已加载 {} 条 SQL 白名单模板",
-        statement_whitelist.len()
-    );
+    // 加载 SQL 语句白名单（statement_whitelist.json）
+    let statement_whitelist = load_statement_whitelist(cfg.statement_whitelist.as_deref())?;
+    info!("已加载 {} 条 SQL 白名单模板", statement_whitelist.len());
 
     // H5: 通过 builder 模式注册 handler(trait object 动态分发)
     // HTTP_GET 走原生 HttpHandler（直接传 URL，无 service_name 翻译）
@@ -852,13 +844,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 4.5 创建 Prometheus 指标共享引用 + IoSubscriber（带 metrics）
-    // P2-7：Prometheus 指标通过 IoSubscriber 注入到 I/O 调度路径
-    let metrics: SharedMetrics = shared_prometheus_metrics()
-        .map_err(|e| format!("Prometheus 指标初始化失败: {}", e))?;
+    // Prometheus 指标通过 IoSubscriber 注入到 I/O 调度路径
+    let metrics: SharedMetrics =
+        shared_prometheus_metrics().map_err(|e| format!("Prometheus 指标初始化失败: {}", e))?;
     let subscriber = IoSubscriber::new(dispatcher).with_metrics(metrics.clone());
 
     // 5. 创建单反应器（GovernanceApi 向后兼容路由用）
-    // P1-7：单反应器模式也启用 WAL 持久化（与多会话一样，保证重启后可回放审计链）
+    // 单反应器模式也启用 WAL 持久化（与多会话一样，保证重启后可回放审计链）
     let mut reactor_builder = Reactor::builder(core_eval.clone()).max_rounds(cfg.max_rounds);
     if let Some(wal_dir) = &cfg.wal_dir {
         let single_wal = wal_dir.join("governance_single_reactor.wal");
@@ -873,10 +865,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             Err(e) => {
-                warn!(
-                    "单反应器 WAL 创建失败，退化为纯内存模式：{}",
-                    e
-                );
+                warn!("单反应器 WAL 创建失败，退化为纯内存模式：{}", e);
             }
         }
     }
@@ -934,13 +923,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_dispatcher(session_dispatcher);
     session_api.start_reaper();
 
-    // P2-8: 创建 readiness flag（优雅退出时设为 false）
+    // 创建 readiness flag（优雅退出时设为 false）
     let readiness: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
 
-    // P1-1: 创建跨会话共享事实存储
+    // 创建跨会话共享事实存储
     let shared_facts = SharedFactsLog::new();
 
-    // P2-7/P2-8: AppState 注入 metrics 和 readiness
+    // AppState 注入 metrics 和 readiness
     // H6: metrics 总是注入（PrometheusMetrics 实现 IoMetrics trait）
     let state = AppState::new(
         api,
@@ -1034,8 +1023,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GRACEFUL_SHUTDOWN_TIMEOUT.as_secs()
     );
 
-    // 9. 启动服务器（带优雅退出，P2-8）
-    // P1-4: 使用 into_make_service_with_connect_info 注入客户端 IP，
+    // 9. 启动服务器（带优雅退出）
+    // 使用 into_make_service_with_connect_info 注入客户端 IP，
     // 以支持 GovernorLayer（速率限制）按 IP 限流
     let listener = tokio::net::TcpListener::bind(&cfg.addr).await?;
     let router = server.build_router();
@@ -1044,15 +1033,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     );
 
-    // P2-8: 优雅退出信号处理
+    // 优雅退出信号处理
     // C3 修复(含 regression 修复):
     // - 第一版修复用 `tokio::time::timeout(30s, graceful)` 包裹整个 serve,
-    //   但 timeout 从服务器启动就开始计时,30s 内没收到信号就超时退出 → regression。
+    // 但 timeout 从服务器启动就开始计时,30s 内没收到信号就超时退出 → regression。
     // - 正确做法: 用 oneshot channel 协调。shutdown future 收到信号后:
-    //   1. 立即返回(让 axum 停止接收新连接)
-    //   2. 通过 oneshot 通知外部开始 30s 超时计时
-    //   然后用 tokio::select! 在 `graceful.await` 和"信号后 30s sleep"之间选择。
-    //   这样: 无信号时服务器永久运行; 有信号后最多等 30s in-flight 请求。
+    // 1. 立即返回(让 axum 停止接收新连接)
+    // 2. 通过 oneshot 通知外部开始 30s 超时计时
+    // 然后用 tokio::select! 在 `graceful.await` 和"信号后 30s sleep"之间选择。
+    // 这样: 无信号时服务器永久运行; 有信号后最多等 30s in-flight 请求。
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let readiness_flag = readiness.clone();
     let shutdown = async move {
@@ -1098,7 +1087,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // P2-8: 立即标记不就绪,负载均衡器切走流量
+        // 立即标记不就绪,负载均衡器切走流量
         readiness_flag.store(false, Ordering::SeqCst);
         info!("已标记为不就绪（readiness=false），/api/health/readiness 将返回 503");
         // 通知外部开始 30s 超时计时
@@ -1107,7 +1096,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 然后等待 in-flight 请求完成(由 with_graceful_shutdown 内部处理)。
     };
 
-    // P2-8: 优雅退出 + 30s 超时(仅在收到信号后才开始计时)
+    // 优雅退出 + 30s 超时(仅在收到信号后才开始计时)
     let graceful = serve.with_graceful_shutdown(shutdown);
     tokio::select! {
         // 分支 A: axum 正常完成 graceful shutdown(in-flight 请求在 30s 内完成)

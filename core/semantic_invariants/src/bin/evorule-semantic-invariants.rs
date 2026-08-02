@@ -21,7 +21,11 @@ use tracing_subscriber::EnvFilter;
 
 /// 语义不变式服务参数
 #[derive(Parser, Debug)]
-#[command(name = "evorule-semantic-invariants", version, about = "EvoRule 语义不变式引擎")]
+#[command(
+    name = "evorule-semantic-invariants",
+    version,
+    about = "EvoRule 语义不变式引擎"
+)]
 struct Args {
     /// HTTP API 监听端口
     #[arg(long = "api-port", default_value = "8087")]

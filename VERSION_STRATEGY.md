@@ -9,7 +9,7 @@
 **evorule-server 仓版本策略**
 
 **最后更新**: 2026-07-30
-**配套**: [AGENTS.md](AGENTS.md) | [CHANGELOG.md](CHANGELOG.md)
+**配套**: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -21,7 +21,7 @@
 MAJOR.MINOR.PATCH
 ```
 
-- **MAJOR**: 破坏性变更(HTTP API 路径变更、crate 改名、依赖主仓 MAJOR 升级)
+- **MAJOR**: 破坏性变更(HTTP API 路径变更、crate 改名、依赖核心引擎 MAJOR 升级)
 - **MINOR**: 新功能(新 HTTP 路由、新 lib、新 feature flag)
 - **PATCH**: bug 修复、性能优化、文档更新
 
@@ -29,19 +29,11 @@ MAJOR.MINOR.PATCH
 
 ---
 
-## 一、与 evorule 主仓的版本关系
+## 一、版本独立性
 
-| 本仓版本 | 主仓版本 | 关系 |
-|---|---|---|
-| `v0.1.0` | `v0.1.0` | 首发,匹配主仓首发 |
-| `v0.1.1` | `v0.1.x` | patch 升级,跟随主仓 patch |
-| `v0.2.0` | `v0.2.0` | minor 升级,跟随主仓 minor |
-| `v1.0.0` | `v1.0.0` | MAJOR 锁定,API 稳定承诺 |
+本仓**独立发布**，不绑核心引擎或其他仓的发布节奏。
 
-**核心原则**(走神 9 精神):
-- 本仓**不绑** evorule 主仓的发布节奏
-- 本仓**不绑** evorule-application 仓的发布节奏
-- 主仓升级时,本仓只需要更新 `Cargo.toml` 的 `evorule-*` 版本号
+核心引擎升级时,本仓只需要更新 `Cargo.toml` 的 `evorule-*` 版本号,无需同步发布。
 
 ---
 
@@ -52,13 +44,13 @@ MAJOR.MINOR.PATCH
 ```toml
 # evorule-server/Cargo.toml
 [dependencies]
-evorule-tcb = { version = "0.1.1" }                         # 跟随主仓
+evorule-tcb = { version = "0.1.1" }                         # 跟随核心引擎
 evorule-reactor = { version = "0.1.1", features = ["persistence"] }
 evorule-governance = { version = "0.1.1", features = ["persistence"] }
 ```
 
 **升级流程**:
-1. 主仓先发新版(`v0.1.1` → crates.io)
+1. 核心引擎先发新版(`v0.1.1` → crates.io)
 2. 等 1 天(让 crates.io 索引更新)
 3. 本仓改 `Cargo.toml` 的 `version = "0.1.1"`
 4. 跑 `cargo test --workspace`,通过后 commit + tag
@@ -122,20 +114,7 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 
 ---
 
-## 六、与 evorule-application 仓的协调
-
-**evorule-application 仓**可能用到本仓的:
-- HTTP API(跨仓 HTTP 调用,不走 crates.io)
-- 二进制(Docker image,`evorule-server:0.1.0`)
-- 库文件(当前 application 仓没依赖本仓任何 lib)
-
-**release 协调**:
-- 本仓发新版 → 在 evorule-application 仓发 issue 通知(如果 breaking)
-- application 仓发新版 → 通知本仓(如果新增对 server 的依赖)
-
----
-
-## 七、安全版本
+## 六、安全版本
 
 - **alpha 阶段**(当前):Critical/High 漏洞 60 天内修;Medium/Low 推迟到下个版本
 - **1.0.0 之后**:Critical 7 天;High 30 天;Medium 90 天;Low 下个 release

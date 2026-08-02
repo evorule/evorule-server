@@ -14,6 +14,7 @@
 //! - `GET /api/health` — 健康检查
 
 use crate::auth::AuthConfig;
+use axum::http::Method;
 use evorule_governance::auditor::Auditor;
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::session;
@@ -21,13 +22,12 @@ use evorule_governance::shared_facts_log::SharedFactsLog;
 use evorule_governance::{IoDispatcher, IoSubscriber};
 use evorule_reactor::{Fact, FactId, FactSender, FactsLog};
 use evorule_tcb::JsonValue;
-use axum::http::Method;
 use serde::Deserialize;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// 就绪标志（P2-8：优雅退出时设为 false，readiness 端点返回 503）
+/// 就绪标志（优雅退出时设为 false，readiness 端点返回 503）
 pub type ReadinessFlag = Arc<AtomicBool>;
 
 /// Governance API 共享状态
@@ -123,19 +123,19 @@ impl GovernanceApi {
     }
 }
 
-/// 全局 SSE 连接数上限（P1-6：防止连接耗尽）
+/// 全局 SSE 连接数上限（防止连接耗尽）
 const MAX_SSE_CONNECTIONS: u64 = 100;
 
-/// SSE 心跳间隔（P1-6：每 15s 发送 `: ping` 保持连接活跃）
+/// SSE 心跳间隔（每 15s 发送 `: ping` 保持连接活跃）
 const SSE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
-/// SSE 连接最大空闲时长（P1-6：10 分钟无事件自动关闭）
+/// SSE 连接最大空闲时长（10 分钟无事件自动关闭）
 const SSE_MAX_IDLE: Duration = Duration::from_secs(600);
 
-/// HTTP 请求体大小上限（P1-4：1MB，防止超大请求体攻击）
+/// HTTP 请求体大小上限（1MB，防止超大请求体攻击）
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
-/// HTTP 并发请求数上限（P1-4：1000 并发，防止连接耗尽）
+/// HTTP 并发请求数上限（1000 并发，防止连接耗尽）
 const MAX_CONCURRENCY: usize = 1000;
 
 /// 会话管理 API 共享状态
@@ -148,7 +148,7 @@ pub struct SessionApi {
     sessions: Arc<Mutex<session::SessionManager>>,
     /// API 层 FactId 计数器（从 30000 起，避免与反应器自身 ID 冲突）
     next_id: Arc<std::sync::atomic::AtomicU64>,
-    /// 当前活跃 SSE 连接数（P1-6：全局计数器，限制 MAX_SSE_CONNECTIONS）
+    /// 当前活跃 SSE 连接数（全局计数器，限制 MAX_SSE_CONNECTIONS）
     sse_connections: Arc<AtomicU64>,
     /// 已加载的核心规则（core_eval）
     /// reload 时会更新此处 + SessionManager 内部 core_eval
@@ -298,7 +298,7 @@ impl SessionApi {
         )
     }
 
-    /// 尝试获取一个 SSE 连接配额（P1-6）
+    /// 尝试获取一个 SSE 连接配额
     ///
     /// 成功返回 `SseConnectionGuard`，连接关闭时自动释放配额。
     /// 超过 `MAX_SSE_CONNECTIONS` 上限返回 `None`。
@@ -338,7 +338,7 @@ impl SessionApi {
         self.sse_connections.load(Ordering::SeqCst)
     }
 
-    /// 返回当前活跃会话数（P2-10：语义修正）
+    /// 返回当前活跃会话数（语义修正）
     ///
     /// 与 `sse_connection_count()` 的区别：
     /// - `sse_connection_count`：SSE 连接数（一个会话可能无 SSE 或多 SSE）
@@ -521,7 +521,7 @@ impl SessionApi {
     }
 }
 
-/// SSE 连接配额守卫（P1-6）
+/// SSE 连接配额守卫
 ///
 /// RAII 模式：Drop 时自动减少全局 SSE 连接计数器，
 /// 确保连接断开后配额被正确释放。
@@ -536,7 +536,7 @@ impl Drop for SseConnectionGuard {
     }
 }
 
-/// SSE 指标守卫（P2-7）
+/// SSE 指标守卫
 ///
 /// RAII 模式：Drop 时自动减少 SSE 连接指标。
 /// 在 `session_events` 的 `stream!` 内部持有，stream 结束时自动释放。
@@ -553,19 +553,19 @@ impl Drop for SseMetricsGuard {
 /// 通过 axum `FromRef` 模式，handler 可按需提取子状态：
 /// - `State<GovernanceApi>` — 单反应器模式路由
 /// - `State<SessionApi>` — 多会话模式路由
-/// - `State<SharedMetrics>` — Prometheus 指标（P2-7）
-/// - `State<ReadinessFlag>` — 就绪标志（P2-8）
+/// - `State<SharedMetrics>` — Prometheus 指标
+/// - `State<ReadinessFlag>` — 就绪标志
 #[derive(Clone)]
 pub struct AppState {
     /// 单反应器 API（向后兼容）
     governance: GovernanceApi,
     /// 多会话 API
     sessions: SessionApi,
-    /// Prometheus 指标（P2-7）
+    /// Prometheus 指标
     metrics: SharedMetrics,
-    /// 就绪标志（P2-8：优雅退出时设为 false）
+    /// 就绪标志（优雅退出时设为 false）
     readiness: ReadinessFlag,
-    /// 跨会话共享事实存储（P1-1）
+    /// 跨会话共享事实存储
     shared_facts: SharedFactsLog,
 }
 
@@ -801,7 +801,7 @@ async fn health() -> Json<ApiResponse> {
     })
 }
 
-/// Liveness 探针（P2-8：进程存活检查）
+/// Liveness 探针（进程存活检查）
 ///
 /// `GET /api/health/liveness` → 始终返回 200，只要进程在运行就算存活。
 /// Kubernetes livenessProbe 用此端点判断是否需要重启容器。
@@ -813,7 +813,7 @@ async fn liveness() -> Json<ApiResponse> {
     })
 }
 
-/// Readiness 探针（P2-8：就绪检查）
+/// Readiness 探针（就绪检查）
 ///
 /// `GET /api/health/readiness` → readiness flag 为 true 时返回 200，否则 503。
 /// 优雅退出时 flag 设为 false，负载均衡器将流量切走。
@@ -829,7 +829,7 @@ async fn readiness(State(flag): State<ReadinessFlag>) -> Result<Json<ApiResponse
     }
 }
 
-/// Prometheus 指标端点（P2-7）
+/// Prometheus 指标端点
 ///
 /// `GET /metrics` → 返回 Prometheus 文本格式指标数据。
 /// 此端点免认证（Prometheus scraper 通常不携带 token），但仍受速率限制和并发限制保护。
@@ -891,7 +891,7 @@ async fn submit_command(
     State(metrics): State<SharedMetrics>,
     Json(req): Json<CommandRequest>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
-    // P2-7: 按指令类型计数
+    // 按指令类型计数
     {
         let cmd_type = req
             .instruction
@@ -984,7 +984,7 @@ async fn create_session(
     };
     match result {
         Ok(id) => {
-            metrics.inc_sessions(); // P2-7: 会话数 +1
+            metrics.inc_sessions(); // 会话数 +1
 
             // 为新 session 的 reactor spawn IoSubscriber
             // 没有 IoSubscriber 时，session 的 IoRequest 会 60s 超时
@@ -993,8 +993,8 @@ async fn create_session(
                 if let Some(session) = sessions.get_session(id) {
                     let event_rx = session.event_tx.subscribe();
                     let command_tx = session.command_tx.clone();
-                    let subscriber = IoSubscriber::new(dispatcher.clone())
-                        .with_metrics(metrics.clone());
+                    let subscriber =
+                        IoSubscriber::new(dispatcher.clone()).with_metrics(metrics.clone());
                     tokio::spawn(async move {
                         if let Err(e) = subscriber.run(event_rx, command_tx).await {
                             tracing::error!(
@@ -1004,10 +1004,7 @@ async fn create_session(
                             );
                         }
                     });
-                    tracing::info!(
-                        session_id = id,
-                        "IoSubscriber 已为 session 启动"
-                    );
+                    tracing::info!(session_id = id, "IoSubscriber 已为 session 启动");
                 }
             }
 
@@ -1053,7 +1050,7 @@ async fn close_session(
     };
     match result {
         Ok(_) => {
-            metrics.dec_sessions(); // P2-7: 会话数 -1
+            metrics.dec_sessions(); // 会话数 -1
             Ok(Json(serde_json::json!({
                 "session_id": session_id,
                 "message": "Session closed"
@@ -1157,7 +1154,7 @@ async fn session_command(
     Path(session_id): Path<u64>,
     Json(req): Json<CommandRequest>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
-    // P2-7: 按指令类型计数
+    // 按指令类型计数
     {
         let cmd_type = req
             .instruction
@@ -1584,9 +1581,9 @@ async fn session_payload(
 /// 连接保持直到：
 /// - 客户端断开连接
 /// - 会话被关闭（反应器退出，broadcast 通道关闭）
-/// - 空闲超时（10 分钟无事件，P1-6）
+/// - 空闲超时（10 分钟无事件）
 ///
-/// # P1-6 安全措施
+/// # 安全措施
 /// - 全局 SSE 连接数限制（`MAX_SSE_CONNECTIONS=100`），超限返回 503
 /// - 心跳（每 15s 发 `: ping`，防止代理/防火墙超时断开）
 /// - 空闲超时（10 分钟无实际事件自动关闭，心跳不计入）
@@ -1595,12 +1592,12 @@ async fn session_events(
     State(metrics): State<SharedMetrics>,
     Path(session_id): Path<u64>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, StatusCode> {
-    // P1-6: 获取 SSE 连接配额，超限返回 503
+    // 获取 SSE 连接配额，超限返回 503
     let sse_guard = api
         .try_acquire_sse()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    // P2-7: SSE 连接指标 +1（stream 结束时通过 SseMetricsGuard 自动 -1）
+    // SSE 连接指标 +1（stream 结束时通过 SseMetricsGuard 自动 -1）
     metrics.inc_sse_connections();
 
     // 从 SessionManager 获取 event 通道接收端
@@ -1614,11 +1611,11 @@ async fn session_events(
     };
 
     // 创建异步流：从 broadcast 接收 Fact，转换为 SSE Event
-    // P1-6: 心跳 + 空闲超时
+    // 心跳 + 空闲超时
     let stream = stream! {
         // 持有 SSE 连接配额守卫，stream 结束时自动释放
         let _guard = sse_guard;
-        // P2-7: 持有 metrics 守卫，stream 结束时自动 dec_sse_connections
+        // 持有 metrics 守卫，stream 结束时自动 dec_sse_connections
         let _metrics_guard = SseMetricsGuard(metrics);
 
         let mut heartbeat = tokio::time::interval(SSE_HEARTBEAT_INTERVAL);
@@ -2164,15 +2161,15 @@ async fn session_auto_verify_post(
 
 /// IoResponse 外部提交 handler
 ///
-/// `POST /api/sessions/:id/io_response` → 外部（如 evo-agent）提交 IoResponse，
-/// 允许 Agent 通过 HTTP API 异步返回 I/O 执行结果。
+/// `POST /api/sessions/:id/io_response` → 外部应用提交 IoResponse，
+/// 允许外部系统通过 HTTP API 异步返回 I/O 执行结果。
 ///
 /// 请求体格式：
 /// ```json
 /// {
-///   "request_id": 123,
-///   "result": {"content": "response data"},
-///   "error": null
+/// "request_id": 123,
+/// "result": {"content": "response data"},
+/// "error": null
 /// }
 /// ```
 async fn session_io_response(
@@ -2233,7 +2230,7 @@ pub struct GovernanceServer {
     rate_limit_per_sec: u64,
     /// 速率限制：令牌桶容量（突发上限）
     rate_limit_burst: u32,
-    /// CORS 允许的 Origin 白名单（P0-5）
+    /// CORS 允许的 Origin 白名单
     ///
     /// - 空列表：只允许同源请求（`AllowOrigin::default()` 不允许任何跨域）
     /// - 非空列表：只允许列表中的 Origin 通过。列表元素示例：`"http://localhost:3000"`
@@ -2300,7 +2297,7 @@ impl GovernanceServer {
 
     /// 构建路由（公开，供 bin 自定义启动流程使用）
     ///
-    /// # 安全层（P1-4，从内到外）
+    /// # 安全层（从内到外）
     /// 1. `auth_middleware` — Bearer token 认证
     /// 2. `RequestBodyLimitLayer` — 请求体大小限制（1MB）
     /// 3. `ConcurrencyLimitLayer` — 并发连接数限制（1000）
@@ -2320,7 +2317,7 @@ impl GovernanceServer {
     pub fn build_router(&self) -> Router {
         let auth = self.auth.clone();
 
-        // P1-4: 速率限制配置（令牌桶：每 period 秒补充 burst 个令牌）
+        // 速率限制配置（令牌桶：每 period 秒补充 burst 个令牌）
         // rate_limit_per_sec == 0 表示完全禁用限速（不添加 GovernorLayer）
         // 修复：之前用 (1, 1_000_000) 模拟"无限速"，但 GovernorConfigBuilder::finish()
         // 可能 fallback 到 GovernorConfig::default()（默认低限速），导致 --no-rate-limit
@@ -2329,10 +2326,10 @@ impl GovernanceServer {
         // 注意：GovernorLayer 不能存入 Option<GovernorLayer> 变量（其 M/RespBody 泛型
         // 只能在 .layer() 调用时通过 Layer trait 约束推断），因此采用 match 分支。
 
-        // P2-7/P2-8: 公开路由（免认证）— health/liveness/readiness/metrics
-        // P1-8: /api/rules/validate 从 protected_routes 移到 public_routes（仅读 JSON，不改状态）
-        // P0-3: /api/rules/reload 是运营操作，但仍放在 public_routes 里（由部署环境的
-        //       网络层防火墙限制访问来源，evorule-server 作为框架层不做 RBAC 强制）
+        // 公开路由（免认证）— health/liveness/readiness/metrics
+        // /api/rules/validate 从 protected_routes 移到 public_routes（仅读 JSON，不改状态）
+        // /api/rules/reload 是运营操作，但仍放在 public_routes 里（由部署环境的
+        // 网络层防火墙限制访问来源，evorule-server 作为框架层不做 RBAC 强制）
         // H6: 显式指定 Router 状态类型为 AppState，消除 SharedMetrics 的 FromRef 歧义
         //（Arc<dyn IoMetrics> 既满足 FromRef<AppState>，又满足 blanket impl FromRef<T> for T: Clone）
         let public_routes = Router::<AppState>::new()
@@ -2434,7 +2431,7 @@ impl GovernanceServer {
                 auth_middleware_wrapper,
             ));
 
-        // P0-5：CORS 白名单（从 self.allowed_origins 构建）
+        // CORS 白名单（从 self.allowed_origins 构建）
         //
         // 策略：
         // - 列表非空 → 只允许列表中的 Origin（精确匹配）
@@ -2495,8 +2492,7 @@ impl GovernanceServer {
         // 修复：当 resolve_governor_config() 返回 None 时，完全跳过 GovernorLayer（真正禁用限速）
         // S2：/metrics 根据 metrics_requires_auth 决定是否需要认证
         // 独立构建 metrics_router，避免改动 public/protected 路由分组的结构
-        let metrics_router = Router::<AppState>::new()
-            .route("/metrics", get(metrics_handler));
+        let metrics_router = Router::<AppState>::new().route("/metrics", get(metrics_handler));
         let metrics_router = if self.metrics_requires_auth {
             metrics_router.layer(axum::middleware::from_fn_with_state(
                 self.auth.clone(),
@@ -2539,7 +2535,7 @@ impl GovernanceServer {
     /// 启动 HTTP 服务器
     ///
     /// 使用 `into_make_service_with_connect_info::<SocketAddr>()` 注入客户端 IP，
-    /// 以支持 `GovernorLayer`（P1-4 速率限制）的按 IP 限流。
+    /// 以支持 `GovernorLayer`（速率限制）的按 IP 限流。
     #[allow(dead_code)]
     pub async fn serve(self) -> Result<(), std::io::Error> {
         // H6: 此方法为预留 API（main.rs 使用 build_router() + axum::serve 自行启动以支持优雅退出）
@@ -2577,10 +2573,10 @@ struct ValidateRulesRequest {
 /// # 响应格式
 /// ```json
 /// {
-///   "passed": true,
-///   "static_validation": { "checks": [...], "error_count": 0, "warn_count": 0 },
-///   "security_analysis": { "checks": [...], "risk_count": 0, "risk_level": "low" },
-///   "summary": { "total_transforms": 1, "total_errors": 0, "total_warnings": 0, "total_risks": 0 }
+/// "passed": true,
+/// "static_validation": { "checks": [...], "error_count": 0, "warn_count": 0 },
+/// "security_analysis": { "checks": [...], "risk_count": 0, "risk_level": "low" },
+/// "summary": { "total_transforms": 1, "total_errors": 0, "total_warnings": 0, "total_risks": 0 }
 /// }
 /// ```
 async fn validate_rules_handler(
@@ -2607,7 +2603,7 @@ async fn validate_rules_handler(
 }
 
 // ============================================================================
-// POST /api/rules/reload — 重新从磁盘加载 TCB 宪法 + 业务规则（P0-3）
+// POST /api/rules/reload — 重新从磁盘加载 TCB 宪法 + 业务规则
 // ============================================================================
 
 /// 规则热重载响应
@@ -2861,9 +2857,9 @@ mod tests {
     // /api/rules/validate 端点测试
     // ====================================================================
     // 直接调用 validate_rules_handler,覆盖所有异常分支:
-    //   - 400 BAD_REQUEST: JSON 解析失败
-    //   - 422 UNPROCESSABLE_ENTITY: 静态验证失败
-    //   - 200 OK: 验证通过(含 warn 级别不阻断的情况)
+    // - 400 BAD_REQUEST: JSON 解析失败
+    // - 422 UNPROCESSABLE_ENTITY: 静态验证失败
+    // - 200 OK: 验证通过(含 warn 级别不阻断的情况)
 
     /// 辅助函数: 调用 handler 并返回 (状态码, 响应体)
     async fn call_validate(

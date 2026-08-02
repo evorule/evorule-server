@@ -8,7 +8,7 @@
 //! H6 架构合规整改：从 evorule-governance/src/api/auth.rs 迁移到应用层。
 //! 移除了 `#[cfg(feature = "auth")]` 门控（应用层默认启用认证）。
 //!
-//! # P1-5 安全加固
+//! # 安全加固
 //! - 使用 `subtle::ConstantTimeEq` 做恒定时间比较，防止时序攻击
 //! - 支持 Token 轮换：`current_tokens` + `previous_tokens` 双 token 并存过渡
 //! - `validate()` 遍历所有 token，不因匹配到就提前返回，避免枚举攻击
@@ -43,9 +43,7 @@ impl AuthConfig {
     pub fn new(tokens: Vec<String>, enabled: bool) -> Self {
         let filtered: Vec<String> = tokens.into_iter().filter(|t| !t.is_empty()).collect();
         if enabled && filtered.is_empty() {
-            warn!(
-                "AuthConfig::new() 启用认证但无有效 token（全部为空或未提供），所有请求将被拒绝"
-            );
+            warn!("AuthConfig::new() 启用认证但无有效 token（全部为空或未提供），所有请求将被拒绝");
         }
         Self {
             current_tokens: Arc::new(filtered),

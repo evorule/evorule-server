@@ -2,9 +2,10 @@
 # Parity with .github/workflows/ci.yml
 #
 # Gitee Go does not support actions/checkout, so we use git clone explicitly.
-# evorule-server 仓独立 release,evorule 核心从 crates.io 拉取,不需要兄弟仓 checkout.
+# evorule-server 仓独立 release,evorule 核心从 crates.io 拉取,不需要 checkout 其他仓.
 
 stages:
+  - validate
   - lint
   - test
   - build
@@ -12,6 +13,32 @@ stages:
 
 variables:
   GIT_DEPTH: "20"
+
+# === 0. 文档安全 + 版本一致性（各仓独立发布 · 强阻塞）===
+validate-pr:
+  stage: validate
+  image: mcr.microsoft.com/powershell:lts-nanoserver-1809
+  script:
+    # VERSION_STRATEGY 基线五件套
+    - pwsh -NoProfile -File scripts/validate-version.ps1
+    - pwsh -NoProfile -File scripts/validate-changelog.ps1
+    - pwsh -NoProfile -File scripts/validate-license.ps1
+    - pwsh -NoProfile -File scripts/validate-cargolock.ps1
+    - pwsh -NoProfile -File scripts/validate-release.ps1 -SkipTagCheck
+    # 文档安全 + 引用完整性 + 基调合规（强阻塞）
+    # 7 类检查：R-门控1 staged文档泄露 / R3 L1私有路径泄露 / L1不提L2L3 / R-兄弟仓零谈论 / R-agent身份零泄露 / 交叉引用完整性 / DOCS_INDEX索引存在性
+    - python3 --version || python --version
+    - python scripts/check_doc_safety.py --skip-git
+  rules:
+    - changes:
+        - Cargo.toml
+        - "**/Cargo.toml"
+        - "**/CHANGELOG.md"
+        - "**/LICENSE"
+        - "scripts/**"
+        - "VERSION_STRATEGY.md"
+        - "*.md"
+        - "docs/**/*"
 
 # === 1. Clippy + fmt ===
 lint:

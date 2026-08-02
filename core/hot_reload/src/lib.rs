@@ -58,11 +58,9 @@ impl HotReloadService {
     /// 若 `config.session_id` 为 `None`，会向 evorule-server 请求创建新会话。
     pub async fn new(mut config: HotReloadConfig) -> Result<Self, String> {
         if config.session_id.is_none() {
-            let sid = Self::create_session(
-                &config.evorule_server_url,
-                config.auth_token.as_deref(),
-            )
-            .await?;
+            let sid =
+                Self::create_session(&config.evorule_server_url, config.auth_token.as_deref())
+                    .await?;
             info!(session_id = sid, "创建新会话");
             config.session_id = Some(sid);
         }
@@ -75,10 +73,7 @@ impl HotReloadService {
     /// 创建 evorule 会话
     ///
     /// N4：`auth_token` 设置后会携带 `Authorization: Bearer <token>` 头
-    async fn create_session(
-        server_url: &str,
-        auth_token: Option<&str>,
-    ) -> Result<u64, String> {
+    async fn create_session(server_url: &str, auth_token: Option<&str>) -> Result<u64, String> {
         let client = reqwest::Client::new();
         let url = format!("{}/api/sessions", server_url);
 
@@ -219,13 +214,9 @@ impl HotReloadService {
                 }
 
                 if let Some(session_id) = session_id {
-                    if let Err(e) = Self::send_rules(
-                        &server_url,
-                        session_id,
-                        &rules,
-                        auth_token.as_deref(),
-                    )
-                    .await
+                    if let Err(e) =
+                        Self::send_rules(&server_url, session_id, &rules, auth_token.as_deref())
+                            .await
                     {
                         warn!(error = %e, "发送规则失败");
                     } else {

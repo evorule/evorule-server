@@ -19,8 +19,8 @@
 
 # EvoRule 商标政策（evorule-server 仓）
 
-> **本仓与 [evorule 主仓](https://gitee.com/evo-rule-lab/evorule)共用同一商标政策。**
-> 完整政策见主仓 [TRADEMARK.md](https://gitee.com/evo-rule-lab/evorule/blob/main/TRADEMARK.md)。
+> **本仓与 [核心仓](https://gitee.com/evo-rule-lab/evorule)共用同一商标政策。**
+> 完整政策见核心仓 [TRADEMARK.md](https://gitee.com/evo-rule-lab/evorule/blob/main/TRADEMARK.md)。
 
 ---
 
@@ -84,8 +84,8 @@ EvoRule Project 拥有以下商标(统称"EvoRule 商标"):
 
 - **商标使用许可申请**:<evorulelab@gmail.com>(主题加 `[Trademark]`)
 - **侵权举报**:<evorulelab@gmail.com>(主题加 `[Trademark Violation]`)
-- **完整政策**:[evorule 主仓 TRADEMARK.md](https://gitee.com/evo-rule-lab/evorule/blob/main/TRADEMARK.md)
+- **完整政策**:[核心仓 TRADEMARK.md](https://gitee.com/evo-rule-lab/evorule/blob/main/TRADEMARK.md)
 
 ---
 
-*本政策为 evorule 主仓商标政策的子集,完整法律条款以主仓为准。*
+*本政策为核心仓商标政策的子集,完整法律条款以核心仓为准。*

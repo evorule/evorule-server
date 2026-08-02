@@ -15,7 +15,7 @@
 //! - `method`（可选，字符串，默认 `GET`）：白名单 `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`
 //! - `headers`（可选，对象）：键值对，值必须为字符串
 //! - `body`（可选）：字符串作为原始 text body；对象/数组序列化为 JSON 并自动
-//!   设置 `Content-Type: application/json`
+//! 设置 `Content-Type: application/json`
 //! - `timeout_ms`（可选，整数，默认 10000）：非正数回退默认
 
 use std::net::{IpAddr, SocketAddr};
@@ -28,7 +28,7 @@ use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Client;
 use url::Url;
 
-/// 默认请求超时（毫秒）（P0-2：HTTP 10s）
+/// 默认请求超时（毫秒）（HTTP 10s）
 const DEFAULT_TIMEOUT_MS: i64 = 10_000;
 
 /// 允许的 HTTP 方法（白名单，防止任意 method）
@@ -169,7 +169,7 @@ impl IoHandler for HttpHandler {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "missing required param: url".to_string())?;
 
-        // P0-4：SSRF 防护（第一步）—— 仅做 URL scheme 校验（无网络 I/O）
+        // SSRF 防护（第一步）—— 仅做 URL scheme 校验（无网络 I/O）
         // DNS 解析 + IP 黑名单检查推迟到所有参数校验之后，避免参数错误时
         // 仍发起 DNS 查询（既慢又导致测试依赖网络）。
         let parsed = Url::parse(url).map_err(|e| format!("invalid url: {e}"))?;
@@ -226,7 +226,7 @@ impl IoHandler for HttpHandler {
         // 提取 body（可选；POST/PUT/PATCH 常用）
         // - 字符串：作为原始 text body（Content-Type 由调用方在 headers 设置）
         // - 对象/数组：序列化为 JSON 文本，并自动设置 Content-Type: application/json
-        //   （若调用方在 headers 显式设置了 Content-Type，会覆盖此默认——以调用方为准）
+        // （若调用方在 headers 显式设置了 Content-Type，会覆盖此默认——以调用方为准）
         // - Null/Bool/Integer：拒绝（避免隐式把标量当 body 发出）
         if let Some(body) = params.get("body") {
             match body {
@@ -244,22 +244,21 @@ impl IoHandler for HttpHandler {
             }
         }
 
-        // P0-4：SSRF 防护（第二步）—— DNS 解析 + IP 黑名单检查
+        // SSRF 防护（第二步）—— DNS 解析 + IP 黑名单检查
         // 在所有参数校验通过后、实际发请求前执行，避免参数错误时仍发起 DNS 查询。
         let host_str = parsed
             .host_str()
             .ok_or_else(|| "SSRF blocked: url has no host".to_string())?
             .to_string();
-        let port = parsed.port().unwrap_or(if scheme == "https" { 443 } else { 80 });
-        let hosts: Vec<SocketAddr> =
-            tokio::net::lookup_host(format!("{host_str}:{port}"))
-                .await
-                .map_err(|e| format!("dns lookup failed for '{host_str}': {e}"))?
-                .collect();
+        let port = parsed
+            .port()
+            .unwrap_or(if scheme == "https" { 443 } else { 80 });
+        let hosts: Vec<SocketAddr> = tokio::net::lookup_host(format!("{host_str}:{port}"))
+            .await
+            .map_err(|e| format!("dns lookup failed for '{host_str}': {e}"))?
+            .collect();
         if hosts.is_empty() {
-            return Err(format!(
-                "SSRF blocked: no dns record for host '{host_str}'"
-            ));
+            return Err(format!("SSRF blocked: no dns record for host '{host_str}'"));
         }
         for addr in &hosts {
             let blocked = is_ip_ssrf_blocked(&addr.ip());
@@ -311,7 +310,7 @@ fn truncate_for_error(s: &str, max_len: usize) -> String {
 }
 
 // ============================================================================
-// SSRF IP 黑名单（P0-4 修复：H6 SSRF）
+// SSRF IP 黑名单（修复：H6 SSRF）
 // ============================================================================
 
 /// 判断 IP 是否为 loopback（127.0.0.0/8 或 ::1）。

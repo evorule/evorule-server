@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "generated_at": "2026-08-01",
   "source_doc": "docs/PITFALLS.md",
-  "description": "evorule-server 集成踩坑记录的结构化版本，供 LLM agent 程序化消费。人类读 PITFALLS.md（narrative），LLM 读本文件（结构化）。",
+  "description": "evorule-server 集成踩坑记录的结构化版本，供工具程序化消费。PITFALLS.md 为叙述版本，本文件为结构化版本。",
   "categories": {
     "io_handling": "I/O 处理（dispatcher / subscriber / service_registry / 两阶段协议）",
     "http_network": "HTTP / SSRF / 编码",
@@ -228,7 +228,7 @@
       "symptom": "payload 中的浮点数都是字符串：{\"joint_positions\": [\"0.4688...\"], \"residual\": \"0.00048...\"}",
       "root_cause": "evorule-tcb 的 JsonValue 枚举没有 Float 变体，只有 Integer / String / Bool / Null / Object / Array。外部 JSON 中的浮点数在转换为 JsonValue 时变成字符串",
       "fix": "精度判断（如 residual < tolerance）放在外部服务里做，返回 converged_ok: true/false 布尔值。evorule 规则只判断布尔结果，不直接比较浮点",
-      "avoidance_tip": "这是 TCB 的有意设计——浮点数不确定性会破坏确定性执行保证。不要试图在 evorule 核心加 Float 变体（违背 AGENTS.md 的 TCB 原语扩展谨慎原则）。业务层浮点处理放在外部 I/O 服务中",
+      "avoidance_tip": "这是 TCB 的有意设计——浮点数不确定性会破坏确定性执行保证。不要试图在 evorule 核心加 Float 变体（违背 TCB 原语扩展谨慎原则）。业务层浮点处理放在外部 I/O 服务中",
       "code_refs": [{"repo": "evorule", "path": "evorule-tcb/src/value.rs", "note": "JsonValue 枚举定义，无 Float 变体"}],
       "detection": {
         "checkable": true,
@@ -249,8 +249,8 @@
       "symptom": "中文乱码，或 Get-Content -Raw 读取 UTF-8 文件时中文变乱码",
       "root_cause": "PowerShell 5.1 默认编码是 GBK（Windows-1252），无 BOM 的 UTF-8 文件会被当作 GBK 解码",
       "fix": "用 pwsh（PowerShell 7+）替代 powershell，默认 UTF-8；或先 chcp 65001 切换代码页；加 SPDX 头用 add-spdx-safe.ps1",
-      "avoidance_tip": "evorule 仓的 AGENTS.md 已记录此坑。CI 脚本和本地开发统一用 pwsh",
-      "code_refs": [{"repo": "evorule", "path": "AGENTS.md", "note": "已知坑章节"}],
+      "avoidance_tip": "CI 脚本和本地开发统一用 pwsh",
+      "code_refs": [],
       "detection": {"checkable": false, "reason": "environment", "scope": "developer_machine"},
       "related_pitfalls": ["P15"]
     },
@@ -264,8 +264,8 @@
       "symptom": "命令执行失败，报错 'Command too long (32064 chars after encoding, limit: 32000)'",
       "root_cause": "PowerShell 环境变量前缀（PATH 等）+ 命令本身总长度超过 32000 字符编码限制",
       "fix": "长命令写成临时 .py 脚本文件执行：python tmp_query.py",
-      "avoidance_tip": "evorule 仓 AGENTS.md 已记录复杂脚本写 .ps1 文件再用 -File 执行。Python 同理——超过 3-4 行的命令一律写脚本文件",
-      "code_refs": [{"repo": "evorule", "path": "AGENTS.md", "note": "已知坑章节"}],
+      "avoidance_tip": "复杂脚本写 .ps1 文件再用 -File 执行。Python 同理——超过 3-4 行的命令一律写脚本文件",
+      "code_refs": [],
       "detection": {"checkable": false, "reason": "environment", "scope": "developer_machine"},
       "related_pitfalls": ["P14"]
     },

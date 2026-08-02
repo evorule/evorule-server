@@ -26,12 +26,16 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
+use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "evorule-rule-tools", version, about = "EvoRule 规则工具（验证 + 安全分析）")]
+#[command(
+    name = "evorule-rule-tools",
+    version,
+    about = "EvoRule 规则工具（验证 + 安全分析）"
+)]
 struct Args {
     #[command(subcommand)]
     command: Command,
@@ -66,10 +70,7 @@ enum Command {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive("info".parse()?),
-        )
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
 
     let args = Args::parse();
@@ -83,15 +84,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Serve { api_port } => {
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(async {
-                evorule_rule_tools::run_server(api_port).await
-            })?;
+            runtime.block_on(async { evorule_rule_tools::run_server(api_port).await })?;
         }
     }
     Ok(())
 }
 
-fn run_validate(file: Option<PathBuf>, dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_validate(
+    file: Option<PathBuf>,
+    dir: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(f) = file {
         let content = std::fs::read_to_string(&f)?;
         let report = evorule_rule_tools::validate_rule_json(&content);
@@ -115,7 +117,10 @@ fn run_validate(file: Option<PathBuf>, dir: Option<PathBuf>) -> Result<(), Box<d
     Ok(())
 }
 
-fn run_safety(file: Option<PathBuf>, dir: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_safety(
+    file: Option<PathBuf>,
+    dir: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(f) = file {
         let content = std::fs::read_to_string(&f)?;
         let report = evorule_rule_tools::analyze_rule_safety(&content);
@@ -154,11 +159,17 @@ fn collect_rule_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn print_report(report: &evorule_rule_tools::ValidationReport, file: &Path) {
-    let status = if report.valid { "✓ 通过" } else { "✗ 失败" };
+    let status = if report.valid {
+        "✓ 通过"
+    } else {
+        "✗ 失败"
+    };
     println!("文件: {}", file.display());
     println!("规则: {}", report.rule_id);
-    println!("状态: {} (错误 {} / 警告 {} / 信息 {})",
-        status, report.error_count, report.warning_count, report.info_count);
+    println!(
+        "状态: {} (错误 {} / 警告 {} / 信息 {})",
+        status, report.error_count, report.warning_count, report.info_count
+    );
     for r in &report.results {
         let icon = match r.severity {
             evorule_rule_tools::ValidationSeverity::Error => "  ✗ ERROR",
@@ -172,11 +183,17 @@ fn print_report(report: &evorule_rule_tools::ValidationReport, file: &Path) {
 }
 
 fn print_safety(report: &evorule_rule_tools::SafetyReport, file: &Path) {
-    let status = if report.safe { "✓ 安全" } else { "⚠ 有风险" };
+    let status = if report.safe {
+        "✓ 安全"
+    } else {
+        "⚠ 有风险"
+    };
     println!("文件: {}", file.display());
     println!("规则: {}", report.rule_id);
-    println!("状态: {} (Critical {} / High {} / Medium {} / Low {})",
-        status, report.critical_count, report.high_count, report.medium_count, report.low_count);
+    println!(
+        "状态: {} (Critical {} / High {} / Medium {} / Low {})",
+        status, report.critical_count, report.high_count, report.medium_count, report.low_count
+    );
     for i in &report.issues {
         let icon = match i.severity {
             evorule_rule_tools::SafetySeverity::Critical => "  🔴 CRIT ",

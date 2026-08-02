@@ -40,10 +40,48 @@ jobs:
       - name: cargo clippy --workspace
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # ===== 文档安全 + 版本一致性（各仓独立发布 · 强阻塞）=====
+  docs-check:
+    name: Doc safety + version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 检查 Python 版本
+        run: python3 --version
+
+      # VERSION_STRATEGY 基线五件套
+      - name: validate-version.ps1
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-version.ps1
+      - name: validate-changelog.ps1
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-changelog.ps1
+      - name: validate-license.ps1（SPDX 头 + LICENSE 文件）
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-license.ps1
+      - name: validate-cargolock.ps1
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-cargolock.ps1
+      - name: validate-release.ps1（tag 格式校验，-SkipTagCheck 跳过 tag 存在性）
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-release.ps1 -SkipTagCheck
+
+      # 文档安全 + 引用完整性 + 基调合规（强阻塞）
+      # 7 类检查：R-门控1 staged文档泄露 / R3 L1私有路径泄露 / L1不提L2L3 / R-兄弟仓零谈论 / R-agent身份零泄露 / 交叉引用完整性 / DOCS_INDEX索引存在性
+      - name: check_doc_safety.py
+        run: python3 scripts/check_doc_safety.py --skip-git
+
   # ===== Rust tests =====
   test:
     name: Rust Tests
     runs-on: ubuntu-latest
+    needs: [lint, docs-check]
     steps:
       - uses: actions/checkout@v4
 

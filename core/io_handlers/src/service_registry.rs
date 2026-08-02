@@ -98,10 +98,7 @@ impl ServiceRegistry {
             let entry = parse_service_entry(name, val)?;
             entries.insert(name.clone(), entry);
         }
-        tracing::info!(
-            count = entries.len(),
-            "loaded service_registry entries"
-        );
+        tracing::info!(count = entries.len(), "loaded service_registry entries");
         Ok(Self { entries })
     }
 
@@ -127,10 +124,7 @@ impl ServiceRegistry {
     }
 }
 
-fn parse_service_entry(
-    name: &str,
-    val: &serde_json::Value,
-) -> Result<ServiceEntry, String> {
+fn parse_service_entry(name: &str, val: &serde_json::Value) -> Result<ServiceEntry, String> {
     let obj = val
         .as_object()
         .ok_or_else(|| format!("service '{}' value must be JSON object", name))?;
@@ -165,10 +159,7 @@ fn parse_service_entry(
                 let s = v
                     .as_str()
                     .ok_or_else(|| {
-                        format!(
-                            "service '{}' header '{}' value must be string",
-                            name, k
-                        )
+                        format!("service '{}' header '{}' value must be string", name, k)
                     })?
                     .to_string();
                 map.insert(k.clone(), s);
@@ -242,10 +233,7 @@ impl ServiceRegistryHandler {
 
         // 1. 注册表条目写入（url/method/headers/timeout_ms）
         merged.insert("url".into(), JsonValue::string(entry.url.as_str()));
-        merged.insert(
-            "method".into(),
-            JsonValue::string(entry.method.as_str()),
-        );
+        merged.insert("method".into(), JsonValue::string(entry.method.as_str()));
         if !entry.headers.is_empty() {
             let h: BTreeMap<String, JsonValue> = entry
                 .headers
@@ -298,10 +286,9 @@ impl ServiceRegistryHandler {
                                 }
                                 std::collections::btree_map::Entry::Occupied(mut e) => {
                                     if let JsonValue::Object(h) = e.get_mut() {
-                                        h.entry("Content-Type".into())
-                                            .or_insert_with(|| {
-                                                JsonValue::string("application/json")
-                                            });
+                                        h.entry("Content-Type".into()).or_insert_with(|| {
+                                            JsonValue::string("application/json")
+                                        });
                                     }
                                 }
                             }
@@ -425,10 +412,7 @@ mod tests {
         .unwrap();
         let handler = ServiceRegistryHandler::new(reg, Arc::new(HttpHandler::new()));
         let params = JsonValue::object_from_pairs(&[
-            (
-                "service_name",
-                JsonValue::string("ik"),
-            ),
+            ("service_name", JsonValue::string("ik")),
             (
                 "args",
                 JsonValue::object_from_pairs(&[
@@ -470,20 +454,15 @@ mod tests {
     fn test_resolve_unknown_service() {
         let handler =
             ServiceRegistryHandler::new(ServiceRegistry::empty(), Arc::new(HttpHandler::new()));
-        let params = JsonValue::object_from_pairs(&[(
-            "service_name",
-            JsonValue::string("nope"),
-        )]);
+        let params = JsonValue::object_from_pairs(&[("service_name", JsonValue::string("nope"))]);
         let err = handler.resolve(&params).unwrap_err();
         assert!(err.contains("unknown service_name 'nope'"));
     }
 
     #[test]
     fn test_resolve_url_cannot_be_overridden() {
-        let reg = ServiceRegistry::load_from_str(
-            r#"{"ok":{"url":"http://good/endpoint"}}"#,
-        )
-        .unwrap();
+        let reg =
+            ServiceRegistry::load_from_str(r#"{"ok":{"url":"http://good/endpoint"}}"#).unwrap();
         let handler = ServiceRegistryHandler::new(reg, Arc::new(HttpHandler::new()));
         let params = JsonValue::object_from_pairs(&[
             ("service_name", JsonValue::string("ok")),

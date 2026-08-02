@@ -18,7 +18,7 @@ name = "evorule-server"
 path = "src/main.rs"
 
 [dependencies]
-# 核心层 (P0-2 修复: crates.io 版本依赖)
+# 核心层 (crates.io 版本依赖)
 # 本地开发用顶层 Cargo.toml 的 [patch.crates-io] 自动 path 覆盖
 evorule-tcb = { version = "0.1.1" }
 evorule-reactor = { version = "0.1.1", features = ["persistence"] }
@@ -67,7 +67,7 @@ thiserror = "2"
 # CLI 参数解析
 clap = { version = "4", features = ["derive", "env"] }
 
-# 安全(P1-5:恒定时间比较)
+# 安全(恒定时间比较)
 subtle = "2"
 
 [dev-dependencies]

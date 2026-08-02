@@ -12,7 +12,7 @@
 //! 4. **会话 fork** — 父子会话状态独立性
 //! 5. **因果链查询** — 追溯指定 Fact 的因果链
 //!
-//! 这些测试加载真实的 `core_eval.json`（来自 evorule 主仓），
+//! 这些测试加载真实的 `core_eval.json`，
 //! 使用 `set` 指令产生可验证的 payload 变更，覆盖 HTTP handler →
 //! evorule-governance → evorule-reactor 的完整调用链。
 
@@ -61,10 +61,10 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     }
 }
 
-/// 从 evorule 主仓加载 `core_eval.json`
+/// 加载 `core_eval.json`
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_path = manifest_dir.join("../../../evorule/evorule-tcb/core_eval.json");
+    let core_eval_path = manifest_dir.join("../../resources/core_eval.json");
     let json_str = std::fs::read_to_string(&core_eval_path).unwrap_or_else(|e| {
         panic!(
             "Failed to read core_eval.json at {}: {}",
@@ -549,14 +549,13 @@ async fn test_session_rule_hot_reload() {
     // 复制 TCB 宪法 core_eval.json 到临时目录
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let core_eval_source = manifest_dir.join("../../../evorule/evorule-tcb/core_eval.json");
-    let core_eval_content =
-        fs::read_to_string(&core_eval_source).unwrap_or_else(|e| {
-            panic!(
-                "Failed to read core_eval.json at {}: {}",
-                core_eval_source.display(),
-                e
-            )
-        });
+    let core_eval_content = fs::read_to_string(&core_eval_source).unwrap_or_else(|e| {
+        panic!(
+            "Failed to read core_eval.json at {}: {}",
+            core_eval_source.display(),
+            e
+        )
+    });
     let core_eval_path = tmp_path.join("core_eval.json");
     fs::write(&core_eval_path, &core_eval_content).expect("Failed to write core_eval.json");
 
@@ -577,12 +576,12 @@ async fn test_session_rule_hot_reload() {
     let sessions = SessionApi::new_with_full_config(
         core_eval,
         100,
-        None,                // wal_dir: 纯内存模式
-        false,               // wal_fsync
-        100 * 1024 * 1024,   // max_wal_size_bytes
-        false,               // auto_verify
-        1000,                // auto_verify_threshold
-        1,                   // auto_verify_interval
+        None,              // wal_dir: 纯内存模式
+        false,             // wal_fsync
+        100 * 1024 * 1024, // max_wal_size_bytes
+        false,             // auto_verify
+        1000,              // auto_verify_threshold
+        1,                 // auto_verify_interval
         core_eval_path.clone(),
         rules_dir.clone(),
     );
@@ -710,7 +709,8 @@ async fn test_session_rule_hot_reload() {
 
     let (status, json) = send(&state, "POST", "/api/rules/reload", Some("{}")).await;
     assert_eq!(
-        status, axum::http::StatusCode::OK,
+        status,
+        axum::http::StatusCode::OK,
         "无效 JSON 文件应被跳过，reload 仍应成功"
     );
     assert_eq!(

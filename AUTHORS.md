@@ -45,7 +45,7 @@ _尚未列出文档或翻译贡献者。_
 
 ## 致谢
 
-- [evorule 主仓](https://gitee.com/evo-rule-lab/evorule)提供了核心三 crate（evorule-tcb / evorule-reactor / evorule-governance）
+- [核心仓](https://gitee.com/evo-rule-lab/evorule)提供了核心三 crate（evorule-tcb / evorule-reactor / evorule-governance）
 - Rust 社区,特别是 axum 团队、Tokio 团队、tower 团队
 - 所有提供 issue、PR、discussion 的贡献者
 

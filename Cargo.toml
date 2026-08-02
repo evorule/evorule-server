@@ -48,10 +48,9 @@ opt-level = 3
 lto = true
 codegen-units = 1
 
-# === 本地开发 override (P0-2 修复) ===
-# 兄弟仓 evorule/ 在 ../evorule 平级,本地开发用 path 覆盖。
-# 用户 clone 后不需要此段 — 自动从 crates.io 拉取 evorule-tcb/reactor/governance 0.1.1。
-# 本地开发时取消注释下面 4 行:
+# === 本地开发 override ===
+# 用户 clone 后不需要此段 — 自动从 crates.io 拉取 evorule-tcb/reactor/governance 0.1.0。
+# 本地开发时如需联动核心仓,取消注释下面 4 行并确保核心仓在 ../evorule 平级目录:
 # [patch.crates-io]
 # evorule-tcb = { path = "../evorule/evorule-tcb" }
 # evorule-reactor = { path = "../evorule/evorule-reactor" }

@@ -36,10 +36,10 @@
 
 > ## ⚠️ v0.1.0 — 内部基线 (2026-07-30)
 >
-> 这是 EvoRule Server 仓的**第一个版本**,承载从 `evorule-application` 仓迁出的官方 server 实现 + 9 个配套 lib。
-> **本仓库独立 release**(走神 9 决策),不绑 evorule 主仓的发布节奏。
+> 这是 EvoRule Server 仓的**第一个版本**,承载官方 server 实现 + 9 个配套 lib。
+> **本仓库独立 release**,不绑核心仓的发布节奏。
 >
-> 本仓库**不是** EvoRule 的核心引擎 —— 核心是 [`evorule`](https://gitee.com/evo-rule-lab/evorule) 仓的 `evorule-tcb` / `evorule-reactor` / `evorule-governance`。本仓的定位是**框架的官方 HTTP server 实现** + server 配套的 lib(auth / io_handlers / metrics / hot_reload / debug_control / semantic_invariants / time_machine / rule_tools)。
+> 本仓库**不是** EvoRule 的核心引擎 —— 核心引擎以 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 形式发布到 crates.io。本仓的定位是**框架的官方 HTTP server 实现** + server 配套的 lib(auth / io_handlers / metrics / hot_reload / debug_control / semantic_invariants / time_machine / rule_tools)。
 >
 > **使用风险自负**。issue / PR 欢迎,但不保证响应时间。
 
@@ -49,7 +49,7 @@
 
 **EvoRule Server = 把 evorule 核心跑成 HTTP 服务。**
 
-`evorule` 主仓提供 `execute_transition` 纯函数 + 反应器运行时;本仓提供 HTTP 入口、Session 管理、审计流、Prometheus 指标、认证、I/O handler 编排、调试控制。
+核心引擎提供 `execute_transition` 纯函数 + 反应器运行时;本仓提供 HTTP 入口、Session 管理、审计流、Prometheus 指标、认证、I/O handler 编排、调试控制。
 
 **适合谁用**:
 
@@ -81,17 +81,17 @@
 │  ├── core/time_machine    rewind / diff / fork                │
 │  └── core/rule_tools      规则脚手架 + 校验                   │
 ├─────────────────────────────────────────────────────────────┤
-│  evorule 核心 (crates.io 依赖,本地开发用 [patch.crates-io])   │
+│  evorule 核心 (crates.io 依赖)                               │
 │  ├── evorule-tcb      纯函数执行 + 类型安全                   │
 │  ├── evorule-reactor  反应式 runtime + 哈希链 WAL             │
 │  └── evorule-governance  SessionManager + Auditor + time_machine  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**关键约束**(走神 6 + 走神 9):
+**关键约束**:
 
-- 本仓**不改 evorule 核心代码** —— 所有变更走 `evorule` 仓的 release
-- 本仓**不绑 evorule-application 仓** —— 两个仓独立 release
+- 本仓**不改核心引擎代码** —— 核心引擎变更走 crates.io release
+- 本仓**独立 release**,不绑其他仓的发布节奏
 - 本仓的 publish 状态:`evorule-server` `publish = false`(应用层,不进 crates.io);`core/*` lib 同样 `publish = false`(内部 lib,跟随 server 仓发布)
 
 ---
@@ -197,7 +197,7 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `EVORULE_AUTO_VERIFY`     | `--auto-verify`     | `false`                      | 审计链实时验证                          |
 | `EVORULE_NO_RATE_LIMIT`   | `--no-rate-limit`   | `false`                      | 禁用速率限制（仅 benchmark）            |
 
-### JSON 配置文件（P2-9）
+### JSON 配置文件
 
 ```bash
 evorule-server --config evorule.json
@@ -261,33 +261,19 @@ cargo build --release
 | 第三方安全审计                   | ❌       | 1.0 之前不做          |
 | 集群模式 (cluster/)              | ❌       | 已弃用,见 commit 历史 |
 
-完整路线图:见 `ROADMAP.md`(待写,尚未撰写;当前以本节"已知限制 / 路线图"表格为准)。
+当前以本节"已知限制 / 路线图"表格为准。
 
 ---
 
-## 与 evorule 生态的关系
+## 依赖关系
 
-```
-evorule/                    ← 框架核心 (L0, 已发 crates.io v0.1.1)
-  ├── evorule-tcb           纯函数执行
-  ├── evorule-reactor       反应式 runtime
-  ├── evorule-governance    HTTP/auth 桥接
-  └── evorule-cli           L0 本地 CLI
+本仓依赖以下 crates.io 包（核心引擎）：
 
-evorule-server/             ← 你在这里 (L0', 框架官方 server)
-  ├── evorule-server        HTTP 入口
-  ├── core/auth, io_handlers, metrics, hot_reload,
-  │     debug_control, semantic_invariants,
-  │     time_machine, rule_tools
-  └── Dockerfile + CI + benches + tests
+- `evorule-tcb` — 纯函数执行 + 类型安全
+- `evorule-reactor` — 反应式 runtime + 哈希链 WAL
+- `evorule-governance` — SessionManager + Auditor + time_machine
 
-evorule-application/        ← 应用层 (L1, 终端用户 web app)
-  ├── time-travel-debugger  时间旅行调试器 (P0)
-  ├── portal, demo
-  └── (未来:audit-inspector, live-monitor, ...)
-
-evo-agent/                  ← L2 AI 增强 (独立)
-```
+本仓**独立发布**，不绑核心仓的发布节奏。
 
 ---
 
@@ -308,7 +294,3 @@ evo-agent/                  ← L2 AI 增强 (独立)
 
 - 邮箱:<evorulelab@gmail.com>
 - Gitee:[@evorulelab](https://gitee.com/evo-rule-lab)
-
----
-
-_本仓库与 evorule 主仓共用开发节奏,但发布独立。_

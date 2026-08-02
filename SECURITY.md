@@ -8,8 +8,8 @@
 
 **最后更新**: 2026-07-30
 
-本仓(`evorule-server`)的安全漏洞报告流程**与 [evorule 主仓](https://gitee.com/evo-rule-lab/evorule)共用**。
-详细流程见主仓 [`SECURITY.md`](https://gitee.com/evo-rule-lab/evorule/blob/main/SECURITY.md)。
+本仓(`evorule-server`)的安全漏洞报告流程**与 [核心仓](https://gitee.com/evo-rule-lab/evorule)共用**。
+详细流程见核心仓 [`SECURITY.md`](https://gitee.com/evo-rule-lab/evorule/blob/main/SECURITY.md)。
 
 ---
 
@@ -25,7 +25,7 @@
 | 版本 | 支持状态 | 说明 |
 |---|---|---|
 | `v0.1.0` | ✅ Supported | 内部基线阶段(2026-07-30 之后) |
-| `evorule-application/core/*` 旧位置 | ❌ EOL | 已迁出,无 Gitee 撤回成本 |
+| 应用层旧位置 | ❌ EOL | 已迁出,无 Gitee 撤回成本 |
 
 ---
 
@@ -62,4 +62,4 @@
 
 ---
 
-_本仓与 evorule 主仓共用开发节奏,安全公告同步发布。_
+_本仓独立发布,安全公告在仓内同步。_

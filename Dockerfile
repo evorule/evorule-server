@@ -116,7 +116,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制二进制
 COPY --from=builder /usr/local/bin/evorule-server /usr/local/bin/evorule-server
 
-# 复制 CC0 资源 (P1-1 修复: 本仓自带 core_eval.json)
+# 复制 CC0 资源 (本仓自带 core_eval.json)
 COPY resources/core_eval.json /etc/evorule/core_eval.json
 
 # 创建非 root 用户(安全: 容器逃逸时不获得 root 权限)

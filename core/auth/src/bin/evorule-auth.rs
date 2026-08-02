@@ -17,7 +17,11 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use axum::{extract::{State, Query}, routing::{get, post}, Json, Router};
+use axum::{
+    extract::{Query, State},
+    routing::{get, post},
+    Json, Router,
+};
 use clap::Parser;
 use evorule_auth::{AuthResponse, AuthService, TokenInfo};
 use std::sync::Arc;
@@ -74,17 +78,27 @@ async fn main() -> Result<(), String> {
         .with_state(service);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.api_port));
-    let listener = tokio::net::TcpListener::bind(&addr).await
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
         .map_err(|e| format!("绑定地址失败: {}", e))?;
 
     tracing::info!(port = args.api_port, "HTTP API 服务器已启动");
     tracing::info!("端点:");
-    tracing::info!("  GET  http://{}:{}/validate?token=xxx", "127.0.0.1", args.api_port);
+    tracing::info!(
+        "  GET  http://{}:{}/validate?token=xxx",
+        "127.0.0.1",
+        args.api_port
+    );
     tracing::info!("  GET  http://{}:{}/tokens", "127.0.0.1", args.api_port);
     tracing::info!("  POST http://{}:{}/tokens", "127.0.0.1", args.api_port);
-    tracing::info!("  POST http://{}:{}/tokens/generate", "127.0.0.1", args.api_port);
+    tracing::info!(
+        "  POST http://{}:{}/tokens/generate",
+        "127.0.0.1",
+        args.api_port
+    );
 
-    axum::serve(listener, app.into_make_service()).await
+    axum::serve(listener, app.into_make_service())
+        .await
         .map_err(|e| format!("启动服务器失败: {}", e))?;
 
     Ok(())
@@ -99,7 +113,9 @@ async fn validate_handler(
 }
 
 /// `GET /tokens` — 返回所有 token 的**掩码**视图(不含明文)
-async fn list_tokens_handler(State(service): State<Arc<AuthService>>) -> Json<Vec<evorule_auth::TokenInfoMasked>> {
+async fn list_tokens_handler(
+    State(service): State<Arc<AuthService>>,
+) -> Json<Vec<evorule_auth::TokenInfoMasked>> {
     Json(service.list_tokens())
 }
 
@@ -128,5 +144,8 @@ async fn generate_token_handler(
     State(_service): State<Arc<AuthService>>,
     Json(req): Json<AddTokenRequest>,
 ) -> Json<TokenInfo> {
-    Json(AuthService::generate_token(&req.description, req.expires_hours))
+    Json(AuthService::generate_token(
+        &req.description,
+        req.expires_hours,
+    ))
 }

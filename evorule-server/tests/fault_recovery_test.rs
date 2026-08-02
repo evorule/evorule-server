@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 // 测试代码豁免 L2 clippy (L1 build.rs 门禁已守 panic-prone)。详见 GATE_REFERENCE.md §六(豁免索引)
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
-//! P3-10 故障恢复测试(H5 迁移到应用层)
+//! 故障恢复测试(H5 迁移到应用层)
 //!
 //! 验证系统在故障场景下的恢复能力:
 //! 1. I/O 错误传播:IoResponse 携带 error 时反应器应继续运行
@@ -22,12 +22,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use evorule_governance::{io_dispatcher::IoDispatcher, io_subscriber::IoSubscriber};
 use evorule_io_handlers::{DbHandler, HttpHandler, MemoryHandler};
-use evorule_tcb::JsonValue;
 use evorule_reactor::{Fact, IoType, Reactor};
-use evorule_governance::{
-    io_dispatcher::IoDispatcher, io_subscriber::IoSubscriber,
-};
+use evorule_tcb::JsonValue;
 use tokio::time::timeout;
 
 /// 将 serde_json::Value 转换为 evorule_tcb::JsonValue
@@ -164,7 +162,7 @@ async fn collect_until_stable(
     (errors, snapshot)
 }
 
-/// P3-10 测试 1:I/O 错误传播
+/// 测试 1:I/O 错误传播
 ///
 /// 调用不存在的工具 → IoSubscriber 返回 error → IoResponse 携带 error
 /// → 反应器应处理错误并最终达到 Stable
@@ -205,7 +203,7 @@ async fn test_io_error_propagation() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
-/// P3-10 测试 2:I/O 超时恢复
+/// 测试 2:I/O 超时恢复
 ///
 /// 发送 call_service 指令但不启动 IoSubscriber（模拟 IoResponse 永不到达）
 /// → 反应器应在 io_error_timeout 后发射 Error 并恢复到 Stable
@@ -259,7 +257,7 @@ async fn test_io_timeout_recovery() {
     );
 }
 
-/// P3-10 测试 3:max_rounds 限制
+/// 测试 3:max_rounds 限制
 ///
 /// 使用极小的 max_rounds + sequence 指令 → 超过步数上限
 /// → 反应器发射 MaxRoundsExceeded Error + Stable
@@ -302,7 +300,7 @@ async fn test_max_rounds_exceeded() {
     );
 }
 
-/// P3-10 测试 4:反应器错误后继续服务
+/// 测试 4:反应器错误后继续服务
 ///
 /// 1. 发送会触发 max_rounds 的指令 → Error + Stable
 /// 2. 发送正常 increment 指令 → 应正常执行并达到 Stable
@@ -352,7 +350,7 @@ async fn test_reactor_continues_after_error() {
     }
 }
 
-/// P3-10 测试 5:I/O 超时恢复后继续服务
+/// 测试 5:I/O 超时恢复后继续服务
 ///
 /// 1. 发送 call_service 但不启动 IoSubscriber → I/O 超时 Error + Stable
 /// 2. 发送正常 increment 指令 → 应正常执行
@@ -404,7 +402,7 @@ async fn test_reactor_continues_after_io_timeout() {
     }
 }
 
-/// P3-10 测试 6:正常 I/O 流程（对照测试）
+/// 测试 6:正常 I/O 流程（对照测试）
 ///
 /// 启动 IoSubscriber，发送 call_service("echo") 指令
 /// → IoRequest → IoSubscriber 执行 → IoResponse → 反应器恢复 → Stable

@@ -20,7 +20,11 @@ use tracing_subscriber::EnvFilter;
 
 /// 时间机器增强服务参数
 #[derive(Parser, Debug)]
-#[command(name = "evorule-time-machine", version, about = "EvoRule 时间机器增强服务")]
+#[command(
+    name = "evorule-time-machine",
+    version,
+    about = "EvoRule 时间机器增强服务"
+)]
 struct Args {
     /// HTTP API 监听端口
     #[arg(long = "api-port", default_value = "8084")]

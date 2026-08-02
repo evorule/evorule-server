@@ -424,9 +424,7 @@ fn match_brace(src: &str, open_idx: usize) -> Option<usize> {
                 while i < bytes.len() {
                     if bytes[i] == b'"' {
                         let mut m = 0;
-                        while m < hash_count
-                            && i + 1 + m < bytes.len()
-                            && bytes[i + 1 + m] == b'#'
+                        while m < hash_count && i + 1 + m < bytes.len() && bytes[i + 1 + m] == b'#'
                         {
                             m += 1;
                         }
@@ -476,7 +474,9 @@ mod tests {
         let mut files = Vec::new();
         collect_rs_files(&src_dir, &mut files);
         assert!(
-            files.iter().any(|f| f.ends_with("main.rs") || f.ends_with("lib.rs")),
+            files
+                .iter()
+                .any(|f| f.ends_with("main.rs") || f.ends_with("lib.rs")),
             "collect_rs_files should find src/main.rs or src/lib.rs, got: {:?}",
             files
         );

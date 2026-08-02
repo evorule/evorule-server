@@ -11,7 +11,7 @@
 > **适用范围**: evorule-server (bin) + core/* 9 个配套 lib
 > **协议**: AGPL-3.0-or-later
 > **状态**: 权威 (build.rs 编译时门禁 + #![forbid(unsafe_code)] + clippy workspace lints)
-> **与 evorule 主仓的关系**: 本仓用 **S 编号** (Server 专属), 不参与主仓的 T/G/F 编号体系
+> **与核心仓的关系**: 本仓用 **S 编号** (Server 专属), 不参与核心仓的 T/G/F 编号体系
 
 ---
 
@@ -33,9 +33,9 @@
 
 ---
 
-## 二、与 evorule 主仓门控的关键差异
+## 二、与核心仓门控的关键差异
 
-evorule 主仓的核心约束是 **确定性** (TCB 禁 I/O/async/thread/rand/time/float/HashMap)。
+核心仓的核心约束是 **确定性** (TCB 禁 I/O/async/thread/rand/time/float/HashMap)。
 evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但需要 **安全约束**。
 
 | 约束 | evorule 核心 (T/G/F 编号) | evorule-server (S 编号) | 原因 |
@@ -70,7 +70,7 @@ evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但�
 
 实施文件: `core/io_handlers/build.rs` (递归扫描 `src/**/*.rs`)
 
-**有意重复**: evorule-server (bin) 和 core/io_handlers 用同一组 4 模式, 保证两个安全最敏感的 crate 不会走偏。与 evorule 主仓 tier1/tier2 "有意重复 14 模式" 的设计哲学一致。
+**有意重复**: evorule-server (bin) 和 core/io_handlers 用同一组 4 模式, 保证两个安全最敏感的 crate 不会走偏。与核心仓 tier1/tier2 "有意重复 14 模式" 的设计哲学一致。
 
 ### 3.3 其余 8 个 core/* lib — 靠 L1' + L2 + L3
 
@@ -104,7 +104,7 @@ evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但�
 | --- | --- | --- |
 | evorule-server (bin) | `src/main.rs:26`, `src/lib.rs:13` | ✅ |
 | core/io_handlers | `src/lib.rs:18`, `db_handler.rs:4`, `http_handler.rs:4`, `memory_handler.rs:4`, `service_registry.rs:4` | ✅ |
-| core/auth | `src/lib.rs` | ✅ (AGENTS.md 二节要求) |
+| core/auth | `src/lib.rs` | ✅ (代码风格要求) |
 | core/debug_control | `src/lib.rs` | ✅ |
 | core/hot_reload | `src/lib.rs` | ✅ |
 | core/metrics | `src/lib.rs` | ✅ |
@@ -212,7 +212,7 @@ src/ 内 `#[cfg(test)] mod <ident> { ... }` 块是测试代码, build.rs 的 `st
 - `match_brace` 感知原始字符串 `r#"..."#` (不感知会导致花括号计数错乱)
 - 拼接只追加闭合 `}` (`src[close_idx..close_idx+1]`), 不追加 `src[close_idx..]` 全部 —— 文件有多个 `#[cfg(test)] mod` 时, 后者会把后续测试模块体重复追加, 导致测试代码被当作生产代码误报
 
-部分文件的 test mod 顶部加了 `#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]` (跟 evorule 主仓一致), 用于 clippy L2 豁免:
+部分文件的 test mod 顶部加了 `#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]` (跟核心仓一致), 用于 clippy L2 豁免:
 - `evorule-server/src/metrics_impl.rs:254-256`
 - (其余文件按需添加)
 
@@ -238,7 +238,7 @@ src/ 内 `#[cfg(test)] mod <ident> { ... }` 块是测试代码, build.rs 的 `st
 2. `cargo build --workspace --release --locked`
 3. `cargo clippy --workspace --locked --all-targets -- -D warnings`
 
-**与 evorule 主仓的区别**: 不跑 `cargo package --list` (evorule-server 仓 `publish = false`, 不上 crates.io)。
+**与核心仓的区别**: 不跑 `cargo package --list` (evorule-server 仓 `publish = false`, 不上 crates.io)。
 
 **build.rs L1 门禁** 随 `cargo build` / `cargo test` / `cargo clippy` 自动执行 — 如果 build.rs 检测到 S1 违规, 编译会失败, 门禁脚本也会失败。
 
@@ -251,5 +251,5 @@ src/ 内 `#[cfg(test)] mod <ident> { ... }` 块是测试代码, build.rs 的 `st
 - `Cargo.toml` (根 `[workspace.lints]` 集中配置)
 - `evorule-server/Cargo.toml` + `core/*/Cargo.toml` (各 crate `[lints] workspace = true`)
 - `scripts/_cargo_gate.ps1` (发布门禁脚本)
-- `AGENTS.md` 二节 (代码风格: 不写 unsafe / 不写 panic-prone)
-- evorule 主仓 `GATE_REFERENCE.md` (T/G/F 编号体系, 本仓 S 编号的源头)
+- 代码风格约束: 不写 unsafe / 不写 panic-prone (见本文档 §一/§二)
+- 核心仓 `GATE_REFERENCE.md` (T/G/F 编号体系, 本仓 S 编号的源头)
