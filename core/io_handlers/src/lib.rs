@@ -50,7 +50,7 @@ mod tests {
 
         let mut handlers: HashMap<IoType, Arc<dyn IoHandler>> = HashMap::new();
         handlers.insert(
-            IoType::SAVE_MEMORY,
+            IoType::save_memory(),
             Arc::new(MemoryHandler::new(dir.clone())),
         );
 
@@ -60,7 +60,7 @@ mod tests {
         let _db_dyn: Arc<dyn IoHandler> = Arc::new(db);
 
         // 通过 trait object 调用 MemoryHandler::execute
-        let h = handlers.get(&IoType::SAVE_MEMORY).unwrap();
+        let h = handlers.get(&IoType::save_memory()).unwrap();
         let r = h
             .execute(&JsonValue::object_from_pairs(&[
                 ("key", JsonValue::string("dyn-key")),
@@ -85,10 +85,10 @@ mod tests {
     #[test]
     fn test_iotype_constants_available() {
         // 这五个常量是 main.rs IoDispatcher 注册时用的，确保它们存在且可比较
-        assert_eq!(IoType::CALL_EXTERNAL.as_str(), "call_external");
-        assert_eq!(IoType::HTTP_GET.as_str(), "http_get");
-        assert_eq!(IoType::QUERY_DB.as_str(), "query_db");
-        assert_eq!(IoType::SAVE_MEMORY.as_str(), "save_memory");
-        assert_eq!(IoType::CALL_SERVICE.as_str(), "call_service");
+        assert_eq!(IoType::call_external().as_str(), "call_external");
+        assert_eq!(IoType::http_get().as_str(), "http_get");
+        assert_eq!(IoType::query_db().as_str(), "query_db");
+        assert_eq!(IoType::save_memory().as_str(), "save_memory");
+        assert_eq!(IoType::call_service().as_str(), "call_service");
     }
 }

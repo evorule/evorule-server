@@ -824,11 +824,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let memory = Arc::new(MemoryHandler::new(cfg.memory_dir.clone()));
     let db_wrapped = WhitelistedDbHandler::new(db, statement_whitelist);
     let dispatcher = IoDispatcher::builder()
-        .register(IoType::CALL_EXTERNAL, svc_handler.clone())
-        .register(IoType::HTTP_GET, http.clone())
-        .register(IoType::CALL_SERVICE, svc_handler)
-        .register(IoType::QUERY_DB, Arc::new(db_wrapped))
-        .register(IoType::SAVE_MEMORY, memory)
+        .register(IoType::call_external(), svc_handler.clone())
+        .register(IoType::http_get(), http.clone())
+        .register(IoType::call_service(), svc_handler)
+        .register(IoType::query_db(), Arc::new(db_wrapped))
+        .register(IoType::save_memory(), memory)
         .build();
     // 为 SessionApi 保留一份 dispatcher 副本：每个新 session 会 clone 此对象
     // 再 spawn 一个 IoSubscriber，将 session reactor 的 IoRequest 分发到 handler。

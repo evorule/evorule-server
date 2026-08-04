@@ -127,8 +127,10 @@ POST /api/sessions
 
 ```json
 // 响应
-{"session_id": 1, "created_at": "...", "max_rounds": 1000}
+{"session_id": 1, "message": "Session created"}
 ```
+
+> **D-S1 对齐(2026-08-03)**：实际响应只含 `session_id` 与 `message`，无 `created_at`/`max_rounds`（此前的文档字段是臆造的）。
 
 创建后，server 会**自动为该 session spawn IoSubscriber**（前提是 `SessionApi` 注入了 dispatcher，见 PITFALLS 坑 1）。
 
@@ -171,10 +173,19 @@ GET /api/sessions/1/state
     "counter": 1,
     "service_result": {"converged": true, "joint_positions": ["0.46", "-2.22"]}
   },
+  "queue": [],
   "version": 12,
-  "phase": "Stable"
+  "reactor": {
+    "phase": "stable",
+    "causal_depth": 4,
+    "structural_invariant_violations": 0,
+    "pending_io_count": 0,
+    "current_step": 2
+  }
 }
 ```
+
+> **D-S2 对齐(2026-08-03)**：实际响应含 `payload` / `queue` / `version` / `reactor` 四字段。`phase` 不是顶层字段，而是嵌套在 `reactor` 子对象中（值来自 `ReactorPhase::as_str()`，全小写：`idle` / `draining` / `executing` / `awaiting_io` / `stable` / `error`）。此前的文档把 `phase` 写在顶层且大写为 `Stable`，与实现不符。
 
 业务数据在 `state["payload"]` 下（见 PITFALLS 坑 12）。客户端轮询示例：
 
@@ -458,7 +469,7 @@ IoResponse 回写后反应器恢复，重新评估 transform 规则：
   branch exists(__io_result__) = true → 消费结果 → set audit.alert → 收敛 ✓
 ```
 
-这个特性让 on_true 分支中可以同时包含 set 操作和嵌套 I/O 两阶段（branch + exists），**无需手动去重**——重复执行的 set 不会触发新的执行轮次，反应器最终收敛到 Stable。
+这个特性让 on_true 分支中可以同时包含 set 操作和嵌套 I/O 两阶段（branch + exists），**无需手动去重**——重复执行的 set 不会触发新的执行轮次，反应器最终收敛到 `stable`。
 
 ---
 

@@ -64,7 +64,9 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
 /// 加载 `core_eval.json`
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_path = manifest_dir.join("../../resources/core_eval.json");
+    // evorule-server 独立仓:resources/ 在 crate 上一级(evorule-server/),
+    // 故只需一级 `..`。原 `../../` 是从 evorule-application 仓复制时的遗留路径。
+    let core_eval_path = manifest_dir.join("../resources/core_eval.json");
     let json_str = std::fs::read_to_string(&core_eval_path).unwrap_or_else(|e| {
         panic!(
             "Failed to read core_eval.json at {}: {}",
@@ -395,18 +397,17 @@ async fn test_session_diff() {
     assert_eq!(json["from_version"], v1);
     assert_eq!(json["to_version"], v2);
 
-    // changed 是 Vec<(String, Value, Value)>，序列化为 [[field_name, old, new], ...]
-    let changed = json["changed"].as_array().expect("changed 应为数组");
-    let counter_changed = changed.iter().any(|entry| {
-        entry
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.as_str())
-            == Some("counter")
+    // 契约对齐(S1 修复,2026-08-03):diff 返回 { items: [...] } + { removed }
+    //   items 元素为元组:added → [key, value](2元组), changed → [key, old, new](3元组)
+    //   counter 从 1→99 属于 changed,应在 items 中找到 3 元组且首元素为 "counter"
+    let items = json["items"].as_array().expect("items 应为数组");
+    let counter_changed = items.iter().any(|entry| {
+        let arr = entry.as_array().expect("item 应为数组(元组)");
+        arr.len() == 3 && arr.first().and_then(|v| v.as_str()) == Some("counter")
     });
     assert!(
         counter_changed,
-        "diff changed 应包含 counter，实际: {changed:?}"
+        "diff items 应包含 counter 的 changed 元组 [counter, old, new],实际: {items:?}"
     );
     assert!(json["summary"].is_string(), "summary 应为字符串");
 }

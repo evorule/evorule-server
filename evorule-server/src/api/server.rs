@@ -1797,14 +1797,33 @@ async fn session_diff(
     let facts = session.facts_log.history();
     let diff = evorule_governance::time_machine::diff(&facts, params.a, params.b);
 
+    // 契约对齐(S1 修复,2026-08-03):
+    //   ttd 修复 2 + SPEC §1.1 规定 diff 返回 { items: [...] },元素为元组:
+    //     - added   → [key, value]      (2 元组)
+    //     - changed → [key, old, new]   (3 元组)
+    //   D1-B 扩展契约:removed 不并入 items(items 契约只支持 added/changed 语义),
+    //   单独作为 removed 字段返回 [[key, value], ...]。
+    //   之前返回 { added, removed, changed, unchanged, summary } 违背既定契约,已修正。
+    let mut items: Vec<serde_json::Value> =
+        Vec::with_capacity(diff.added.len() + diff.changed.len());
+    for (k, v) in &diff.added {
+        items.push(serde_json::json!([k, v]));
+    }
+    for (k, old, new) in &diff.changed {
+        items.push(serde_json::json!([k, old, new]));
+    }
+    let removed: Vec<serde_json::Value> = diff
+        .removed
+        .iter()
+        .map(|(k, v)| serde_json::json!([k, v]))
+        .collect();
+
     Ok(Json(serde_json::json!({
         "session_id": session_id,
         "from_version": params.a,
         "to_version": params.b,
-        "added": diff.added,
-        "removed": diff.removed,
-        "changed": diff.changed,
-        "unchanged": diff.unchanged,
+        "items": items,
+        "removed": removed,
         "summary": diff.summary(),
     })))
 }
@@ -1822,18 +1841,20 @@ async fn session_facts_by_prefix(
     let prefix = params.prefix.unwrap_or_default();
     let facts = session.facts_log.facts_by_path_prefix(&prefix);
 
+    // D-S3 修复(2026-08-03):非 PayloadUpdate 的 fact 跳过(filter),不再返回空对象 {}。
+    //   facts 端点语义是"按 path prefix 的 payload 更新索引",只返回 PayloadUpdate。
     let result: Vec<_> = facts
         .into_iter()
-        .map(|(version, fact)| {
+        .filter_map(|(version, fact)| {
             if let Fact::PayloadUpdate { id, path, value } = fact {
-                serde_json::json!({
+                Some(serde_json::json!({
                     "fact_id": id.0,
                     "version": version,
                     "path": path,
                     "value": tcb_to_serde(&value),
-                })
+                }))
             } else {
-                serde_json::json!({})
+                None
             }
         })
         .collect();
@@ -2829,7 +2850,7 @@ mod tests {
         let fact = Fact::IoRequest {
             id: FactId(3),
             cause: FactId(1),
-            io_type: IoType::CALL_EXTERNAL,
+            io_type: IoType::call_external(),
             params: JsonValue::Null,
         };
         let json: serde_json::Value = serde_json::from_str(&fact_to_sse_data(&fact)).unwrap();

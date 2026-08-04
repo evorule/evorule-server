@@ -11,8 +11,8 @@ publish = false
 # 核心层 (crates.io 版本依赖)
 # 本地开发用顶层 Cargo.toml 的 [patch.crates-io] 自动 path 覆盖
 # H5: 仅依赖 evorule-reactor,不依赖 evorule-governance,避免循环
-evorule-tcb = { version = "0.1.1" }
-evorule-reactor = { version = "0.1.1" }
+evorule-tcb = { version = "0.2.0" }
+evorule-reactor = { version = "0.2.0" }
 
 # I/O SDK
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] } # SQLite

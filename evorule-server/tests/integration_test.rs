@@ -122,23 +122,23 @@ async fn create_test_dispatcher(temp_dir: &std::path::Path) -> IoDispatcher {
 
     IoDispatcher::builder()
         .register(
-            IoType::CALL_EXTERNAL,
+            IoType::call_external(),
             Arc::new(HttpHandler::new()) as Arc<dyn evorule_reactor::IoHandler>,
         )
         .register(
-            IoType::HTTP_GET,
+            IoType::http_get(),
             Arc::new(HttpHandler::new()) as Arc<dyn evorule_reactor::IoHandler>,
         )
         .register(
-            IoType::CALL_SERVICE,
+            IoType::call_service(),
             Arc::new(HttpHandler::new()) as Arc<dyn evorule_reactor::IoHandler>,
         )
         .register(
-            IoType::QUERY_DB,
+            IoType::query_db(),
             Arc::new(db) as Arc<dyn evorule_reactor::IoHandler>,
         )
         .register(
-            IoType::SAVE_MEMORY,
+            IoType::save_memory(),
             Arc::new(memory) as Arc<dyn evorule_reactor::IoHandler>,
         )
         .build()

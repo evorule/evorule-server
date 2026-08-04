@@ -58,7 +58,7 @@ impl DbHandler {
     ///
     /// # 参数
     /// - `database_url`: SQLite 连接字符串（如 `sqlite://./data/demo.sqlite`
-    /// 或 `sqlite::memory:`）。
+    ///   或 `sqlite::memory:`）。
     ///
     /// # 错误
     /// `database_url` 解析失败时返回 `sqlx::Error`，**不会静默回退到内存库**。

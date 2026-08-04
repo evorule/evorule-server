@@ -15,7 +15,7 @@
 //! - `method`（可选，字符串，默认 `GET`）：白名单 `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`
 //! - `headers`（可选，对象）：键值对，值必须为字符串
 //! - `body`（可选）：字符串作为原始 text body；对象/数组序列化为 JSON 并自动
-//! 设置 `Content-Type: application/json`
+//!   设置 `Content-Type: application/json`
 //! - `timeout_ms`（可选，整数，默认 10000）：非正数回退默认
 
 use std::net::{IpAddr, SocketAddr};
