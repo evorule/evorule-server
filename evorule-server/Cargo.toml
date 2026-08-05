@@ -20,10 +20,10 @@ path = "src/main.rs"
 [dependencies]
 # 核心层 (crates.io 版本依赖)
 # 本地开发用顶层 Cargo.toml 的 [patch.crates-io] 自动 path 覆盖
-evorule-tcb = { version = "0.2.0" }
-evorule-reactor = { version = "0.2.0", features = ["persistence"] }
+evorule-tcb = { version = "0.2.1" }
+evorule-reactor = { version = "0.2.1", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
-evorule-governance = { version = "0.2.0", features = ["persistence"] }
+evorule-governance = { version = "0.2.1", features = ["persistence"] }
 
 # I/O handler(H5: 应用层,从 evorule-governance 迁出; 新位置: core/io_handlers)
 evorule-io-handlers = { path = "../core/io_handlers" }
