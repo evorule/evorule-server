@@ -41,6 +41,7 @@ use std::time::Instant;
 use evorule_governance::auditor::Auditor;
 use evorule_server::api::server::{AppState, GovernanceApi, GovernanceServer, SessionApi};
 use evorule_server::auth::AuthConfig;
+use evorule_server::input_sanitizer::InputSanitizer;
 // H5: IoDispatcher/IoSubscriber 来自 evorule-governance(机制层)
 use evorule_governance::{IoDispatcher, IoSubscriber};
 // H5: 具体 handler 实现来自 evorule-io-handlers(应用层,从 evorule-governance 迁出)
@@ -1011,6 +1012,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         readiness.clone(),
         shared_facts,
         workspace_state,
+        Arc::new(InputSanitizer::with_default_rules()),
     );
 
     info!(

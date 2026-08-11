@@ -14,6 +14,7 @@
 //! - `GET /api/health` — 健康检查
 
 use crate::auth::AuthConfig;
+use crate::input_sanitizer::InputSanitizer;
 use axum::http::Method;
 use evorule_governance::auditor::Auditor;
 use evorule_governance::metrics::SharedMetrics;
@@ -853,6 +854,7 @@ impl Drop for SseMetricsGuard {
 /// - `State<SharedMetrics>` — Prometheus 指标
 /// - `State<ReadinessFlag>` — 就绪标志
 /// - `State<WorkspaceState>` — 工作空间 + 规则元数据 (P10)
+/// - `State<Arc<InputSanitizer>>` — Phase 1 第一层输入净化（Prompt 注入防御）
 #[derive(Clone)]
 pub struct AppState {
     /// 单反应器 API（向后兼容）
@@ -867,6 +869,8 @@ pub struct AppState {
     shared_facts: SharedFactsLog,
     /// 工作空间状态 (P10: 多租户工作空间 + 规则元数据)
     workspace: WorkspaceState,
+    /// Phase 1: 输入净化器（HTTP 入口 Prompt 注入防御，静默改写）
+    sanitizer: Arc<InputSanitizer>,
 }
 
 impl AppState {
@@ -878,6 +882,7 @@ impl AppState {
         readiness: ReadinessFlag,
         shared_facts: SharedFactsLog,
         workspace: WorkspaceState,
+        sanitizer: Arc<InputSanitizer>,
     ) -> Self {
         Self {
             governance,
@@ -886,6 +891,7 @@ impl AppState {
             readiness,
             shared_facts,
             workspace,
+            sanitizer,
         }
     }
 }
@@ -923,6 +929,12 @@ impl FromRef<AppState> for SharedFactsLog {
 impl FromRef<AppState> for WorkspaceState {
     fn from_ref(state: &AppState) -> Self {
         state.workspace.clone()
+    }
+}
+
+impl FromRef<AppState> for Arc<InputSanitizer> {
+    fn from_ref(state: &AppState) -> Self {
+        state.sanitizer.clone()
     }
 }
 
@@ -1197,19 +1209,29 @@ fn normalize_path_for_metrics(path: &str) -> String {
 async fn submit_command(
     State(api): State<GovernanceApi>,
     State(metrics): State<SharedMetrics>,
+    State(sanitizer): State<Arc<InputSanitizer>>,
     Json(req): Json<CommandRequest>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
+    // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
+    let (instruction_value, sanitize_report) = sanitizer.sanitize_value(&req.instruction);
+    if sanitize_report.has_hits() {
+        tracing::warn!(
+            hits = ?sanitize_report.unique_hits(),
+            hit_count = sanitize_report.hit_count(),
+            "submit_command 输入净化命中（已静默改写）"
+        );
+    }
+
     // 按指令类型计数
     {
-        let cmd_type = req
-            .instruction
+        let cmd_type = instruction_value
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         metrics.inc_commands(cmd_type);
     }
 
-    let instruction = serde_to_tcb(req.instruction);
+    let instruction = serde_to_tcb(instruction_value);
     match api.send_command(instruction) {
         Ok(id) => Ok(Json(ApiResponse {
             success: true,
@@ -1459,13 +1481,24 @@ async fn create_session_fork(
 async fn session_command(
     State(api): State<SessionApi>,
     State(metrics): State<SharedMetrics>,
+    State(sanitizer): State<Arc<InputSanitizer>>,
     Path(session_id): Path<u64>,
     Json(req): Json<CommandRequest>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
+    // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
+    let (instruction_value, sanitize_report) = sanitizer.sanitize_value(&req.instruction);
+    if sanitize_report.has_hits() {
+        tracing::warn!(
+            hits = ?sanitize_report.unique_hits(),
+            hit_count = sanitize_report.hit_count(),
+            session_id = session_id,
+            "session_command 输入净化命中（已静默改写）"
+        );
+    }
+
     // 按指令类型计数
     {
-        let cmd_type = req
-            .instruction
+        let cmd_type = instruction_value
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
@@ -1473,7 +1506,7 @@ async fn session_command(
     }
 
     let id = api.next_id();
-    let instruction = serde_to_tcb(req.instruction);
+    let instruction = serde_to_tcb(instruction_value);
 
     let sessions = api.sessions.lock().await;
     sessions.touch_session(session_id);
@@ -3641,6 +3674,7 @@ mod tests {
                 readiness.clone(),
                 shared_facts,
                 workspace_state,
+                Arc::new(InputSanitizer::with_default_rules()),
             ),
             readiness,
         )
