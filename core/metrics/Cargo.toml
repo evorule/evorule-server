@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "evorule-metrics"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule Prometheus 指标实现 — 13 个核心 metric + /metrics 端点 (evorule-server 仓配套 lib)"

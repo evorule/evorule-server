@@ -82,6 +82,41 @@ fn load_core_eval() -> Vec<JsonValue> {
         .unwrap_or_default()
 }
 
+/// 构造测试用 `WorkspaceState`（内存 SQLite + 桥接到 SessionApi）
+///
+/// 为不需要实际测试 workspace 功能的集成测试提供默认 WorkspaceState，
+/// 满足 `AppState::new()` 第 6 参数的类型要求。
+fn make_workspace_state(sessions: &SessionApi) -> evorule_workspace::api::WorkspaceState {
+    let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+    let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(sessions.clone());
+    let ws_service = Arc::new(evorule_workspace::WorkspaceService::new(
+        ws_db.clone(),
+        session_ops.clone(),
+    ));
+    let rule_meta_service = Arc::new(evorule_workspace::RuleMetaService::new(ws_db.clone()));
+    let switcher = evorule_workspace::SessionSwitchedBroadcaster::new();
+    let sandbox_service = Arc::new(evorule_workspace::SandboxService::new(
+        ws_db.clone(),
+        session_ops.clone(),
+    ));
+    let rolling_session = evorule_workspace::RollingSessionService::new(
+        ws_db.clone(),
+        session_ops,
+        switcher.clone(),
+    );
+    let publish_service = Arc::new(evorule_workspace::PublishService::new(ws_db.clone(), rolling_session));
+    // 界面升级 v1.0 阶段 A: 新增 verdict_service (判定契约 + wall-clock 旁路, 第 6 参)
+    let verdict_service = Arc::new(evorule_workspace::VerdictService::new(ws_db));
+    evorule_workspace::WorkspaceState::new(
+        ws_service,
+        rule_meta_service,
+        sandbox_service,
+        publish_service,
+        Arc::new(switcher),
+        verdict_service,
+    )
+}
+
 /// 构造测试用 `AppState`（使用真实 core_eval，纯内存模式无 WAL）
 fn make_state() -> AppState {
     let core_eval = load_core_eval();
@@ -95,8 +130,16 @@ fn make_state() -> AppState {
     let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
     let readiness = Arc::new(AtomicBool::new(true));
     let shared_facts = SharedFactsLog::new();
+    let workspace_state = make_workspace_state(&sessions);
 
-    AppState::new(governance, sessions, metrics, readiness, shared_facts)
+    AppState::new(
+        governance,
+        sessions,
+        metrics,
+        readiness,
+        shared_facts,
+        workspace_state,
+    )
 }
 
 /// 构造测试用 `Router`（bench 模式：无认证、无限速）
@@ -590,7 +633,15 @@ async fn test_session_rule_hot_reload() {
     let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
     let readiness = Arc::new(AtomicBool::new(true));
     let shared_facts = SharedFactsLog::new();
-    let state = AppState::new(governance, sessions, metrics, readiness, shared_facts);
+    let workspace_state = make_workspace_state(&sessions);
+    let state = AppState::new(
+        governance,
+        sessions,
+        metrics,
+        readiness,
+        shared_facts,
+        workspace_state,
+    );
 
     // ===== 3. 创建旧会话（reload 前创建，使用初始规则集）=====
 

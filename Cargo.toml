@@ -9,11 +9,12 @@ members = [
     "core/rule_tools",
     "core/semantic_invariants",
     "core/time_machine",
+    "core/workspace",
     "evorule-server",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 authors = ["EvoRule Project"]

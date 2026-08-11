@@ -67,3 +67,8 @@ kani-results/
 # 推送公开仓前必须确保此处目录被忽略。
 wendang/
 wendang/**
+
+# === 2026-08-10 v0.2.0 发布前盘点 ===
+# 临时测试脚本和输出（联调时产生，不应进版本控制）
+test_api.ps1
+test_output.txt

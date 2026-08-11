@@ -1,6 +1,6 @@
 [package]
 name = "evorule-hot-reload"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "规则文件热重载服务"
 license = "AGPL-3.0-or-later"

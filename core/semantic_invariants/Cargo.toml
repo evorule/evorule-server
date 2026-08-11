@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "evorule-semantic-invariants"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 语义不变式引擎 —— JSON 驱动的业务约束检查"

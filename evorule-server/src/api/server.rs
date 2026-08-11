@@ -22,6 +22,7 @@ use evorule_governance::shared_facts_log::SharedFactsLog;
 use evorule_governance::{IoDispatcher, IoSubscriber};
 use evorule_reactor::{Fact, FactId, FactSender, FactsLog};
 use evorule_tcb::JsonValue;
+use evorule_workspace::api::WorkspaceState;
 use serde::Deserialize;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -521,6 +522,302 @@ impl SessionApi {
     }
 }
 
+// =============================================================================
+// WC-10: SessionOps for SessionApi — 桥接 evorule-workspace 与 SessionManager
+// =============================================================================
+// 设计依据: WORKSPACE_CRATE_DESIGN.md §4 (SessionOps trait)
+// workspace crate 通过 SessionOps trait 抽象会话操作,此处为 SessionApi 实现该 trait,
+// 使 WorkspaceService 能够调用底层 SessionManager 的方法。
+
+#[async_trait::async_trait]
+impl evorule_workspace::SessionOps for SessionApi {
+    async fn create_session(&self) -> evorule_workspace::WorkspaceResult<u64> {
+        let result = {
+            let sessions = self.sessions.lock().await;
+            sessions.create_session()
+        };
+        match result {
+            Ok(id) => {
+                // 为新 session 的 reactor spawn IoSubscriber (复用 create_session handler 逻辑)
+                if let Some(ref dispatcher) = self.dispatcher {
+                    let sessions = self.sessions.lock().await;
+                    if let Some(session) = sessions.get_session(id) {
+                        let event_rx = session.event_tx.subscribe();
+                        let command_tx = session.command_tx.clone();
+                        let subscriber =
+                            IoSubscriber::new(dispatcher.clone());
+                        tokio::spawn(async move {
+                            if let Err(e) = subscriber.run(event_rx, command_tx).await {
+                                tracing::error!(
+                                    session_id = id,
+                                    error = %e,
+                                    "Workspace SessionOps: IoSubscriber 异常退出"
+                                );
+                            }
+                        });
+                    }
+                }
+                Ok(id)
+            }
+            Err(e) => Err(evorule_workspace::WorkspaceError::internal(format!(
+                "create_session failed: {e:?}"
+            ))),
+        }
+    }
+
+    async fn fork_session(
+        &self,
+        parent_session_id: u64,
+    ) -> evorule_workspace::WorkspaceResult<u64> {
+        let result = {
+            let sessions = self.sessions.lock().await;
+            sessions.create_session_from_parent_at_version(parent_session_id, None)
+        };
+        match result {
+            Ok(id) => Ok(id),
+            Err(evorule_governance::session::SessionError::NotFound { id }) => {
+                Err(evorule_workspace::WorkspaceError::not_found(
+                    "session",
+                    id.to_string(),
+                ))
+            }
+            Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => {
+                Err(evorule_workspace::WorkspaceError::internal(format!(
+                    "session limit exceeded: {current}/{max}"
+                )))
+            }
+            Err(e) => Err(evorule_workspace::WorkspaceError::internal(format!(
+                "fork_session failed: {e:?}"
+            ))),
+        }
+    }
+
+    async fn close_session(
+        &self,
+        session_id: u64,
+    ) -> evorule_workspace::WorkspaceResult<()> {
+        let result = {
+            let sessions = self.sessions.lock().await;
+            sessions.close_session(session_id)
+        };
+        match result {
+            Ok(_) => Ok(()),
+            Err(_) => Err(evorule_workspace::WorkspaceError::not_found(
+                "session",
+                session_id.to_string(),
+            )),
+        }
+    }
+
+    async fn list_sessions(&self) -> evorule_workspace::WorkspaceResult<Vec<u64>> {
+        let sessions = self.sessions.lock().await;
+        Ok(sessions.list_sessions())
+    }
+
+    async fn send_command(
+        &self,
+        session_id: u64,
+        command: serde_json::Value,
+    ) -> evorule_workspace::WorkspaceResult<u64> {
+        let id = self.next_id();
+        let instruction = serde_to_tcb(command);
+
+        let sessions = self.sessions.lock().await;
+        sessions.touch_session(session_id);
+        let session = sessions.get_session(session_id).ok_or_else(|| {
+            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+        })?;
+
+        session
+            .command_tx
+            .send(Fact::Command { id, instruction })
+            .map_err(|_| {
+                evorule_workspace::WorkspaceError::internal(
+                    "command channel closed (reactor exited)",
+                )
+            })?;
+        // 缺口2 修复: send_command 后实时刷新审计链
+        // 将 FactsLog 中已处理但尚未审计的 Fact 刷入 BLAKE3 哈希链。
+        // reactor 异步处理, 此处刷新已处理的 fact; 未处理的由读方法兜底刷新。
+        session.audit_new();
+        Ok(id.0)
+    }
+
+    async fn get_session_state(
+        &self,
+        session_id: u64,
+    ) -> evorule_workspace::WorkspaceResult<serde_json::Value> {
+        let sessions = self.sessions.lock().await;
+        sessions.touch_session(session_id);
+        let session = sessions.get_session(session_id).ok_or_else(|| {
+            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+        })?;
+
+        let (payload, queue, version) = session.facts_log.snapshot();
+
+        let mut obj = serde_json::Map::new();
+        obj.insert("payload".to_string(), tcb_to_serde(&payload));
+        obj.insert(
+            "queue".to_string(),
+            serde_json::Value::Array(queue.iter().map(tcb_to_serde).collect()),
+        );
+        obj.insert(
+            "version".to_string(),
+            serde_json::Value::Number(version.into()),
+        );
+        Ok(serde_json::Value::Object(obj))
+    }
+
+    // ===== 沙盒编排扩展 (SANDBOX_ORCHESTRATION_DESIGN.md §3.2) =====
+
+    /// 获取审计报告 (含 BLAKE3 链验证结果)
+    ///
+    /// 返回 JSON,包含审计链长度、验证状态、Fact 统计等。
+    async fn get_audit_report(
+        &self,
+        session_id: u64,
+    ) -> evorule_workspace::WorkspaceResult<serde_json::Value> {
+        let sessions = self.sessions.lock().await;
+        sessions.touch_session(session_id);
+        let session = sessions.get_session(session_id).ok_or_else(|| {
+            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+        })?;
+
+        // 兜底刷新: send_command 后已实时刷新, 此处确保 reactor 异步处理的 fact 也进链
+        let _new_count = session.audit_new();
+        let report_str = session.audit_report();
+        let report: serde_json::Value = serde_json::from_str(&report_str)
+            .map_err(|e| {
+                evorule_workspace::WorkspaceError::internal(format!("audit parse failed: {e}"))
+            })?;
+
+        // 附加验证状态 (report 字段已含 last_hash/entry_count,补充 verified)
+        let mut enriched = report;
+        if let serde_json::Value::Object(ref mut map) = enriched {
+            map.insert(
+                "verified".into(),
+                serde_json::json!(session.audit_verify()),
+            );
+            map.insert("session_id".into(), serde_json::json!(session_id));
+        }
+        Ok(enriched)
+    }
+
+    /// 获取审计链导出 (JSON 字符串)
+    ///
+    /// 返回完整的审计链 JSON,用于沙盒关闭时导出 test Fact。
+    async fn get_audit_export(
+        &self,
+        session_id: u64,
+    ) -> evorule_workspace::WorkspaceResult<String> {
+        let sessions = self.sessions.lock().await;
+        sessions.touch_session(session_id);
+        let session = sessions.get_session(session_id).ok_or_else(|| {
+            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+        })?;
+
+        // 兜底刷新: 确保 reactor 异步处理的 fact 已进 BLAKE3 链后再导出
+        let _new_count = session.audit_new();
+        Ok(session.audit_export())
+    }
+
+    /// 获取 Fact 列表 (用于测试报告统计)
+    ///
+    /// 从审计链导出中解析出 Fact 列表。
+    async fn get_facts(
+        &self,
+        session_id: u64,
+    ) -> evorule_workspace::WorkspaceResult<Vec<serde_json::Value>> {
+        let export_str = self.get_audit_export(session_id).await?;
+        let export: serde_json::Value = serde_json::from_str(&export_str)
+            .map_err(|e| {
+                evorule_workspace::WorkspaceError::internal(format!("audit export parse: {e}"))
+            })?;
+
+        // 审计导出包含 entries 数组,每条 entry 有 fact_id/fact_type/content_hash 等
+        // 提取 entries 作为 Fact 列表
+        let entries = export
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(entries)
+    }
+
+    /// 获取因果链 (某条 Fact 的因果追溯)
+    ///
+    /// 返回从根 Fact 到指定 Fact 的因果链 JSON。
+    async fn get_causal_chain(
+        &self,
+        session_id: u64,
+        fact_id: u64,
+    ) -> evorule_workspace::WorkspaceResult<serde_json::Value> {
+        use evorule_reactor::FactId;
+
+        let sessions = self.sessions.lock().await;
+        sessions.touch_session(session_id);
+        let session = sessions.get_session(session_id).ok_or_else(|| {
+            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+        })?;
+
+        // 兜底刷新: 确保 fact 已进审计链后再追溯因果
+        let _new_count = session.audit_new();
+        let chain = session.causal_chain(FactId(fact_id));
+
+        let entries: Vec<serde_json::Value> = chain
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "fact_id": e.fact_id.0,
+                    "fact_type": e.fact_type,
+                    "logical_time": e.logical_time,
+                    "content_hash": e.content_hash,
+                    "prev_hash": e.prev_hash,
+                    "cause": e.cause.map(|c| c.0),
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "session_id": session_id,
+            "fact_id": fact_id,
+            "chain_length": entries.len(),
+            "chain": entries,
+        }))
+    }
+
+    // ===== 发布队列扩展 (PUBLISH_QUEUE_DESIGN.md §4) =====
+
+    /// 触发规则热重载
+    ///
+    /// 调用 reload_from_disk,使 SessionManager 内部 core_eval 更新
+    /// (影响后续新创建的 session,已存在 session 不受影响 — TCB 不可变语义)。
+    async fn reload_rules(&self) -> evorule_workspace::WorkspaceResult<()> {
+        self.reload_from_disk()
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                evorule_workspace::WorkspaceError::internal(format!("reload_rules failed: {e}"))
+            })
+    }
+
+    /// 显式刷新审计链 (缺口5 修复)
+    ///
+    /// 将 FactsLog 中尚未审计的 Fact 刷入 BLAKE3 哈希链, 返回本次新增条目数。
+    /// send_command 后应调用此方法确保审计链实时性。
+    async fn flush_audit(
+        &self,
+        session_id: u64,
+    ) -> evorule_workspace::WorkspaceResult<usize> {
+        let sessions = self.sessions.lock().await;
+        sessions.touch_session(session_id);
+        let session = sessions.get_session(session_id).ok_or_else(|| {
+            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+        })?;
+        Ok(session.audit_new())
+    }
+}
+
 /// SSE 连接配额守卫
 ///
 /// RAII 模式：Drop 时自动减少全局 SSE 连接计数器，
@@ -548,13 +845,14 @@ impl Drop for SseMetricsGuard {
     }
 }
 
-/// 应用全局状态（合并 GovernanceApi + SessionApi + AgentManager + Metrics + Readiness）
+/// 应用全局状态（合并 GovernanceApi + SessionApi + AgentManager + Metrics + Readiness + Workspace）
 ///
 /// 通过 axum `FromRef` 模式，handler 可按需提取子状态：
 /// - `State<GovernanceApi>` — 单反应器模式路由
 /// - `State<SessionApi>` — 多会话模式路由
 /// - `State<SharedMetrics>` — Prometheus 指标
 /// - `State<ReadinessFlag>` — 就绪标志
+/// - `State<WorkspaceState>` — 工作空间 + 规则元数据 (P10)
 #[derive(Clone)]
 pub struct AppState {
     /// 单反应器 API（向后兼容）
@@ -567,6 +865,8 @@ pub struct AppState {
     readiness: ReadinessFlag,
     /// 跨会话共享事实存储
     shared_facts: SharedFactsLog,
+    /// 工作空间状态 (P10: 多租户工作空间 + 规则元数据)
+    workspace: WorkspaceState,
 }
 
 impl AppState {
@@ -577,6 +877,7 @@ impl AppState {
         metrics: SharedMetrics,
         readiness: ReadinessFlag,
         shared_facts: SharedFactsLog,
+        workspace: WorkspaceState,
     ) -> Self {
         Self {
             governance,
@@ -584,6 +885,7 @@ impl AppState {
             metrics,
             readiness,
             shared_facts,
+            workspace,
         }
     }
 }
@@ -615,6 +917,12 @@ impl FromRef<AppState> for ReadinessFlag {
 impl FromRef<AppState> for SharedFactsLog {
     fn from_ref(state: &AppState) -> Self {
         state.shared_facts.clone()
+    }
+}
+
+impl FromRef<AppState> for WorkspaceState {
+    fn from_ref(state: &AppState) -> Self {
+        state.workspace.clone()
     }
 }
 
@@ -1174,11 +1482,15 @@ async fn session_command(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     match session.command_tx.send(Fact::Command { id, instruction }) {
-        Ok(()) => Ok(Json(ApiResponse {
-            success: true,
-            message: "Command submitted".to_string(),
-            fact_id: Some(id.0),
-        })),
+        Ok(()) => {
+            // 缺口2 修复: 命令提交后实时刷新审计链 (BLAKE3 哈希链)
+            session.audit_new();
+            Ok(Json(ApiResponse {
+                success: true,
+                message: "Command submitted".to_string(),
+                fact_id: Some(id.0),
+            }))
+        }
         Err(_) => Ok(Json(ApiResponse {
             success: false,
             message: "Command channel closed (reactor exited)".to_string(),
@@ -2446,6 +2758,8 @@ impl GovernanceServer {
             // 该端点会重新加载 core_eval.json + rules_dir，是运营操作，
             // 未认证用户不应触发（DoS 风险 + rules_dir 可写时注入恶意规则）。
             .route("/api/rules/reload", post(reload_rules_handler))
+            // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)
+            .merge(evorule_workspace::build_workspace_router())
             // rewind/diff 已移至 application/core/time_machine（本地实现）
             .layer(axum::middleware::from_fn_with_state(
                 auth,
@@ -3285,6 +3599,40 @@ mod tests {
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
         let shared_facts = SharedFactsLog::new();
 
+        // P10: 构造测试用 WorkspaceState (内存 SQLite + 桥接到 sessions)
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(sessions.clone());
+        let ws_service = Arc::new(evorule_workspace::WorkspaceService::new(
+            ws_db.clone(),
+            session_ops.clone(),
+        ));
+        let rule_meta_service = Arc::new(evorule_workspace::RuleMetaService::new(ws_db.clone()));
+        // 构造沙盒/发布/滚动 session 服务 (SANDBOX_ORCHESTRATION_DESIGN.md §3, PUBLISH_QUEUE_DESIGN.md §3)
+        let switcher = evorule_workspace::SessionSwitchedBroadcaster::new();
+        let sandbox_service = Arc::new(evorule_workspace::SandboxService::new(
+            ws_db.clone(),
+            session_ops.clone(),
+        ));
+        let rolling_session = evorule_workspace::RollingSessionService::new(
+            ws_db.clone(),
+            session_ops,
+            switcher.clone(),
+        );
+        let publish_service = Arc::new(evorule_workspace::PublishService::new(
+            ws_db.clone(),
+            rolling_session,
+        ));
+        let verdict_service =
+            Arc::new(evorule_workspace::VerdictService::new(ws_db.clone()));
+        let workspace_state = evorule_workspace::WorkspaceState::new(
+            ws_service,
+            rule_meta_service,
+            sandbox_service,
+            publish_service,
+            Arc::new(switcher),
+            verdict_service,
+        );
+
         (
             AppState::new(
                 governance,
@@ -3292,6 +3640,7 @@ mod tests {
                 metrics,
                 readiness.clone(),
                 shared_facts,
+                workspace_state,
             ),
             readiness,
         )

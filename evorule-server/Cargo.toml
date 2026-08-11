@@ -1,6 +1,6 @@
 [package]
 name = "evorule-server"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 框架官方 HTTP server 实现 — 把 evorule-tcb/reactor 暴露为远程 API"
@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 # 核心层 (crates.io 版本依赖)
 # 本地开发用顶层 Cargo.toml 的 [patch.crates-io] 自动 path 覆盖
+# 注: 依赖版本保持 0.2.1 (crates.io 最新), 待核心仓 v0.2.2 cargo publish 后单独 bump 到 0.2.2
 evorule-tcb = { version = "0.2.1" }
 evorule-reactor = { version = "0.2.1", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
@@ -27,6 +28,9 @@ evorule-governance = { version = "0.2.1", features = ["persistence"] }
 
 # I/O handler(H5: 应用层,从 evorule-governance 迁出; 新位置: core/io_handlers)
 evorule-io-handlers = { path = "../core/io_handlers" }
+
+# Workspace crate (P10: 多租户工作空间 + 规则元数据管理)
+evorule-workspace = { path = "../core/workspace" }
 
 # 异步运行时
 tokio = { version = "1", features = [
@@ -69,6 +73,9 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # 安全(恒定时间比较)
 subtle = "2"
+
+# async trait (WC-10: SessionOps for SessionApi 需要)
+async-trait = "0.1"
 
 [dev-dependencies]
 # H6: benchmarks 迁移到应用层后需要的依赖

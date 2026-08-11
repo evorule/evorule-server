@@ -127,6 +127,8 @@ struct FilePathsConfig {
     service_registry: Option<PathBuf>,
     /// SQL 语句模板白名单文件（可选，未设置则禁用 QUERY_DB）
     statement_whitelist: Option<PathBuf>,
+    /// Workspace 元数据库路径 (P10, 可选, 默认 ./data/workspace.db)
+    workspace_db: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -217,6 +219,10 @@ struct Cli {
     /// SQLite 数据库文件路径
     #[arg(long, env = "EVORULE_DB_PATH")]
     db_path: Option<PathBuf>,
+
+    /// Workspace 元数据库路径 (P10: 工作空间 + 规则元数据, 独立于业务 db_path)
+    #[arg(long, env = "EVORULE_WORKSPACE_DB")]
+    workspace_db: Option<PathBuf>,
 
     /// Memory handler 存储根目录
     #[arg(long, env = "EVORULE_MEMORY_DIR")]
@@ -339,6 +345,8 @@ struct ResolvedConfig {
     allow_loopback: bool,
     /// S2：/metrics 端点是否需要认证
     metrics_auth: bool,
+    /// Workspace 元数据库路径 (P10, 默认 ./data/workspace.db)
+    workspace_db: PathBuf,
 }
 
 impl ResolvedConfig {
@@ -401,6 +409,11 @@ impl ResolvedConfig {
             allow_loopback: cli.allow_loopback,
             // S2：从 CLI/环境变量读取 metrics_auth 配置
             metrics_auth: cli.metrics_auth,
+            // P10: workspace 元数据库路径 (独立于业务 db_path)
+            workspace_db: cli
+                .workspace_db
+                .or(file.paths.workspace_db)
+                .unwrap_or_else(|| PathBuf::from("./data/workspace.db")),
         };
         cfg
     }
@@ -776,6 +789,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(wal_dir) = &cfg.wal_dir {
         ensure_dir(wal_dir)?;
     }
+    // P10: workspace 元数据库父目录
+    if let Some(parent) = cfg.workspace_db.parent() {
+        ensure_dir(&parent.to_path_buf())?;
+    }
     info!(
         "数据目录检查完成（耗时: {}ms）",
         step_start.elapsed().as_millis()
@@ -929,6 +946,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建跨会话共享事实存储
     let shared_facts = SharedFactsLog::new();
 
+    // P10: 初始化 Workspace 元数据库 + 服务 (多租户工作空间 + 规则元数据管理)
+    // workspace_db 独立于业务 db_path,存储 workspace/member/rule/session 元数据。
+    // SessionApi 实现 SessionOps trait,通过 Arc 桥接到底层 SessionManager,
+    // 使 WorkspaceService 能创建/fork/close 会话而无需直接依赖 evorule-governance。
+    //
+    // 三层架构完整接入 (SANDBOX_ORCHESTRATION_DESIGN.md + PUBLISH_QUEUE_DESIGN.md):
+    // - WorkspaceService: 多租户工作空间 + 会话管理
+    // - RuleMetaService: 规则元数据 + 状态机 + BLAKE3 哈希
+    // - SandboxService: 沙盒编排 (fork + 合成数据 + 测试报告)
+    // - PublishService: 发布队列 + 三级权限 + 滚动 session 热重载
+    // - SessionSwitchedBroadcaster: U7 SSE session_switched 推送
+    let workspace_db = evorule_workspace::WorkspaceDb::open(&cfg.workspace_db)
+        .map_err(|e| format!("workspace db 初始化失败: {}", e))?;
+    let workspace_db = Arc::new(workspace_db);
+    let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(session_api.clone());
+    let workspace_service = Arc::new(evorule_workspace::WorkspaceService::new(
+        workspace_db.clone(),
+        session_ops.clone(),
+    ));
+    let rule_meta_service = Arc::new(evorule_workspace::RuleMetaService::new(
+        workspace_db.clone(),
+    ));
+    // SessionSwitchedBroadcaster (U7): 共享底层 channel 映射, Clone 廉价
+    let switcher = evorule_workspace::SessionSwitchedBroadcaster::new();
+    // SandboxService: 沙盒编排 (持有 session_ops, 通过 db 直接查询规则版本)
+    let sandbox_service = Arc::new(evorule_workspace::SandboxService::new(
+        workspace_db.clone(),
+        session_ops.clone(),
+    ));
+    // RollingSessionService: 滚动 session 热重载 (reload → fork → switch → audit → broadcast → drain)
+    let rolling_session = evorule_workspace::RollingSessionService::new(
+        workspace_db.clone(),
+        session_ops.clone(),
+        switcher.clone(),
+    );
+    // PublishService: 发布队列 + 三级权限 (持有 RollingSessionService)
+    let publish_service = Arc::new(evorule_workspace::PublishService::new(
+        workspace_db.clone(),
+        rolling_session,
+    ));
+    // VerdictService: 判定契约 + wall-clock 旁路 (界面升级 v1.0 阶段 A.3/A.4)
+    let verdict_service =
+        Arc::new(evorule_workspace::VerdictService::new(workspace_db.clone()));
+    let workspace_state = evorule_workspace::WorkspaceState::new(
+        workspace_service,
+        rule_meta_service,
+        sandbox_service,
+        publish_service,
+        Arc::new(switcher),
+        verdict_service,
+    );
+    info!(
+        "Workspace 元数据库已就绪: {} (P10: 多租户 + 规则元数据 + 沙盒编排 + 发布队列)",
+        cfg.workspace_db.display()
+    );
+
     // AppState 注入 metrics 和 readiness
     // H6: metrics 总是注入（PrometheusMetrics 实现 IoMetrics trait）
     let state = AppState::new(
@@ -937,6 +1010,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics.clone(),
         readiness.clone(),
         shared_facts,
+        workspace_state,
     );
 
     info!(
@@ -1132,6 +1206,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !reactor_handle.is_finished() {
         reactor_handle.abort();
         info!("已中止单反应器任务");
+    }
+
+    // 缺口6 修复: 服务器退出前导出当前生产 session 的 BLAKE3 审计链
+    // (rolling_swap 关闭旧 session 时由缺口5处理; 此处处理 server 直接退出的场景)
+    // 未导出的审计链会随 SessionManager 内存释放而永久丢失 — 对合规审计不可接受。
+    match workspace_db.get_production_state() {
+        Ok(prod_state) => {
+            if let Some(session_id) = prod_state.current_session_id {
+                let session_id = session_id as u64;
+                info!(
+                    session_id,
+                    "正在导出生产 session 审计链 (缺口6: server 退出前持久化)..."
+                );
+                match evorule_workspace::rolling_session::export_production_audit_chain(
+                    &session_ops,
+                    session_id,
+                )
+                .await
+                {
+                    Some(path) => {
+                        // 记录 session_closed (server_shutdown) 到 production_audit
+                        let source_ws_ids = serde_json::json!([]).to_string();
+                        let ruleset_hash = prod_state.ruleset_hash.unwrap_or_default();
+                        if let Err(e) = workspace_db.insert_production_audit(
+                            "session_closed",
+                            prod_state.ruleset_version,
+                            None,
+                            &ruleset_hash,
+                            session_id as i64,
+                            &source_ws_ids,
+                            "system",
+                            Some("server_shutdown"),
+                            Some(&path),
+                            None,
+                        ) {
+                            warn!(
+                                session_id,
+                                error = %e,
+                                "Failed to record session_closed audit event on shutdown (缺口6)"
+                            );
+                        }
+                        info!(
+                            session_id,
+                            path = %path,
+                            "生产 session 审计链已导出 (缺口6)"
+                        );
+                    }
+                    None => {
+                        warn!(
+                            session_id,
+                            "Failed to export production session audit chain on shutdown (缺口6)"
+                        );
+                    }
+                }
+            } else {
+                info!("无活跃生产 session, 跳过审计链导出");
+            }
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Failed to query production_state for audit chain export on shutdown (缺口6)"
+            );
+        }
     }
 
     info!("evorule-server 已停止");

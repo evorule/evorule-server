@@ -23,7 +23,7 @@
 
 ---
 
-## [Unreleased]
+## [0.2.0] - 2026-08-10
 
 ### 🔒 安全
 
@@ -58,6 +58,31 @@
 - **S2: /metrics 端点可选认证** — `evorule-server/src/main.rs` 新增 `--metrics-auth` / `EVORULE_METRICS_AUTH` CLI 参数；`api/server.rs` `GovernanceServer` 新增 `metrics_requires_auth` 字段，独立构建 `metrics_router`，启用时挂载 `auth_middleware`。默认关闭（Prometheus scraper 通常不带 token），启用后 `/metrics` 也需 `Authorization: Bearer <token>` 头
 - **S3: CORS 通配符 origin 检测** — `evorule-server/src/api/server.rs` `build_router()` 检测 `allowed_origins` 包含 `"*"` 时输出 `warn!`，提示"CORS 规范禁止通配符 + credentials 组合，浏览器会拒绝此响应，请使用精确 Origin 列表替代"
 - **S4: time_machine 版本间隙测试覆盖** — `core/time_machine/src/lib.rs` 新增 9 个测试覆盖版本间隙（version gap）场景：首条记录前间隙、Command 被忽略产生间隙、ST 与 IoResponse 间间隙、多间隙全返回 None、间隙边界返回 Some、local_diff 间隙版本退化为空对象、build_version_tree 稀疏版本 total_versions 正确性、build_batch_diff 跨间隙配对
+
+### 🆕 新增（v0.2.0 里程碑）
+
+- **`core/workspace` crate 首次纳入版本控制** — 多租户工作空间 + 规则元数据管理（P10 基础设施层），含 14 个源文件：
+  - `rule_translate.rs`（36KB）：BusinessRule ↔ evorule 核心 6 域类型双向翻译引擎
+  - `api.rs`（36KB）：Workspace HTTP API 端点（规则 CRUD / 版本管理 / 审计链 / 沙盒）
+  - `db.rs`（96KB）：SQLite 持久化层（工作区 / 规则元数据 / 沙盒报告）
+  - `workspace_service.rs` / `rule_meta_service.rs` / `publish_service.rs` / `sandbox_service.rs` / `verdict_service.rs` / `rolling_session.rs` / `session_bridge.rs` / `session_switched.rs` / `mock_io_responder.rs` / `test_report.rs` / `models.rs` / `error.rs` / `lib.rs`
+  - 依赖：rusqlite (bundled) + serde + blake3 + chrono + ulid + axum 0.8 + tokio
+- **Workspace API 端点** — `evorule-server/src/api/server.rs` 新增 +355 行：workspace 路由组（创建/列举/删除工作区、规则 CRUD、版本管理、审计链拉取、沙盒试运行）
+- **Workspace CLI 参数** — `evorule-server/src/main.rs` 新增 +138 行：`--workspace-db` / `--workspace-root` / `--enable-workspace-api` 等启动参数
+- **Workspace 集成测试** — `evorule-server/tests/session_integration_test.rs` 新增 +54 行：workspace API 端到端测试
+
+### 🐛 修复（v0.2.0 本次会话）
+
+- **gte/gt 域类型翻译** — `core/workspace/src/rule_translate.rs`：evorule 核心仅支持 eq/lt/exists/instruction/all/not 6 域类型，server 端将 gte 翻译为 `not(lt)`、gt 翻译为 `not(all([lt,eq]))`，并实现对称回译（not(lt)→gte、not(all([lt,eq]))→gt），确保 onboarding 创建的 gte/gt 规则通过 G4 校验
+- **action_set 角色丢失** — `core/workspace/src/rule_translate.rs` `translate_to_transform`：未正确处理 `action_set` 中的 value 字段，导致动作角色（role）信息丢失。修复后 value 字段正确包含 role 信息
+- **G5 校验白名单遗漏** — `core/workspace/src/rule_translate.rs` + `evorule-console/src/lib/validators/ruleValidator.ts`：`__exec__.result.notify` 不在 G5 白名单，新增 `__exec__.result.*` 路径前缀，支持执行结果引用
+- **params.path vs params.attr 不一致** — `core/workspace/src/rule_translate.rs`：`translate_to_transform` 生成 `params.path`，而 evorule core `exec_set` 读取 `params.attr`，导致 set 动作静默失败。统一为 `params.attr`
+
+### 🔄 变更（v0.2.0 依赖同步）
+
+- **核心库依赖版本保持 0.2.1** — `evorule-server/Cargo.toml`：evorule-tcb / evorule-reactor / evorule-governance 三项依赖版本号保持 0.2.1（crates.io 上最新）。核心仓 v0.2.2 已 git tag + push，但尚未 `cargo publish` 到 crates.io，待核心仓 v0.2.2 publish 后单独 bump 依赖版本
+- **内部 crate 版本号统一 workspace 继承** — 9 个内部 crate（auth / debug_control / hot_reload / io_handlers / metrics / rule_tools / semantic_invariants / time_machine / evorule-server）的 `version = "0.1.0"` 改为 `version.workspace = true`，统一继承 workspace.package.version = 0.2.0，以后 bump 一处即可
+- **workspace Cargo.toml 注册新成员** — 根 `Cargo.toml` `[workspace].members` 新增 `core/workspace`
 
 ## [0.1.0] - 2026-07-30
 

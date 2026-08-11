@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "evorule-debug-control"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 调试控制 —— 基于 interrupt + rewind 的伪单步调试"

@@ -1,6 +1,6 @@
 [package]
 name = "evorule-auth"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 认证模块 — Bearer + 速率限制 + 恒定时间比较 (evorule-server 仓配套 lib)"

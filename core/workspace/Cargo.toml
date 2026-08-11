@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Workspace crate: 多租户工作空间 + 规则元数据管理 (P10 基础设施层)"
+repository.workspace = true
+
+[lints]
+# 继承顶层 [workspace.lints] (C4 forbid unsafe / C5 unwrap·expect·panic = deny)
+workspace = true
+
+[dependencies]
+# SQLite 持久化 (D1 决策: 应用层 DB 选 SQLite)
+rusqlite = { version = "0.31", features = ["bundled"] }
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 规则内容哈希 (BLAKE3, 与审计链同源)
+blake3 = "1"
+# 时间戳
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+# 错误传播 (与 evorule-server 保持一致: v2)
+thiserror = "2"
+# 日志
+tracing = "0.1"
+# 唯一 ID 生成 (ULID, 字典序可排序)
+ulid = "1"
+# async trait (Rust 1.74 原生 async trait 尚不完全稳定)
+async-trait = "0.1"
+# HTTP API (与 evorule-server 保持一致: axum 0.8)
+axum = "0.8"
+# tokio 运行时 + 同步原语 (mock_io_responder / session_switched / rolling_session / publish_service 需要)
+# - sync: broadcast / Mutex
+# - time: drain 超时
+# - rt-multi-thread + macros: 测试用 (test 模块内的 #[tokio::test] + Runtime::new)
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"

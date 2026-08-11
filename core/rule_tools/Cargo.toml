@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "evorule-rule-tools"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 规则工具 —— 验证器 + 安全分析"
