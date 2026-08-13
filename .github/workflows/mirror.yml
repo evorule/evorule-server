@@ -1,0 +1,35 @@
+name: Mirror from Gitee
+
+on:
+  schedule:
+    # 每 24 小时同步一次：UTC 00:00 = 北京时间 08:00
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 支持手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    name: Mirror branches and tags from Gitee
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch from Gitee
+        run: |
+          git remote add gitee https://gitee.com/evo-rule-lab/evorule-server.git
+          git fetch gitee --tags --prune --force
+
+      - name: Mirror branches to GitHub
+        run: |
+          # 将 Gitee 上的每个分支强制同步到 GitHub 同名分支（完全镜像对齐）
+          for branch in $(git for-each-ref --format='%(refname:strip=3)' refs/remotes/gitee/); do
+            [ -z "$branch" ] && continue
+            git push origin "refs/remotes/gitee/$branch:refs/heads/$branch" --force
+          done
+
+      - name: Mirror tags to GitHub
+        run: git push origin --tags --force
