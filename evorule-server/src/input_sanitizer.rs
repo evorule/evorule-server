@@ -282,8 +282,8 @@ fn default_rules() -> Vec<SanitizeRule> {
 
     patterns
         .iter()
-        .filter_map(|(name, pattern)| {
-            SanitizeRule::new(*name, *pattern, FILTERED_PLACEHOLDER).ok()
+        .filter_map(|&(name, pattern)| {
+            SanitizeRule::new(name, pattern, FILTERED_PLACEHOLDER).ok()
         })
         .collect()
 }
