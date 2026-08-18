@@ -16,4 +16,5 @@
 
 pub mod api;
 pub mod auth;
+pub mod input_sanitizer;
 pub mod metrics_impl;

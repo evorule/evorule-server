@@ -29,6 +29,7 @@ use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
 use evorule_reactor::Reactor;
 use evorule_server::api::server::{AppState, GovernanceApi, GovernanceServer, SessionApi};
+use evorule_server::input_sanitizer::InputSanitizer;
 use evorule_server::metrics_impl::shared_prometheus_metrics;
 use evorule_tcb::JsonValue;
 use tower::ServiceExt;
@@ -139,6 +140,7 @@ fn make_state() -> AppState {
         readiness,
         shared_facts,
         workspace_state,
+        Arc::new(InputSanitizer::with_default_rules()),
     )
 }
 
@@ -641,6 +643,7 @@ async fn test_session_rule_hot_reload() {
         readiness,
         shared_facts,
         workspace_state,
+        Arc::new(InputSanitizer::with_default_rules()),
     );
 
     // ===== 3. 创建旧会话（reload 前创建，使用初始规则集）=====

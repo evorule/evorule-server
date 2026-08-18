@@ -77,6 +77,9 @@ subtle = "2"
 # async trait (WC-10: SessionOps for SessionApi 需要)
 async-trait = "0.1"
 
+# Phase 1: 第一层输入净化（正则匹配 + 静默改写，可复用公共服务）
+regex = "1"
+
 [dev-dependencies]
 # H6: benchmarks 迁移到应用层后需要的依赖
 # bench_determinism/long_session/throughput 通过 HTTP 调用 evorule-server 进行压测

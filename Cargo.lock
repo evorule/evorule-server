@@ -791,6 +791,7 @@ dependencies = [
  "futures-core",
  "governor",
  "prometheus 0.14.0",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
