@@ -39,7 +39,7 @@
 > 这是 EvoRule Server 仓的**第二个版本**,也是首个独立稳定 release。
 > **本仓库独立 release**,不绑核心仓的发布节奏。
 >
-> v0.2.0 主要变化 (相对 v0.1.0):核心库依赖 0.2.1 → 0.3.1;
+> v0.2.0 主要变化 (相对前一个内部基线版):核心库依赖 0.2.1 → 0.3.1;
 > 新增 `core/workspace` 多租户工作空间 (P10);OpenAPI 单一真相源
 > (`/api/openapi.json` + 可选 Swagger UI);InputSanitizer 第一层
 > 输入净化 (Phase 1);强制中止端点 (--allow-abort, 双保险);

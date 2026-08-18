@@ -90,9 +90,9 @@ pwsh scripts/validate-all.ps1 -PreRelease
 
 ```bash
 # 生成 JSON + 文本格式审计报告
-mkdir -p audit-report-v0.1.0
-cargo audit --json > audit-report-v0.1.0/cargo-audit.json
-cargo audit > audit-report-v0.1.0/cargo-audit.txt
+mkdir -p audit-report-v0.2.0
+cargo audit --json > audit-report-v0.2.0/cargo-audit.json
+cargo audit > audit-report-v0.2.0/cargo-audit.txt
 
 # 归档到本地私有目录（不 commit，不发布）
 # 具体路径由 Release Manager 本地确定，统一不进入 git 与发布包
@@ -105,7 +105,7 @@ cargo audit > audit-report-v0.1.0/cargo-audit.txt
 ### 3.1 CHANGELOG.md
 
 - 确认当前版本章节完整，包含所有变更
-- 填入实际发布日期：`## [0.1.0] - 2026-XX-XX`
+- 填入实际发布日期：`## [0.2.0] - 2026-XX-XX`
 - 确认无 `## [未发布]` 段（发布时未发布段应转为版本段或清空）
 - 确认遵循 [Keep a Changelog](https://keepachangelog.com/) v1.0 格式
 - 历史段只保留本仓事实，不谈论其他仓
@@ -123,14 +123,14 @@ cargo audit > audit-report-v0.1.0/cargo-audit.txt
 git status  # 必须无未提交变更
 
 # 2. 确认版本号
-grep '^version' Cargo.toml  # workspace.package.version = "0.1.0"
+grep '^version' Cargo.toml  # workspace.package.version = "0.2.0"
 
 # 3. 创建带注释的 annotated tag
-git tag -a v0.1.0 -m "EvoRule Server v0.1.0
+git tag -a v0.2.0 -m "EvoRule Server v0.2.0
 
-规则引擎服务端首次发布：
-- evorule-server: HTTP API 服务（认证 + 规则热重载 + 时间机器）
-- core/*: I/O 处理器、调试控制、指标采集、语义不变量等
+规则引擎服务端首个独立稳定 release：
+- evorule-server: HTTP API 服务（认证 + 规则热重载 + 时间机器 + OpenAPI 单一真相源）
+- core/*: I/O 处理器、调试控制、指标采集、语义不变量、workspace 多租户等
 
 详见 CHANGELOG.md。"
 ```
@@ -185,8 +185,8 @@ git push github main --tags
 
 在 Gitee/GitHub 的 Releases 页面创建 Release：
 
-1. **Tag**: 选择刚推送的 `v0.1.0`
-2. **Title**: `EvoRule Server v0.1.0`
+1. **Tag**: 选择刚推送的 `v0.2.0`
+2. **Title**: `EvoRule Server v0.2.0`
 3. **Body**: 从 `CHANGELOG.md` 的当前版本章节提取
 4. **附加产物**（可选）：Linux x86_64 二进制（`target/release/evorule-server`）、Docker 镜像 tar
 
@@ -197,12 +197,12 @@ git push github main --tags
 pwsh scripts/validate-all.ps1
 ```
 
-此命令会用默认严格模式运行 7 项检查（gate-bypass + 5 validate 脚本 + check_doc_safety）。`validate-release.ps1` 会检查 tag `v0.1.0` 存在且无更大 tag。
+此命令会用默认严格模式运行 7 项检查（gate-bypass + 5 validate 脚本 + check_doc_safety）。`validate-release.ps1` 会检查 tag `v0.2.0` 存在且无更大 tag。
 
 ```bash
 # 2. 确认 tag 在仓库存在
-git tag -l v0.1.0                    # 本地
-git ls-remote --tags origin v0.1.0   # Gitee
+git tag -l v0.2.0                    # 本地
+git ls-remote --tags origin v0.2.0   # Gitee
 # GitHub: 暂缓（镜像仓未配置）
 
 # 3. 确认 CI 全绿
@@ -210,7 +210,7 @@ git ls-remote --tags origin v0.1.0   # Gitee
 # GitHub: 暂缓（镜像仓未配置）
 
 # 4. 确认 cargo audit 报告已归档（如执行了 §2）
-ls -la audit-report-v0.1.0/
+ls -la audit-report-v0.2.0/
 ```
 
 ## 10. 发布后事项
@@ -227,15 +227,15 @@ ls -la audit-report-v0.1.0/
 ```bash
 # 1. 删除 Release（如已创建）
 # Gitee: 在 Releases 页面手动删除
-# GitHub: gh release delete v0.1.0 --yes（暂缓）
+# GitHub: gh release delete v0.2.0 --yes（暂缓）
 
 # 2. 在仓库删除 tag
-git tag -d v0.1.0                          # 本地
-git push origin :refs/tags/v0.1.0          # Gitee
-# git push github :refs/tags/v0.1.0        # GitHub（暂缓）
+git tag -d v0.2.0                          # 本地
+git push origin :refs/tags/v0.2.0          # Gitee
+# git push github :refs/tags/v0.2.0        # GitHub（暂缓）
 
-# 3. 在 README.md 标注"v0.1.0 已撤回，原因：XXX"
-# 4. 修复后以 v0.1.1 重新发布（不覆盖已撤回的 v0.1.0）
+# 3. 在 README.md 标注"v0.2.0 已撤回，原因：XXX"
+# 4. 修复后以 v0.2.1 重新发布（不覆盖已撤回的 v0.2.0）
 ```
 
 > **注意**：撤回 tag 是最后手段。如果问题属于非阻塞缺陷，可在不撤回 tag 的前提下发布下一个 patch 版本。仅当源码本身有严重缺陷（如编译失败、数据损坏、安全漏洞）时才撤回。
