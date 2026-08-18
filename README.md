@@ -16,9 +16,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-internal--baseline-orange.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.2.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -34,12 +34,18 @@
 
 ---
 
-> ## ⚠️ v0.1.0 — 内部基线 (2026-07-30)
+> ## ✅ v0.2.0 — 稳定发布 (2026-08-19)
 >
-> 这是 EvoRule Server 仓的**第一个版本**,承载官方 server 实现 + 9 个配套 lib。
+> 这是 EvoRule Server 仓的**第二个版本**,也是首个独立稳定 release。
 > **本仓库独立 release**,不绑核心仓的发布节奏。
 >
-> 本仓库**不是** EvoRule 的核心引擎 —— 核心引擎以 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 形式发布到 crates.io。本仓的定位是**框架的官方 HTTP server 实现** + server 配套的 lib(auth / io_handlers / metrics / hot_reload / debug_control / semantic_invariants / time_machine / rule_tools)。
+> v0.2.0 主要变化 (相对 v0.1.0):核心库依赖 0.2.1 → 0.3.1;
+> 新增 `core/workspace` 多租户工作空间 (P10);OpenAPI 单一真相源
+> (`/api/openapi.json` + 可选 Swagger UI);InputSanitizer 第一层
+> 输入净化 (Phase 1);强制中止端点 (--allow-abort, 双保险);
+> gitee owner 从 `evo-rule-lab` 迁移到 `evorule`。
+>
+> 本仓库**不是** EvoRule 的核心引擎 —— 核心引擎以 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 形式发布到 crates.io。本仓的定位是**框架的官方 HTTP server 实现** + server 配套的 lib(auth / io_handlers / metrics / hot_reload / debug_control / semantic_invariants / time_machine / rule_tools / workspace)。
 >
 > **使用风险自负**。issue / PR 欢迎,但不保证响应时间。
 
@@ -252,14 +258,17 @@ cargo build --release
 
 ## 已知限制 / 路线图
 
-| 项                               | 状态     | 说明                  |
-| -------------------------------- | -------- | --------------------- |
-| `cargo build --release` 编译时间 | ~3-4 min | cold build            |
-| 启动时间(冷启动)                 | ~2s      | 含 WAL 校验           |
-| API 版本化 (`/api/v1/` 锁定)     | ❌       | 1.0 之前不承诺        |
-| 多反应器协作原语                 | ❌       | 路线图                |
-| 第三方安全审计                   | ❌       | 1.0 之前不做          |
-| 集群模式 (cluster/)              | ❌       | 已弃用,见 commit 历史 |
+| 项                                       | 状态     | 说明                                  |
+| ---------------------------------------- | -------- | ------------------------------------- |
+| `cargo build --release` 编译时间         | ~3-4 min | cold build                            |
+| 启动时间(冷启动)                         | ~2s      | 含 WAL 校验                           |
+| OpenAPI 单一真相源                       | ✅       | `GET /api/openapi.json`, Swagger UI 需 `--openapi-ui` 显式开启 |
+| 多租户工作空间 (`core/workspace`)        | ✅       | P10 阶段, 规则 CRUD + 版本 + 沙盒     |
+| 输入净化 (Prompt 注入防御, Phase 1)      | ✅       | `InputSanitizer` 公共服务, 静默改写   |
+| API 版本化 (`/api/v1/` 锁定)             | ❌       | 1.0 之前不承诺                        |
+| 多反应器协作原语                         | ❌       | 路线图                                |
+| 第三方安全审计                           | ❌       | 1.0 之前不做                          |
+| 集群模式 (cluster/)                      | ❌       | 已弃用,见 commit 历史                 |
 
 当前以本节"已知限制 / 路线图"表格为准。
 

@@ -23,7 +23,14 @@
 
 ---
 
-## [0.2.0] - 2026-08-10
+## [0.2.0] - 2026-08-19
+
+> **本版本实际打 tag 日期: 2026-08-19**
+>
+> 2026-08-10 起 CHANGELOG 段已预写但未实际打 tag, 期间累积了实际 release
+> 内容 (workspace 模块 + OpenAPI 单一真相源 + InputSanitizer + 核心库 0.3.1
+> 升级 + gitee URL 迁移), 2026-08-19 一次打 tag. 本段在原 2026-08-10 段
+> 基础上补完下面新增条目.
 
 ### 🔒 安全
 
@@ -83,6 +90,54 @@
 - **核心库依赖版本保持 0.2.1** — `evorule-server/Cargo.toml`：evorule-tcb / evorule-reactor / evorule-governance 三项依赖版本号保持 0.2.1（crates.io 上最新）。核心仓 v0.2.2 已 git tag + push，但尚未 `cargo publish` 到 crates.io，待核心仓 v0.2.2 publish 后单独 bump 依赖版本
 - **内部 crate 版本号统一 workspace 继承** — 9 个内部 crate（auth / debug_control / hot_reload / io_handlers / metrics / rule_tools / semantic_invariants / time_machine / evorule-server）的 `version = "0.1.0"` 改为 `version.workspace = true`，统一继承 workspace.package.version = 0.2.0，以后 bump 一处即可
 - **workspace Cargo.toml 注册新成员** — 根 `Cargo.toml` `[workspace].members` 新增 `core/workspace`
+
+---
+
+## v0.2.0 实际打 tag 补充 (2026-08-19)
+
+2026-08-10 段记录的 [0.2.0] 计划基础上, 实际打 tag 前 (2026-08-10 → 2026-08-19)
+累积的实际 release 内容:
+
+### 🔄 依赖最终升级
+
+- **核心库 0.2.1 → 0.3.1** — `evorule-server/Cargo.toml` / `core/io_handlers/Cargo.toml`:
+  evorule-tcb / evorule-reactor / evorule-governance 三项核心依赖从 0.2.1 升到 0.3.1
+  (核心仓 v0.3.x 已 cargo publish 到 crates.io)
+- **新增 utoipa + utoipa-swagger-ui 依赖** — `evorule-server/Cargo.toml`:
+  引入 OpenAPI 单一真相源 (`utoipa = "5"` + `utoipa-swagger-ui = "9"`)
+- **核心 workspace 加 utoipa 依赖** — `core/workspace/Cargo.toml`: 标注模型
+  用于 OpenAPI 导出 (`utoipa = { version = "5", features = ["axum_extras", "chrono"] }`)
+- **移除 `[patch.crates-io]` 段** — 根 `Cargo.toml` 之前为本地开发覆盖 evorule-*
+  路径的 `[patch.crates-io]` 段移除, release 用户不再误用本地路径
+
+### 🆕 新增 (实际 release 范围)
+
+- **OpenAPI 单一真相源 (P2-1)** — `evorule-server/src/api/openapi.rs` (新, 179 行):
+  `utoipa::OpenApi` derive 聚合 server 全部 handler, 运行时经
+  `GET /api/openapi.json` 导出 OpenAPI 3.1 规范, 前端通过
+  `openapi-typescript` 自动生成类型 (杜绝手写 schema 与代码漂移).
+  Swagger UI 端点 `GET /api/docs` 通过 `--openapi-ui` 显式开启
+  (默认关闭避免生产暴露接口面)
+- **强制中止会话端点** — `evorule-server/src/api/server.rs`:
+  `POST /api/sessions/{id}/abort` 端点 (014 合法 API #4) 通过 `--allow-abort`
+  CLI 参数显式开启, 默认 404 (双保险: 即使认证通过也需显式开启)
+- **InputSanitizer 第一层输入净化 (Phase 1)** — `evorule-server/src/input_sanitizer.rs`
+  (来自 feature/agent-prompt-impl 分支合并, 749 行 + clippy 修复): Prompt 注入
+  防御公共服务, 静默改写 "ignore previous instructions" / "you are now" /
+  "system: ..." / "act as admin" 等常见攻击模式, 18 类正则规则, 19 个单测覆盖
+- **--openapi-ui / --allow-abort CLI 参数** — `evorule-server/src/main.rs`:
+  两个破坏性/暴露性端点的双保险开关, 默认关闭
+
+### 🏠 仓元数据迁移
+
+- **gitee 仓 owner 迁移** — `evo-rule-lab` → `evorule`:
+  - 本仓 (`evorule-server`): `evo-rule-lab/evorule-server` → `evorule/evorule-server` (11 处)
+  - 核心仓 (`evorule`): `evo-rule-lab/evorule` → `evorule/evorule` (5 个 L1 文档 10 处)
+  - 组织页: `gitee.com/evo-rule-lab` → `gitee.com/evorule` (README + NOTICE 2 处)
+  - GitHub 镜像 workflow (`.github/workflows/mirror.yml`) 镜像源 URL 同步
+- **CI 验证全绿** — 实际打 tag 时: `cargo check --workspace --all-targets` 0 error,
+  `cargo clippy --workspace --all-targets -- -D warnings` 0 warning, `cargo fmt --all
+  -- --check` 通过, `cargo test --workspace --all-features` 32 个测试组全 ok
 
 ## [0.1.0] - 2026-07-30
 
