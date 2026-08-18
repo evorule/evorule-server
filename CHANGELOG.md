@@ -94,7 +94,7 @@
 - **新仓建立** — evorule-server 仓 git init,主分支 `main`
 - **Cargo workspace 顶层配置**
   - members: `core/{auth, debug_control, hot_reload, io_handlers, metrics, rule_tools, semantic_invariants, time_machine}` + `evorule-server`
-  - workspace.package: `version = "0.1.0"` / `edition = "2021"` / `license = "AGPL-3.0-or-later"` / `authors = ["EvoRule Project"]` / `repository = "https://gitee.com/evo-rule-lab/evorule-server"` / `rust-version = "1.74"`
+  - workspace.package: `version = "0.1.0"` / `edition = "2021"` / `license = "AGPL-3.0-or-later"` / `authors = ["EvoRule Project"]` / `repository = "https://gitee.com/evorule/evorule-server"` / `rust-version = "1.74"`
   - workspace.lints: `unwrap_used/expect_used/panic/panic_in_result_fn` deny + `cognitive_complexity/too_many_lines/type_complexity/module_inception` warn
   - workspace.lints.rust: `unexpected_cfgs` warn (兼容 kani cfg)
 
@@ -125,7 +125,7 @@
 
 - **evorule-server 仓元数据**
   - `description`: "EvoRule 框架官方 HTTP server 实现"
-  - `repository`: `https://gitee.com/evo-rule-lab/evorule-server`
+  - `repository`: `https://gitee.com/evorule/evorule-server`
   - 9 个 core/* lib 的 metadata 同步调整
 
 ### 🗑 弃用

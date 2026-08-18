@@ -4,8 +4,8 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 认证模块 — Bearer + 速率限制 + 恒定时间比较 (evorule-server 仓配套 lib)"
-repository = "https://gitee.com/evo-rule-lab/evorule-server"
-homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+repository = "https://gitee.com/evorule/evorule-server"
+homepage = "https://gitee.com/evorule/evorule-server"
 publish = false
 
 [dependencies]

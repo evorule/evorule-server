@@ -4,9 +4,9 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 时间机器增强层 —— 版本树 / 批量 diff / 重放计划"
-repository = "https://gitee.com/evo-rule-lab/evorule-server"
+repository = "https://gitee.com/evorule/evorule-server"
 publish = false
-homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+homepage = "https://gitee.com/evorule/evorule-server"
 
 [[bin]]
 name = "evorule-time-machine"

@@ -168,13 +168,13 @@ fn row_to_json(row: &SqliteRow) -> JsonValue {
         } else if let Ok(Some(b)) = row.try_get::<Option<bool>, _>(idx) {
             JsonValue::Bool(b)
         } else if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) {
-            JsonValue::String(s)
+            JsonValue::String(s.into())
         } else if let Ok(Some(f)) = row.try_get::<Option<f64>, _>(idx) {
             // JsonValue 无浮点类型，用字符串保留值。
             // 注：Rust 的 f64 Display 不是最短 round-trip 表示，
             // 如 0.1+0.2 会得到 "0.30000000000000004"。
             // 需要精确浮点的调用方应在 SQL 层用 ROUND()/printf() 控制位数。
-            JsonValue::String(f.to_string())
+            JsonValue::String(f.to_string().into())
         } else {
             JsonValue::Null
         };

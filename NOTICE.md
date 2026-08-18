@@ -30,7 +30,7 @@
 | 资产 | 协议 | 说明 |
 |---|---|---|
 | **本仓所有代码** | AGPL-3.0-or-later | 详见 [LICENSE](LICENSE) |
-| **`resources/core_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法（解释器规范）——从 [核心仓](https://gitee.com/evo-rule-lab/evorule)同步，任何人可自由使用 |
+| **`resources/core_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法（解释器规范）——从 [核心仓](https://gitee.com/evorule/evorule)同步，任何人可自由使用 |
 
 ## 依赖说明
 
@@ -38,7 +38,7 @@
 
 | 依赖 | 来源 | 说明 |
 |---|---|---|
-| `evorule-tcb` | [核心仓](https://gitee.com/evo-rule-lab/evorule) | TCB 基础层（JSON 状态机 / 路径解析 / 域评估） |
+| `evorule-tcb` | [核心仓](https://gitee.com/evorule/evorule) | TCB 基础层（JSON 状态机 / 路径解析 / 域评估） |
 | `evorule-reactor` | 同上 | 反应器层（主循环 / Fact 日志 / WAL） |
 | `evorule-governance` | 同上 | 治理层机制（会话管理 / 审计链 / IoDispatcher 框架） |
 
@@ -66,5 +66,5 @@
 - **项目**: EvoRule Server — 官方 HTTP server 实现
 - **作者**: EvoRule Project
 - **邮箱**: <evorulelab@gmail.com>
-- **组织**: [EvoRule Lab](https://gitee.com/evo-rule-lab)
-- **Gitee**: <https://gitee.com/evo-rule-lab/evorule-server>
+- **组织**: [EvoRule Lab](https://gitee.com/evorule)
+- **Gitee**: <https://gitee.com/evorule/evorule-server>

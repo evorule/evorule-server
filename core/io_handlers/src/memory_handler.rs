@@ -110,7 +110,7 @@ impl IoHandler for MemoryHandler {
                         format!("read file timed out after {}s", MEMORY_TIMEOUT.as_secs())
                     })?;
             match read_result {
-                Ok(content) => Ok(JsonValue::String(content)),
+                Ok(content) => Ok(JsonValue::String(content.into())),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     Err(format!("key not found: {key}"))
                 }

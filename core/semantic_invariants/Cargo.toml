@@ -4,9 +4,9 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 语义不变式引擎 —— JSON 驱动的业务约束检查"
-repository = "https://gitee.com/evo-rule-lab/evorule-server"
+repository = "https://gitee.com/evorule/evorule-server"
 publish = false
-homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+homepage = "https://gitee.com/evorule/evorule-server"
 
 [[bin]]
 name = "evorule-semantic-invariants"

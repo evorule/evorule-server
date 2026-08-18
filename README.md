@@ -101,7 +101,7 @@
 ### 1. 编译
 
 ```bash
-git clone https://gitee.com/evo-rule-lab/evorule-server.git
+git clone https://gitee.com/evorule/evorule-server.git
 cd evorule-server
 cargo build --release
 ```
@@ -293,4 +293,4 @@ cargo build --release
 ## 联系方式
 
 - 邮箱:<evorulelab@gmail.com>
-- Gitee:[@evorulelab](https://gitee.com/evo-rule-lab)
+- Gitee:[@evorulelab](https://gitee.com/evorule)

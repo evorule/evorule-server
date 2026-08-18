@@ -4,9 +4,9 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 规则工具 —— 验证器 + 安全分析"
-repository = "https://gitee.com/evo-rule-lab/evorule-server"
+repository = "https://gitee.com/evorule/evorule-server"
 publish = false
-homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+homepage = "https://gitee.com/evorule/evorule-server"
 
 [[bin]]
 name = "evorule-rule-tools"

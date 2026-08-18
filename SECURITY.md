@@ -8,8 +8,8 @@
 
 **最后更新**: 2026-07-30
 
-本仓(`evorule-server`)的安全漏洞报告流程**与 [核心仓](https://gitee.com/evo-rule-lab/evorule)共用**。
-详细流程见核心仓 [`SECURITY.md`](https://gitee.com/evo-rule-lab/evorule/blob/main/SECURITY.md)。
+本仓(`evorule-server`)的安全漏洞报告流程**与 [核心仓](https://gitee.com/evorule/evorule)共用**。
+详细流程见核心仓 [`SECURITY.md`](https://gitee.com/evorule/evorule/blob/main/SECURITY.md)。
 
 ---
 

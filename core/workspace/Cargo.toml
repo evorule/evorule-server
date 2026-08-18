@@ -35,6 +35,9 @@ ulid = "1"
 async-trait = "0.1"
 # HTTP API (与 evorule-server 保持一致: axum 0.8)
 axum = "0.8"
+# OpenAPI 单一真相源 (P2-1): workspace 端点标注 + 独立 OpenApi 聚合,由 evorule-server 合并
+# chrono: models 大量使用 DateTime<Utc>, 开启后生成 string + date-time 格式
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 # tokio 运行时 + 同步原语 (mock_io_responder / session_switched / rolling_session / publish_service 需要)
 # - sync: broadcast / Mutex
 # - time: drain 超时

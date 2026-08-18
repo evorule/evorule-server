@@ -21,7 +21,7 @@
 
 本文件列出 EvoRule Server 项目的作者和重要贡献者。
 
-EvoRule Server 是 [EvoRule](https://gitee.com/evo-rule-lab/evorule) 框架的官方 HTTP server 实现，
+EvoRule Server 是 [EvoRule](https://gitee.com/evorule/evorule) 框架的官方 HTTP server 实现，
 提供 axum HTTP API + SSE 事件流 + 多会话管理 + 9 个 server 配套 crate。
 
 ## 项目创始人和主要作者
@@ -45,7 +45,7 @@ _尚未列出文档或翻译贡献者。_
 
 ## 致谢
 
-- [核心仓](https://gitee.com/evo-rule-lab/evorule)提供了核心三 crate（evorule-tcb / evorule-reactor / evorule-governance）
+- [核心仓](https://gitee.com/evorule/evorule)提供了核心三 crate（evorule-tcb / evorule-reactor / evorule-governance）
 - Rust 社区,特别是 axum 团队、Tokio 团队、tower 团队
 - 所有提供 issue、PR、discussion 的贡献者
 

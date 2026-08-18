@@ -4,8 +4,8 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 框架官方 HTTP server 实现 — 把 evorule-tcb/reactor 暴露为远程 API"
-repository = "https://gitee.com/evo-rule-lab/evorule-server"
-homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+repository = "https://gitee.com/evorule/evorule-server"
+homepage = "https://gitee.com/evorule/evorule-server"
 readme = "../README.md"
 publish = false
 
@@ -20,11 +20,10 @@ path = "src/main.rs"
 [dependencies]
 # 核心层 (crates.io 版本依赖)
 # 本地开发用顶层 Cargo.toml 的 [patch.crates-io] 自动 path 覆盖
-# 注: 依赖版本保持 0.2.1 (crates.io 最新), 待核心仓 v0.2.2 cargo publish 后单独 bump 到 0.2.2
-evorule-tcb = { version = "0.2.1" }
-evorule-reactor = { version = "0.2.1", features = ["persistence"] }
+evorule-tcb = { version = "0.3.1" }
+evorule-reactor = { version = "0.3.1", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
-evorule-governance = { version = "0.2.1", features = ["persistence"] }
+evorule-governance = { version = "0.3.1", features = ["persistence"] }
 
 # I/O handler(H5: 应用层,从 evorule-governance 迁出; 新位置: core/io_handlers)
 evorule-io-handlers = { path = "../core/io_handlers" }
@@ -67,6 +66,10 @@ serde_json = "1"
 
 # 错误处理
 thiserror = "2"
+
+# OpenAPI 单一真相源 (P2-1): utoipa 从代码生成规范，运行时经 /api/openapi.json 导出
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # CLI 参数解析
 clap = { version = "4", features = ["derive", "env"] }

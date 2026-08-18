@@ -61,4 +61,4 @@ Code of Conduct documents are community norms; we release them under CC0 for max
 
 ---
 
-**本公约采用 Contributor Covenant v2.1 标准,与 [核心仓](https://gitee.com/evo-rule-lab/evorule)共用社区规范。**
+**本公约采用 Contributor Covenant v2.1 标准,与 [核心仓](https://gitee.com/evorule/evorule)共用社区规范。**

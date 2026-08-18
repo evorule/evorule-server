@@ -231,7 +231,7 @@ impl IoHandler for HttpHandler {
         if let Some(body) = params.get("body") {
             match body {
                 JsonValue::String(s) => {
-                    req = req.body(s.clone());
+                    req = req.body(String::from(s.as_ref()));
                 }
                 JsonValue::Object(_) | JsonValue::Array(_) => {
                     let json = body.to_string();
@@ -293,7 +293,7 @@ impl IoHandler for HttpHandler {
             ));
         }
 
-        Ok(JsonValue::String(body))
+        Ok(JsonValue::String(body.into()))
     }
 }
 

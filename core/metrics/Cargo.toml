@@ -4,8 +4,8 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule Prometheus 指标实现 — 13 个核心 metric + /metrics 端点 (evorule-server 仓配套 lib)"
-repository = "https://gitee.com/evo-rule-lab/evorule-server"
-homepage = "https://gitee.com/evo-rule-lab/evorule-server"
+repository = "https://gitee.com/evorule/evorule-server"
+homepage = "https://gitee.com/evorule/evorule-server"
 publish = false
 
 [dependencies]
