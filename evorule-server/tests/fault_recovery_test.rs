@@ -37,10 +37,10 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
             if let Some(i) = n.as_i64() {
                 JsonValue::Integer(i)
             } else {
-                JsonValue::String(n.to_string())
+                JsonValue::String(n.to_string().into())
             }
         }
-        serde_json::Value::String(s) => JsonValue::String(s),
+        serde_json::Value::String(s) => JsonValue::String(s.into()),
         serde_json::Value::Array(arr) => {
             JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
         }

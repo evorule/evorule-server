@@ -37,10 +37,10 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
             if let Some(i) = n.as_i64() {
                 JsonValue::Integer(i)
             } else {
-                JsonValue::String(n.to_string())
+                JsonValue::String(n.to_string().into())
             }
         }
-        serde_json::Value::String(s) => JsonValue::String(s),
+        serde_json::Value::String(s) => JsonValue::String(s.into()),
         serde_json::Value::Array(arr) => {
             JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
         }
@@ -54,10 +54,11 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     }
 }
 
-/// 从 core_eval.json 加载 transform 列表
+/// 从 core_eval.json 加载 transform 列表,并附加 v0.2.x → v0.3.1 兼容规则
 ///
-/// H5: CARGO_MANIFEST_DIR 现在是 evorule-server crate 目录,
-/// 路径需多回溯一层到达 evorule/evorule-tcb/core_eval.json。
+/// v0.3.1 起 `save_memory` / `query_db` / `http_get` 不再是核心指令类型,
+/// 应用层应通过 `call_service` 路由。本测试为验证 IoSubscriber/IoDispatcher
+/// 机制层行为,附加兼容 transform 规则使旧指令仍可映射到相应 IoType。
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let core_eval_path = manifest_dir.join("../../../evorule/evorule-tcb/core_eval.json");
@@ -68,10 +69,82 @@ fn load_core_eval() -> Vec<JsonValue> {
     let json: serde_json::Value =
         serde_json::from_str(&json_str).expect("Failed to parse core_eval.json");
 
-    json.get("transform")
+    let mut transforms: Vec<JsonValue> = json
+        .get("transform")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().cloned().map(serde_to_tcb).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // 附加兼容规则: save_memory → IoType::save_memory
+    transforms.push(serde_to_tcb(serde_json::json!({
+        "type": "branch",
+        "params": {
+            "domain": { "type": "instruction", "instruction_type": "save_memory" },
+            "on_true": [
+                {
+                    "type": "branch",
+                    "params": {
+                        "domain": { "type": "exists", "path": "__exec__.payload.__io_results__.save_memory" },
+                        "on_true": [
+                            { "type": "set", "params": { "attr": "memory_result", "operation": "set", "value": "__exec__.payload.__io_results__.save_memory" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.__io_results__.save_memory", "operation": "set", "value": null } }
+                        ],
+                        "on_false": [
+                            { "type": "io_request", "params": { "io_type": "save_memory", "key": "__exec__.instruction.params.key", "value": "__exec__.instruction.params.value" } }
+                        ]
+                    }
+                }
+            ]
+        }
+    })));
+
+    // 附加兼容规则: query_db → IoType::query_db
+    transforms.push(serde_to_tcb(serde_json::json!({
+        "type": "branch",
+        "params": {
+            "domain": { "type": "instruction", "instruction_type": "query_db" },
+            "on_true": [
+                {
+                    "type": "branch",
+                    "params": {
+                        "domain": { "type": "exists", "path": "__exec__.payload.__io_results__.query_db" },
+                        "on_true": [
+                            { "type": "set", "params": { "attr": "db_result", "operation": "set", "value": "__exec__.payload.__io_results__.query_db" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.__io_results__.query_db", "operation": "set", "value": null } }
+                        ],
+                        "on_false": [
+                            { "type": "io_request", "params": { "io_type": "query_db", "query": "__exec__.instruction.params.query" } }
+                        ]
+                    }
+                }
+            ]
+        }
+    })));
+
+    // 附加兼容规则: http_get → IoType::http_get
+    transforms.push(serde_to_tcb(serde_json::json!({
+        "type": "branch",
+        "params": {
+            "domain": { "type": "instruction", "instruction_type": "http_get" },
+            "on_true": [
+                {
+                    "type": "branch",
+                    "params": {
+                        "domain": { "type": "exists", "path": "__exec__.payload.__io_results__.http_get" },
+                        "on_true": [
+                            { "type": "set", "params": { "attr": "http_result", "operation": "set", "value": "__exec__.payload.__io_results__.http_get" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.__io_results__.http_get", "operation": "set", "value": null } }
+                        ],
+                        "on_false": [
+                            { "type": "io_request", "params": { "io_type": "http_get", "url": "__exec__.instruction.params.url" } }
+                        ]
+                    }
+                }
+            ]
+        }
+    })));
+
+    transforms
 }
 
 /// 构造 call_service 指令

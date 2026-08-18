@@ -45,10 +45,10 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
             if let Some(i) = n.as_i64() {
                 JsonValue::Integer(i)
             } else {
-                JsonValue::String(n.to_string())
+                JsonValue::String(n.to_string().into())
             }
         }
-        serde_json::Value::String(s) => JsonValue::String(s),
+        serde_json::Value::String(s) => JsonValue::String(s.into()),
         serde_json::Value::Array(arr) => {
             JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
         }
@@ -100,12 +100,12 @@ fn make_workspace_state(sessions: &SessionApi) -> evorule_workspace::api::Worksp
         ws_db.clone(),
         session_ops.clone(),
     ));
-    let rolling_session = evorule_workspace::RollingSessionService::new(
+    let rolling_session =
+        evorule_workspace::RollingSessionService::new(ws_db.clone(), session_ops, switcher.clone());
+    let publish_service = Arc::new(evorule_workspace::PublishService::new(
         ws_db.clone(),
-        session_ops,
-        switcher.clone(),
-    );
-    let publish_service = Arc::new(evorule_workspace::PublishService::new(ws_db.clone(), rolling_session));
+        rolling_session,
+    ));
     // 界面升级 v1.0 阶段 A: 新增 verdict_service (判定契约 + wall-clock 旁路, 第 6 参)
     let verdict_service = Arc::new(evorule_workspace::VerdictService::new(ws_db));
     evorule_workspace::WorkspaceState::new(
