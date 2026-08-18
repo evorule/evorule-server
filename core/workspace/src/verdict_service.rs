@@ -44,10 +44,14 @@ impl VerdictService {
         req: CreateVerdictContractRequest,
     ) -> WorkspaceResult<VerdictContractRecord> {
         if req.name.trim().is_empty() {
-            return Err(WorkspaceError::invalid_input("contract name must not be empty"));
+            return Err(WorkspaceError::invalid_input(
+                "contract name must not be empty",
+            ));
         }
         if req.created_by.trim().is_empty() {
-            return Err(WorkspaceError::invalid_input("created_by must not be empty"));
+            return Err(WorkspaceError::invalid_input(
+                "created_by must not be empty",
+            ));
         }
         self.db.insert_verdict_contract(
             workspace_id,
@@ -108,12 +112,14 @@ impl VerdictService {
         let contract = if let Some(cid) = req.contract_id {
             self.db.get_verdict_contract(cid)?
         } else {
-            self.db.get_default_verdict_contract(workspace_id)?.ok_or_else(|| {
-                WorkspaceError::not_found(
-                    "verdict_contract (default)",
-                    workspace_id.to_string(),
-                )
-            })?
+            self.db
+                .get_default_verdict_contract(workspace_id)?
+                .ok_or_else(|| {
+                    WorkspaceError::not_found(
+                        "verdict_contract (default)",
+                        workspace_id.to_string(),
+                    )
+                })?
         };
 
         let rules: Vec<Value> = serde_json::from_str(&contract.rules_json).map_err(|e| {
@@ -183,7 +189,7 @@ impl VerdictService {
 // =============================================================================
 
 /// 创建判定契约请求 (对齐 A.3 POST body: {name, rules_json, is_default})
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateVerdictContractRequest {
     pub name: String,
     /// 条件集合 JSON 文本: [{field, op, value, verdict}]
@@ -194,7 +200,7 @@ pub struct CreateVerdictContractRequest {
 }
 
 /// 更新判定契约请求 (PATCH, 全字段可选)
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 pub struct UpdateVerdictContractRequest {
     #[serde(default)]
     pub name: Option<String>,
@@ -205,7 +211,7 @@ pub struct UpdateVerdictContractRequest {
 }
 
 /// evaluate 请求 (对齐 A.3: {payload, contract_id?})
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct EvaluateVerdictRequest {
     pub payload: Value,
     #[serde(default)]
@@ -213,7 +219,7 @@ pub struct EvaluateVerdictRequest {
 }
 
 /// evaluate 响应 (对齐 A.3: {verdict, matched_rule_id?, source_workspace_ids, note})
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EvaluateVerdictResult {
     pub verdict: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -223,7 +229,7 @@ pub struct EvaluateVerdictResult {
 }
 
 /// clock/record 请求 (对齐 A.4: {version, wall_clock})
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RecordClockRequest {
     pub version: i64,
     pub wall_clock: String,
@@ -232,7 +238,7 @@ pub struct RecordClockRequest {
 }
 
 /// clock/lookup 查询参数 (对齐 A.4: from_version, to_version)
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 pub struct LookupClockQuery {
     pub from_version: Option<i64>,
     pub to_version: Option<i64>,

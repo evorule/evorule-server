@@ -21,6 +21,12 @@
 //! - [`RuleState`]: Draft → Candidate → Active ↔ Blocked; * → Archived
 //! - [`SessionBindingState`]: Bound → Closed
 //! - [`RuleVersionState`]: Current → Superseded
+//!
+//! 状态机枚举的 `from_str` 是有意设计的**有损解析器**（返回 `Option<Self>`，
+//! 未知字符串 → `None`，配合 db 层 `unwrap_or(默认值)` 做容错回读），
+//! 与 `std::str::FromStr`（返回 `Result`）语义不同、非 trait 实现，
+//! 故豁免 `clippy::should_implement_trait`（避免为规避 lint 而改名 30+ 调用点）。
+#![allow(clippy::should_implement_trait)]
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -32,7 +38,7 @@ use serde::{Deserialize, Serialize};
 /// 工作空间状态机
 ///
 /// Active → Archived (单向)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceState {
     /// 活跃 (可读写)
@@ -61,10 +67,7 @@ impl WorkspaceState {
     ///
     /// 仅允许: Active → Archived
     pub fn can_transition_to(&self, target: Self) -> bool {
-        matches!(
-            (self, target),
-            (Self::Active, Self::Archived)
-        )
+        matches!((self, target), (Self::Active, Self::Archived))
     }
 }
 
@@ -77,7 +80,7 @@ impl WorkspaceState {
 /// - Active → Blocked (临时阻塞)
 /// - Blocked → Active (恢复)
 /// - Draft/Candidate/Active/Blocked → Archived (归档)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleState {
     /// 草稿 (可编辑)
@@ -139,7 +142,7 @@ impl RuleState {
 /// 会话-规则绑定状态机
 ///
 /// Bound → Closed (单向)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionBindingState {
     /// 绑定中 (会话活跃)
@@ -172,7 +175,7 @@ impl SessionBindingState {
 /// 规则版本状态机
 ///
 /// Current → Superseded (单向, 新版本激活时旧版本自动 superseded)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleVersionState {
     /// 当前版本 (活跃)
@@ -207,7 +210,7 @@ impl RuleVersionState {
 // =============================================================================
 
 /// 工作空间记录 (workspaces 表)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct WorkspaceRecord {
     /// 工作空间 ID (ULID, 字典序可排序)
     pub id: String,
@@ -228,7 +231,7 @@ pub struct WorkspaceRecord {
 }
 
 /// 工作空间成员记录 (workspace_members 表)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct WorkspaceMemberRecord {
     /// 所属工作空间 ID
     pub workspace_id: String,
@@ -282,7 +285,7 @@ impl MemberRole {
 }
 
 /// 规则记录 (rules 表)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RuleRecord {
     /// 规则 ID (ULID)
     pub id: String,
@@ -311,7 +314,7 @@ pub struct RuleRecord {
 }
 
 /// 规则版本记录 (rule_versions 表)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct RuleVersionRecord {
     /// 版本 ID (ULID)
     pub id: String,
@@ -332,7 +335,7 @@ pub struct RuleVersionRecord {
 }
 
 /// 会话记录 (sessions 表)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SessionRecord {
     /// 会话 ID (与 evorule-governance SessionManager 的 session_id 对应)
     pub id: u64,
@@ -376,7 +379,7 @@ pub struct RuleSessionBinding {
 /// 沙盒状态机
 ///
 /// Running → Closed (单向,关闭后不可恢复)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxStatus {
     /// 运行中 (sandbox session 活跃,可注入测试数据)
@@ -410,7 +413,7 @@ impl SandboxStatus {
 ///
 /// 每个 sandbox session 从 Production session fork 而来,
 /// 加载 Workspace 的 Draft 规则 + 合成测试数据集,隔离运行测试。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SandboxSession {
     /// 应用层沙盒 ID (自增)
     pub id: i64,
@@ -444,7 +447,7 @@ pub struct SandboxSession {
 ///
 /// 存储沙盒测试用的合成数据 (P0 全合成,Q2 决策)。
 /// cases_json 为 JSON 数组,每个元素是一条测试 case。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestDatasetRecord {
     /// 数据集 ID (自增)
     pub id: i64,
@@ -474,7 +477,7 @@ pub struct TestDatasetRecord {
 /// - Doctor: 仅可编辑 Draft, 不可提交发布
 /// - DepartmentHead: 可提交到发布队列 (本科室 WS), 不可审批
 /// - Admin: 可审批发布 (全院) + 紧急回滚
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PublishRole {
     /// 普通医生 (可编辑 Draft, 不可提交发布)
@@ -524,7 +527,7 @@ impl PublishRole {
 /// Pending → Approved → Published (正常流程)
 /// Pending → Rejected (驳回)
 /// Pending → Cancelled (取消)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PublishStatus {
     /// 待审批 (科室主任已提交,等待信息科审批)
@@ -580,7 +583,7 @@ impl PublishStatus {
 /// 1. 科室主任 (DepartmentHead) 提交 → status=Pending
 /// 2. 信息科/院领导 (Admin) 审批 → Approved / Rejected
 /// 3. Approved 后触发滚动 session 热重载 → Published
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PublishQueueItem {
     /// 队列项 ID (自增)
     pub id: i64,
@@ -620,7 +623,7 @@ pub struct PublishQueueItem {
 ///
 /// 记录当前生产环境的活跃 session + 规则集版本。
 /// 每次滚动发布后原子更新,版本号单调递增。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ProductionStateRecord {
     /// 固定 ID = 1 (单行表)
     pub id: i64,
@@ -645,7 +648,7 @@ pub struct ProductionStateRecord {
 /// 记录每次发布/回滚事件,与 tcb BLAKE3 链互补:
 /// - tcb 链: Fact 级完整性 (物理不可篡改)
 /// - production_audit: 版本级可审计性 (逻辑不可篡改)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ProductionAuditRecord {
     /// 审计记录 ID (自增)
     pub id: i64,
@@ -686,7 +689,7 @@ pub struct ProductionAuditRecord {
 /// - workspace 级配置, 条件集合 field/op/value → verdict
 /// - `is_default=true` 表示该 workspace 的默认契约 (每 workspace 至多一条)
 /// - 绝不进入审计链哈希 (公共层旁路, 00 §七)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct VerdictContractRecord {
     /// 自增主键
     pub id: i64,
@@ -717,7 +720,7 @@ pub struct VerdictContractRecord {
 /// 设计约束 (00_架构边界原则 §六/§七):
 /// - 仅做索引, 绝不写入审计链或参与哈希
 /// - 不进入 evorule 仓 / TCB Fact (Fact 无 wall-clock)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct VersionClockMapRecord {
     /// 自增主键
     pub id: i64,
@@ -736,7 +739,7 @@ pub struct VersionClockMapRecord {
 // =============================================================================
 
 /// 创建工作空间请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateWorkspaceRequest {
     pub name: String,
     pub owner_id: String,
@@ -745,21 +748,21 @@ pub struct CreateWorkspaceRequest {
 }
 
 /// 更新工作空间请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateWorkspaceRequest {
     pub name: Option<String>,
     pub description: Option<String>,
 }
 
 /// 添加成员请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AddMemberRequest {
     pub user_id: String,
     pub role: String,
 }
 
 /// 创建规则请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateRuleRequest {
     pub name: String,
     /// 初始内容 (JSON 字符串)
@@ -770,7 +773,7 @@ pub struct CreateRuleRequest {
 }
 
 /// 更新规则内容请求 (仅 Draft 状态允许)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateRuleContentRequest {
     /// 新内容 (JSON 字符串)
     pub content: String,
@@ -778,7 +781,7 @@ pub struct UpdateRuleContentRequest {
 }
 
 /// 创建会话请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateSessionRequest {
     /// 绑定的规则 ID (可选)
     pub rule_id: Option<String>,
@@ -792,7 +795,7 @@ pub struct CreateSessionRequest {
 // =============================================================================
 
 /// 启动沙盒测试请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct StartSandboxRequest {
     /// 要测试的规则版本 ID 列表 (从 rules 表查 Draft/Candidate 状态的当前版本)
     pub rule_version_ids: Vec<String>,
@@ -804,7 +807,7 @@ pub struct StartSandboxRequest {
 }
 
 /// 启动沙盒测试响应
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StartSandboxResponse {
     /// 应用层 sandbox_sessions.id
     pub sandbox_id: i64,
@@ -817,7 +820,7 @@ pub struct StartSandboxResponse {
 }
 
 /// 创建测试数据集请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateTestDatasetRequest {
     pub name: String,
     /// 测试 case 列表 (JSON 数组字符串)
@@ -830,7 +833,7 @@ pub struct CreateTestDatasetRequest {
 }
 
 /// 提交发布请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SubmitPublishRequest {
     pub workspace_id: String,
     /// 待发布的规则版本 ID 列表 (必须全部为 Candidate 状态)
@@ -844,7 +847,7 @@ pub struct SubmitPublishRequest {
 }
 
 /// 审批请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReviewPublishRequest {
     /// approved / rejected
     pub decision: String,
@@ -853,14 +856,14 @@ pub struct ReviewPublishRequest {
 }
 
 /// 紧急回滚请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RollbackRequest {
     pub target_version: i64,
     pub reason: String,
 }
 
 /// 列出发布队列的查询参数
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 pub struct ListPublishQueueQuery {
     /// 按状态过滤 (pending/approved/published/rejected/cancelled)
     pub status: Option<String>,
@@ -930,13 +933,11 @@ mod tests {
 
     #[test]
     fn test_state_roundtrip_serialization() {
-        let states = vec![
-            WorkspaceState::Active,
-            WorkspaceState::Archived,
-        ];
+        let states = vec![WorkspaceState::Active, WorkspaceState::Archived];
         for s in states {
             let json = serde_json::to_string(&s).unwrap_or_default();
-            let back: WorkspaceState = serde_json::from_str(&json).unwrap_or(WorkspaceState::Active);
+            let back: WorkspaceState =
+                serde_json::from_str(&json).unwrap_or(WorkspaceState::Active);
             assert_eq!(s, back);
         }
 
@@ -956,8 +957,14 @@ mod tests {
 
     #[test]
     fn test_state_from_str() {
-        assert_eq!(WorkspaceState::from_str("active"), Some(WorkspaceState::Active));
-        assert_eq!(WorkspaceState::from_str("archived"), Some(WorkspaceState::Archived));
+        assert_eq!(
+            WorkspaceState::from_str("active"),
+            Some(WorkspaceState::Active)
+        );
+        assert_eq!(
+            WorkspaceState::from_str("archived"),
+            Some(WorkspaceState::Archived)
+        );
         assert_eq!(WorkspaceState::from_str("invalid"), None);
 
         assert_eq!(RuleState::from_str("draft"), Some(RuleState::Draft));
@@ -1012,15 +1019,36 @@ mod tests {
 
     #[test]
     fn test_new_status_from_str() {
-        assert_eq!(SandboxStatus::from_str("running"), Some(SandboxStatus::Running));
-        assert_eq!(SandboxStatus::from_str("closed"), Some(SandboxStatus::Closed));
+        assert_eq!(
+            SandboxStatus::from_str("running"),
+            Some(SandboxStatus::Running)
+        );
+        assert_eq!(
+            SandboxStatus::from_str("closed"),
+            Some(SandboxStatus::Closed)
+        );
         assert_eq!(SandboxStatus::from_str("invalid"), None);
 
-        assert_eq!(PublishStatus::from_str("pending"), Some(PublishStatus::Pending));
-        assert_eq!(PublishStatus::from_str("approved"), Some(PublishStatus::Approved));
-        assert_eq!(PublishStatus::from_str("published"), Some(PublishStatus::Published));
-        assert_eq!(PublishStatus::from_str("rejected"), Some(PublishStatus::Rejected));
-        assert_eq!(PublishStatus::from_str("cancelled"), Some(PublishStatus::Cancelled));
+        assert_eq!(
+            PublishStatus::from_str("pending"),
+            Some(PublishStatus::Pending)
+        );
+        assert_eq!(
+            PublishStatus::from_str("approved"),
+            Some(PublishStatus::Approved)
+        );
+        assert_eq!(
+            PublishStatus::from_str("published"),
+            Some(PublishStatus::Published)
+        );
+        assert_eq!(
+            PublishStatus::from_str("rejected"),
+            Some(PublishStatus::Rejected)
+        );
+        assert_eq!(
+            PublishStatus::from_str("cancelled"),
+            Some(PublishStatus::Cancelled)
+        );
         assert_eq!(PublishStatus::from_str("invalid"), None);
     }
 
@@ -1050,8 +1078,7 @@ mod tests {
             PublishRole::Admin,
         ] {
             let json = serde_json::to_string(&role).unwrap_or_default();
-            let back: PublishRole =
-                serde_json::from_str(&json).unwrap_or(PublishRole::Doctor);
+            let back: PublishRole = serde_json::from_str(&json).unwrap_or(PublishRole::Doctor);
             assert_eq!(role, back);
         }
         assert_eq!(PublishRole::from_str("admin"), Some(PublishRole::Admin));

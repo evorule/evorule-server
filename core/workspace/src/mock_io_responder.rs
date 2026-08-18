@@ -84,10 +84,7 @@ impl MockIoResponder {
     /// 停止合成 IO 响应器
     pub async fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
-        info!(
-            session_id = self.session_id,
-            "MockIoResponder stopped"
-        );
+        info!(session_id = self.session_id, "MockIoResponder stopped");
     }
 
     /// 设置自定义合成响应 (按 io_type)
@@ -152,7 +149,10 @@ mod tests {
     async fn test_custom_response() {
         let responder = MockIoResponder::new(1);
         responder
-            .set_response("query_db", serde_json::json!({"rows": [{"id": 1}], "custom": true}))
+            .set_response(
+                "query_db",
+                serde_json::json!({"rows": [{"id": 1}], "custom": true}),
+            )
             .await;
 
         let resp = responder.get_response("query_db").await;

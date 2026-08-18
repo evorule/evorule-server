@@ -72,7 +72,9 @@ impl RuleMetaService {
             return Err(WorkspaceError::invalid_input("rule name must not be empty"));
         }
         if req.created_by.trim().is_empty() {
-            return Err(WorkspaceError::invalid_input("created_by must not be empty"));
+            return Err(WorkspaceError::invalid_input(
+                "created_by must not be empty",
+            ));
         }
 
         // 1. 校验 workspace
@@ -138,11 +140,7 @@ impl RuleMetaService {
     /// 获取规则
     ///
     /// 校验 rule 属于指定 workspace。
-    pub async fn get_rule(
-        &self,
-        workspace_id: &str,
-        rule_id: &str,
-    ) -> WorkspaceResult<RuleRecord> {
+    pub async fn get_rule(&self, workspace_id: &str, rule_id: &str) -> WorkspaceResult<RuleRecord> {
         let rule = self.db.get_rule(rule_id)?;
         if rule.workspace_id != workspace_id {
             return Err(WorkspaceError::not_found("rule", rule_id));
@@ -151,10 +149,7 @@ impl RuleMetaService {
     }
 
     /// 列出 workspace 下的规则
-    pub async fn list_rules(
-        &self,
-        workspace_id: &str,
-    ) -> WorkspaceResult<Vec<RuleRecord>> {
+    pub async fn list_rules(&self, workspace_id: &str) -> WorkspaceResult<Vec<RuleRecord>> {
         // 校验 workspace 存在
         self.db.get_workspace(workspace_id)?;
         self.db.list_rules(workspace_id)
@@ -212,7 +207,8 @@ impl RuleMetaService {
         self.db.insert_rule_version(&new_rv)?;
 
         // 6. 更新 current_version_id
-        self.db.update_rule_current_version(rule_id, &new_version_id)?;
+        self.db
+            .update_rule_current_version(rule_id, &new_version_id)?;
 
         tracing::info!(
             rule_id = %rule_id,
@@ -309,11 +305,7 @@ impl RuleMetaService {
     }
 
     /// 内部状态迁移辅助
-    fn transition_state(
-        &self,
-        rule_id: &str,
-        target: RuleState,
-    ) -> WorkspaceResult<RuleRecord> {
+    fn transition_state(&self, rule_id: &str, target: RuleState) -> WorkspaceResult<RuleRecord> {
         self.db.update_rule_state(rule_id, target)
     }
 
@@ -374,9 +366,10 @@ impl RuleMetaService {
         let source = self.get_rule(workspace_id, source_rule_id).await?;
 
         // 获取源规则当前版本内容
-        let source_version = self.db.get_current_version(source_rule_id)?.ok_or_else(
-            || WorkspaceError::internal("source rule has no current version"),
-        )?;
+        let source_version = self
+            .db
+            .get_current_version(source_rule_id)?
+            .ok_or_else(|| WorkspaceError::internal("source rule has no current version"))?;
 
         // 创建新规则 (复用 create_rule 逻辑)
         let new_rule = self
@@ -441,11 +434,7 @@ mod tests {
             async fn get_facts(&self, _: u64) -> WorkspaceResult<Vec<serde_json::Value>> {
                 Ok(Vec::new())
             }
-            async fn get_causal_chain(
-                &self,
-                _: u64,
-                _: u64,
-            ) -> WorkspaceResult<serde_json::Value> {
+            async fn get_causal_chain(&self, _: u64, _: u64) -> WorkspaceResult<serde_json::Value> {
                 Ok(serde_json::json!([]))
             }
             async fn reload_rules(&self) -> WorkspaceResult<()> {
@@ -552,7 +541,10 @@ mod tests {
 
         // rule 的 current_version_id 应更新
         let rule_after = rt.block_on(rule_svc.get_rule(&ws_id, &rule.id)).unwrap();
-        assert_eq!(rule_after.current_version_id.as_deref(), Some(new_rv.id.as_str()));
+        assert_eq!(
+            rule_after.current_version_id.as_deref(),
+            Some(new_rv.id.as_str())
+        );
     }
 
     #[test]
@@ -563,7 +555,8 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         // 激活规则
-        rt.block_on(rule_svc.activate_rule(&ws_id, &rule.id)).unwrap();
+        rt.block_on(rule_svc.activate_rule(&ws_id, &rule.id))
+            .unwrap();
 
         // Active 状态不允许更新
         let err = rt
@@ -586,11 +579,15 @@ mod tests {
         let rule = make_rule(&rule_svc, &ws_id, "rule-1");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let active = rt.block_on(rule_svc.activate_rule(&ws_id, &rule.id)).unwrap();
+        let active = rt
+            .block_on(rule_svc.activate_rule(&ws_id, &rule.id))
+            .unwrap();
         assert_eq!(active.state, RuleState::Active);
 
         // 幂等: 再次激活
-        let active2 = rt.block_on(rule_svc.activate_rule(&ws_id, &rule.id)).unwrap();
+        let active2 = rt
+            .block_on(rule_svc.activate_rule(&ws_id, &rule.id))
+            .unwrap();
         assert_eq!(active2.state, RuleState::Active);
     }
 
@@ -602,14 +599,17 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         // 先激活
-        rt.block_on(rule_svc.activate_rule(&ws_id, &rule.id)).unwrap();
+        rt.block_on(rule_svc.activate_rule(&ws_id, &rule.id))
+            .unwrap();
 
         // 阻塞
         let blocked = rt.block_on(rule_svc.block_rule(&ws_id, &rule.id)).unwrap();
         assert_eq!(blocked.state, RuleState::Blocked);
 
         // 恢复 (activate 会从 Blocked -> Active)
-        let active = rt.block_on(rule_svc.activate_rule(&ws_id, &rule.id)).unwrap();
+        let active = rt
+            .block_on(rule_svc.activate_rule(&ws_id, &rule.id))
+            .unwrap();
         assert_eq!(active.state, RuleState::Active);
     }
 
@@ -620,7 +620,9 @@ mod tests {
         let rule = make_rule(&rule_svc, &ws_id, "rule-1");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let archived = rt.block_on(rule_svc.archive_rule(&ws_id, &rule.id)).unwrap();
+        let archived = rt
+            .block_on(rule_svc.archive_rule(&ws_id, &rule.id))
+            .unwrap();
         assert_eq!(archived.state, RuleState::Archived);
 
         // 归档后不能激活

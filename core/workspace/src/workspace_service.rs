@@ -85,11 +85,8 @@ impl WorkspaceService {
         self.db.insert_workspace(&ws)?;
 
         // 自动添加 owner 成员
-        self.db.insert_member(
-            &ws.id,
-            &req.owner_id,
-            MemberRole::Owner.as_str(),
-        )?;
+        self.db
+            .insert_member(&ws.id, &req.owner_id, MemberRole::Owner.as_str())?;
 
         tracing::info!(
             workspace_id = %ws.id,
@@ -178,11 +175,7 @@ impl WorkspaceService {
     }
 
     /// 移除成员 (不能移除 owner)
-    pub async fn remove_member(
-        &self,
-        workspace_id: &str,
-        user_id: &str,
-    ) -> WorkspaceResult<()> {
+    pub async fn remove_member(&self, workspace_id: &str, user_id: &str) -> WorkspaceResult<()> {
         self.db.delete_member(workspace_id, user_id)
     }
 
@@ -314,10 +307,7 @@ impl WorkspaceService {
     }
 
     /// 列出 workspace 下的会话
-    pub async fn list_sessions(
-        &self,
-        workspace_id: &str,
-    ) -> WorkspaceResult<Vec<SessionRecord>> {
+    pub async fn list_sessions(&self, workspace_id: &str) -> WorkspaceResult<Vec<SessionRecord>> {
         // 校验 workspace 存在
         self.db.get_workspace(workspace_id)?;
         self.db.list_sessions_by_workspace(workspace_id)
@@ -353,6 +343,14 @@ impl WorkspaceService {
         let closed = self.db.close_session(session_id)?;
 
         // 4. 关闭相关 binding
+        self.close_session_bindings(session_id)?;
+
+        tracing::info!(session_id, "session closed");
+        Ok(closed)
+    }
+
+    /// 关闭 session 下所有相关 binding (幂等, 单个失败仅告警)
+    fn close_session_bindings(&self, session_id: u64) -> WorkspaceResult<()> {
         let bindings = self.db.list_bindings_by_session(session_id)?;
         for b in bindings {
             if b.state == SessionBindingState::Bound {
@@ -365,9 +363,7 @@ impl WorkspaceService {
                 }
             }
         }
-
-        tracing::info!(session_id, "session closed");
-        Ok(closed)
+        Ok(())
     }
 }
 

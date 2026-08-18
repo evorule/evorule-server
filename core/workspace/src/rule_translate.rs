@@ -27,11 +27,26 @@ use serde_json::Value;
 use crate::error::{WorkspaceError, WorkspaceResult};
 
 // =============================================================================
-// 常量 (对齐 ruleValidator.ts)
+// 常量 (对齐 ruleValidator.ts) — UX 门禁口径, 非权威镜像
 // =============================================================================
+//
+// # 口径声明 (P: G1-G7 为编辑器 UX 预校验, 非权威)
+// 本层常量是"非权威 UX 预校验"口径, 对齐 console 侧 ruleValidator.ts,
+// 与 evorule-governance 权威校验是"口径一致"关系, 而非"数值相同"关系。
+// 权威拦截者: core 仓 build.rs + evorule-governance/src/rule_validation.rs
+//   (MAX_TRANSFORM_RULES=64 / MAX_NESTING_DEPTH=8 / MAX_IO_PARAMS_SIZE=10KB)。
+//
+// # 同步提醒 (方案 A: 显式锚定, 消静默漂移)
+// 若核心仓调整校验语义(元指令集合 / 域类型 / 深度限制 / I/O 参数上限),
+// 本层常量不会自动同步, 需人工核对。判定标准 = 边界输入下 UX 门禁与
+// 权威校验的"放行/拒绝结论"一致, 而非常量数值相等。
+// (自动报警见 evorule-server 对齐集成测试的规划, 尚未落地)
 
 const VALID_META_INSTRUCTIONS: &[&str] = &["set", "push", "branch", "io_request"];
 const VALID_DOMAIN_TYPES: &[&str] = &["eq", "lt", "exists", "instruction", "all", "not"];
+// UX 门禁: 整体递归深度 ≤ 64。
+// 注意与权威层 MAX_NESTING_DEPTH=8 (branch 嵌套层数) 是不同量, 勿混; 仅需在
+// 边界输入下两者放行/拒绝结论一致即可。
 const MAX_RECURSION_DEPTH: usize = 64;
 
 // =============================================================================
@@ -47,9 +62,12 @@ pub struct ValidationError {
     pub path: Option<String>,
 }
 
-/// 校验结果 (对齐 TS ValidationResult)
+/// 校验结果 (对齐 TS ValidationResult, UX 门禁 G1-G7, 非权威)
+///
+/// 命名加 `Ux` 前缀以与核心仓 (evorule-governance) 的权威 `ValidationResult`
+/// 明确区分, 消除"两处 ValidationResult 语义不同"的漂移混淆。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValidationResult {
+pub struct UxValidationResult {
     pub valid: bool,
     pub errors: Vec<ValidationError>,
 }
@@ -57,12 +75,12 @@ pub struct ValidationResult {
 /// G1-G7 门禁校验入口
 ///
 /// 入参为规则 JSON 文本 (期望含 `transform` 数组)。
-pub fn validate_rule_json(json: &str) -> ValidationResult {
+pub fn validate_rule_json(json: &str) -> UxValidationResult {
     // G1: JSON 格式合法性
     let parsed: Value = match serde_json::from_str(json) {
         Ok(v) => v,
         Err(e) => {
-            return ValidationResult {
+            return UxValidationResult {
                 valid: false,
                 errors: vec![ValidationError {
                     gate: "G1".into(),
@@ -97,7 +115,7 @@ pub fn validate_rule_json(json: &str) -> ValidationResult {
     // G7: 递归深度限制
     check_recursion_depth(&parsed, &mut errors);
 
-    ValidationResult {
+    UxValidationResult {
         valid: errors.is_empty(),
         errors,
     }
@@ -131,7 +149,11 @@ fn check_meta_instruction(rule: &Value, errors: &mut Vec<ValidationError>, path:
         for branch_key in ["on_true", "on_false"] {
             if let Some(arr) = params.get(branch_key).and_then(|v| v.as_array()) {
                 for (i, sub) in arr.iter().enumerate() {
-                    check_meta_instruction(sub, errors, &format!("{path}.params.{branch_key}[{i}]"));
+                    check_meta_instruction(
+                        sub,
+                        errors,
+                        &format!("{path}.params.{branch_key}[{i}]"),
+                    );
                 }
             }
         }
@@ -356,7 +378,9 @@ fn check_recursion_depth(value: &Value, errors: &mut Vec<ValidationError>) {
             });
             return;
         }
-        let Some(rule_obj) = obj.as_object() else { return };
+        let Some(rule_obj) = obj.as_object() else {
+            return;
+        };
         if let Some(params) = rule_obj.get("params").and_then(|v| v.as_object()) {
             for bk in ["on_true", "on_false"] {
                 if let Some(arr) = params.get(bk).and_then(|v| v.as_array()) {
@@ -379,7 +403,7 @@ fn check_recursion_depth(value: &Value, errors: &mut Vec<ValidationError>) {
 // =============================================================================
 
 /// to_transform 请求: { condition, action_set, metadata }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct TranslateToTransformRequest {
     /// condition 列表: [{field, op, value}]
     pub condition: Vec<Value>,
@@ -391,7 +415,7 @@ pub struct TranslateToTransformRequest {
 }
 
 /// to_transform 响应
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TranslateToTransformResponse {
     pub transform: Vec<Value>,
     pub g1_g7_pass: bool,
@@ -399,13 +423,13 @@ pub struct TranslateToTransformResponse {
 }
 
 /// to_conditional 请求: { transform }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct TranslateToConditionalRequest {
     pub transform: Vec<Value>,
 }
 
 /// to_conditional 响应
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TranslateToConditionalResponse {
     pub condition: Vec<Value>,
     pub action_set: Vec<Value>,
@@ -455,7 +479,9 @@ fn build_condition_domain(op: &str, field: &str, value: Value) -> Value {
 /// - 每个 action_set {attr, operation, value} → set 指令 (params={path=attr, operation, value})
 /// - 末条自动补 all([]) 兜底 (满足 G6)
 /// - 对生成的 transform 跑 G1-G7, warnings 收集错误信息
-pub fn translate_to_transform(req: TranslateToTransformRequest) -> WorkspaceResult<TranslateToTransformResponse> {
+pub fn translate_to_transform(
+    req: TranslateToTransformRequest,
+) -> WorkspaceResult<TranslateToTransformResponse> {
     let mut transform: Vec<Value> = Vec::new();
 
     // condition → branch 指令
@@ -506,7 +532,8 @@ pub fn translate_to_transform(req: TranslateToTransformRequest) -> WorkspaceResu
     }));
 
     // 跑 G1-G7
-    let rule_obj = serde_json::json!({ "transform": transform.clone(), "metadata": req.metadata.clone() });
+    let rule_obj =
+        serde_json::json!({ "transform": transform.clone(), "metadata": req.metadata.clone() });
     let rule_text = serde_json::to_string(&rule_obj)
         .map_err(|e| WorkspaceError::internal(format!("serialize translate result: {e}")))?;
     let vr = validate_rule_json(&rule_text);
@@ -581,7 +608,10 @@ pub fn translate_to_conditional(
                 // 仅 eq/lt/exists 可回译; all(兜底)跳过; not/instruction 超出子集
                 match dom_type {
                     "eq" | "lt" | "exists" => {
-                        let dom = domain.and_then(|d| d.as_object()).cloned().unwrap_or_default();
+                        let dom = domain
+                            .and_then(|d| d.as_object())
+                            .cloned()
+                            .unwrap_or_default();
                         let field = dom
                             .get("path")
                             .and_then(|v| v.as_str())
@@ -604,7 +634,8 @@ pub fn translate_to_conditional(
                             .and_then(|d| d.get("domain"))
                             .and_then(|d| d.as_object());
                         if let Some(inner_obj) = inner {
-                            let inner_type = inner_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            let inner_type =
+                                inner_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             match inner_type {
                                 "lt" => {
                                     // not(lt(x)) → gte
@@ -613,7 +644,8 @@ pub fn translate_to_conditional(
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("")
                                         .to_string();
-                                    let value = inner_obj.get("value").cloned().unwrap_or(Value::Null);
+                                    let value =
+                                        inner_obj.get("value").cloned().unwrap_or(Value::Null);
                                     condition.push(serde_json::json!({
                                         "field": field, "op": "gte", "value": value,
                                     }));
@@ -629,15 +661,21 @@ pub fn translate_to_conditional(
                                     }
                                 }
                                 _ => {
-                                    lost_items.push(format!("transform[{i}]: not({inner_type}...) 超出回译子集"));
+                                    lost_items.push(format!(
+                                        "transform[{i}]: not({inner_type}...) 超出回译子集"
+                                    ));
                                 }
                             }
                         } else {
-                            lost_items.push(format!("transform[{i}]: not 缺少 domain 子域, 超出回译子集"));
+                            lost_items.push(format!(
+                                "transform[{i}]: not 缺少 domain 子域, 超出回译子集"
+                            ));
                         }
                     }
                     _ => {
-                        lost_items.push(format!("transform[{i}]: branch domain 类型 '{dom_type}' 超出回译子集"));
+                        lost_items.push(format!(
+                            "transform[{i}]: branch domain 类型 '{dom_type}' 超出回译子集"
+                        ));
                     }
                 }
                 // 检查是否有嵌套子指令 (on_true 非空) → 超出子集
@@ -729,12 +767,9 @@ mod tests {
         };
         let resp = translate_to_transform(req).unwrap();
         assert!(resp.transform.len() >= 3); // 1 branch + 1 set + 1 fallback
-        // 末条应是 all([]) 兜底
+                                            // 末条应是 all([]) 兜底
         let last = resp.transform.last().unwrap();
-        assert_eq!(
-            last.get("type").and_then(|v| v.as_str()),
-            Some("branch")
-        );
+        assert_eq!(last.get("type").and_then(|v| v.as_str()), Some("branch"));
     }
 
     #[test]
@@ -757,7 +792,9 @@ mod tests {
     #[test]
     fn to_transform_gte_generates_not_lt() {
         let req = TranslateToTransformRequest {
-            condition: vec![serde_json::json!({"field":"__exec__.payload.amount","op":"gte","value":10000})],
+            condition: vec![
+                serde_json::json!({"field":"__exec__.payload.amount","op":"gte","value":10000}),
+            ],
             action_set: vec![],
             metadata: None,
         };
@@ -775,7 +812,9 @@ mod tests {
     #[test]
     fn to_transform_gt_generates_not_all_lt_eq() {
         let req = TranslateToTransformRequest {
-            condition: vec![serde_json::json!({"field":"__exec__.payload.amount","op":"gt","value":10000})],
+            condition: vec![
+                serde_json::json!({"field":"__exec__.payload.amount","op":"gt","value":10000}),
+            ],
             action_set: vec![],
             metadata: None,
         };
@@ -794,14 +833,22 @@ mod tests {
     fn to_conditional_symmetric_gte() {
         // gte → transform → conditional → 应回译成 gte (不 lossy)
         let req_fwd = TranslateToTransformRequest {
-            condition: vec![serde_json::json!({"field":"__exec__.payload.amount","op":"gte","value":10000})],
+            condition: vec![
+                serde_json::json!({"field":"__exec__.payload.amount","op":"gte","value":10000}),
+            ],
             action_set: vec![],
             metadata: None,
         };
         let fwd = translate_to_transform(req_fwd).unwrap();
-        let req_rev = TranslateToConditionalRequest { transform: fwd.transform };
+        let req_rev = TranslateToConditionalRequest {
+            transform: fwd.transform,
+        };
         let rev = translate_to_conditional(req_rev).unwrap();
-        assert!(!rev.lossy, "gte 应对称回译, 不应 lossy: {:?}", rev.lost_items);
+        assert!(
+            !rev.lossy,
+            "gte 应对称回译, 不应 lossy: {:?}",
+            rev.lost_items
+        );
         assert_eq!(rev.condition.len(), 1);
         assert_eq!(rev.condition[0]["op"], "gte");
         assert_eq!(rev.condition[0]["field"], "__exec__.payload.amount");
@@ -816,7 +863,10 @@ mod tests {
             metadata: None,
         };
         let fwd = translate_to_transform(req_fwd).unwrap();
-        let rev = translate_to_conditional(TranslateToConditionalRequest { transform: fwd.transform }).unwrap();
+        let rev = translate_to_conditional(TranslateToConditionalRequest {
+            transform: fwd.transform,
+        })
+        .unwrap();
         assert!(!rev.lossy, "gt 应对称回译: {:?}", rev.lost_items);
         assert_eq!(rev.condition[0]["op"], "gt");
     }
@@ -842,7 +892,9 @@ mod tests {
     fn action_set_value_with_role_preserved_end_to_end() {
         // 模拟 console businessRuleToTranslateInput 的输出
         let req = TranslateToTransformRequest {
-            condition: vec![serde_json::json!({"field":"__exec__.payload.amount","op":"gte","value":10000})],
+            condition: vec![
+                serde_json::json!({"field":"__exec__.payload.amount","op":"gte","value":10000}),
+            ],
             action_set: vec![serde_json::json!({
                 "attr": "__exec__.result.notify",
                 "operation": "set",
@@ -852,7 +904,11 @@ mod tests {
         };
         let fwd = translate_to_transform(req).unwrap();
         // G1-G7 应全过 (含 G5: __exec__.result.* 已加入白名单)
-        assert!(fwd.g1_g7_pass, "业务规则(gte + result.notify) 应通过 G1-G7: {:?}", fwd.warnings);
+        assert!(
+            fwd.g1_g7_pass,
+            "业务规则(gte + result.notify) 应通过 G1-G7: {:?}",
+            fwd.warnings
+        );
         // set 指令的 params.value 应完整保留 {role, action}
         let set_instr = fwd
             .transform
@@ -866,18 +922,31 @@ mod tests {
         );
         let value = &set_instr["params"]["value"];
         assert_eq!(value["role"], "CFO", "transform 阶段 value.role 应保留");
-        assert_eq!(value["action"], "notify", "transform 阶段 value.action 应保留");
+        assert_eq!(
+            value["action"], "notify",
+            "transform 阶段 value.action 应保留"
+        );
 
         // 回译: translate_to_conditional 应将 set 还原为 action_set, value 完整
-        let rev = translate_to_conditional(TranslateToConditionalRequest { transform: fwd.transform }).unwrap();
+        let rev = translate_to_conditional(TranslateToConditionalRequest {
+            transform: fwd.transform,
+        })
+        .unwrap();
         let action = rev
             .action_set
             .iter()
             .find(|a| a.get("attr").and_then(|v| v.as_str()) == Some("__exec__.result.notify"))
             .expect("回译应含 notify 动作");
         assert_eq!(action["value"]["role"], "CFO", "回译后 value.role 应保留");
-        assert_eq!(action["value"]["action"], "notify", "回译后 value.action 应保留");
+        assert_eq!(
+            action["value"]["action"], "notify",
+            "回译后 value.action 应保留"
+        );
         // 回译不应 lossy (set + branch(eq/lt/exists/not) 都在子集内)
-        assert!(!rev.lossy, "动作 role 保留时不应 lossy: {:?}", rev.lost_items);
+        assert!(
+            !rev.lossy,
+            "动作 role 保留时不应 lossy: {:?}",
+            rev.lost_items
+        );
     }
 }

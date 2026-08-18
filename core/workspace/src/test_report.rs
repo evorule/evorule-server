@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 测试报告
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestReport {
     /// 元信息
     pub sandbox_id: String,
@@ -42,7 +42,7 @@ pub struct TestReport {
 }
 
 /// 测试统计摘要
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestSummary {
     pub total_cases: usize,
     pub passed: usize,
@@ -54,7 +54,7 @@ pub struct TestSummary {
 }
 
 /// 单个测试 case 结果
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestCaseResult {
     pub case_id: String,
     pub case_name: String,
@@ -65,7 +65,7 @@ pub struct TestCaseResult {
 }
 
 /// case 状态
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CaseStatus {
     Passed,
@@ -74,7 +74,7 @@ pub enum CaseStatus {
 }
 
 /// 测试异常
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestAnomaly {
     pub anomaly_type: String,
     pub description: String,
@@ -83,7 +83,7 @@ pub struct TestAnomaly {
 }
 
 /// 审计链信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AuditInfo {
     pub audit_chain_length: usize,
     pub audit_chain_verified: bool,

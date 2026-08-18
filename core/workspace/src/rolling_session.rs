@@ -26,6 +26,7 @@ use tracing::{info, warn};
 
 use crate::db::WorkspaceDb;
 use crate::error::{WorkspaceError, WorkspaceResult};
+use crate::models::ProductionStateRecord;
 use crate::session_bridge::SessionOps;
 use crate::session_switched::SessionSwitchedBroadcaster;
 
@@ -79,19 +80,23 @@ pub async fn export_production_audit_chain(
     }
 
     // 2. 导出完整审计链 JSON (含 entries / entry_count / last_hash / verified)
-    let audit_json = match session_ops.get_audit_export(session_id).await {
-        Ok(json) => json,
+    match session_ops.get_audit_export(session_id).await {
+        Ok(json) => write_audit_chain_to_disk(session_id, &json),
         Err(e) => {
             warn!(
                 session_id,
                 error = %e,
                 "Failed to export production session audit chain (缺口5)"
             );
-            return None;
+            None
         }
-    };
+    }
+}
 
-    // 3. 写入磁盘 (./data/production_audits/session_{id}_{timestamp}.json)
+/// 将审计链 JSON 写入磁盘 (缺口5)
+///
+/// `./data/production_audits/session_{id}_{timestamp}.json`
+fn write_audit_chain_to_disk(session_id: u64, audit_json: &str) -> Option<String> {
     let dir = std::path::Path::new("./data/production_audits");
     if let Err(e) = std::fs::create_dir_all(dir) {
         warn!(
@@ -105,7 +110,7 @@ pub async fn export_production_audit_chain(
     let timestamp = Utc::now().timestamp();
     let path = dir.join(format!("session_{session_id}_{timestamp}.json"));
 
-    match std::fs::write(&path, &audit_json) {
+    match std::fs::write(&path, audit_json) {
         Ok(()) => {
             let path_str = path.to_string_lossy().to_string();
             info!(
@@ -198,118 +203,16 @@ impl RollingSessionService {
         self.session_ops.reload_rules().await?;
         info!("Rules reloaded into SessionManager core_eval");
 
-        let new_session_id = if is_first_publish {
-            // 首次发布: 创建全新 session (无旧 session 可 fork)
-            let sid = self.session_ops.create_session().await?;
-            info!(
-                new_session_id = sid,
-                "First publish: created new production session (no old session to fork)"
-            );
-            sid
-        } else {
-            // 后续发布: Fork 旧 session (新 session 用新 core_eval, 继承 payload 状态)
-            let old_session_id = current_state
-                .current_session_id
-                .ok_or_else(|| {
-                    WorkspaceError::internal(
-                        "current_session_id is None despite is_first_publish=false (invariant violated)",
-                    )
-                })? as u64;
-            info!(
-                old_session_id = old_session_id,
-                rule_count = rules.len(),
-                ruleset_hash = ruleset_hash,
-                "Starting rolling session swap (fork from existing production session)"
-            );
-            let sid = self.session_ops.fork_session(old_session_id).await?;
-            info!(
-                old_session_id = old_session_id,
-                new_session_id = sid,
-                "New production session forked (inherits payload state, uses new core_eval)"
-            );
-
-            // Step 6: 向旧 session 的 SSE 订阅者推送 session_switched 事件 (U7)
-            // (仅后续发布需要, 首次发布无旧 session)
-            let new_ruleset_version_for_broadcast = current_state.ruleset_version + 1;
-            self.switcher
-                .broadcast_switched(
-                    old_session_id,
-                    sid,
-                    new_ruleset_version_for_broadcast,
-                    ruleset_hash,
-                )
-                .await?;
-            info!(
-                old_session_id = old_session_id,
-                new_session_id = sid,
-                "session_switched SSE event pushed to old session subscribers"
-            );
-
-            // Step 7: 旧 session drain (异步, 等待在途 Fact 处理完, 超时强制关闭)
-            // P0 简化: 直接等待固定超时后关闭 (P1 增强: 轮询判断是否处理完)
-            // 缺口5 修复: 关闭前导出生产 session 的 BLAKE3 审计链到磁盘
-            // (与沙盒 close 时导出测试报告同构, 确保生产 session 的 fact 级审计链不丢失)
-            let session_ops = self.session_ops.clone();
-            let switcher = self.switcher.clone();
-            let db = self.db.clone();
-            let timeout = self.drain_timeout;
-            let closed_ruleset_version = current_state.ruleset_version;
-            let closed_ruleset_hash = current_state.ruleset_hash.clone().unwrap_or_default();
-            let source_ws_id = source_workspace_id.to_string();
-            tokio::spawn(async move {
-                tokio::time::sleep(timeout).await;
-
-                // 缺口5: 关闭前 flush + 导出审计链到磁盘
-                let audit_export_path =
-                    export_production_audit_chain(&session_ops, old_session_id).await;
-
-                match session_ops.close_session(old_session_id).await {
-                    Ok(()) => {
-                        info!(
-                            old_session_id = old_session_id,
-                            audit_export_path = ?audit_export_path,
-                            "Old production session closed after drain"
-                        );
-                        // 缺口5: 记录 session_closed 生命周期节点到 production_audit
-                        // test_report_paths 字段在此复用为审计链导出路径
-                        // (event_type=session_closed 区分语义, 非沙盒测试报告)
-                        if let Some(path) = &audit_export_path {
-                            let source_ws_ids =
-                                serde_json::json!([source_ws_id]).to_string();
-                            if let Err(e) = db.insert_production_audit(
-                                "session_closed",
-                                closed_ruleset_version,
-                                None,
-                                &closed_ruleset_hash,
-                                old_session_id as i64,
-                                &source_ws_ids,
-                                "system",
-                                Some("rolling_swap_drain_complete"),
-                                Some(path),
-                                None,
-                            ) {
-                                warn!(
-                                    old_session_id = old_session_id,
-                                    error = %e,
-                                    "Failed to record session_closed audit event (缺口5)"
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            old_session_id = old_session_id,
-                            error = %e,
-                            "Failed to close old production session after drain timeout"
-                        );
-                    }
-                }
-                // 通知广播器旧 session 已关闭 (清理订阅通道)
-                switcher.notify_session_closed(old_session_id).await;
-            });
-
-            sid
-        };
+        // Step 2: 首次发布创建新 session / 后续发布 fork 旧 session (内部含广播 + 调度 drain)
+        let new_session_id = self
+            .create_or_fork_session(
+                &current_state,
+                rules,
+                ruleset_hash,
+                source_workspace_id,
+                is_first_publish,
+            )
+            .await?;
 
         // Step 3: 计算新版本号 (单调递增)
         let new_ruleset_version = current_state.ruleset_version + 1;
@@ -364,6 +267,189 @@ impl RollingSessionService {
             new_ruleset_version,
             new_ruleset_hash: ruleset_hash.to_string(),
         })
+    }
+
+    /// 创建或 fork 生产 session, 并在后续发布时广播切换事件 + 调度旧 session drain
+    ///
+    /// - 首次发布: 创建全新 session (无旧 session 可 fork)
+    /// - 后续发布: fork 旧 session (新 session 用新 core_eval, 继承 payload 状态)
+    async fn create_or_fork_session(
+        &self,
+        current_state: &ProductionStateRecord,
+        rules: &[Value],
+        ruleset_hash: &str,
+        source_workspace_id: &str,
+        is_first_publish: bool,
+    ) -> WorkspaceResult<u64> {
+        if is_first_publish {
+            return self.create_first_session().await;
+        }
+        self.fork_and_switch(current_state, rules, ruleset_hash, source_workspace_id)
+            .await
+    }
+
+    /// 首次发布: 创建全新 production session
+    async fn create_first_session(&self) -> WorkspaceResult<u64> {
+        let sid = self.session_ops.create_session().await?;
+        info!(
+            new_session_id = sid,
+            "First publish: created new production session (no old session to fork)"
+        );
+        Ok(sid)
+    }
+
+    /// 后续发布: fork 旧 session (新 session 用新 core_eval) + 广播切换事件 (U7) + 调度 drain
+    async fn fork_and_switch(
+        &self,
+        current_state: &ProductionStateRecord,
+        rules: &[Value],
+        ruleset_hash: &str,
+        source_workspace_id: &str,
+    ) -> WorkspaceResult<u64> {
+        let old_session_id = self.require_current_session_id(current_state)?;
+        info!(
+            old_session_id = old_session_id,
+            rule_count = rules.len(),
+            ruleset_hash = ruleset_hash,
+            "Starting rolling session swap (fork from existing production session)"
+        );
+        let sid = self.session_ops.fork_session(old_session_id).await?;
+        info!(
+            old_session_id = old_session_id,
+            new_session_id = sid,
+            "New production session forked (inherits payload state, uses new core_eval)"
+        );
+
+        // Step 6: 向旧 session 的 SSE 订阅者推送 session_switched 事件 (U7)
+        self.switcher
+            .broadcast_switched(
+                old_session_id,
+                sid,
+                current_state.ruleset_version + 1,
+                ruleset_hash,
+            )
+            .await?;
+        info!(
+            old_session_id = old_session_id,
+            new_session_id = sid,
+            "session_switched SSE event pushed to old session subscribers"
+        );
+
+        // Step 7: 调度旧 session drain (异步, 不阻塞本次返回)
+        self.schedule_drain(old_session_id, current_state, source_workspace_id);
+
+        Ok(sid)
+    }
+
+    /// 校验并返回当前 production session_id (供 fork 用)
+    fn require_current_session_id(
+        &self,
+        current_state: &ProductionStateRecord,
+    ) -> WorkspaceResult<u64> {
+        current_state
+            .current_session_id
+            .ok_or_else(|| {
+                WorkspaceError::internal(
+                    "current_session_id is None despite is_first_publish=false (invariant violated)",
+                )
+            })
+            .map(|id| id as u64)
+    }
+
+    /// 调度旧生产 session 的异步 drain + 关闭 (后台任务, 失败仅记录 warning)
+    fn schedule_drain(
+        &self,
+        old_session_id: u64,
+        current_state: &ProductionStateRecord,
+        source_workspace_id: &str,
+    ) {
+        let session_ops = self.session_ops.clone();
+        let switcher = self.switcher.clone();
+        let db = self.db.clone();
+        let params = DrainParams {
+            old_session_id,
+            timeout: self.drain_timeout,
+            closed_ruleset_version: current_state.ruleset_version,
+            closed_ruleset_hash: current_state.ruleset_hash.clone().unwrap_or_default(),
+            source_ws_id: source_workspace_id.to_string(),
+        };
+        tokio::spawn(async move {
+            drain_old_session(session_ops, switcher, db, params).await;
+        });
+    }
+}
+
+/// 旧 session drain 所需参数 (避免过长函数签名)
+struct DrainParams {
+    old_session_id: u64,
+    timeout: Duration,
+    closed_ruleset_version: i64,
+    closed_ruleset_hash: String,
+    source_ws_id: String,
+}
+
+/// 旧生产 session 异步 drain + 关闭 (P0 简化: 固定超时后关闭; P1 增强: 轮询判断是否处理完)
+///
+/// 缺口5 修复: 关闭前导出生产 session 的 BLAKE3 审计链到磁盘
+/// (与沙盒 close 时导出测试报告同构, 确保生产 session 的 fact 级审计链不丢失)
+async fn drain_old_session(
+    session_ops: Arc<dyn SessionOps>,
+    switcher: SessionSwitchedBroadcaster,
+    db: Arc<WorkspaceDb>,
+    params: DrainParams,
+) {
+    tokio::time::sleep(params.timeout).await;
+
+    // 缺口5: 关闭前 flush + 导出审计链到磁盘
+    let audit_export_path =
+        export_production_audit_chain(&session_ops, params.old_session_id).await;
+
+    match session_ops.close_session(params.old_session_id).await {
+        Ok(()) => {
+            info!(
+                old_session_id = params.old_session_id,
+                audit_export_path = ?audit_export_path,
+                "Old production session closed after drain"
+            );
+            // 缺口5: 记录 session_closed 生命周期节点到 production_audit
+            // test_report_paths 字段在此复用为审计链导出路径
+            // (event_type=session_closed 区分语义, 非沙盒测试报告)
+            if let Some(path) = &audit_export_path {
+                record_session_closed_audit(&db, &params, path);
+            }
+        }
+        Err(e) => {
+            warn!(
+                old_session_id = params.old_session_id,
+                error = %e,
+                "Failed to close old production session after drain timeout"
+            );
+        }
+    }
+    // 通知广播器旧 session 已关闭 (清理订阅通道)
+    switcher.notify_session_closed(params.old_session_id).await;
+}
+
+/// 记录 session_closed 生命周期节点到 production_audit (缺口5, 失败仅告警)
+fn record_session_closed_audit(db: &WorkspaceDb, params: &DrainParams, audit_export_path: &str) {
+    let source_ws_ids = serde_json::json!([params.source_ws_id]).to_string();
+    if let Err(e) = db.insert_production_audit(
+        "session_closed",
+        params.closed_ruleset_version,
+        None,
+        &params.closed_ruleset_hash,
+        params.old_session_id as i64,
+        &source_ws_ids,
+        "system",
+        Some("rolling_swap_drain_complete"),
+        Some(audit_export_path),
+        None,
+    ) {
+        warn!(
+            old_session_id = params.old_session_id,
+            error = %e,
+            "Failed to record session_closed audit event (缺口5)"
+        );
     }
 }
 
@@ -493,7 +579,14 @@ mod tests {
 
         let rules = vec![serde_json::json!({"type": "rollback_rule"})];
         let result = svc
-            .rolling_swap(&rules, "old_hash", "rollback", "admin-1", Some("误触发"), None)
+            .rolling_swap(
+                &rules,
+                "old_hash",
+                "rollback",
+                "admin-1",
+                Some("误触发"),
+                None,
+            )
             .await
             .unwrap();
 

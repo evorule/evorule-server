@@ -27,8 +27,8 @@ use tracing::info;
 use crate::db::WorkspaceDb;
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::models::{
-    PublishQueueItem, PublishRole, PublishStatus, ProductionAuditRecord,
-    ProductionStateRecord, ReviewPublishRequest, RollbackRequest, SubmitPublishRequest,
+    ProductionAuditRecord, ProductionStateRecord, PublishQueueItem, PublishRole, PublishStatus,
+    ReviewPublishRequest, RollbackRequest, SubmitPublishRequest,
 };
 use crate::rolling_session::RollingSessionService;
 
@@ -45,10 +45,7 @@ pub struct PublishService {
 
 impl PublishService {
     /// 创建新服务实例
-    pub fn new(
-        db: Arc<WorkspaceDb>,
-        rolling_session: RollingSessionService,
-    ) -> Self {
+    pub fn new(db: Arc<WorkspaceDb>, rolling_session: RollingSessionService) -> Self {
         Self {
             db,
             rolling_session,
@@ -79,7 +76,10 @@ impl PublishService {
         }
 
         // 校验提交者是 workspace 成员
-        if !self.db.is_workspace_member(&req.workspace_id, submitted_by)? {
+        if !self
+            .db
+            .is_workspace_member(&req.workspace_id, submitted_by)?
+        {
             return Err(WorkspaceError::forbidden(format!(
                 "user {submitted_by} is not a member of workspace {}",
                 req.workspace_id
@@ -93,9 +93,7 @@ impl PublishService {
         }
 
         // 2. 查询规则版本 + 校验所属 workspace + 状态为 Candidate
-        let rule_versions = self
-            .db
-            .get_rule_versions_by_ids(&req.rule_version_ids)?;
+        let rule_versions = self.db.get_rule_versions_by_ids(&req.rule_version_ids)?;
         if rule_versions.len() != req.rule_version_ids.len() {
             return Err(WorkspaceError::not_found(
                 "rule_version",
@@ -179,9 +177,9 @@ impl PublishService {
             None, // ruleset_snapshot (生命周期事件, 无快照)
         )?;
 
-        self.db
-            .get_publish_queue_item(id)?
-            .ok_or_else(|| WorkspaceError::internal("publish_queue item just inserted but not found"))
+        self.db.get_publish_queue_item(id)?.ok_or_else(|| {
+            WorkspaceError::internal("publish_queue item just inserted but not found")
+        })
     }
 
     /// 列出发布队列 (按状态过滤)
@@ -328,11 +326,7 @@ impl PublishService {
     /// 执行发布 (滚动 session 热重载)
     ///
     /// 获取全局发布锁 → 调用 RollingSessionService.rolling_swap
-    async fn execute_publish(
-        &self,
-        queue_id: i64,
-        published_by: &str,
-    ) -> WorkspaceResult<i64> {
+    async fn execute_publish(&self, queue_id: i64, published_by: &str) -> WorkspaceResult<i64> {
         let _lock = self.publish_lock.lock().await;
 
         let item = self
@@ -395,7 +389,10 @@ impl PublishService {
             .db
             .get_production_audit_by_version(req.target_version)?
             .ok_or_else(|| {
-                WorkspaceError::not_found("production_audit (version)", req.target_version.to_string())
+                WorkspaceError::not_found(
+                    "production_audit (version)",
+                    req.target_version.to_string(),
+                )
             })?;
 
         // 3. 从快照加载规则集
@@ -405,9 +402,8 @@ impl PublishService {
                 req.target_version
             ))
         })?;
-        let rules: Vec<Value> = serde_json::from_str(snapshot_str).map_err(|e| {
-            WorkspaceError::internal(format!("parse ruleset_snapshot failed: {e}"))
-        })?;
+        let rules: Vec<Value> = serde_json::from_str(snapshot_str)
+            .map_err(|e| WorkspaceError::internal(format!("parse ruleset_snapshot failed: {e}")))?;
 
         if rules.is_empty() {
             return Err(WorkspaceError::invalid_input(format!(
@@ -448,7 +444,10 @@ impl PublishService {
     }
 
     /// 列出生产审计记录
-    pub async fn list_production_audit(&self, limit: i64) -> WorkspaceResult<Vec<ProductionAuditRecord>> {
+    pub async fn list_production_audit(
+        &self,
+        limit: i64,
+    ) -> WorkspaceResult<Vec<ProductionAuditRecord>> {
         self.db.list_production_audit(limit)
     }
 }
@@ -592,10 +591,7 @@ mod tests {
         // Draft → Candidate
         rule_svc.submit_rule(ws_id, &rule.id).await.unwrap();
         // 获取当前版本 ID
-        let versions = rule_svc
-            .list_rule_versions(ws_id, &rule.id)
-            .await
-            .unwrap();
+        let versions = rule_svc.list_rule_versions(ws_id, &rule.id).await.unwrap();
         versions
             .into_iter()
             .find(|v| v.state == RuleVersionState::Current)

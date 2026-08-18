@@ -14,21 +14,21 @@
 //!
 //! # 方法定义
 //! ## 基础方法 (WORKSPACE_CRATE_DESIGN.md M5)
-//! - [`create_session`]: 创建新会话,返回 session_id
-//! - [`fork_session`]: 从父会话 fork 新会话
-//! - [`close_session`]: 关闭会话
-//! - [`list_sessions`]: 列出所有活跃会话 ID
-//! - [`send_command`]: 向会话发送命令
-//! - [`get_session_state`]: 获取会话当前状态快照
+//! - [`create_session`] — 创建新会话,返回 session_id
+//! - [`fork_session`] — 从父会话 fork 新会话
+//! - [`close_session`] — 关闭会话
+//! - [`list_sessions`] — 列出所有活跃会话 ID
+//! - [`send_command`] — 向会话发送命令
+//! - [`get_session_state`] — 获取会话当前状态快照
 //!
 //! ## 沙盒编排扩展 (SANDBOX_ORCHESTRATION_DESIGN.md §3.2)
-//! - [`get_audit_report`]: 获取审计报告 (含 BLAKE3 链验证)
-//! - [`get_audit_export`]: 获取审计链导出 (JSON 字符串)
-//! - [`get_facts`]: 获取 Fact 列表 (测试报告统计)
-//! - [`get_causal_chain`]: 获取因果链 (Fact 因果追溯)
+//! - [`get_audit_report`] — 获取审计报告 (含 BLAKE3 链验证)
+//! - [`get_audit_export`] — 获取审计链导出 (JSON 字符串)
+//! - [`get_facts`] — 获取 Fact 列表 (测试报告统计)
+//! - [`get_causal_chain`] — 获取因果链 (Fact 因果追溯)
 //!
 //! ## 发布队列扩展 (PUBLISH_QUEUE_DESIGN.md §4)
-//! - [`reload_rules`]: 触发规则热重载 (SessionManager 内部 core_eval 更新)
+//! - [`reload_rules`] — 触发规则热重载 (SessionManager 内部 core_eval 更新)
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -68,11 +68,7 @@ pub trait SessionOps: Send + Sync {
     /// 向指定会话发送命令,返回 fact_id
     ///
     /// `command` 是原始 JSON 指令(如 `{"type":"noop"}`)
-    async fn send_command(
-        &self,
-        session_id: u64,
-        command: Value,
-    ) -> WorkspaceResult<u64>;
+    async fn send_command(&self, session_id: u64, command: Value) -> WorkspaceResult<u64>;
 
     /// 获取会话当前状态快照
     ///
@@ -99,11 +95,7 @@ pub trait SessionOps: Send + Sync {
     /// 获取因果链 (某条 Fact 的因果追溯)
     ///
     /// 返回从根 Fact 到指定 Fact 的因果链 JSON。
-    async fn get_causal_chain(
-        &self,
-        session_id: u64,
-        fact_id: u64,
-    ) -> WorkspaceResult<Value>;
+    async fn get_causal_chain(&self, session_id: u64, fact_id: u64) -> WorkspaceResult<Value>;
 
     // ===== 发布队列扩展 (PUBLISH_QUEUE_DESIGN.md §4) =====
 

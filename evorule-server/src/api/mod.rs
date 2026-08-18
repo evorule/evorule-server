@@ -9,6 +9,7 @@
 //! SessionManager 本身保留在 evorule_governance::session（机制层），
 //! 此处仅包含 HTTP 路由处理（应用层策略）。
 
+pub mod openapi;
 pub mod server;
 
 // H6: main.rs 直接从 `api::server::{...}` 导入所需类型,

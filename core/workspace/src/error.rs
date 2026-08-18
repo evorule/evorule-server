@@ -153,15 +153,14 @@ impl IntoResponse for WorkspaceError {
             WorkspaceError::InvalidInput(msg) => {
                 (StatusCode::BAD_REQUEST, format!("invalid input: {msg}"))
             }
-            WorkspaceError::Unauthorized => {
-                (StatusCode::UNAUTHORIZED, "unauthorized".to_string())
-            }
-            WorkspaceError::Forbidden(msg) => {
-                (StatusCode::FORBIDDEN, format!("forbidden: {msg}"))
-            }
+            WorkspaceError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
+            WorkspaceError::Forbidden(msg) => (StatusCode::FORBIDDEN, format!("forbidden: {msg}")),
             WorkspaceError::DatabaseError(msg) => {
                 tracing::error!(error = %msg, "workspace database error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "database error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "database error".to_string(),
+                )
             }
             WorkspaceError::Internal(msg) => {
                 tracing::error!(error = %msg, "workspace internal error");
@@ -211,7 +210,8 @@ mod tests {
 
     #[test]
     fn test_from_serde_json_error() {
-        let e: serde_json::Error = serde_json::from_str::<serde_json::Value>("bad json").unwrap_err();
+        let e: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("bad json").unwrap_err();
         let we: WorkspaceError = e.into();
         assert!(matches!(we, WorkspaceError::InvalidInput(_)));
     }

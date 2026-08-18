@@ -34,7 +34,8 @@ use crate::db::WorkspaceDb;
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::mock_io_responder::MockIoResponder;
 use crate::models::{
-    SandboxSession, SandboxStatus, StartSandboxRequest, StartSandboxResponse, TestDatasetRecord,
+    RuleVersionRecord, SandboxSession, SandboxStatus, StartSandboxRequest, StartSandboxResponse,
+    TestDatasetRecord,
 };
 use crate::session_bridge::SessionOps;
 use crate::test_report::{TestReport, TestReportBuilder};
@@ -55,10 +56,7 @@ pub struct SandboxService {
 
 impl SandboxService {
     /// 创建新服务实例
-    pub fn new(
-        db: Arc<WorkspaceDb>,
-        session_ops: Arc<dyn SessionOps>,
-    ) -> Self {
+    pub fn new(db: Arc<WorkspaceDb>, session_ops: Arc<dyn SessionOps>) -> Self {
         Self {
             db,
             session_ops,
@@ -85,58 +83,15 @@ impl SandboxService {
         started_by: &str,
     ) -> WorkspaceResult<StartSandboxResponse> {
         // 1. 校验成员权限
-        if !self.db.is_workspace_member(workspace_id, started_by)? {
-            return Err(WorkspaceError::forbidden(format!(
-                "user {started_by} is not a member of workspace {workspace_id}"
-            )));
-        }
+        self.validate_member(workspace_id, started_by)?;
 
-        if req.rule_version_ids.is_empty() {
-            return Err(WorkspaceError::invalid_input(
-                "rule_version_ids must not be empty",
-            ));
-        }
-
-        // 2. 查询规则版本 + 校验所属 workspace
-        let rule_versions = self
-            .db
-            .get_rule_versions_by_ids(&req.rule_version_ids)?;
-        if rule_versions.len() != req.rule_version_ids.len() {
-            let found: Vec<&str> = rule_versions.iter().map(|rv| rv.id.as_str()).collect();
-            return Err(WorkspaceError::not_found(
-                "rule_version",
-                format!(
-                    "requested {} but found {} (ids: {:?})",
-                    req.rule_version_ids.len(),
-                    rule_versions.len(),
-                    found
-                ),
-            ));
-        }
-
-        // 校验每个规则版本所属的 rule 属于该 workspace
-        for rv in &rule_versions {
-            let rule = self.db.get_rule(&rv.rule_id)?;
-            if rule.workspace_id != workspace_id {
-                return Err(WorkspaceError::forbidden(format!(
-                    "rule {} (version {}) does not belong to workspace {}",
-                    rule.id, rv.id, workspace_id
-                )));
-            }
-        }
-
-        // 3. 计算 Draft 规则集 BLAKE3 哈希
+        // 2. 查询规则版本 + 校验所属 workspace + 计算 Draft 规则集 BLAKE3 哈希
+        let rule_versions = self.validate_rule_versions(workspace_id, &req)?;
         let draft_hash = compute_ruleset_hash(&rule_versions);
 
-        // 4. 获取 Production session_id
-        let production_state = self.db.get_production_state()?;
-        let parent_session_id = production_state.current_session_id.ok_or_else(|| {
-            WorkspaceError::internal("production session not initialized (cannot fork sandbox)")
-        })? as u64;
-
-        // 5. Fork Production session
+        // 4. 获取 Production session_id + 5. Fork → 新 sandbox session
+        let parent_session_id = self.get_production_parent_session()?;
         let tcb_session_id = self.session_ops.fork_session(parent_session_id).await?;
-
         info!(
             sandbox_session_id = tcb_session_id,
             parent_session_id = parent_session_id,
@@ -155,7 +110,101 @@ impl SandboxService {
         )?;
 
         // 7. 逐条加载 Draft 规则到 sandbox (send_command transform)
+        self.load_rules_into_sandbox(tcb_session_id, &rule_versions)
+            .await?;
+
+        // 8. 注入合成测试数据
+        let test_cases = self
+            .inject_test_cases(tcb_session_id, workspace_id, &req)
+            .await?;
+
+        // 9. 启动 MockIoResponder
+        let responder = MockIoResponder::new(tcb_session_id);
+        responder.start().await;
+        self.mock_responders
+            .lock()
+            .await
+            .insert(tcb_session_id, responder);
+
+        // 缺口3: 记录 sandbox_started 生命周期节点到 production_audit
+        // 沙盒从生产 session fork, 记录启动时的生产版本上下文, 便于追溯
+        // "哪个生产版本被用来做沙盒测试"。
+        self.record_sandbox_started(workspace_id, started_by, &draft_hash, tcb_session_id)?;
+
+        Ok(StartSandboxResponse {
+            sandbox_id,
+            tcb_session_id,
+            draft_ruleset_hash: draft_hash,
+            test_case_count: test_cases.len(),
+        })
+    }
+
+    /// 校验成员权限
+    fn validate_member(&self, workspace_id: &str, started_by: &str) -> WorkspaceResult<()> {
+        if !self.db.is_workspace_member(workspace_id, started_by)? {
+            return Err(WorkspaceError::forbidden(format!(
+                "user {started_by} is not a member of workspace {workspace_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 查询规则版本 + 校验非空 + 校验每个规则版本所属 workspace
+    fn validate_rule_versions(
+        &self,
+        workspace_id: &str,
+        req: &StartSandboxRequest,
+    ) -> WorkspaceResult<Vec<RuleVersionRecord>> {
+        if req.rule_version_ids.is_empty() {
+            return Err(WorkspaceError::invalid_input(
+                "rule_version_ids must not be empty",
+            ));
+        }
+
+        let rule_versions = self.db.get_rule_versions_by_ids(&req.rule_version_ids)?;
+        if rule_versions.len() != req.rule_version_ids.len() {
+            let found: Vec<&str> = rule_versions.iter().map(|rv| rv.id.as_str()).collect();
+            return Err(WorkspaceError::not_found(
+                "rule_version",
+                format!(
+                    "requested {} but found {} (ids: {:?})",
+                    req.rule_version_ids.len(),
+                    rule_versions.len(),
+                    found
+                ),
+            ));
+        }
+
         for rv in &rule_versions {
+            let rule = self.db.get_rule(&rv.rule_id)?;
+            if rule.workspace_id != workspace_id {
+                return Err(WorkspaceError::forbidden(format!(
+                    "rule {} (version {}) does not belong to workspace {}",
+                    rule.id, rv.id, workspace_id
+                )));
+            }
+        }
+        Ok(rule_versions)
+    }
+
+    /// 获取当前 production session_id (作为 sandbox 的 parent)
+    fn get_production_parent_session(&self) -> WorkspaceResult<u64> {
+        self.db
+            .get_production_state()?
+            .current_session_id
+            .ok_or_else(|| {
+                WorkspaceError::internal("production session not initialized (cannot fork sandbox)")
+            })
+            .map(|id| id as u64)
+    }
+
+    /// 逐条加载 Draft 规则到 sandbox (send_command transform), 失败时关闭 session 并清理
+    async fn load_rules_into_sandbox(
+        &self,
+        tcb_session_id: u64,
+        rule_versions: &[RuleVersionRecord],
+    ) -> WorkspaceResult<()> {
+        for rv in rule_versions {
             let rule_content: Value = serde_json::from_str(&rv.content).map_err(|e| {
                 WorkspaceError::internal(format!(
                     "rule_version {} content is not valid JSON: {e}",
@@ -186,8 +235,16 @@ impl SandboxService {
             sandbox_session_id = tcb_session_id,
             "Draft rules loaded into sandbox"
         );
+        Ok(())
+    }
 
-        // 8. 注入合成测试数据
+    /// 逐条注入合成测试数据, 返回解析后的 test_cases
+    async fn inject_test_cases(
+        &self,
+        tcb_session_id: u64,
+        workspace_id: &str,
+        req: &StartSandboxRequest,
+    ) -> WorkspaceResult<Vec<Value>> {
         let dataset = self
             .db
             .get_test_dataset(req.test_dataset_id)?
@@ -206,7 +263,9 @@ impl SandboxService {
         }
 
         let test_cases: Vec<Value> = serde_json::from_str(&dataset.cases_json).map_err(|e| {
-            WorkspaceError::internal(format!("test_dataset cases_json is not valid JSON array: {e}"))
+            WorkspaceError::internal(format!(
+                "test_dataset cases_json is not valid JSON array: {e}"
+            ))
         })?;
 
         for case in &test_cases {
@@ -223,25 +282,24 @@ impl SandboxService {
             sandbox_session_id = tcb_session_id,
             "Test cases injected into sandbox"
         );
+        Ok(test_cases)
+    }
 
-        // 9. 启动 MockIoResponder
-        let responder = MockIoResponder::new(tcb_session_id);
-        responder.start().await;
-        self.mock_responders
-            .lock()
-            .await
-            .insert(tcb_session_id, responder);
-
-        // 缺口3: 记录 sandbox_started 生命周期节点到 production_audit
-        // 沙盒从生产 session fork, 记录启动时的生产版本上下文, 便于追溯
-        // "哪个生产版本被用来做沙盒测试"。
+    /// 缺口3: 记录 sandbox_started 生命周期节点到 production_audit
+    fn record_sandbox_started(
+        &self,
+        workspace_id: &str,
+        started_by: &str,
+        draft_hash: &str,
+        tcb_session_id: u64,
+    ) -> WorkspaceResult<()> {
         let prod_state = self.db.get_production_state()?;
         let source_ws_ids = serde_json::json!([workspace_id]).to_string();
         self.db.insert_production_audit(
             "sandbox_started",
             prod_state.ruleset_version,
             None,
-            &draft_hash,
+            draft_hash,
             tcb_session_id as i64,
             &source_ws_ids,
             started_by,
@@ -249,13 +307,7 @@ impl SandboxService {
             None,
             None,
         )?;
-
-        Ok(StartSandboxResponse {
-            sandbox_id,
-            tcb_session_id,
-            draft_ruleset_hash: draft_hash,
-            test_case_count: test_cases.len(),
-        })
+        Ok(())
     }
 
     /// 关闭沙盒 (导出 test Fact + 更新状态 + 关闭 session)
@@ -267,11 +319,7 @@ impl SandboxService {
     /// 4. 导出 test Fact (audit/export → JSON 文件)
     /// 5. 关闭 session
     /// 6. 更新 sandbox_sessions 表 (status=closed)
-    pub async fn close_sandbox(
-        &self,
-        sandbox_id: i64,
-        closed_by: &str,
-    ) -> WorkspaceResult<String> {
+    pub async fn close_sandbox(&self, sandbox_id: i64, closed_by: &str) -> WorkspaceResult<String> {
         let sandbox = self
             .db
             .get_sandbox_session(sandbox_id)?
@@ -285,7 +333,10 @@ impl SandboxService {
         }
 
         // 校验成员权限
-        if !self.db.is_workspace_member(&sandbox.workspace_id, closed_by)? {
+        if !self
+            .db
+            .is_workspace_member(&sandbox.workspace_id, closed_by)?
+        {
             return Err(WorkspaceError::forbidden(format!(
                 "user {closed_by} is not a member of workspace {}",
                 sandbox.workspace_id
@@ -310,9 +361,8 @@ impl SandboxService {
         std::fs::create_dir_all(SANDBOX_REPORT_DIR).map_err(|e| {
             WorkspaceError::internal(format!("create sandbox_report dir failed: {e}"))
         })?;
-        std::fs::write(&export_path, &audit_data).map_err(|e| {
-            WorkspaceError::internal(format!("write sandbox export failed: {e}"))
-        })?;
+        std::fs::write(&export_path, &audit_data)
+            .map_err(|e| WorkspaceError::internal(format!("write sandbox export failed: {e}")))?;
 
         // 关闭 session (尽力清理,失败仅告警)
         if let Err(e) = self.session_ops.close_session(tcb_session_id).await {
@@ -377,7 +427,8 @@ impl SandboxService {
 
         // 如果 session 已关闭, audit/facts 可能失败; 用空值兜底
         let state_val = state.unwrap_or_else(|_| serde_json::json!({"status": "closed"}));
-        let audit_val = audit.unwrap_or_else(|_| serde_json::json!({"entry_count": 0, "verified": false}));
+        let audit_val =
+            audit.unwrap_or_else(|_| serde_json::json!({"entry_count": 0, "verified": false}));
         let facts_val = facts.unwrap_or_default();
 
         // 构建测试报告
@@ -601,11 +652,7 @@ mod tests {
         .id
     }
 
-    async fn create_rule(
-        rule_svc: &RuleMetaService,
-        ws_id: &str,
-        name: &str,
-    ) -> RuleVersionRecord {
+    async fn create_rule(rule_svc: &RuleMetaService, ws_id: &str, name: &str) -> RuleVersionRecord {
         let rule = rule_svc
             .create_rule(
                 ws_id,
@@ -665,12 +712,13 @@ mod tests {
         assert_eq!(resp.test_case_count, 2);
 
         // send_command 被调用: 1 次 transform + 2 次 command = 3 次
-        let commands = mock_ops.commands_sent.lock().unwrap();
-        assert_eq!(commands.len(), 3);
-        assert_eq!(commands[0].1["type"], "transform");
-        assert_eq!(commands[1].1["type"], "command");
-        assert_eq!(commands[2].1["type"], "command");
-        drop(commands);
+        {
+            let commands = mock_ops.commands_sent.lock().unwrap();
+            assert_eq!(commands.len(), 3);
+            assert_eq!(commands[0].1["type"], "transform");
+            assert_eq!(commands[1].1["type"], "command");
+            assert_eq!(commands[2].1["type"], "command");
+        }
 
         // 沙盒记录存在且状态为 running
         let sandbox = db.get_sandbox_session(resp.sandbox_id).unwrap().unwrap();

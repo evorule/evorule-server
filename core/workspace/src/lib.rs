@@ -59,9 +59,9 @@ pub use db::WorkspaceDb;
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use models::{
     ProductionAuditRecord, ProductionStateRecord, PublishQueueItem, PublishRole, PublishStatus,
-    RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord, RuleVersionState,
-    SandboxSession, SandboxStatus, SessionBindingState, SessionRecord, TestDatasetRecord,
-    VersionClockMapRecord, VerdictContractRecord, WorkspaceMemberRecord, WorkspaceRecord,
+    RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord, RuleVersionState, SandboxSession,
+    SandboxStatus, SessionBindingState, SessionRecord, TestDatasetRecord, VerdictContractRecord,
+    VersionClockMapRecord, WorkspaceMemberRecord, WorkspaceRecord,
 };
 pub use publish_service::PublishService;
 pub use rolling_session::{RollingSessionService, RollingSwapResult};

@@ -306,6 +306,20 @@ struct Cli {
     /// 启用后 /metrics 端点也需要 Authorization: Bearer <token> 头。
     #[arg(long, env = "EVORULE_METRICS_AUTH")]
     metrics_auth: bool,
+
+    /// 挂载 OpenAPI Swagger UI（默认关闭，避免生产暴露接口面）
+    ///
+    /// 启用后 `GET /api/docs` 提供交互式 API 文档。
+    /// `/api/openapi.json`（单一真相源）始终可用，与此开关无关。
+    #[arg(long, env = "EVORULE_OPENAPI_UI")]
+    openapi_ui: bool,
+
+    /// 启用强制中止会话端点（POST /api/sessions/{id}/abort，默认关闭）
+    ///
+    /// abort 是破坏性操作。双保险：即使认证通过，未显式开启时也不注册该
+    /// 路由（返回 404），防止误触发/滥用。
+    #[arg(long, env = "EVORULE_ALLOW_ABORT")]
+    allow_abort: bool,
 }
 
 /// 合并后的最终配置（CLI > env > file > default）
@@ -346,6 +360,10 @@ struct ResolvedConfig {
     allow_loopback: bool,
     /// S2：/metrics 端点是否需要认证
     metrics_auth: bool,
+    /// 是否挂载 OpenAPI Swagger UI（--openapi-ui）
+    openapi_ui: bool,
+    /// 是否启用强制中止端点（--allow-abort，默认 false）
+    allow_abort: bool,
     /// Workspace 元数据库路径 (P10, 默认 ./data/workspace.db)
     workspace_db: PathBuf,
 }
@@ -410,6 +428,10 @@ impl ResolvedConfig {
             allow_loopback: cli.allow_loopback,
             // S2：从 CLI/环境变量读取 metrics_auth 配置
             metrics_auth: cli.metrics_auth,
+            // OpenAPI Swagger UI 开关（默认 false）
+            openapi_ui: cli.openapi_ui,
+            // abort 破坏性端点开关（默认 false，双保险）
+            allow_abort: cli.allow_abort,
             // P10: workspace 元数据库路径 (独立于业务 db_path)
             workspace_db: cli
                 .workspace_db
@@ -434,10 +456,10 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
             if let Some(i) = n.as_i64() {
                 JsonValue::Integer(i)
             } else {
-                JsonValue::String(n.to_string())
+                JsonValue::String(n.to_string().into())
             }
         }
-        serde_json::Value::String(s) => JsonValue::String(s),
+        serde_json::Value::String(s) => JsonValue::String(s.into()),
         serde_json::Value::Array(arr) => {
             JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
         }
@@ -945,7 +967,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let readiness: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
 
     // 创建跨会话共享事实存储
-    let shared_facts = SharedFactsLog::new();
+    // 当 wal_dir 配置时，从 WAL + metadata 恢复历史共享事实；否则纯内存模式
+    let shared_facts = if let Some(wal_dir) = &cfg.wal_dir {
+        let shared_wal = wal_dir.join("shared_facts.wal");
+        let shared_meta = wal_dir.join("shared_facts_meta.json");
+        match SharedFactsLog::recover(&shared_wal, &shared_meta) {
+            Ok(log) => {
+                info!(
+                    "共享事实 WAL 已恢复：{}（metadata: {}）",
+                    shared_wal.display(),
+                    shared_meta.display()
+                );
+                log
+            }
+            Err(e) => {
+                warn!("共享事实 WAL 恢复失败，退化为纯内存模式：{}", e);
+                SharedFactsLog::new()
+            }
+        }
+    } else {
+        SharedFactsLog::new()
+    };
 
     // P10: 初始化 Workspace 元数据库 + 服务 (多租户工作空间 + 规则元数据管理)
     // workspace_db 独立于业务 db_path,存储 workspace/member/rule/session 元数据。
@@ -988,8 +1030,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rolling_session,
     ));
     // VerdictService: 判定契约 + wall-clock 旁路 (界面升级 v1.0 阶段 A.3/A.4)
-    let verdict_service =
-        Arc::new(evorule_workspace::VerdictService::new(workspace_db.clone()));
+    let verdict_service = Arc::new(evorule_workspace::VerdictService::new(workspace_db.clone()));
     let workspace_state = evorule_workspace::WorkspaceState::new(
         workspace_service,
         rule_meta_service,
@@ -1064,6 +1105,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.allowed_origins.clone(),
         // S2：/metrics 端点是否需要认证（--metrics-auth 控制）
         cfg.metrics_auth,
+        // OpenAPI Swagger UI 开关（--openapi-ui 控制，默认关闭）
+        cfg.openapi_ui,
+        // abort 强制中止端点开关（--allow-abort 控制，默认关闭，双保险）
+        cfg.allow_abort,
     );
 
     info!(
@@ -1094,6 +1139,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.addr
     );
     info!("  审计报告: GET  http://{}/api/audit", cfg.addr);
+    info!("  OpenAPI 规范: GET http://{}/api/openapi.json", cfg.addr);
+    info!(
+        "  Swagger UI: {}",
+        if cfg.openapi_ui {
+            format!("GET http://{}/api/docs", cfg.addr)
+        } else {
+            "未启用（--openapi-ui 开启）".to_string()
+        }
+    );
+    info!(
+        "  强制中止: {}",
+        if cfg.allow_abort {
+            format!(
+                "POST http://{}/api/sessions/{{id}}/abort（已启用 --allow-abort）",
+                cfg.addr
+            )
+        } else {
+            "未启用（--allow-abort 开启后注册，默认关闭双保险）".to_string()
+        }
+    );
     info!(
         "优雅退出：SIGTERM/SIGINT → readiness=false → 等待 {}s",
         GRACEFUL_SHUTDOWN_TIMEOUT.as_secs()
@@ -1552,7 +1617,7 @@ mod tests {
     fn test_serde_to_tcb_string() {
         assert_eq!(
             serde_to_tcb(serde_json::json!("hello")),
-            JsonValue::String("hello".to_string())
+            JsonValue::String("hello".into())
         );
     }
 
@@ -1576,10 +1641,7 @@ mod tests {
         match result {
             JsonValue::Object(map) => {
                 assert_eq!(map.len(), 2);
-                assert_eq!(
-                    map.get("key"),
-                    Some(&JsonValue::String("value".to_string()))
-                );
+                assert_eq!(map.get("key"), Some(&JsonValue::String("value".into())));
             }
             _ => panic!("应是 Object"),
         }

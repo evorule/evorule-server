@@ -22,10 +22,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::models::{
     MemberRole, ProductionAuditRecord, ProductionStateRecord, PublishQueueItem, PublishStatus,
-    RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord, RuleVersionState,
-    SandboxSession, SandboxStatus, SessionBindingState, SessionRecord, TestDatasetRecord,
-    VersionClockMapRecord, VerdictContractRecord, WorkspaceMemberRecord, WorkspaceRecord,
-    WorkspaceState,
+    RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord, RuleVersionState, SandboxSession,
+    SandboxStatus, SessionBindingState, SessionRecord, TestDatasetRecord, VerdictContractRecord,
+    VersionClockMapRecord, WorkspaceMemberRecord, WorkspaceRecord, WorkspaceState,
 };
 
 /// 当前 schema 版本
@@ -86,273 +85,15 @@ impl WorkspaceDb {
     fn migrate(&self) -> WorkspaceResult<()> {
         let conn = self.lock()?;
 
-        // schema_migrations 表必须最先创建
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
-            );",
-        )
-        .map_err(|e| WorkspaceError::DatabaseError(format!("create schema_migrations: {e}")))?;
-
-        // 检查当前版本
-        let current: Option<u32> = conn
-            .query_row(
-                "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| WorkspaceError::DatabaseError(format!("query schema version: {e}")))?
-            .flatten();
-
-        if current.unwrap_or(0) >= SCHEMA_VERSION {
+        create_schema_migrations_table(&conn)?;
+        let current = current_schema_version(&conn)?;
+        if current >= SCHEMA_VERSION {
             return Ok(());
         }
 
-        // 应用迁移 (v1: 创建全部表)
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS workspaces (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                owner_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                archived_at TEXT,
-                state TEXT NOT NULL CHECK(state IN ('active', 'archived')),
-                description TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS workspace_members (
-                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-                user_id TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'editor', 'viewer')),
-                joined_at TEXT NOT NULL,
-                PRIMARY KEY (workspace_id, user_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS rules (
-                id TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-                name TEXT NOT NULL,
-                current_version_id TEXT,
-                state TEXT NOT NULL CHECK(state IN ('draft', 'candidate', 'active', 'blocked', 'archived')),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                archived_at TEXT,
-                description TEXT,
-                created_by TEXT NOT NULL,
-                UNIQUE(workspace_id, name)
-            );
-
-            CREATE TABLE IF NOT EXISTS rule_versions (
-                id TEXT PRIMARY KEY,
-                rule_id TEXT NOT NULL REFERENCES rules(id),
-                version INTEGER NOT NULL,
-                content_hash TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                state TEXT NOT NULL CHECK(state IN ('current', 'superseded')),
-                created_by TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY,
-                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-                rule_id TEXT REFERENCES rules(id),
-                rule_version_id TEXT REFERENCES rule_versions(id),
-                created_at TEXT NOT NULL,
-                closed_at TEXT,
-                created_by TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS rule_session_bindings (
-                id TEXT PRIMARY KEY,
-                rule_version_id TEXT NOT NULL REFERENCES rule_versions(id),
-                session_id INTEGER NOT NULL REFERENCES sessions(id),
-                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-                bound_at TEXT NOT NULL,
-                unbound_at TEXT,
-                state TEXT NOT NULL CHECK(state IN ('bound', 'closed'))
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_rules_workspace ON rules(workspace_id);
-            CREATE INDEX IF NOT EXISTS idx_rule_versions_rule ON rule_versions(rule_id);
-            CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
-            CREATE INDEX IF NOT EXISTS idx_bindings_session ON rule_session_bindings(session_id);
-            CREATE INDEX IF NOT EXISTS idx_bindings_rule_version ON rule_session_bindings(rule_version_id);
-            CREATE INDEX IF NOT EXISTS idx_members_workspace ON workspace_members(workspace_id);
-            ",
-        )
-        .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v1: {e}")))?;
-
-        // 记录 v1
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (1, ?1)",
-            params![now],
-        )
-        .map_err(|e| WorkspaceError::DatabaseError(format!("record migration v1: {e}")))?;
-
-        // 应用 v2 迁移: 沙盒 + 发布队列 + 生产状态/审计 + 测试数据集
-        // (SANDBOX_ORCHESTRATION_DESIGN.md §3 + PUBLISH_QUEUE_DESIGN.md §3/§4/§8)
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS sandbox_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-                tcb_session_id INTEGER,
-                parent_session_id INTEGER NOT NULL,
-                draft_ruleset_hash TEXT,
-                test_dataset_id INTEGER NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('running', 'closed')),
-                started_at TEXT NOT NULL,
-                closed_at TEXT,
-                started_by TEXT NOT NULL,
-                export_path TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_sandbox_workspace ON sandbox_sessions(workspace_id);
-            CREATE INDEX IF NOT EXISTS idx_sandbox_status ON sandbox_sessions(status);
-
-            CREATE TABLE IF NOT EXISTS test_datasets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                workspace_id TEXT REFERENCES workspaces(id),
-                cases_json TEXT NOT NULL,
-                case_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                created_by TEXT NOT NULL,
-                description TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_test_datasets_workspace ON test_datasets(workspace_id);
-
-            CREATE TABLE IF NOT EXISTS publish_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-                final_candidate_rules TEXT NOT NULL,
-                ruleset_hash TEXT NOT NULL,
-                test_report_sandbox_id INTEGER,
-                submitted_by TEXT NOT NULL,
-                submitted_at TEXT NOT NULL,
-                reviewed_by TEXT,
-                reviewed_at TEXT,
-                review_comment TEXT,
-                published_version INTEGER,
-                published_at TEXT,
-                status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'published', 'rejected', 'cancelled')),
-                description TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_publish_queue_status ON publish_queue(status);
-            CREATE INDEX IF NOT EXISTS idx_publish_queue_workspace ON publish_queue(workspace_id);
-            CREATE INDEX IF NOT EXISTS idx_publish_queue_submitted_at ON publish_queue(submitted_at);
-
-            CREATE TABLE IF NOT EXISTS production_state (
-                id INTEGER PRIMARY KEY CHECK(id = 1),
-                current_session_id INTEGER,
-                ruleset_version INTEGER NOT NULL DEFAULT 0,
-                ruleset_hash TEXT,
-                last_operated_by TEXT,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS production_audit (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_type TEXT NOT NULL,
-                ruleset_version INTEGER NOT NULL,
-                previous_version INTEGER,
-                ruleset_hash TEXT NOT NULL,
-                tcb_session_id INTEGER NOT NULL,
-                source_workspace_ids TEXT NOT NULL,
-                operated_by TEXT NOT NULL,
-                operated_at TEXT NOT NULL,
-                reason TEXT,
-                test_report_paths TEXT,
-                ruleset_snapshot TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_production_audit_version ON production_audit(ruleset_version);
-            CREATE INDEX IF NOT EXISTS idx_production_audit_event ON production_audit(event_type);
-
-            -- 初始化 production_state 单行记录 (如果不存在)
-            INSERT OR IGNORE INTO production_state (id, current_session_id, ruleset_version, ruleset_hash, last_operated_by, updated_at)
-            VALUES (1, NULL, 0, NULL, NULL, '1970-01-01T00:00:00Z');
-            ",
-        )
-        .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v2: {e}")))?;
-
-        // 记录 v2
-        let now_v2 = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (2, ?1)",
-            params![now_v2],
-        )
-        .map_err(|e| WorkspaceError::DatabaseError(format!("record migration v2: {e}")))?;
-
-        // 应用 v3 迁移: 判定契约 + wall-clock 旁路映射 + rules.metadata 扩展列
-        // (实施文档_界面升级_v1.0.md §四 阶段 A.1)
-        //
-        // 设计约束 (00_架构边界原则.md §七):
-        //   - verdict_contracts / version_clock_map 属于公共层旁路数据, 绝不进入审计链哈希
-        //   - version_clock_map 仅版本→时间索引, 不写入 evorule 仓/TCB Fact
-        conn.execute_batch(
-            "
-            -- 判定契约表 (workspace 级配置): 条件集合 field/op/value → verdict
-            -- 字段对齐 实施文档 A.1 / A.3 端点契约
-            CREATE TABLE IF NOT EXISTS verdict_contracts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-                name TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                -- 条件集合 JSON: [{field, op, value, verdict}]
-                rules_json TEXT NOT NULL,
-                -- 是否为该 workspace 的默认契约 (每 workspace 至多一条 is_default=1)
-                is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0, 1)),
-                created_by TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(workspace_id, name, version)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_verdict_contracts_workspace
-                ON verdict_contracts(workspace_id);
-            CREATE INDEX IF NOT EXISTS idx_verdict_contracts_default
-                ON verdict_contracts(workspace_id) WHERE is_default = 1;
-
-            -- wall-clock 旁路映射表: 逻辑版本号 → wall-clock
-            -- 绝不写入审计链或参与哈希, 仅应用层查询使用 (00 §六 Fact 无 wall-clock)
-            CREATE TABLE IF NOT EXISTS version_clock_map (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER NOT NULL REFERENCES sessions(id),
-                version INTEGER NOT NULL,
-                wall_clock TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT 'ttd_sidecar',
-                UNIQUE(session_id, version)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_version_clock_session
-                ON version_clock_map(session_id);
-            CREATE INDEX IF NOT EXISTS idx_version_clock_version
-                ON version_clock_map(session_id, version);
-
-            -- rules 表新增 metadata JSON 扩展列 (用于双模式编辑器、来源、标签等可扩展元数据)
-            -- 对既有历史记录使用默认值 '{}', 不破坏现有结构
-            ALTER TABLE rules ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
-            ",
-        )
-        .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v3: {e}")))?;
-
-        // 记录 v3
-        let now_v3 = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (3, ?1)",
-            params![now_v3],
-        )
-        .map_err(|e| WorkspaceError::DatabaseError(format!("record migration v3: {e}")))?;
-
+        migrate_v1(&conn)?;
+        migrate_v2(&conn)?;
+        migrate_v3(&conn)?;
         Ok(())
     }
 
@@ -370,6 +111,270 @@ impl WorkspaceDb {
             .flatten();
         Ok(v.unwrap_or(0) as u32)
     }
+}
+
+/// 创建 schema_migrations 元数据表 (必须最先执行)
+fn create_schema_migrations_table(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("create schema_migrations: {e}")))
+}
+
+/// 查询已应用的最高 schema 版本
+fn current_schema_version(conn: &Connection) -> WorkspaceResult<u32> {
+    let v: Option<u32> = conn
+        .query_row(
+            "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| WorkspaceError::DatabaseError(format!("query schema version: {e}")))?
+        .flatten();
+    Ok(v.unwrap_or(0))
+}
+
+/// 记录已应用的迁移版本
+fn record_migration(conn: &Connection, version: u32) -> WorkspaceResult<()> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+        params![version, now],
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("record migration v{version}: {e}")))?;
+    Ok(())
+}
+
+/// v1 迁移: 创建全部基础表
+fn migrate_v1(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            archived_at TEXT,
+            state TEXT NOT NULL CHECK(state IN ('active', 'archived')),
+            description TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_members (
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'editor', 'viewer')),
+            joined_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS rules (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            name TEXT NOT NULL,
+            current_version_id TEXT,
+            state TEXT NOT NULL CHECK(state IN ('draft', 'candidate', 'active', 'blocked', 'archived')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            archived_at TEXT,
+            description TEXT,
+            created_by TEXT NOT NULL,
+            UNIQUE(workspace_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS rule_versions (
+            id TEXT PRIMARY KEY,
+            rule_id TEXT NOT NULL REFERENCES rules(id),
+            version INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('current', 'superseded')),
+            created_by TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            rule_id TEXT REFERENCES rules(id),
+            rule_version_id TEXT REFERENCES rule_versions(id),
+            created_at TEXT NOT NULL,
+            closed_at TEXT,
+            created_by TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS rule_session_bindings (
+            id TEXT PRIMARY KEY,
+            rule_version_id TEXT NOT NULL REFERENCES rule_versions(id),
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            bound_at TEXT NOT NULL,
+            unbound_at TEXT,
+            state TEXT NOT NULL CHECK(state IN ('bound', 'closed'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rules_workspace ON rules(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_rule_versions_rule ON rule_versions(rule_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_bindings_session ON rule_session_bindings(session_id);
+        CREATE INDEX IF NOT EXISTS idx_bindings_rule_version ON rule_session_bindings(rule_version_id);
+        CREATE INDEX IF NOT EXISTS idx_members_workspace ON workspace_members(workspace_id);
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v1: {e}")))?;
+    record_migration(conn, 1)
+}
+
+/// v2 迁移: 沙盒 + 发布队列 + 生产状态/审计 + 测试数据集
+/// (SANDBOX_ORCHESTRATION_DESIGN.md §3 + PUBLISH_QUEUE_DESIGN.md §3/§4/§8)
+fn migrate_v2(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS sandbox_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            tcb_session_id INTEGER,
+            parent_session_id INTEGER NOT NULL,
+            draft_ruleset_hash TEXT,
+            test_dataset_id INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('running', 'closed')),
+            started_at TEXT NOT NULL,
+            closed_at TEXT,
+            started_by TEXT NOT NULL,
+            export_path TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sandbox_workspace ON sandbox_sessions(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_sandbox_status ON sandbox_sessions(status);
+
+        CREATE TABLE IF NOT EXISTS test_datasets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            workspace_id TEXT REFERENCES workspaces(id),
+            cases_json TEXT NOT NULL,
+            case_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            description TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_test_datasets_workspace ON test_datasets(workspace_id);
+
+        CREATE TABLE IF NOT EXISTS publish_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            final_candidate_rules TEXT NOT NULL,
+            ruleset_hash TEXT NOT NULL,
+            test_report_sandbox_id INTEGER,
+            submitted_by TEXT NOT NULL,
+            submitted_at TEXT NOT NULL,
+            reviewed_by TEXT,
+            reviewed_at TEXT,
+            review_comment TEXT,
+            published_version INTEGER,
+            published_at TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'published', 'rejected', 'cancelled')),
+            description TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_publish_queue_status ON publish_queue(status);
+        CREATE INDEX IF NOT EXISTS idx_publish_queue_workspace ON publish_queue(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_publish_queue_submitted_at ON publish_queue(submitted_at);
+
+        CREATE TABLE IF NOT EXISTS production_state (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            current_session_id INTEGER,
+            ruleset_version INTEGER NOT NULL DEFAULT 0,
+            ruleset_hash TEXT,
+            last_operated_by TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS production_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            ruleset_version INTEGER NOT NULL,
+            previous_version INTEGER,
+            ruleset_hash TEXT NOT NULL,
+            tcb_session_id INTEGER NOT NULL,
+            source_workspace_ids TEXT NOT NULL,
+            operated_by TEXT NOT NULL,
+            operated_at TEXT NOT NULL,
+            reason TEXT,
+            test_report_paths TEXT,
+            ruleset_snapshot TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_production_audit_version ON production_audit(ruleset_version);
+        CREATE INDEX IF NOT EXISTS idx_production_audit_event ON production_audit(event_type);
+
+        -- 初始化 production_state 单行记录 (如果不存在)
+        INSERT OR IGNORE INTO production_state (id, current_session_id, ruleset_version, ruleset_hash, last_operated_by, updated_at)
+        VALUES (1, NULL, 0, NULL, NULL, '1970-01-01T00:00:00Z');
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v2: {e}")))?;
+    record_migration(conn, 2)
+}
+
+/// v3 迁移: 判定契约 + wall-clock 旁路映射 + rules.metadata 扩展列
+/// (实施文档_界面升级_v1.0.md §四 阶段 A.1)
+///
+/// 设计约束 (00_架构边界原则.md §七):
+///   - verdict_contracts / version_clock_map 属于公共层旁路数据, 绝不进入审计链哈希
+///   - version_clock_map 仅版本→时间索引, 不写入 evorule 仓/TCB Fact
+fn migrate_v3(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        -- 判定契约表 (workspace 级配置): 条件集合 field/op/value → verdict
+        -- 字段对齐 实施文档 A.1 / A.3 端点契约
+        CREATE TABLE IF NOT EXISTS verdict_contracts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            name TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            -- 条件集合 JSON: [{field, op, value, verdict}]
+            rules_json TEXT NOT NULL,
+            -- 是否为该 workspace 的默认契约 (每 workspace 至多一条 is_default=1)
+            is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0, 1)),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(workspace_id, name, version)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_verdict_contracts_workspace
+            ON verdict_contracts(workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_verdict_contracts_default
+            ON verdict_contracts(workspace_id) WHERE is_default = 1;
+
+        -- wall-clock 旁路映射表: 逻辑版本号 → wall-clock
+        -- 绝不写入审计链或参与哈希, 仅应用层查询使用 (00 §六 Fact 无 wall-clock)
+        CREATE TABLE IF NOT EXISTS version_clock_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            version INTEGER NOT NULL,
+            wall_clock TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'ttd_sidecar',
+            UNIQUE(session_id, version)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_version_clock_session
+            ON version_clock_map(session_id);
+        CREATE INDEX IF NOT EXISTS idx_version_clock_version
+            ON version_clock_map(session_id, version);
+
+        -- rules 表新增 metadata JSON 扩展列 (用于双模式编辑器、来源、标签等可扩展元数据)
+        -- 对既有历史记录使用默认值 '{}', 不破坏现有结构
+        ALTER TABLE rules ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v3: {e}")))?;
+    record_migration(conn, 3)
 }
 
 // =============================================================================
@@ -408,9 +413,7 @@ impl WorkspaceDb {
                 row_to_workspace,
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    WorkspaceError::not_found("workspace", id)
-                }
+                rusqlite::Error::QueryReturnedNoRows => WorkspaceError::not_found("workspace", id),
                 other => WorkspaceError::from(other),
             })?;
         Ok(ws)
@@ -459,10 +462,7 @@ impl WorkspaceDb {
                 }
                 sets.push("updated_at = ?");
                 params_vec.push(Box::new(now.clone()));
-                let sql = format!(
-                    "UPDATE workspaces SET {} WHERE id = ?",
-                    sets.join(", ")
-                );
+                let sql = format!("UPDATE workspaces SET {} WHERE id = ?", sets.join(", "));
                 params_vec.push(Box::new(id.to_string()));
                 let param_refs: Vec<&dyn rusqlite::ToSql> =
                     params_vec.iter().map(|p| p.as_ref()).collect();
@@ -637,7 +637,10 @@ impl WorkspaceDb {
                     "cannot remove owner from workspace",
                 ));
             }
-            return Err(WorkspaceError::not_found("member", format!("{workspace_id}/{user_id}")));
+            return Err(WorkspaceError::not_found(
+                "member",
+                format!("{workspace_id}/{user_id}"),
+            ));
         }
         Ok(())
     }
@@ -692,11 +695,7 @@ impl WorkspaceDb {
         Ok(r)
     }
 
-    pub fn get_rule_by_name(
-        &self,
-        workspace_id: &str,
-        name: &str,
-    ) -> WorkspaceResult<RuleRecord> {
+    pub fn get_rule_by_name(&self, workspace_id: &str, name: &str) -> WorkspaceResult<RuleRecord> {
         let conn = self.lock()?;
         let r = conn
             .query_row(
@@ -708,10 +707,9 @@ impl WorkspaceDb {
                 row_to_rule,
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => WorkspaceError::not_found(
-                    "rule",
-                    format!("{workspace_id}/{name}"),
-                ),
+                rusqlite::Error::QueryReturnedNoRows => {
+                    WorkspaceError::not_found("rule", format!("{workspace_id}/{name}"))
+                }
                 other => WorkspaceError::from(other),
             })?;
         Ok(r)
@@ -739,11 +737,7 @@ impl WorkspaceDb {
         Ok(out)
     }
 
-    pub fn update_rule_state(
-        &self,
-        id: &str,
-        new_state: RuleState,
-    ) -> WorkspaceResult<RuleRecord> {
+    pub fn update_rule_state(&self, id: &str, new_state: RuleState) -> WorkspaceResult<RuleRecord> {
         {
             let conn = self.lock()?;
             let now = Utc::now().to_rfc3339();
@@ -793,11 +787,9 @@ impl WorkspaceDb {
                 .map_err(WorkspaceError::from)?;
             if affected == 0 {
                 let exists: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM rules WHERE id = ?1",
-                        params![id],
-                        |_| Ok(true),
-                    )
+                    .query_row("SELECT 1 FROM rules WHERE id = ?1", params![id], |_| {
+                        Ok(true)
+                    })
                     .optional()
                     .map_err(WorkspaceError::from)?
                     .unwrap_or(false);
@@ -878,10 +870,7 @@ impl WorkspaceDb {
         Ok(out)
     }
 
-    pub fn get_current_version(
-        &self,
-        rule_id: &str,
-    ) -> WorkspaceResult<Option<RuleVersionRecord>> {
+    pub fn get_current_version(&self, rule_id: &str) -> WorkspaceResult<Option<RuleVersionRecord>> {
         let conn = self.lock()?;
         let rv = conn
             .query_row(
@@ -1134,9 +1123,7 @@ impl WorkspaceDb {
                 row_to_binding,
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    WorkspaceError::not_found("binding", id)
-                }
+                rusqlite::Error::QueryReturnedNoRows => WorkspaceError::not_found("binding", id),
                 other => WorkspaceError::from(other),
             })?
         };
@@ -1240,10 +1227,8 @@ impl WorkspaceDb {
              FROM rules WHERE id IN ({})",
             placeholders.join(", ")
         );
-        let params_vec: Vec<&dyn rusqlite::ToSql> = rule_ids
-            .iter()
-            .map(|s| s as &dyn rusqlite::ToSql)
-            .collect();
+        let params_vec: Vec<&dyn rusqlite::ToSql> =
+            rule_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
         let mut stmt = conn.prepare(&sql).map_err(WorkspaceError::from)?;
         let rows = stmt
             .query_map(params_vec.as_slice(), row_to_rule)
@@ -1267,11 +1252,12 @@ impl WorkspaceDb {
         {
             let conn = self.lock()?;
             let now = Utc::now().to_rfc3339();
-            let affected = conn.execute(
-                "UPDATE rules SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
-                params![metadata, now, rule_id],
-            )
-            .map_err(WorkspaceError::from)?;
+            let affected = conn
+                .execute(
+                    "UPDATE rules SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![metadata, now, rule_id],
+                )
+                .map_err(WorkspaceError::from)?;
             if affected == 0 {
                 return Err(WorkspaceError::not_found("rule", rule_id));
             }
@@ -1335,7 +1321,10 @@ impl WorkspaceDb {
     }
 
     /// 列出 workspace 的沙盒会话 (按启动时间降序)
-    pub fn list_sandbox_sessions(&self, workspace_id: &str) -> WorkspaceResult<Vec<SandboxSession>> {
+    pub fn list_sandbox_sessions(
+        &self,
+        workspace_id: &str,
+    ) -> WorkspaceResult<Vec<SandboxSession>> {
         let conn = self.lock()?;
         let mut stmt = conn
             .prepare(
@@ -1357,11 +1346,7 @@ impl WorkspaceDb {
     }
 
     /// 关闭沙盒会话 (status → closed, 填充 closed_at + export_path)
-    pub fn close_sandbox_session(
-        &self,
-        id: i64,
-        export_path: &str,
-    ) -> WorkspaceResult<()> {
+    pub fn close_sandbox_session(&self, id: i64, export_path: &str) -> WorkspaceResult<()> {
         let conn = self.lock()?;
         let now = Utc::now().to_rfc3339();
         let affected = conn
@@ -1373,7 +1358,10 @@ impl WorkspaceDb {
             )
             .map_err(WorkspaceError::from)?;
         if affected == 0 {
-            return Err(WorkspaceError::not_found("sandbox (running)", id.to_string()));
+            return Err(WorkspaceError::not_found(
+                "sandbox (running)",
+                id.to_string(),
+            ));
         }
         Ok(())
     }
@@ -1402,7 +1390,15 @@ impl WorkspaceDb {
             "INSERT INTO test_datasets
                 (name, workspace_id, cases_json, case_count, created_at, created_by, description)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![name, workspace_id, cases_json, case_count, now, created_by, description],
+            params![
+                name,
+                workspace_id,
+                cases_json,
+                case_count,
+                now,
+                created_by,
+                description
+            ],
         )
         .map_err(WorkspaceError::from)?;
         Ok(conn.last_insert_rowid())
@@ -1495,7 +1491,13 @@ impl WorkspaceDb {
                  last_operated_by = ?4,
                  updated_at = ?5
              WHERE id = 1",
-            params![new_session_id, new_ruleset_version, new_ruleset_hash, operated_by, now],
+            params![
+                new_session_id,
+                new_ruleset_version,
+                new_ruleset_hash,
+                operated_by,
+                now
+            ],
         )
         .map_err(WorkspaceError::from)?;
         Ok(())
@@ -1723,7 +1725,10 @@ impl WorkspaceDb {
             )
             .map_err(WorkspaceError::from)?;
         if affected == 0 {
-            return Err(WorkspaceError::not_found("publish_queue (approved)", id.to_string()));
+            return Err(WorkspaceError::not_found(
+                "publish_queue (approved)",
+                id.to_string(),
+            ));
         }
         Ok(())
     }
@@ -1885,8 +1890,9 @@ impl WorkspaceDb {
             }
 
             if let Some(rj) = rules_json {
-                serde_json::from_str::<serde_json::Value>(rj)
-                    .map_err(|e| WorkspaceError::invalid_input(format!("invalid rules_json: {e}")))?;
+                serde_json::from_str::<serde_json::Value>(rj).map_err(|e| {
+                    WorkspaceError::invalid_input(format!("invalid rules_json: {e}"))
+                })?;
                 conn.execute(
                     "UPDATE verdict_contracts SET rules_json = ?1, updated_at = ?2 WHERE id = ?3",
                     params![rj, now, id],
@@ -1918,7 +1924,10 @@ impl WorkspaceDb {
             .execute("DELETE FROM verdict_contracts WHERE id = ?1", params![id])
             .map_err(WorkspaceError::from)?;
         if affected == 0 {
-            return Err(WorkspaceError::not_found("verdict_contract", id.to_string()));
+            return Err(WorkspaceError::not_found(
+                "verdict_contract",
+                id.to_string(),
+            ));
         }
         Ok(())
     }
@@ -1996,7 +2005,9 @@ impl WorkspaceDb {
 
 /// 解析 RFC3339 时间字符串
 fn parse_dt(s: String) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(&s).map(|dt| dt.with_timezone(&Utc)).unwrap_or_else(|_| Utc::now())
+    DateTime::parse_from_rfc3339(&s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
 }
 
 /// workspaces 表行映射
@@ -2320,13 +2331,13 @@ mod tests {
         assert_eq!(fetched.state, RuleState::Draft);
 
         // get by name
-        let by_name = db
-            .get_rule_by_name(&ws.id, "rule-1")
-            .unwrap();
+        let by_name = db.get_rule_by_name(&ws.id, "rule-1").unwrap();
         assert_eq!(by_name.id, rule.id);
 
         // 状态机: Draft -> Candidate -> Active
-        let candidate = db.update_rule_state(&rule.id, RuleState::Candidate).unwrap();
+        let candidate = db
+            .update_rule_state(&rule.id, RuleState::Candidate)
+            .unwrap();
         assert_eq!(candidate.state, RuleState::Candidate);
         let active = db.update_rule_state(&rule.id, RuleState::Active).unwrap();
         assert_eq!(active.state, RuleState::Active);
