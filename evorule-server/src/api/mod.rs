@@ -11,6 +11,8 @@
 
 pub mod openapi;
 pub mod server;
+pub mod permissions;
+pub mod bundles;
 
 // H6: main.rs 直接从 `api::server::{...}` 导入所需类型,
 // 此处不再 `pub use` 重导出（mod api 是 private 的,外部 crate 无法访问）。

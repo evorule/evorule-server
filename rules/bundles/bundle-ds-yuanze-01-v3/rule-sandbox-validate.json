@@ -1,0 +1,58 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "sandbox_validate",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.__io_results__.call_service",
+              "type": "exists"
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "_sandbox_args.candidate_rule",
+                  "operation": "set",
+                  "value": "__exec__.payload.audit.generated_patch_raw"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_sandbox_args.test_cases",
+                  "operation": "set",
+                  "value": "__exec__.payload.audit.compacted_log"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "args": "__exec__.payload._sandbox_args",
+                  "io_type": "call_service",
+                  "service_name": "rule_sandbox"
+                },
+                "type": "io_request"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "audit.sandbox_verdict",
+                  "operation": "set",
+                  "value": "__exec__.payload.__io_results__.call_service"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

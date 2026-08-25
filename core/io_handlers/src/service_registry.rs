@@ -51,6 +51,20 @@ pub struct ServiceEntry {
     pub method: String,
     pub headers: BTreeMap<String, String>,
     pub timeout_ms: Option<i64>,
+    /// 服务业务版本（C4，可选；server 侧 /api/services 能力对账用，缺省 None 向前兼容）
+    pub version: Option<String>,
+    /// 服务描述（可选；能力对账展示用）
+    pub description: Option<String>,
+}
+
+/// 服务元数据（C5：/api/services 能力对账只读视图；name 保序确定性）
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ServiceMeta {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// 服务注册中心
@@ -111,6 +125,23 @@ impl ServiceRegistry {
     /// 按名称查找条目
     pub fn get(&self, name: &str) -> Option<&ServiceEntry> {
         self.entries.get(name)
+    }
+
+    /// 已注册服务名列表（server 侧服务绑定核对用；BTreeMap 保序 → 确定性）
+    pub fn service_names(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
+    /// 服务元数据列表（C5：server 侧 /api/services 能力对账用）
+    pub fn service_metadata(&self) -> Vec<ServiceMeta> {
+        self.entries
+            .iter()
+            .map(|(name, e)| ServiceMeta {
+                name: name.clone(),
+                version: e.version.clone(),
+                description: e.description.clone(),
+            })
+            .collect()
     }
 
     /// 已注册条目数量
@@ -182,6 +213,11 @@ fn parse_service_entry(name: &str, val: &serde_json::Value) -> Result<ServiceEnt
         method,
         headers,
         timeout_ms,
+        version: obj.get("version").and_then(|v| v.as_str()).map(String::from),
+        description: obj
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     })
 }
 

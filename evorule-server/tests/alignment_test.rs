@@ -60,7 +60,7 @@ fn build_deep_nesting(levels: usize) -> String {
         inner = serde_json::json!({
             "type": "branch",
             "params": {
-                "domain": { "type": "all", "domains": [] },
+                "domain": { "type": "all", "inner": [] },
                 "on_true": [inner],
                 "on_false": []
             }
@@ -75,7 +75,7 @@ fn ux_gate_matches_authoritative_validation() {
     let valid = r#"{
         "transform": [
             { "type": "set", "params": { "attr": "x", "operation": "set", "value": 42 } },
-            { "type": "branch", "params": { "domain": { "type": "all", "domains": [] }, "on_true": [] } }
+            { "type": "branch", "params": { "domain": { "type": "all", "inner": [] }, "on_true": [] } }
         ]
     }"#;
     assert_agrees(valid, "valid_shallow", true);
@@ -94,15 +94,16 @@ fn ux_gate_matches_authoritative_validation() {
 #[test]
 fn documented_depth_boundary_relationship() {
     // 深度边界钉住（对"核心仓调整嵌套深度限制"最灵敏的探测器）:
-    // 当前 UX 递归上限 64 > 权威 branch 嵌套上限 8（从深度 0 起算），
-    // 故 10 层嵌套 branch（最深 depth 9 > 8）落在两者之间: UX 放行、权威拒绝
-    // （非对称，设计如此——权威是最终拦截者）。
-    // 若核心仓上调/下调 MAX_NESTING_DEPTH 使该边界翻转（核心仓一改即 CI 变红），
-    // 请先同步 workspace 门禁口径（G7 / 常量区注释），再更新本断言。
+    // P2-02 已将 governance MAX_NESTING_DEPTH 从 8 对齐到 64（与 UX 递归上限、
+    // TCB MAX_BRANCH_DEPTH 三方一致），故 10 层嵌套 branch（深度 10 < 64）
+    // 双方均放行——原先"UX 放行、权威拒绝"的非对称边界已消除，此处改为
+    // 钉住"对齐后一致放行"。
+    // 若核心仓调整嵌套上限使该关系翻转，请先同步 workspace 门禁口径（G7 / 常量区注释），
+    // 再更新本断言。
     let depth10 = build_deep_nesting(10);
     let (ux, auth) = verdict(&depth10);
     assert!(
-        ux && !auth,
+        ux && auth,
         "深度边界语料已失效 [depth_10]: UX 门禁={ux} vs 权威校验={auth} —— 核心仓可能已调整嵌套深度上限, 请核对 workspace 门禁口径"
     );
 }

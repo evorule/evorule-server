@@ -680,6 +680,37 @@ pub struct ProductionAuditRecord {
 }
 
 // =============================================================================
+
+/// bundle 导入溯源记录 (bundle_imports 表, T5)
+///
+/// 记录执行侧导入治理层快照包的历史。确定性硬约束 (00_架构边界原则.md §七):
+/// bundle_id / source_version 为逻辑标识可入溯源元数据; imported_at 为**管理元数据**
+/// (墙钟旁路), 绝不渗入 fact / 内容哈希 / 审计验证链 (审计链哈希不受此记录影响)。
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct BundleImportRecord {
+    /// 记录 ID (自增)
+    pub id: i64,
+    /// 快照包 ID
+    pub bundle_id: String,
+    /// 数据集 ID
+    pub dataset_id: String,
+    /// 快照源版本 (v1 / v2 / v2.p1)
+    pub source_version: String,
+    /// 版本选择模式 (`auto_by_effective_date` | `pinned`, 与 evorule-bundle 枚举 snake_case 一致)
+    pub selection_mode: String,
+    /// pinned 已解析版本 (None = auto 模式)
+    pub resolved_version: Option<String>,
+    /// 快照全包防篡改哈希 (blake3)
+    pub content_hash: String,
+    /// 条目数
+    pub entry_count: i64,
+    /// 导入时间 (管理元数据, 墙钟旁路)
+    pub imported_at: DateTime<Utc>,
+    /// 溯源主体: 治理侧导出者 exported_by (发布链发布者), fallback "system"
+    pub imported_by: String,
+}
+
+// =============================================================================
 // 判定契约 (verdict_contracts 表) — 界面升级 v1.0 阶段 A.1
 // =============================================================================
 

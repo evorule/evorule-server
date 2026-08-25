@@ -1,0 +1,59 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "validate_precision",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "payload.service_result.converged_ok",
+              "type": "eq",
+              "value": true
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "audit.pending_alert.error",
+                  "operation": "set",
+                  "value": "Service result out of tolerance"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.pending_alert.residual",
+                  "operation": "set",
+                  "value": "__exec__.payload.service_result.residual"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.pending_alert.threshold",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.max_allowed_residual"
+                },
+                "type": "set"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "audit.pending_alert",
+                  "operation": "set",
+                  "value": null
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

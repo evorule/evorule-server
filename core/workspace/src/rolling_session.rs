@@ -284,6 +284,19 @@ impl RollingSessionService {
         if is_first_publish {
             return self.create_first_session().await;
         }
+
+        // 前置缺陷修复: server 重启后 SessionManager 为内存态, production_state 持久化的
+        // current_session_id 可能已失效。旧生产 session 不存在时回退为"首次发布"新建 session,
+        // 避免 fork 404 阻塞发布 (原实现直接 fork → 404 session not found, 首个发布必失败)。
+        let current_session_id = current_state.current_session_id.unwrap_or(0) as u64;
+        if !self.session_ops.session_exists(current_session_id).await {
+            warn!(
+                current_session_id = current_session_id,
+                "Production session no longer exists (likely after server restart); falling back to creating a fresh production session"
+            );
+            return self.create_first_session().await;
+        }
+
         self.fork_and_switch(current_state, rules, ruleset_hash, source_workspace_id)
             .await
     }
@@ -459,6 +472,7 @@ mod tests {
     use super::*;
     use crate::db::WorkspaceDb;
     use async_trait::async_trait;
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
 
@@ -468,6 +482,8 @@ mod tests {
         /// 共享的 reload 计数器 (测试可直接读取)
         reload_counter: Arc<AtomicU64>,
         closed: Mutex<Vec<u64>>,
+        /// 已创建的 session id (session_exists 依据)
+        created: Mutex<HashSet<u64>>,
     }
 
     impl MockSessionOps {
@@ -477,6 +493,7 @@ mod tests {
                 next_id: AtomicU64::new(start_id),
                 reload_counter: reload_counter.clone(),
                 closed: Mutex::new(Vec::new()),
+                created: Mutex::new(HashSet::new()),
             };
             (ops, reload_counter)
         }
@@ -485,10 +502,17 @@ mod tests {
     #[async_trait]
     impl SessionOps for MockSessionOps {
         async fn create_session(&self) -> WorkspaceResult<u64> {
-            Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            self.created.lock().unwrap().insert(id);
+            Ok(id)
         }
         async fn fork_session(&self, _parent: u64) -> WorkspaceResult<u64> {
-            Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            self.created.lock().unwrap().insert(id);
+            Ok(id)
+        }
+        async fn session_exists(&self, session_id: u64) -> bool {
+            self.created.lock().unwrap().contains(&session_id)
         }
         async fn close_session(&self, id: u64) -> WorkspaceResult<()> {
             self.closed.lock().unwrap().push(id);
@@ -596,6 +620,31 @@ mod tests {
         let audit = db.get_production_audit_by_version(1).unwrap().unwrap();
         assert_eq!(audit.event_type, "ruleset_rollback");
         assert_eq!(audit.reason.as_deref(), Some("误触发"));
+    }
+
+    #[tokio::test]
+    async fn test_rolling_swap_falls_back_to_create_when_production_session_missing() {
+        // 前置缺陷修复回归: production_state 引用的 session 已失效 (如 server 重启后内存态丢失),
+        // 发布应回退为"首次发布"新建 session, 而非 fork 404 失败。
+        let db = make_db_with_production_session(100); // 引用 session 100, 但 mock 从未创建
+        let (mock, _reload_counter) = MockSessionOps::new(200);
+        let ops: Arc<dyn SessionOps> = Arc::new(mock);
+        let switcher = SessionSwitchedBroadcaster::new();
+        let svc = RollingSessionService::new(db.clone(), ops, switcher);
+
+        let rules = vec![serde_json::json!({"type": "noop"})];
+        let result = svc
+            .rolling_swap(&rules, "hash_v1", "ws-test", "admin-1", None, None)
+            .await
+            .unwrap();
+
+        // 回退新建 session (200), 版本递增 0 → 1
+        assert_eq!(result.new_session_id, 200);
+        assert_eq!(result.new_ruleset_version, 1);
+
+        let state = db.get_production_state().unwrap();
+        assert_eq!(state.ruleset_version, 1);
+        assert_eq!(state.current_session_id, Some(200));
     }
 
     #[tokio::test]

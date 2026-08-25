@@ -49,6 +49,8 @@ use evorule_io_handlers::{
     DbHandler, HttpHandler, MemoryHandler, ServiceRegistry, ServiceRegistryHandler,
     StatementWhitelist, WhitelistedDbHandler,
 };
+// Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
+use evorule_demo_services::DemoServiceRouter;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
@@ -839,6 +841,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => ServiceRegistry::empty(),
     };
     let reg_count = registry.len();
+    // 服务绑定核对集（T6）：注册表服务名注入 SessionApi，与原生叶子能力并集
+    let registry_names = registry.service_names();
     if reg_count == 0 {
         warn!(
             "ServiceRegistry 为空 — call_service/call_external 会返回 'unknown service_name'，\
@@ -860,13 +864,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         HttpHandler::new()
     });
-    let svc_handler = Arc::new(ServiceRegistryHandler::new(registry, http.clone()));
+    let svc_handler = Arc::new(ServiceRegistryHandler::new(registry.clone(), http.clone()));
+    // Phase 1: yuanze-demos 业务服务走原生实现（进程内确定性执行），
+    // 未命中的 service_name 回落 svc_handler（HTTP service_registry）。
+    let demo_router = Arc::new(DemoServiceRouter::new(svc_handler.clone()));
     let memory = Arc::new(MemoryHandler::new(cfg.memory_dir.clone()));
     let db_wrapped = WhitelistedDbHandler::new(db, statement_whitelist);
     let dispatcher = IoDispatcher::builder()
-        .register(IoType::call_external(), svc_handler.clone())
+        .register(IoType::call_external(), demo_router.clone())
         .register(IoType::http_get(), http.clone())
-        .register(IoType::call_service(), svc_handler)
+        .register(IoType::call_service(), demo_router)
         .register(IoType::query_db(), Arc::new(db_wrapped))
         .register(IoType::save_memory(), memory)
         .build();
@@ -960,7 +967,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.core_eval.clone(),
         cfg.rules_dir.clone(),
     )
-    .with_dispatcher(session_dispatcher);
+    .with_dispatcher(session_dispatcher)
+    .with_bound_services(registry_names)
+    // C5/C6：注册表显式绑定元数据（version/description）注入，供 /api/services 能力对账
+    // 与 sensitive 服务绑定核对使用（02 方案服务契约三层闭环 层3）。
+    .with_registry_services(registry.service_metadata());
     session_api.start_reaper();
 
     // 创建 readiness flag（优雅退出时设为 false）
@@ -1003,6 +1014,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace_db = evorule_workspace::WorkspaceDb::open(&cfg.workspace_db)
         .map_err(|e| format!("workspace db 初始化失败: {}", e))?;
     let workspace_db = Arc::new(workspace_db);
+    // T5: 把 workspace 元数据库注入 SessionApi，使 bundle 导入时写入审计溯源（bundle_imports 表，
+    // 管理元数据墙钟旁路，不参与 fact/哈希/审计验证链）。须在 workspace_db 创建后、AppState 组装前注入。
+    let session_api = session_api.with_workspace_db(workspace_db.clone());
     let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(session_api.clone());
     let workspace_service = Arc::new(evorule_workspace::WorkspaceService::new(
         workspace_db.clone(),

@@ -1,0 +1,74 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "audit_alert",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.__io_results__.call_service",
+              "type": "exists"
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "_llm_args.model",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.model"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_llm_args.tpl_alert",
+                  "operation": "set",
+                  "value": "__exec__.payload.audit.pending_alert"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_llm_args.tpl_snapshot",
+                  "operation": "set",
+                  "value": "__exec__.payload.audit.input_snapshot"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "args": "__exec__.payload._llm_args",
+                  "io_type": "call_service",
+                  "service_name": "llm_advisor"
+                },
+                "type": "io_request"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "alert_sent",
+                  "operation": "set",
+                  "value": true
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.alert_llm_suggestion",
+                  "operation": "set",
+                  "value": "__exec__.payload.__io_results__.call_service"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

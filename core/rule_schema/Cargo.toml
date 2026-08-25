@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-rule-schema"
+version.workspace = true
+edition = "2021"
+description = "EvoRule 规则 Schema 门禁 —— 基于固化的 evorule-system-rules v1.0 Schema 的确定性校验"
+license = "AGPL-3.0-or-later"
+repository = "https://gitee.com/evorule/evorule-server"
+publish = false
+homepage = "https://gitee.com/evorule/evorule-server"
+
+[lints]
+# 继承顶层 [workspace.lints] (C4 forbid unsafe / C5 unwrap·expect·panic = deny)
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 校验器静态缓存（workspace MSRV 1.74，std LazyLock 需 1.80，用 once_cell）
+once_cell = "1"
+# JSON Schema 2020-12 校验器（Draft202012）。schema 源文件: schemas/ 下三个固化文件。
+jsonschema = "0.21"
+
+[build-dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+# 测试用真实规则文件路径常量（跨仓一致性由 scripts/check_schema_sync.py 守护）

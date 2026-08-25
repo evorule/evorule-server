@@ -1,0 +1,58 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "robot_move",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.__io_results__.call_service",
+              "type": "exists"
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "_robot_args.joints",
+                  "operation": "set",
+                  "value": "__exec__.payload.service_result.joint_positions"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_robot_args.speed",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.speed"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "args": "__exec__.payload._robot_args",
+                  "io_type": "call_service",
+                  "service_name": "__exec__.instruction.params.service_name"
+                },
+                "type": "io_request"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "move_result",
+                  "operation": "set",
+                  "value": "__exec__.payload.__io_results__.call_service"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

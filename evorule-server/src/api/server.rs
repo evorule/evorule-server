@@ -30,6 +30,9 @@ use crate::auth::AuthConfig;
 use crate::input_sanitizer::InputSanitizer;
 use axum::http::Method;
 
+use evorule_demo_services::DemoServiceRouter;
+use evorule_io_handlers::ServiceMeta;
+
 use evorule_governance::auditor::Auditor;
 
 use evorule_governance::metrics::SharedMetrics;
@@ -51,6 +54,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use std::sync::atomic::AtomicBool;
+
+use std::collections::HashSet;
 
 use std::sync::Arc;
 
@@ -144,7 +149,7 @@ impl GovernanceApi {
     }
 
     /// 获取审计报告
-    pub async fn audit_report(&self) -> String {
+    pub async fn audit_report(&self) -> Result<String, serde_json::Error> {
         let auditor = self.auditor.lock().await;
 
         auditor.report()
@@ -219,6 +224,28 @@ pub struct SessionApi {
 
     /// None 时 session 的 IoRequest 无人处理（纯计算场景）
     dispatcher: Option<IoDispatcher>,
+
+    /// workspace 元数据库（T5：bundle 导入审计溯源 bundle_imports 表）
+    ///
+    /// 仅用于写入/查询**管理元数据**（墙钟旁路），绝不参与 fact / 内容哈希 / 审计验证链。
+    /// 未接线（None）时不记录 bundle 导入溯源（如单元测试环境）。
+    workspace_db: Option<Arc<evorule_workspace::WorkspaceDb>>,
+
+    /// 执行侧已绑定服务名集合（T6 阻断项 ①：import_bundle 服务绑定核对）
+    ///
+    /// = 原生叶子能力（evorule-demo-services `NATIVE_SERVICE_NAMES`）+ 注册表
+    /// （service_registry.json）的并集。`import_bundle` 校验 bundle 声明的服务必须
+    /// ⊆ 本集合，缺失则**显式失败**（不静默，防"治理侧声明、执行侧未绑定 →
+    /// 运行时 unknown service_name"）。`with_bound_services` 按并集语义追加。
+    bound_services: Arc<HashSet<String>>,
+
+    /// 注册表（service_registry.json）显式绑定的服务元数据（C5/C6）
+    ///
+    /// - C5：`GET /api/services` 能力对账的来源 `registry` 条目（带 version/description）；
+    /// - C6：声明 `sensitive=true` 的服务必须 ∈ 本集合（注册表显式绑定，含端点/凭据配置位），
+    ///   仅原生内嵌不满足敏感服务要求 → import 显式失败（不静默）。
+    /// 原生服务（`NATIVE_SERVICE_NAMES`）由 `DemoServiceRouter` 恒在，不在此列表。
+    registry_services: Arc<Vec<ServiceMeta>>,
 }
 
 impl SessionApi {
@@ -369,6 +396,18 @@ impl SessionApi {
             rules_dir,
 
             dispatcher: None,
+
+            workspace_db: None,
+
+            // 默认绑定 = 原生叶子能力（Phase 1 demo-services 是二进制硬依赖，始终可路由）
+            bound_services: Arc::new(
+                DemoServiceRouter::native_service_names()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            // 注册表显式绑定元数据：默认空（C5/C6；由 with_registry_services 注入）
+            registry_services: Arc::new(Vec::new()),
         }
     }
 
@@ -381,6 +420,39 @@ impl SessionApi {
     ///
     pub fn with_dispatcher(mut self, dispatcher: IoDispatcher) -> Self {
         self.dispatcher = Some(dispatcher);
+
+        self
+    }
+
+    /// 追加执行侧已绑定服务（builder 模式，T6 服务绑定核对）
+    ///
+    /// **并集语义**：原生叶子能力（`NATIVE_SERVICE_NAMES`）始终在集合内，
+    /// 此处追加注册表（service_registry.json）/额外绑定，避免调用方重复枚举原生服务。
+    pub fn with_bound_services<I: IntoIterator<Item = String>>(mut self, names: I) -> Self {
+        let mut set = (*self.bound_services).clone();
+        set.extend(names);
+        self.bound_services = Arc::new(set);
+
+        self
+    }
+
+    /// 注入注册表显式绑定的服务元数据（builder 模式，C5/C6）
+    ///
+    /// 来自 service_registry.json 的条目（含 version/description）。`bound_services`
+    /// 的并集追加调用方自行处理；此处仅记录注册表条目（C6 敏感核对 + C5 能力对账）。
+    pub fn with_registry_services<I: IntoIterator<Item = ServiceMeta>>(mut self, metas: I) -> Self {
+        let mut v = (*self.registry_services).clone();
+        v.extend(metas);
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+        self.registry_services = Arc::new(v);
+        self
+    }
+
+    /// 注入 workspace 元数据库（builder 模式, T5 bundle 导入溯源）
+    ///
+    /// 仅用于管理元数据旁路（bundle_imports 表），不参与 fact / 哈希 / 审计链。
+    pub fn with_workspace_db(mut self, workspace_db: Arc<evorule_workspace::WorkspaceDb>) -> Self {
+        self.workspace_db = Some(workspace_db);
 
         self
     }
@@ -629,7 +701,8 @@ impl SessionApi {
         Ok(tcb)
     }
 
-    /// 扫描业务规则目录，按文件名字典序加载所有 *.json 的 transform 数组。
+    /// 扫描业务规则目录（递归，含 `rules/bundles/{bundle_id}/` 子目录，T3），按完整路径
+    /// 字典序加载所有 *.json 的 transform 数组（确定性加载顺序；排除 `bundle_manifest.json`）。
     ///
     ///
     /// 目录不存在或读取失败时返回空 Vec（不报错）；单个文件解析失败时
@@ -641,29 +714,16 @@ impl SessionApi {
             return Vec::new();
         }
 
-        let Ok(read_dir) = std::fs::read_dir(rules_dir) else {
-            return Vec::new();
-        };
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
 
-        let mut entries: Vec<std::path::PathBuf> = Vec::new();
+        Self::collect_json_files_recursive(rules_dir, &mut paths);
 
-        for entry in read_dir.flatten() {
-            let p = entry.path();
-
-            if p.extension().map(|e| e == "json").unwrap_or(false) && p.is_file() {
-                entries.push(p);
-            }
-        }
-
-        entries.sort_by(|a, b| {
-            a.file_name()
-                .unwrap_or_default()
-                .cmp(b.file_name().unwrap_or_default())
-        });
+        // 完整路径字典序 = 确定性（bundles/ 子目录条目按路径自然归位）
+        paths.sort();
 
         let mut out: Vec<JsonValue> = Vec::new();
 
-        for p in entries {
+        for p in paths {
             if let Some(extra) = Self::parse_rule_file(&p) {
                 out.extend(extra);
             }
@@ -672,12 +732,49 @@ impl SessionApi {
         out
     }
 
+    /// 递归收集规则 .json 文件路径（T3）：跳过子目录的 manifest，其余按目录展开
+    fn collect_json_files_recursive(
+        dir: &std::path::Path,
+        out: &mut Vec<std::path::PathBuf>,
+    ) {
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                // 跳过隐藏目录（T4：`.tmp/.bak/.stale` 等临时/备份目录不参与加载）
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.starts_with('.') {
+                    continue;
+                }
+                Self::collect_json_files_recursive(&p, out);
+            } else if p.extension().map(|e| e == "json").unwrap_or(false)
+                && p.file_name()
+                    .map(|n| n != crate::api::bundles::BUNDLE_MANIFEST_FILE)
+                    .unwrap_or(true)
+            {
+                out.push(p);
+            }
+        }
+    }
+
     /// 读取并解析单个业务规则文件，返回其 transform 数组。
     ///
     ///
     /// 文件读取/解析失败或格式不符时 warn 并返回 None（fail-soft，保证热重载可用性）。
     ///
     fn parse_rule_file(p: &std::path::Path) -> Option<Vec<JsonValue>> {
+        let json = Self::load_rule_doc(p)?;
+        let arr = Self::extract_transform_array(p, &json)?;
+        if !Self::passes_schema_gate(p, &arr) {
+            return None;
+        }
+        Some(arr.into_iter().map(serde_to_tcb).collect())
+    }
+
+    /// 读取规则文件并解析为 JSON；失败时 warn 并返回 None
+    fn load_rule_doc(p: &std::path::Path) -> Option<serde_json::Value> {
         let raw = match std::fs::read_to_string(p) {
             Ok(s) => s,
 
@@ -688,27 +785,389 @@ impl SessionApi {
             }
         };
 
-        let json: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
+        match serde_json::from_str(&raw) {
+            Ok(v) => Some(v),
 
             Err(e) => {
                 tracing::warn!("解析业务规则文件 {} 失败: {}，已跳过", p.display(), e);
 
-                return None;
+                None
             }
-        };
+        }
+    }
 
+    /// 从规则文档中提取 transform 数组（兼容 {transform:[]} 与裸 transform 数组两种形态）
+    fn extract_transform_array(
+        p: &std::path::Path,
+        json: &serde_json::Value,
+    ) -> Option<Vec<serde_json::Value>> {
         if let Some(arr) = json.get("transform").and_then(|x| x.as_array()) {
-            Some(arr.iter().cloned().map(serde_to_tcb).collect())
-        } else if let Some(arr) = json.as_array() {
-            Some(arr.iter().cloned().map(serde_to_tcb).collect())
-        } else {
-            tracing::warn!(
-                "业务规则文件 {} 既不是 {{transform:[]}} 也不是 transform 数组，已跳过",
-                p.display()
-            );
+            return Some(arr.to_vec());
+        }
+        if let Some(arr) = json.as_array() {
+            return Some(arr.to_vec());
+        }
+        tracing::warn!(
+            "业务规则文件 {} 既不是 {{transform:[]}} 也不是 transform 数组，已跳过",
+            p.display()
+        );
+        None
+    }
 
-            None
+    /// Schema 门禁（线1 防御层, records/77）：校验引擎原生结构，非法时 warn 并拒绝加载
+    fn passes_schema_gate(p: &std::path::Path, arr: &[serde_json::Value]) -> bool {
+        // P2-04/P2-05：启动/热重载加载业务规则时即校验引擎原生结构（元指令白名单、必填参数、
+        // 域结构等），拦截含不支持元指令或结构非法的规则并 warn 跳过——避免"启动照常、运行时才
+        // 崩溃"（TCB 只保证确定性执行，不保证用户规则正确性；防御在 server 层）。
+        let schema_report =
+            evorule_rule_schema::validate_transform_list(&serde_json::Value::Array(arr.to_vec()));
+        if !schema_report.valid {
+            let detail = schema_report.errors.join("; ");
+            tracing::warn!(
+                "业务规则文件 {} 未通过 Schema 门禁（引擎原生结构非法，参见固化 rule_set v1.0 Schema），已跳过: {}",
+                p.display(),
+                detail
+            );
+            return false;
+        }
+        true
+    }
+
+    /// T2: 导入快照包（36 号 集成契约）—— 6 项硬校验 → 逐条 Schema 门禁 → 服务绑定核对
+    /// → 原子落盘 → 触发 reload。
+    ///
+    /// - 任一硬校验失败 → `Err`（显式报错，不静默跳过，T0/35 号 §9）；
+    /// - `dry_run=true` 只跑校验链（6 项 + Schema 门禁 + 服务绑定核对），不落盘不 reload；
+    /// - 返回 [evorule_bundle::ImportResult]（校验通过后的运行配置）。
+    pub async fn import_bundle(
+        &self,
+        bundle: &evorule_bundle::DatasetBundle,
+        dry_run: bool,
+    ) -> Result<evorule_bundle::ImportResult, String> {
+        // ① 6 项硬校验（schema → 防篡改 → 版本链 → 符号三方一致 → 版本解析 → 闸门一证据）
+        let result = evorule_bundle::BundleImporter::validate(bundle)
+            .map_err(|e| format!("快照包校验失败（不静默）: {e}"))?;
+
+        // ② 第 7 项逐条 Schema 门禁（硬失败，防 loader fail-soft 静默跳过非法规则）
+        for entry in &bundle.entries {
+            let report = evorule_rule_schema::validate_rule_input(&entry.rule_body);
+            if !report.valid {
+                return Err(format!(
+                    "条目 `{}` 未通过 Schema 门禁（引擎原生结构非法）: {}",
+                    entry.entry_id,
+                    report.errors.join("; ")
+                ));
+            }
+        }
+
+        // ③ 第 8 项执行侧服务绑定核对（T6 阻断项 ①）：bundle 声明的服务必须已绑定，
+        // 缺失 → **显式失败**（不静默）。防"治理侧声明 / 执行侧未绑定 → 运行时
+        // unknown service_name"（35 号 三层绑定：执行侧 service_registry 绑定）。
+        // 核对集 = 原生叶子能力 + service_registry.json（`with_bound_services` 注入）。
+        if let Some(dd) = &bundle.data_dependencies {
+            let missing: Vec<&str> = dd
+                .services
+                .iter()
+                .map(|s| s.service_name.as_str())
+                .filter(|name| !self.bound_services.contains(*name))
+                .collect();
+            if !missing.is_empty() {
+                let mut bound: Vec<&str> = self.bound_services.iter().map(String::as_str).collect();
+                bound.sort_unstable();
+                return Err(format!(
+                    "快照包声明了执行侧未绑定的服务（不静默）: {}；当前已绑定: {}",
+                    missing.join(", "),
+                    bound.join(", ")
+                ));
+            }
+
+            // C6（02 方案层 3）：声明 sensitive=true 的服务必须**注册表显式绑定**
+            // （service_registry.json，端点/凭据配置位），仅原生内嵌不满足敏感服务要求
+            // （涉及凭据的服务必须可由运维显式配置/核对）。未经注册表绑定 → 显式失败（不静默）。
+            let registry_names: HashSet<&str> = self
+                .registry_services
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect();
+            let sensitive_unbound: Vec<&str> = dd
+                .services
+                .iter()
+                .filter(|s| s.sensitive)
+                .map(|s| s.service_name.as_str())
+                .filter(|name| !registry_names.contains(name))
+                .collect();
+            if !sensitive_unbound.is_empty() {
+                let mut reg: Vec<&str> = registry_names.iter().copied().collect();
+                reg.sort_unstable();
+                return Err(format!(
+                    "快照包声明了 sensitive 服务但执行侧未在 service_registry 显式绑定（不静默）: {}；当前注册表: {}",
+                    sensitive_unbound.join(", "),
+                    reg.join(", ")
+                ));
+            }
+        }
+
+        if dry_run {
+            return Ok(result);
+        }
+
+        // ④ 原子落盘（临时目录 → rename，失败清理无半成品；含 bundle_manifest.json）
+        self.land_bundle_atomically(bundle, &result)?;
+
+        // ⑤ 触发既有 reload 链（新会话使用新规则；已存在会话不改 TCB 语义）
+        self.reload_from_disk().await?;
+
+        // ⑥ T5 审计溯源：bundle 导入历史写入 workspace 元数据库（bundle_imports 表）。
+        // 管理元数据（imported_at 墙钟旁路），绝不渗入 fact / 内容哈希 / 审计验证链。
+        // 写入失败 → 显式 Err（不静默掩盖审计缺失，35 号 §9）；bundle 落盘已完成但溯源
+        // 未记录，调用方需知悉。溯源主体沿用治理侧导出者 exported_by（发布链发布者），
+        // 缺省 fallback "system"。
+        if let Some(ws_db) = &self.workspace_db {
+            let imported_by = if bundle.audit.exported_by.is_empty() {
+                "system".to_string()
+            } else {
+                bundle.audit.exported_by.clone()
+            };
+            ws_db
+                .insert_bundle_import(
+                    &bundle.bundle_id,
+                    &result.dataset_id,
+                    &result.source_version,
+                    result.selection_mode.as_str(),
+                    result.resolved_version.as_deref(),
+                    &bundle.audit.content_hash,
+                    result.entry_count as i64,
+                    &imported_by,
+                )
+                .map_err(|e| format!("bundle 导入溯源写入失败（不静默）: {e}"))?;
+        }
+
+        Ok(result)
+    }
+
+    /// T4: 列出当前激活的 bundle（读 `rules/bundles/*/bundle_manifest.json`）。
+    ///
+    /// - 目录不存在 → 空列表（非错误）；
+    /// - manifest 读取/解析失败 → **显式 Err**（不静默跳过，防激活状态被掩盖，
+    ///   符合"透明可审计不静默"原则）；
+    /// - 按 dataset_id 字典序稳定排序。
+    pub fn active_bundles(&self) -> Result<Vec<crate::api::bundles::BundleManifest>, String> {
+        let base = self.rules_dir.join("bundles");
+        if !base.exists() {
+            return Ok(Vec::new());
+        }
+        let read_dir = std::fs::read_dir(&base)
+            .map_err(|e| format!("读取 bundles 目录失败: {e}"))?;
+        let mut out = Vec::new();
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') {
+                continue; // 临时/备份目录
+            }
+            let manifest_path = p.join(crate::api::bundles::BUNDLE_MANIFEST_FILE);
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("读取 `{}` 失败: {e}", manifest_path.display()))?;
+            let m: crate::api::bundles::BundleManifest = serde_json::from_str(&raw)
+                .map_err(|e| format!("解析 `{}` 失败: {e}", manifest_path.display()))?;
+            out.push(m);
+        }
+        out.sort_by(|a, b| a.dataset_id.cmp(&b.dataset_id));
+        Ok(out)
+    }
+
+    /// T5: 列出 bundle 导入溯源记录（bundle_imports 表, 按导入时间倒序, 限制条数）。
+    ///
+    /// - workspace 元数据库未接线（None）→ 空列表（非错误，未启用溯源）；
+    /// - 查询失败 → **显式 Err**（不静默，35 号 §9）。
+    pub fn list_bundle_imports(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<evorule_workspace::BundleImportRecord>, String> {
+        match &self.workspace_db {
+            Some(ws_db) => ws_db
+                .list_bundle_imports(limit)
+                .map_err(|e| format!("读取 bundle 导入溯源失败（不静默）: {e}")),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// 原子落盘：`rules/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
+    /// + `bundle_manifest.json`（T3：版本语义/法规基准/哈希/条目→文件映射）。
+    ///
+    /// - 同 dataset 再次导入 → 替换旧 bundle 目录（单激活替换语义，T4 细化）；
+    /// - 写入失败 → 清理临时目录，无半成品；
+    /// - rename 失败 → 回滚恢复旧版。
+    fn land_bundle_atomically(
+        &self,
+        bundle: &evorule_bundle::DatasetBundle,
+        result: &evorule_bundle::ImportResult,
+    ) -> Result<(), String> {
+        if bundle.bundle_id.is_empty()
+            || bundle.bundle_id.contains(['/', '\\'])
+            || bundle.bundle_id.contains("..")
+        {
+            return Err(format!("非法 bundle_id `{}`（拒绝路径穿越）", bundle.bundle_id));
+        }
+
+        let base = self.rules_dir.join("bundles");
+        let target = base.join(&bundle.bundle_id);
+        let tmp = base.join(format!(".{}.tmp", bundle.bundle_id));
+        let backup = base.join(format!(".{}.bak", bundle.bundle_id));
+
+        // 清理上次残留的临时/备份目录
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&backup);
+        std::fs::create_dir_all(&tmp)
+            .map_err(|e| format!("创建临时目录失败: {e}"))?;
+
+        // 写入条目（任一失败 → 清理临时目录，不留半成品）
+        let write_result = (|| -> Result<(), String> {
+            for entry in &bundle.entries {
+                if entry.entry_id.is_empty()
+                    || entry.entry_id.contains(['/', '\\'])
+                    || entry.entry_id.contains("..")
+                {
+                    return Err(format!(
+                        "条目 `{}` 含非法路径字符（拒绝写入）",
+                        entry.entry_id
+                    ));
+                }
+                let doc = serde_json::to_string_pretty(&entry.rule_body)
+                    .map_err(|e| format!("序列化条目 `{}` 失败: {e}", entry.entry_id))?;
+                std::fs::write(tmp.join(format!("{}.json", entry.entry_id)), doc)
+                    .map_err(|e| format!("写入条目 `{}` 失败: {e}", entry.entry_id))?;
+            }
+            // T3: 写 manifest（与条目同目录，随原子替换一并落盘）
+            let manifest = crate::api::bundles::BundleManifest {
+                bundle_id: bundle.bundle_id.clone(),
+                dataset_id: result.dataset_id.clone(),
+                source_version: result.source_version.clone(),
+                selection_mode: result.selection_mode,
+                resolved_version: result.resolved_version.clone(),
+                effective_from: bundle
+                    .dataset
+                    .law_ref
+                    .as_ref()
+                    .and_then(|l| l.effective_from.clone()),
+                content_hash: bundle.audit.content_hash.clone(),
+                entry_files: bundle
+                    .entries
+                    .iter()
+                    .map(|e| crate::api::bundles::EntryFileManifest {
+                        entry_id: e.entry_id.clone(),
+                        file: format!("{}.json", e.entry_id),
+                    })
+                    .collect(),
+            };
+            let manifest_json = serde_json::to_string_pretty(&manifest)
+                .map_err(|e| format!("序列化 bundle_manifest.json 失败: {e}"))?;
+            std::fs::write(tmp.join(crate::api::bundles::BUNDLE_MANIFEST_FILE), manifest_json)
+                .map_err(|e| format!("写入 bundle_manifest.json 失败: {e}"))?;
+            Ok(())
+        })();
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+
+        // T4: 收集同 dataset 的旧 bundle 目录（不同 bundle_id），单激活替换
+        let stale_dirs =
+            Self::find_same_dataset_stale_dirs(&base, &result.dataset_id, &bundle.bundle_id);
+
+        // 原子替换：旧版先移走为备份，新版本 rename 就位后清理备份；任一失败回滚
+        let mut moved: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new(); // (原路径, 备份路径)
+        // 1) 同 bundle_id 旧目录
+        if target.exists() {
+            std::fs::rename(&target, &backup).map_err(|e| {
+                let _ = std::fs::remove_dir_all(&tmp);
+                format!("移走旧版 bundle 目录失败: {e}")
+            })?;
+            moved.push((target.clone(), backup.clone()));
+        }
+        // 2) 同 dataset 的其它旧 bundle 目录（单激活替换：仅最新激活）
+        for (i, stale) in stale_dirs.iter().enumerate() {
+            let stale_bak = base.join(format!(".stale.{}.{}", bundle.bundle_id, i));
+            let _ = std::fs::remove_dir_all(&stale_bak);
+            if let Err(e) = std::fs::rename(stale, &stale_bak) {
+                Self::rollback_bundle_moves(&moved);
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(format!(
+                    "移走同 dataset 旧 bundle `{}` 失败（已回滚）: {e}",
+                    stale.display()
+                ));
+            }
+            moved.push((stale.clone(), stale_bak));
+        }
+        // 3) 新版本就位
+        if let Err(e) = std::fs::rename(&tmp, &target) {
+            Self::rollback_bundle_moves(&moved);
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!("原子落盘 rename 失败（已回滚）: {e}"));
+        }
+        // 4) 清理备份（隐藏目录：loader 已跳过 `.` 前缀，残留不污染加载）
+        for (_, bak) in &moved {
+            let _ = std::fs::remove_dir_all(bak);
+        }
+
+        tracing::info!(
+            bundle_id = %bundle.bundle_id,
+            dataset_id = %result.dataset_id,
+            entry_count = bundle.entries.len(),
+            replaced_stale = stale_dirs.len(),
+            "bundle 已原子落盘（单激活替换）"
+        );
+        Ok(())
+    }
+
+    /// 找出 base 下与指定 dataset 相同（且 bundle_id 不同）的旧 bundle 目录（T4 单激活）。
+    ///
+    /// 跳过隐藏目录（临时/备份目录）与不含 manifest 的目录；manifest 读取失败静默跳过。
+    fn find_same_dataset_stale_dirs(
+        base: &std::path::Path,
+        dataset_id: &str,
+        bundle_id: &str,
+    ) -> Vec<std::path::PathBuf> {
+        let Ok(read_dir) = std::fs::read_dir(base) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') {
+                continue; // 临时/备份目录
+            }
+            let manifest_path = p.join(crate::api::bundles::BUNDLE_MANIFEST_FILE);
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            let Ok(m) = serde_json::from_str::<crate::api::bundles::BundleManifest>(&raw) else {
+                continue;
+            };
+            if m.dataset_id == dataset_id && m.bundle_id != bundle_id {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// 回滚 bundle 落盘的目录移动：按逆序把备份目录还原到原路径
+    fn rollback_bundle_moves(moved: &[(std::path::PathBuf, std::path::PathBuf)]) {
+        for (orig, bak) in moved.iter().rev() {
+            let _ = std::fs::rename(bak, orig);
         }
     }
 }
@@ -821,6 +1280,10 @@ impl evorule_workspace::SessionOps for SessionApi {
         }
     }
 
+    async fn session_exists(&self, session_id: u64) -> bool {
+        self.sessions.lock().await.get_session(session_id).is_some()
+    }
+
     async fn list_sessions(&self) -> evorule_workspace::WorkspaceResult<Vec<u64>> {
         let sessions = self.sessions.lock().await;
 
@@ -920,7 +1383,9 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         let _new_count = session.audit_new();
 
-        let report_str = session.audit_report();
+        let report_str = session.audit_report().map_err(|e| {
+            evorule_workspace::WorkspaceError::internal(format!("audit report failed: {e}"))
+        })?;
 
         let report: serde_json::Value = serde_json::from_str(&report_str).map_err(|e| {
             evorule_workspace::WorkspaceError::internal(format!("audit parse failed: {e}"))
@@ -959,7 +1424,9 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         let _new_count = session.audit_new();
 
-        Ok(session.audit_export())
+        Ok(session.audit_export().map_err(|e| {
+            evorule_workspace::WorkspaceError::internal(format!("audit export failed: {e}"))
+        })?)
     }
 
     /// 获取 Fact 列表 (用于测试报告统计)
@@ -2307,6 +2774,21 @@ async fn submit_command(
         metrics.inc_commands(cmd_type);
     }
 
+    // Opt3：指令层结构门禁（线1 防御层, records/77）。与 session_command 同口径，
+    // 提交即校验并拦截结构非法指令（单数 __io_result__ / 坏路径 / 非法控制流结构）。
+    let schema_report = evorule_rule_schema::validate_command_instruction(&instruction_value);
+    if !schema_report.valid {
+        let detail = schema_report.errors.join("; ");
+        tracing::warn!("submit_command 未通过 Schema 门禁，已拒绝提交: {detail}");
+        return Ok(Json(ApiResponse {
+            success: false,
+            message: format!(
+                "指令未通过 Schema 门禁（引擎原生结构非法，参见固化 rule_set v1.0 Schema，records/77）: {detail}"
+            ),
+            fact_id: None,
+        }));
+    }
+
     let instruction = serde_to_tcb(instruction_value);
     match api.send_command(instruction) {
         Ok(id) => Ok(Json(ApiResponse {
@@ -2439,15 +2921,18 @@ async fn get_state(State(api): State<GovernanceApi>) -> Json<serde_json::Value> 
 
 )]
 
-async fn get_audit(State(api): State<GovernanceApi>) -> Json<serde_json::Value> {
+async fn get_audit(State(api): State<GovernanceApi>) -> Result<Json<serde_json::Value>, StatusCode> {
     api.audit_new().await;
 
-    let report = api.audit_report().await;
+    let report = api.audit_report().await.map_err(|e| {
+        tracing::error!(error = %e, "audit report failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     match serde_json::from_str::<serde_json::Value>(&report) {
-        Ok(json) => Json(json),
+        Ok(json) => Ok(Json(json)),
 
-        Err(_) => Json(serde_json::Value::String(report)),
+        Err(_) => Ok(Json(serde_json::Value::String(report))),
     }
 }
 
@@ -2961,6 +3446,26 @@ async fn session_command(
         metrics.inc_commands(cmd_type);
     }
 
+    // Opt3：指令层结构门禁（线1 防御层, records/77）。
+    // 提交即校验（双层语言分派：元指令层 transform_rule / 指令层 instruction），
+    // 拦截单数 __io_result__、坏路径、非法控制流结构——避免"提交照常、运行时才崩溃"。
+    // 拒绝返回 success:false + 明确原因，指令不进引擎（TCB 只保证确定性执行，不保证正确性）。
+    let schema_report = evorule_rule_schema::validate_command_instruction(&instruction_value);
+    if !schema_report.valid {
+        let detail = schema_report.errors.join("; ");
+        tracing::warn!(
+            session_id = session_id,
+            "session_command 未通过 Schema 门禁，已拒绝提交: {detail}"
+        );
+        return Ok(Json(ApiResponse {
+            success: false,
+            message: format!(
+                "指令未通过 Schema 门禁（引擎原生结构非法，参见固化 rule_set v1.0 Schema，records/77）: {detail}"
+            ),
+            fact_id: None,
+        }));
+    }
+
     let id = api.next_id();
     let instruction = serde_to_tcb(instruction_value);
 
@@ -3138,10 +3643,15 @@ async fn session_audit(
 
     let _new_count = session.audit_new();
 
-    let report_str = session.audit_report();
+    let report_str = session.audit_report().map_err(|e| {
+        tracing::error!(session_id, "audit report failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    let report: serde_json::Value = serde_json::from_str(&report_str)
-        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+    let report: serde_json::Value = serde_json::from_str(&report_str).map_err(|e| {
+        tracing::error!(session_id, "audit report parse failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // 重新映射字段名以符合 API 文档规范
 
@@ -3220,10 +3730,15 @@ async fn session_audit_verify(
 
     // 获取审计报告以提取更多信息
 
-    let report_str = session.audit_report();
+    let report_str = session.audit_report().map_err(|e| {
+        tracing::error!(session_id, "audit report failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    let report: serde_json::Value = serde_json::from_str(&report_str)
-        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+    let report: serde_json::Value = serde_json::from_str(&report_str).map_err(|e| {
+        tracing::error!(session_id, "audit report parse failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(serde_json::json!({
 
@@ -3363,10 +3878,15 @@ async fn session_audit_export(
 
     let _new_count = session.audit_new();
 
-    let export_str = session.audit_export();
+    let export_str = session.audit_export().map_err(|e| {
+        tracing::error!(session_id, "audit export failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    let export: serde_json::Value = serde_json::from_str(&export_str)
-        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+    let export: serde_json::Value = serde_json::from_str(&export_str).map_err(|e| {
+        tracing::error!(session_id, "audit export parse failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(export))
 }
@@ -5654,7 +6174,10 @@ impl GovernanceServer {
             .route("/api/rules/validate", post(validate_rules_handler))
             // OpenAPI 单一真相源：仅暴露规范元数据（无业务数据），故免认证，
             // 便于前端 codegen 与运维查阅。Swagger UI 交互界面由 --openapi-ui 单独控制。
-            .route("/api/openapi.json", get(crate::api::openapi::openapi_json));
+            .route("/api/openapi.json", get(crate::api::openapi::openapi_json))
+            // C5：执行侧已绑定服务能力对账（仅只读能力元数据，不改状态）——
+            // 供场景包导入前服务需求预检与治理侧服务目录（GET /v1/services）核对。
+            .route("/api/services", get(list_services_handler));
 
         // abort 破坏性端点双保险：即使认证通过也默认拒绝，仅 --allow-abort 显式
         // 开启后才挂载该路由（默认不注册 → 404）。空 Router merge 无副作用。
@@ -5759,6 +6282,27 @@ impl GovernanceServer {
             // 未认证用户不应触发（DoS 风险 + rules_dir 可写时注入恶意规则）。
             .route("/api/rules/reload", post(reload_rules_handler))
             .route("/api/rules", get(get_rules))
+            // T2: 快照包导入端点（36 号 集成契约）——写 rules_dir 的运营操作，走受保护路由
+            .route(
+                "/api/bundles/import",
+                post(crate::api::bundles::import_bundle_handler),
+            )
+            .route(
+                "/api/bundles/import/dry-run",
+                post(crate::api::bundles::import_bundle_dry_run_handler),
+            )
+            // T4: 报告当前激活 bundle（版本语义运行配置只读）
+            .route(
+                "/api/bundles/active",
+                get(crate::api::bundles::active_bundles_handler),
+            )
+            // T5: bundle 导入溯源记录（bundle_imports 表, 只读审计查询）
+            .route(
+                "/api/bundles/imports",
+                get(crate::api::bundles::list_bundle_imports_handler),
+            )
+            // 权限管理端点族（A-流 权限系统，受认证保护）
+            .merge(crate::api::permissions::permissions_router())
             // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)
             .merge(evorule_workspace::build_workspace_router())
             // abort 双保险：条件挂载（--allow-abort 关闭时为空 Router）
@@ -5985,6 +6529,47 @@ async fn get_rules(State(api): State<SessionApi>) -> Result<Json<RulesResponse>,
     }))
 }
 
+/// 执行侧已绑定服务信息（C5：`GET /api/services` 能力对账）
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BoundServiceInfo {
+    pub name: String,
+    /// `native`（内嵌 demo-services 叶子能力）| `registry`（service_registry.json 显式绑定）
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// GET /api/services —— 执行侧已绑定服务能力对账（C5）
+///
+/// 返回执行侧可路由服务全集：原生叶子能力（`native`，version=1.0.0）+
+/// service_registry.json（`registry`，带配置的 version/description）。
+/// 供场景包导入前的服务需求预检（02 方案 §3.5）与治理侧服务目录
+/// （`GET /v1/services`）做服务需求核对。
+pub async fn list_services_handler(
+    State(api): State<SessionApi>,
+) -> Json<Vec<BoundServiceInfo>> {
+    let mut out: Vec<BoundServiceInfo> = DemoServiceRouter::native_service_names()
+        .iter()
+        .map(|name| BoundServiceInfo {
+            name: (*name).to_string(),
+            source: "native".to_string(),
+            version: Some("1.0.0".to_string()),
+            description: None,
+        })
+        .collect();
+    for meta in api.registry_services.iter() {
+        out.push(BoundServiceInfo {
+            name: meta.name.clone(),
+            source: "registry".to_string(),
+            version: meta.version.clone(),
+            description: meta.description.clone(),
+        });
+    }
+    Json(out)
+}
+
 /// 校验结果响应（与 core ValidationResult 字段一致）
 ///
 ///
@@ -6129,6 +6714,57 @@ pub struct ValidateRulesRequest {
 async fn validate_rules_handler(
     Json(req): Json<ValidateRulesRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    // === Schema 门禁（线1 防御层, records/77）===
+    // 以固化 rule_set v1.0 Schema 为权威基准，先拦截引擎原生结构非法的规则，
+    // 再走 governance 详细校验。防止结构非法规则被误判/静默放行。
+    let parsed: serde_json::Value = match serde_json::from_str(&req.rules) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("JSON 解析失败: {e}"),
+                    "passed": false
+                })),
+            ));
+        }
+    };
+
+    // 输入形态归一化（与 governance extract_transforms 口径一致）：
+    // - { "transform": [...] } → 校验 transform 数组
+    // - [...] → 校验数组
+    // - {type:...} 单对象 → 视为单条 transform，包装为数组
+    if !parsed.is_object() && !parsed.is_array() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "JSON 必须是对象或数组",
+                "passed": false
+            })),
+        ));
+    }
+
+    let schema_report = if let Some(arr) = parsed.get("transform").and_then(|v| v.as_array()) {
+        evorule_rule_schema::validate_transform_list(&serde_json::Value::Array(arr.clone()))
+    } else if parsed.is_array() {
+        evorule_rule_schema::validate_transform_list(&parsed)
+    } else {
+        // 单条 transform 对象 → 包装为数组再校验
+        evorule_rule_schema::validate_transform_list(&serde_json::json!([parsed.clone()]))
+    };
+
+    if !schema_report.valid {
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "passed": false,
+                "schema_gate": "failed",
+                "schema_errors": schema_report.errors,
+                "message": "规则未通过 Schema 门禁（引擎原生结构非法，参见固化 rule_set v1.0 Schema，records/77）"
+            })),
+        ));
+    }
+
     match evorule_governance::rule_validation::validate_rules_from_json(&req.rules) {
         Ok(result) => {
             let json = serde_json::to_value(&result).unwrap_or_default();
@@ -6668,15 +7304,11 @@ mod tests {
 
         assert_eq!(body["passed"], false);
 
-        // 应有 "non_empty" 校验项报错
+        // Schema 门禁:空 transform 数组被拒（minItems=1）
 
-        let checks = &body["static_validation"]["checks"];
+        assert_eq!(body["schema_gate"], "failed");
 
-        assert!(checks
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["name"] == "non_empty" && c["passed"] == false));
+        assert!(!body["schema_errors"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -6692,7 +7324,15 @@ mod tests {
 
         assert_eq!(body["passed"], false);
 
-        assert!(body["summary"]["total_errors"].as_u64().unwrap() > 0);
+        // Schema 门禁:缺 type 字段被拒（transform_rule 必填 type）
+
+        assert_eq!(body["schema_gate"], "failed");
+
+        assert!(body["schema_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.as_str().unwrap().contains("type")));
     }
 
     #[tokio::test]
@@ -6708,15 +7348,15 @@ mod tests {
 
         assert_eq!(body["passed"], false);
 
-        // 应有 "type_valid" 校验项报错
+        // Schema 门禁:未知 type 被拒（type 枚举仅 6 元指令）
 
-        let checks = &body["static_validation"]["checks"];
+        assert_eq!(body["schema_gate"], "failed");
 
-        assert!(checks
+        assert!(body["schema_errors"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c["name"] == "type_valid" && c["passed"] == false));
+            .any(|e| e.as_str().unwrap().contains("unknown_type")));
     }
 
     #[tokio::test]
@@ -6733,15 +7373,15 @@ mod tests {
 
         assert_eq!(body["passed"], false);
 
-        // params_complete 应报错
+        // Schema 门禁:set 缺 operation/value 被拒（必填）
 
-        let checks = &body["static_validation"]["checks"];
+        assert_eq!(body["schema_gate"], "failed");
 
-        assert!(checks
+        assert!(body["schema_errors"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c["name"] == "params_complete" && c["level"] == "error"));
+            .any(|e| e.as_str().unwrap().contains("required")));
     }
 
     #[tokio::test]
@@ -6788,8 +7428,8 @@ mod tests {
 
     #[tokio::test]
 
-    async fn test_validate_increment_missing_delta() {
-        // increment 指令缺少必填参数 delta
+    async fn test_validate_increment_transform_type_rejected() {
+        // increment 是指令层类型，不是元指令层 transform 类型（P0-01），Schema 门禁应拒绝
 
         let (status, body) =
             call_validate(r#"{"transform":[{"type":"increment","params":{"attr":"x"}}]}"#)
@@ -6799,6 +7439,8 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
         assert_eq!(body["passed"], false);
+
+        assert_eq!(body["schema_gate"], "failed");
     }
 
     #[tokio::test]
@@ -6851,10 +7493,12 @@ mod tests {
     async fn test_validate_transform_count_exceeds_limit() {
         // transform 数量超过 64 条上限
 
-        // 用 noop 填充 65 条
+        // 用合法 set 填充 65 条（超过 TCB 上限 64）
 
         let transforms: Vec<serde_json::Value> = (0..65)
-            .map(|_| serde_json::json!({"type": "noop"}))
+            .map(|_| {
+                serde_json::json!({"type": "set", "params": {"attr": "x", "operation": "set", "value": 1}})
+            })
             .collect();
 
         let rules = serde_json::json!({"transform": transforms}).to_string();
@@ -6865,35 +7509,33 @@ mod tests {
 
         assert_eq!(body["passed"], false);
 
-        // transform_count_limit 应报错
+        // Schema 门禁:transform 数量超限（maxItems=64 / 引擎上限）
 
-        let checks = &body["static_validation"]["checks"];
+        assert_eq!(body["schema_gate"], "failed");
 
-        assert!(checks
+        assert!(body["schema_errors"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c["name"] == "transform_count_limit" && c["passed"] == false));
+            .any(|e| e.as_str().unwrap().contains("上限")));
     }
 
     // --- 200 OK: 验证通过 ---
 
     #[tokio::test]
 
-    async fn test_validate_valid_noop() {
-        // 合法 noop 指令
+    async fn test_validate_noop_transform_rejected() {
+        // noop 是指令层类型，不是元指令层 transform 类型（P0-01），Schema 门禁应拒绝
 
         let (status, body) = call_validate(r#"{"transform":[{"type":"noop"}]}"#)
             .await
             .unwrap();
 
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
-        assert_eq!(body["passed"], true);
+        assert_eq!(body["passed"], false);
 
-        assert_eq!(body["summary"]["total_errors"], 0);
-
-        assert_eq!(body["summary"]["total_transforms"], 1);
+        assert_eq!(body["schema_gate"], "failed");
     }
 
     #[tokio::test]
@@ -6921,7 +7563,7 @@ mod tests {
 
         let (status, body) = call_validate(
 
-            r#"{"transform":[{"type":"branch","params":{"domain":"check","on_true":[{"type":"noop"}],"on_false":[{"type":"noop"}]}}]}"#,
+            r#"{"transform":[{"type":"branch","params":{"domain":{"type":"all","inner":[]},"on_true":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}],"on_false":[{"type":"set","params":{"attr":"x","operation":"set","value":0}}]}}]}"#,
 
         )
 
@@ -6955,7 +7597,9 @@ mod tests {
     async fn test_validate_single_transform_object() {
         // 单条 transform 对象(非数组,非标准 transform 包装)
 
-        let (status, body) = call_validate(r#"{"type":"noop"}"#).await.unwrap();
+        let (status, body) = call_validate(r#"{"type":"set","params":{"attr":"x","operation":"set","value":1}}"#)
+            .await
+            .unwrap();
 
         assert_eq!(status, StatusCode::OK);
 
@@ -6969,7 +7613,7 @@ mod tests {
     async fn test_validate_top_level_array() {
         // 顶层数组格式
 
-        let (status, body) = call_validate(r#"[{"type":"noop"},{"type":"noop"}]"#)
+        let (status, body) = call_validate(r#"[{"type":"set","params":{"attr":"x","operation":"set","value":1}},{"type":"set","params":{"attr":"y","operation":"set","value":2}}]"#)
             .await
             .unwrap();
 
@@ -6982,8 +7626,8 @@ mod tests {
 
     #[tokio::test]
 
-    async fn test_validate_invalid_operation_warn_not_blocking() {
-        // set 的 operation 不在合法值中 → warn 级别,不阻断 passed
+    async fn test_validate_invalid_operation_rejected() {
+        // set 的 operation 不在合法枚举（set/add/sub）→ Schema 门禁拦截（P1-02）
 
         let (status, body) = call_validate(
 
@@ -6995,16 +7639,11 @@ mod tests {
 
         .unwrap();
 
-        assert_eq!(status, StatusCode::OK, "warn 不阻断,应返回 200");
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
-        assert_eq!(body["passed"], true);
+        assert_eq!(body["passed"], false);
 
-        // 但应有 warn 计数
-
-        assert!(
-            body["static_validation"]["warn_count"].as_u64().unwrap() > 0,
-            "应有 warn 级别校验项"
-        );
+        assert_eq!(body["schema_gate"], "failed");
     }
 
     #[tokio::test]
@@ -7030,11 +7669,13 @@ mod tests {
 
         assert_eq!(body["passed"], false);
 
-        // 至少 3 个 error(unknown type + missing type + missing params)
+        // Schema 门禁:三条规则均结构非法,应至少报 3 条 schema 错误
+
+        assert_eq!(body["schema_gate"], "failed");
 
         assert!(
-            body["summary"]["total_errors"].as_u64().unwrap() >= 3,
-            "应有至少 3 个 error"
+            body["schema_errors"].as_array().unwrap().len() >= 3,
+            "应有至少 3 条 schema 错误"
         );
     }
 
@@ -7043,7 +7684,7 @@ mod tests {
     async fn test_validate_response_structure() {
         // 验证响应体的完整结构(所有必需字段都存在)
 
-        let (status, body) = call_validate(r#"{"transform":[{"type":"noop"}]}"#)
+        let (status, body) = call_validate(r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#)
             .await
             .unwrap();
 
@@ -7738,6 +8379,43 @@ mod tests {
 
     #[tokio::test]
 
+    async fn test_submit_command_io_result_singular_rejected() {
+        // Opt3 实证：demos 08.json 风格单数 __io_result__ 在提交期即被 Schema 门禁拦截
+        let (state, _) = make_test_state();
+        let body = r#"{"instruction":{"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"sampling_decider"},"on_true":[{"type":"branch","params":{"domain":{"type":"exists","path":"__exec__.payload.__io_result__"},"on_true":[],"on_false":[]}}]}}}"#;
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "POST", "/api/command", Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], false);
+        assert!(json["message"].as_str().unwrap_or("").contains("__io_result__"));
+    }
+
+    #[tokio::test]
+
+    async fn test_submit_command_sequence_bad_structure_rejected() {
+        // Opt3 实证：指令层 sequence 缺 instructions → 提交期被拒
+        let (state, _) = make_test_state();
+        let body = r#"{"instruction":{"type":"sequence","params":{}}}"#;
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "POST", "/api/command", Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], false);
+    }
+
+    #[tokio::test]
+
+    async fn test_submit_command_valid_sequence_accepted() {
+        // Opt3 实证：合法 sequence 工作流（demos 010 风格）仍通过（无假阳性）
+        let (state, _) = make_test_state();
+        let body = r#"{"instruction":{"type":"sequence","params":{"instructions":[{"type":"sampling_decider","params":{}}]}}}"#;
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "POST", "/api/command", Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+    }
+
+    #[tokio::test]
+
     async fn test_get_state_oneshot() {
         let (state, _) = make_test_state();
 
@@ -7771,7 +8449,7 @@ mod tests {
     async fn test_validate_rules_via_router_oneshot() {
         let (state, _) = make_test_state();
 
-        let body = r#"{"rules":"{\"transform\":[{\"type\":\"noop\"}]}"}"#;
+        let body = r#"{"rules":"{\"transform\":[{\"type\":\"set\",\"params\":{\"attr\":\"x\",\"operation\":\"set\",\"value\":1}}]}"}"#;
 
         let (status, json) = oneshot_json(
             make_test_router(&state),

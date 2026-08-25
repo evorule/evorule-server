@@ -23,6 +23,46 @@
 
 ---
 
+## [0.3.0] - Unreleased
+
+> **开发中**: 核心库依赖本地 v0.3.2 开发版（`[patch.crates-io]`），待核心库发布后移除 patch 段并打 tag。
+
+### ⚠️ Breaking Changes
+
+- **`audit_report()` 返回值变更** — `evorule-server/src/api/server.rs` `GovernanceApi::audit_report()` 从 `String` 改为 `Result<String, serde_json::Error>`，不再静默退化为 `"{}"`（同步 evorule v0.3.2）
+- **`GET /api/audit` handler 返回值变更** — `get_audit()` 从 `Json<serde_json::Value>` 改为 `Result<Json<Value>, StatusCode>`，序列化失败时返回 500
+
+### 🆕 新增
+
+- **`core/rule_schema` crate** — 规则 Schema 门禁（线1 防御层），`/api/rules/validate` 提交校验的权威基准。含 3 个 JSON Schema 文件（rule_set / _meta / _shared v1.0）和 Rust 验证库（19KB）
+- **`/api/bundles` 规则包 API** — `evorule-server/src/api/bundles.rs`（31KB）：规则包导入、列出活跃包、导入历史、原子落盘（`land_bundle_atomically`）、回滚（`rollback_bundle_moves`）、陈旧目录清理
+- **`/api/permissions` 权限 API** — `evorule-server/src/api/permissions.rs`（10KB）：权限管理端点
+- **`plugins/demo-services` 插件示例** — Rust 原生业务服务实现（复合路由：原生优先，HTTP 回落），Phase 1 yuanze-demos
+- **`rules/bundles/` 规则包示例** — `bundle-ds-yuanze-01-v3`（15 条规则：审计告警/压缩/计算/演进扫描/生成补丁/热加载/机器人移动/安全回滚/采样决策/沙盒验证/影子验证/精度验证）+ `b_guard_shell_risky` 安全规则包
+- **服务注册 API** — `list_services_handler` + `BoundServiceInfo` 结构体，列出已绑定服务及其元数据（名称/来源/版本/描述）
+- **`service_registry.json`** — 服务注册配置文件
+- **`scripts/check_schema_sync.py`** — Schema 同步检查脚本，确保规则 Schema 与代码一致
+- **`evorule-bundle` 依赖** — 快照包共享校验（T2：36 号集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘），version 0.2.0
+
+### 🔄 变更
+
+- **核心库依赖本地开发版** — 根 `Cargo.toml` 新增 `[patch.crates-io]` 段，用本地 path 覆盖 evorule-tcb / reactor / governance（含 permission 模块 / io_context 数据型）和 evorule-bundle。发布前必须移除
+- **workspace members 新增** — 根 `Cargo.toml` 新增 `core/rule_schema` 和 `plugins/demo-services`
+- **`evorule-server/Cargo.toml` 新增依赖** — `evorule-rule-schema`（path）、`evorule-bundle`（0.2.0）、`evorule-demo-services`（path）
+- **`resources/core_eval.json` 同步更新** — 同步 evorule v0.3.2 宪法变更
+
+### 🐛 修复
+
+- **元指令白名单修正同步** — `increment` / `noop` transform 类型被拒绝（之前误混入白名单导致假阳性），测试用例重命名为 `test_validate_increment_transform_type_rejected` / `test_validate_noop_transform_rejected`
+- **set 非法 operation 提升为 error** — 从 warn 不阻断改为 rejected 阻断，测试用例重命名为 `test_validate_invalid_operation_rejected`
+- **workspace 模块多项修复** — `publish_service.rs` / `rule_translate.rs` / `sandbox_service.rs` / `rolling_session.rs` / `session_bridge.rs` / `workspace_service.rs` / `rule_meta_service.rs` / `models.rs` / `db.rs` / `lib.rs`
+- **io_handlers 多项修复** — `db_handler.rs` / `http_handler.rs` / `memory_handler.rs` / `service_registry.rs` / `lib.rs`
+- **hot_reload 修复** — `loader.rs` / `lib.rs`
+- **rule_tools 修复** — `validator.rs` / `lib.rs` / `bin/evorule-rule-tools.rs`
+- **集成测试更新** — `alignment_test.rs` / `integration_test.rs` 同步 API 变更
+
+---
+
 ## [0.2.0] - 2026-08-19
 
 > **本版本实际打 tag 日期: 2026-08-19**

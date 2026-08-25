@@ -425,11 +425,11 @@ impl SandboxService {
         // 获取 Fact 列表 (用于统计 pass/fail)
         let facts = self.session_ops.get_facts(tcb_session_id).await;
 
-        // 如果 session 已关闭, audit/facts 可能失败; 用空值兜底
-        let state_val = state.unwrap_or_else(|_| serde_json::json!({"status": "closed"}));
-        let audit_val =
-            audit.unwrap_or_else(|_| serde_json::json!({"entry_count": 0, "verified": false}));
-        let facts_val = facts.unwrap_or_default();
+        // 审计/状态/事实必须真实可查, 不得用空值兜底掩盖取数失败 (静默通过治理)
+        // 若 session 已关闭导致取数失败, 显式报错而非伪造空报告 (防止报告被误判为"无事实/未验证")
+        let state_val = state?;
+        let audit_val = audit?;
+        let facts_val = facts?;
 
         // 构建测试报告
         let report = TestReportBuilder::new()
@@ -586,6 +586,9 @@ mod tests {
         }
         async fn fork_session(&self, _parent: u64) -> WorkspaceResult<u64> {
             Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+        }
+        async fn session_exists(&self, id: u64) -> bool {
+            id < self.next_id.load(Ordering::SeqCst)
         }
         async fn close_session(&self, _id: u64) -> WorkspaceResult<()> {
             Ok(())

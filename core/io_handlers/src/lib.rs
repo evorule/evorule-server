@@ -25,7 +25,7 @@ pub mod service_registry;
 pub use db_handler::{DbHandler, StatementEntry, StatementWhitelist, WhitelistedDbHandler};
 pub use http_handler::HttpHandler;
 pub use memory_handler::MemoryHandler;
-pub use service_registry::{ServiceEntry, ServiceRegistry, ServiceRegistryHandler};
+pub use service_registry::{ServiceEntry, ServiceMeta, ServiceRegistry, ServiceRegistryHandler};
 
 #[cfg(test)]
 mod tests {

@@ -11,7 +11,7 @@
 //!
 //! # Schema 版本
 //! 通过 `schema_migrations` 表追踪已应用的迁移版本。
-//! 当前版本: 3。
+//! 当前版本: 4。
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -21,14 +21,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::models::{
-    MemberRole, ProductionAuditRecord, ProductionStateRecord, PublishQueueItem, PublishStatus,
-    RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord, RuleVersionState, SandboxSession,
-    SandboxStatus, SessionBindingState, SessionRecord, TestDatasetRecord, VerdictContractRecord,
-    VersionClockMapRecord, WorkspaceMemberRecord, WorkspaceRecord, WorkspaceState,
+    BundleImportRecord, MemberRole, ProductionAuditRecord, ProductionStateRecord,
+    PublishQueueItem, PublishStatus, RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord,
+    RuleVersionState, SandboxSession, SandboxStatus, SessionBindingState, SessionRecord,
+    TestDatasetRecord, VerdictContractRecord, VersionClockMapRecord, WorkspaceMemberRecord,
+    WorkspaceRecord, WorkspaceState,
 };
 
 /// 当前 schema 版本
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 
 /// SQLite 数据库封装
 ///
@@ -94,6 +95,7 @@ impl WorkspaceDb {
         migrate_v1(&conn)?;
         migrate_v2(&conn)?;
         migrate_v3(&conn)?;
+        migrate_v4(&conn)?;
         Ok(())
     }
 
@@ -375,6 +377,35 @@ fn migrate_v3(conn: &Connection) -> WorkspaceResult<()> {
     )
     .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v3: {e}")))?;
     record_migration(conn, 3)
+}
+
+/// v4 迁移: bundle 导入溯源 (bundle_imports 表, T5)
+///
+/// 设计约束 (00_架构边界原则.md §七): bundle_id/source_version 为逻辑标识可入溯源元数据;
+/// imported_at 为管理元数据 (墙钟旁路), 绝不渗入 fact / 内容哈希 / 审计验证链。
+fn migrate_v4(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS bundle_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bundle_id TEXT NOT NULL,
+            dataset_id TEXT NOT NULL,
+            source_version TEXT NOT NULL,
+            selection_mode TEXT NOT NULL,
+            resolved_version TEXT,
+            content_hash TEXT NOT NULL,
+            entry_count INTEGER NOT NULL,
+            imported_at TEXT NOT NULL,
+            imported_by TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_bundle_imports_dataset ON bundle_imports(dataset_id);
+        CREATE INDEX IF NOT EXISTS idx_bundle_imports_bundle ON bundle_imports(bundle_id);
+        CREATE INDEX IF NOT EXISTS idx_bundle_imports_imported_at ON bundle_imports(imported_at);
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v4: {e}")))?;
+    record_migration(conn, 4)
 }
 
 // =============================================================================
@@ -1604,8 +1635,87 @@ impl WorkspaceDb {
 }
 
 // =============================================================================
-// publish_queue 表 CRUD — PUBLISH_QUEUE_DESIGN.md §3
+// bundle_imports 表 CRUD — T5 审计溯源
 // =============================================================================
+
+impl WorkspaceDb {
+    /// 记录一次 bundle 导入溯源 (T5)
+    ///
+    /// 返回自增 id。`imported_at` 由本方法以墙钟生成 (管理元数据, 旁路),
+    /// 不参与 fact / 内容哈希 / 审计验证链。
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_bundle_import(
+        &self,
+        bundle_id: &str,
+        dataset_id: &str,
+        source_version: &str,
+        selection_mode: &str,
+        resolved_version: Option<&str>,
+        content_hash: &str,
+        entry_count: i64,
+        imported_by: &str,
+    ) -> WorkspaceResult<i64> {
+        let conn = self.lock()?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO bundle_imports
+                (bundle_id, dataset_id, source_version, selection_mode, resolved_version,
+                 content_hash, entry_count, imported_at, imported_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                bundle_id,
+                dataset_id,
+                source_version,
+                selection_mode,
+                resolved_version,
+                content_hash,
+                entry_count,
+                now,
+                imported_by,
+            ],
+        )
+        .map_err(WorkspaceError::from)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 列出 bundle 导入溯源记录 (按导入时间倒序, 限制条数)
+    pub fn list_bundle_imports(&self, limit: i64) -> WorkspaceResult<Vec<BundleImportRecord>> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, bundle_id, dataset_id, source_version, selection_mode,
+                        resolved_version, content_hash, entry_count, imported_at, imported_by
+                 FROM bundle_imports
+                 ORDER BY imported_at DESC, id DESC
+                 LIMIT ?1",
+            )
+            .map_err(WorkspaceError::from)?;
+        let rows = stmt
+            .query_map(params![limit], row_to_bundle_import)
+            .map_err(WorkspaceError::from)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(WorkspaceError::from)?);
+        }
+        Ok(out)
+    }
+}
+
+/// bundle_imports 行映射
+fn row_to_bundle_import(row: &rusqlite::Row<'_>) -> rusqlite::Result<BundleImportRecord> {
+    Ok(BundleImportRecord {
+        id: row.get(0)?,
+        bundle_id: row.get(1)?,
+        dataset_id: row.get(2)?,
+        source_version: row.get(3)?,
+        selection_mode: row.get(4)?,
+        resolved_version: row.get(5)?,
+        content_hash: row.get(6)?,
+        entry_count: row.get(7)?,
+        imported_at: parse_dt(row.get(8)?),
+        imported_by: row.get(9)?,
+    })
+}
 
 impl WorkspaceDb {
     /// 插入发布队列项 (status=pending)
@@ -1712,21 +1822,39 @@ impl WorkspaceDb {
         Ok(())
     }
 
-    /// 标记队列项已发布 (status=published, 填充 published_version + published_at)
-    pub fn complete_publish(&self, id: i64, published_version: i64) -> WorkspaceResult<()> {
+    /// 标记队列项已发布 (status=pending → published, 填充版本号/审批人/审批时间/审批意见)
+    ///
+    /// 前置缺陷修复: 原实现先置 status=approved 再执行滚动发布, 发布失败会残留孤儿 approved
+    /// 状态 (无法重试、无法恢复)。改为仅在发布成功后才把 pending 直接置为 published,
+    /// 失败时队列保持 pending 可重试。审批人/意见随发布成功一并落库。
+    pub fn complete_publish(
+        &self,
+        id: i64,
+        published_version: i64,
+        reviewed_by: &str,
+        review_comment: Option<&str>,
+    ) -> WorkspaceResult<()> {
         let conn = self.lock()?;
         let now = Utc::now().to_rfc3339();
         let affected = conn
             .execute(
                 "UPDATE publish_queue
-                 SET status = 'published', published_version = ?1, published_at = ?2
-                 WHERE id = ?3 AND status = 'approved'",
-                params![published_version, now, id],
+                 SET status = 'published', published_version = ?1, published_at = ?2,
+                     reviewed_by = ?3, reviewed_at = ?4, review_comment = ?5
+                 WHERE id = ?6 AND status = 'pending'",
+                params![
+                    published_version,
+                    now,
+                    reviewed_by,
+                    now,
+                    review_comment,
+                    id
+                ],
             )
             .map_err(WorkspaceError::from)?;
         if affected == 0 {
             return Err(WorkspaceError::not_found(
-                "publish_queue (approved)",
+                "publish_queue (pending)",
                 id.to_string(),
             ));
         }

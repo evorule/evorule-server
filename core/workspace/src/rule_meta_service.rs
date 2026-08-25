@@ -413,6 +413,9 @@ mod tests {
             async fn fork_session(&self, _: u64) -> WorkspaceResult<u64> {
                 Ok(2)
             }
+            async fn session_exists(&self, _: u64) -> bool {
+                true
+            }
             async fn close_session(&self, _: u64) -> WorkspaceResult<()> {
                 Ok(())
             }

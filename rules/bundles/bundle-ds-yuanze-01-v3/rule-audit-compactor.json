@@ -1,0 +1,66 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "audit_compactor",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.audit.compacted_log",
+              "type": "exists"
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "audit.compacted_log.init_audit",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.timestamp"
+                },
+                "type": "set"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "audit.compacted_log.last_audit",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.timestamp"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.compacted_log.counter",
+                  "operation": "set",
+                  "value": "__exec__.payload.audit.counter"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        },
+        {
+          "params": {
+            "attr": "audit.input_snapshot",
+            "operation": "set",
+            "value": null
+          },
+          "type": "set"
+        },
+        {
+          "params": {
+            "attr": "audit.pending_alert",
+            "operation": "set",
+            "value": null
+          },
+          "type": "set"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

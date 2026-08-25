@@ -94,24 +94,46 @@ fn run_validate(
     file: Option<PathBuf>,
     dir: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // 读取失败/目录为空/校验失败均不得静默通过, 出现任一错误即非零退出
+    let mut had_error = false;
     if let Some(f) = file {
         let content = std::fs::read_to_string(&f)?;
         let report = evorule_rule_tools::validate_rule_json(&content);
         print_report(&report, &f);
+        had_error = !report.valid;
     } else if let Some(d) = dir {
-        let files = collect_rule_files(&d);
+        let files = match collect_rule_files(&d) {
+            Ok(files) => files,
+            Err(e) => {
+                eprintln!("错误：无法读取目录 {}: {e}", d.display());
+                std::process::exit(1);
+            }
+        };
         if files.is_empty() {
-            eprintln!("目录中未找到 .json 文件: {}", d.display());
+            eprintln!("错误：目录中未找到 .json 文件: {}", d.display());
+            had_error = true;
         }
         for f in files {
-            if let Ok(content) = std::fs::read_to_string(&f) {
-                let report = evorule_rule_tools::validate_rule_json(&content);
-                print_report(&report, &f);
-                println!();
+            match std::fs::read_to_string(&f) {
+                Ok(content) => {
+                    let report = evorule_rule_tools::validate_rule_json(&content);
+                    print_report(&report, &f);
+                    println!();
+                    if !report.valid {
+                        had_error = true;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("警告：跳过无法读取的文件 {}: {e}", f.display());
+                    had_error = true;
+                }
             }
         }
     } else {
         eprintln!("错误：需要指定 --file 或 --dir");
+        std::process::exit(1);
+    }
+    if had_error {
         std::process::exit(1);
     }
     Ok(())
@@ -121,41 +143,61 @@ fn run_safety(
     file: Option<PathBuf>,
     dir: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // 读取失败/目录为空/分析发现风险均不得静默通过, 出现任一错误即非零退出
+    let mut had_error = false;
     if let Some(f) = file {
         let content = std::fs::read_to_string(&f)?;
         let report = evorule_rule_tools::analyze_rule_safety(&content);
         print_safety(&report, &f);
+        had_error = !report.safe;
     } else if let Some(d) = dir {
-        let files = collect_rule_files(&d);
+        let files = match collect_rule_files(&d) {
+            Ok(files) => files,
+            Err(e) => {
+                eprintln!("错误：无法读取目录 {}: {e}", d.display());
+                std::process::exit(1);
+            }
+        };
         if files.is_empty() {
-            eprintln!("目录中未找到 .json 文件: {}", d.display());
+            eprintln!("错误：目录中未找到 .json 文件: {}", d.display());
+            had_error = true;
         }
         for f in files {
-            if let Ok(content) = std::fs::read_to_string(&f) {
-                let report = evorule_rule_tools::analyze_rule_safety(&content);
-                print_safety(&report, &f);
-                println!();
+            match std::fs::read_to_string(&f) {
+                Ok(content) => {
+                    let report = evorule_rule_tools::analyze_rule_safety(&content);
+                    print_safety(&report, &f);
+                    println!();
+                    if !report.safe {
+                        had_error = true;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("警告：跳过无法读取的文件 {}: {e}", f.display());
+                    had_error = true;
+                }
             }
         }
     } else {
         eprintln!("错误：需要指定 --file 或 --dir");
         std::process::exit(1);
     }
+    if had_error {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
-fn collect_rule_files(dir: &Path) -> Vec<PathBuf> {
+fn collect_rule_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                files.push(path);
-            }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            files.push(path);
         }
     }
     files.sort();
-    files
+    Ok(files)
 }
 
 fn print_report(report: &evorule_rule_tools::ValidationReport, file: &Path) {

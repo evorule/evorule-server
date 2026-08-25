@@ -1,0 +1,16 @@
+{
+  "rule_id": "guard_shell_risky_v1",
+  "transform": [
+    {
+      "params": {
+        "command_regex": "rm\\s+-rf|sudo|curl\\s|bash\\s+-c",
+        "io_type": "call_service",
+        "reason": "高风险命令须人工确认（自进化生成）",
+        "require_approval": "candidate",
+        "service_name": "shell_exec"
+      },
+      "type": "io_request"
+    }
+  ],
+  "version": "0.1.0"
+}

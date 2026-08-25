@@ -31,6 +31,15 @@ evorule-io-handlers = { path = "../core/io_handlers" }
 # Workspace crate (P10: 多租户工作空间 + 规则元数据管理)
 evorule-workspace = { path = "../core/workspace" }
 
+# Schema 门禁（线1 防御层）：/api/rules/validate 提交校验的权威基准
+evorule-rule-schema = { path = "../core/rule_schema" }
+
+# 快照包共享校验（T2：36 号 集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘）
+evorule-bundle = { version = "0.2.0" }
+
+# Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
+evorule-demo-services = { path = "../plugins/demo-services" }
+
 # 异步运行时
 tokio = { version = "1", features = [
     "rt-multi-thread",

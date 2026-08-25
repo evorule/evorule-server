@@ -1,0 +1,90 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "generate_patch",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.__io_results__.call_service",
+              "type": "exists"
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "_patch_args.model",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.model"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_patch_args.system",
+                  "operation": "set",
+                  "value": "你生成的规则必须严格遵守core_eval.json规范，且只能针对参数阈值进行调整，不能删除或绕过现有的安全回滚规则。"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_patch_args.prompt_template",
+                  "operation": "set",
+                  "value": "你是EvoRule架构师。当前系统遇到故障：{{ alert }}。请根据标准EvoRule格式，生成一条新的branch规则来解决此问题。规则必须包含合法的domain和on_true/on_false分支。只输出纯JSON，不要包含任何解释。"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_patch_args.tpl_alert",
+                  "operation": "set",
+                  "value": "__exec__.payload.audit.evolve_request"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_patch_args.temperature",
+                  "operation": "set",
+                  "value": "0.2"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_patch_args.max_tokens",
+                  "operation": "set",
+                  "value": 600
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "args": "__exec__.payload._patch_args",
+                  "io_type": "call_service",
+                  "service_name": "llm_advisor"
+                },
+                "type": "io_request"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "audit.generated_patch_raw",
+                  "operation": "set",
+                  "value": "__exec__.payload.__io_results__.call_service"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

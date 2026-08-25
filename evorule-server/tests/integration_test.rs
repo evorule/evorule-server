@@ -280,10 +280,11 @@ async fn test_end_to_end_io_subscriber_with_save_memory() {
         "memory_result should be true"
     );
 
-    // 验证 __io_result__ 已被清除
+    // 验证 __io_results__ 已被清除（P1-03/v0.3.1：复数容器，按 io_type 隔离，
+    // 消费后整体移除；单数 __io_result__ 已不存在，断言单数恒真无意义）
     assert!(
-        snapshot.get("__io_result__").is_none(),
-        "__io_result__ should be cleared after consumption"
+        snapshot.get("__io_results__").is_none(),
+        "__io_results__ should be cleared after consumption"
     );
 
     // 验证文件实际被写入
@@ -520,7 +521,6 @@ async fn test_logical_clock_merge() {
 }
 
 #[test]
-#[allow(deprecated)]
 fn test_hash_chain_verification() {
     let facts = vec![
         Fact::Command {
@@ -533,9 +533,25 @@ fn test_hash_chain_verification() {
         },
     ];
 
-    assert!(
-        hash::verify_hash_chain(&facts),
-        "Hash chain should verify for valid sequence"
+    // P1-05：废弃 verify_hash_chain（恒 true、无断言力），改用 compute_chain_hash 真正验证：
+    // ① 非空链哈希 ≠ genesis；② 确定性；③ 篡改任一事实后链哈希必须改变（防篡改断言力）。
+    let chain = hash::compute_chain_hash(&facts).unwrap();
+    assert_ne!(chain, "genesis", "非空链哈希不应等于 genesis");
+    assert_eq!(
+        hash::compute_chain_hash(&facts).unwrap(),
+        chain,
+        "链哈希应确定"
+    );
+
+    let mut tampered = facts.clone();
+    tampered[0] = Fact::Command {
+        id: FactId(1),
+        instruction: JsonValue::string("tampered"),
+    };
+    assert_ne!(
+        hash::compute_chain_hash(&tampered).unwrap(),
+        chain,
+        "篡改事实后链哈希应改变（防篡改）"
     );
 }
 

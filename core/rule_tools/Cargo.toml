@@ -20,6 +20,8 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+# Schema 门禁（线1 防御层）：校验器以固化 v1.0 Schema 为权威基准
+evorule-rule-schema = { path = "../rule_schema" }
 
 [dev-dependencies]
 # handler 层 oneshot 测试

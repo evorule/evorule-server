@@ -1,0 +1,120 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "hotload_patch",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "payload.audit.sandbox_verdict.passed",
+              "type": "eq",
+              "value": true
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "audit.evolve_request",
+                  "operation": "set",
+                  "value": null
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.evolution_count",
+                  "operation": "add",
+                  "value": 1
+                },
+                "type": "set"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "domain": {
+                    "path": "__exec__.payload.__io_results__.call_service",
+                    "type": "exists"
+                  },
+                  "on_false": [
+                    {
+                      "params": {
+                        "attr": "_persist_args.operation",
+                        "operation": "set",
+                        "value": "append_transform"
+                      },
+                      "type": "set"
+                    },
+                    {
+                      "params": {
+                        "attr": "_persist_args.rule",
+                        "operation": "set",
+                        "value": "__exec__.payload.audit.generated_patch_raw"
+                      },
+                      "type": "set"
+                    },
+                    {
+                      "params": {
+                        "args": "__exec__.payload._persist_args",
+                        "io_type": "call_service",
+                        "service_name": "config_persist"
+                      },
+                      "type": "io_request"
+                    }
+                  ],
+                  "on_true": [
+                    {
+                      "params": {
+                        "attr": "audit.evolution_history.last_patch",
+                        "operation": "set",
+                        "value": "__exec__.payload.audit.generated_patch_raw"
+                      },
+                      "type": "set"
+                    },
+                    {
+                      "params": {
+                        "attr": "audit.evolution_history.reason",
+                        "operation": "set",
+                        "value": "__exec__.payload.audit.evolve_request.reason"
+                      },
+                      "type": "set"
+                    },
+                    {
+                      "params": {
+                        "attr": "audit.evolution_history.timestamp",
+                        "operation": "set",
+                        "value": "__exec__.instruction.params.timestamp"
+                      },
+                      "type": "set"
+                    },
+                    {
+                      "params": {
+                        "attr": "audit.evolve_request",
+                        "operation": "set",
+                        "value": null
+                      },
+                      "type": "set"
+                    },
+                    {
+                      "params": {
+                        "attr": "audit.evolution_count",
+                        "operation": "add",
+                        "value": 1
+                      },
+                      "type": "set"
+                    }
+                  ]
+                },
+                "type": "branch"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

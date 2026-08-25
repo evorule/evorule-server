@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 # validate-all.ps1
 # One-shot runner for all VERSION_STRATEGY validation scripts
 #
@@ -12,10 +12,11 @@
 #   2. 打 tag:  git tag v0.1.1
 #   3. 发布后:  pwsh scripts/validate-all.ps1               (tag 存在且与版本一致)
 #
-# 包含 7 项检查:
+# 包含 8 项检查:
 #   0. 门禁绕过检测 (EVORULE_SKIP_GATE 环境变量)
 #   1-5. validate-version / validate-changelog / validate-license / validate-cargolock / validate-release
 #   6. check_doc_safety.py (文档安全 + 交叉引用完整性 + 基调合规)
+#   7. check_schema_sync.py (内嵌 Schema 与 evorule-system-rules 源仓一致性)
 
 [CmdletBinding()]
 param(
@@ -86,12 +87,20 @@ if ($LASTEXITCODE -ne 0) {
     $failed += 'check_doc_safety'
 }
 
+# === 7. check_schema_sync.py (内嵌 Schema 与源仓一致性) ===
+Write-Host "`n>>> [check_schema_sync] <<<" -ForegroundColor Magenta
+$schemaSyncScript = Join-Path $repoRoot "scripts\check_schema_sync.py"
+& python $schemaSyncScript
+if ($LASTEXITCODE -ne 0) {
+    $failed += 'check_schema_sync'
+}
+
 # === SUMMARY ===
 Write-Host "`n=========== SUMMARY ===========" -ForegroundColor Cyan
-$totalChecks = 1 + $scripts.Count + 1  # gate-bypass + 5 scripts + doc-safety
+$totalChecks = 1 + $scripts.Count + 2  # gate-bypass + 5 scripts + doc-safety + schema-sync
 if ($failed.Count -gt 0) {
     Write-Host "FAILED: $($failed -join ', ')" -ForegroundColor Red
     exit 1
 }
-Write-Host "ALL $totalChecks CHECKS PASSED (gate-bypass + 5 validate scripts + doc-safety)" -ForegroundColor Green
+Write-Host "ALL $totalChecks CHECKS PASSED (gate-bypass + 5 validate scripts + doc-safety + schema-sync)" -ForegroundColor Green
 exit 0

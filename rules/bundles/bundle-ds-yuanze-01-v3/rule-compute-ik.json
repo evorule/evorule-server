@@ -1,0 +1,90 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "compute_ik",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.__io_results__.call_service",
+              "type": "exists"
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "_ik_args.target_pose",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.target_pose"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_ik_args.solver_type",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.solver_type"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_ik_args.tolerance",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.tolerance"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "args": "__exec__.payload._ik_args",
+                  "io_type": "call_service",
+                  "service_name": "__exec__.instruction.params.service_name"
+                },
+                "type": "io_request"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "service_result",
+                  "operation": "set",
+                  "value": "__exec__.payload.__io_results__.call_service"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.input_snapshot",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.timestamp",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.timestamp"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.result_payload",
+                  "operation": "set",
+                  "value": "__exec__.payload.__io_results__.call_service"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

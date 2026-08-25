@@ -54,6 +54,13 @@ pub trait SessionOps: Send + Sync {
     /// 实现应调用 SessionManager::create_session_from_parent_at_version()
     async fn fork_session(&self, parent_session_id: u64) -> WorkspaceResult<u64>;
 
+    /// 检查会话是否存在
+    ///
+    /// 前置缺陷修复: production_state 持久化的 current_session_id 在 server 重启后可能失效
+    /// (SessionManager 为内存态), 滚动发布前需校验旧生产 session 是否仍存活;
+    /// 不存在时应回退为"首次发布"新建 session, 而非 fork 失败 404。
+    async fn session_exists(&self, session_id: u64) -> bool;
+
     /// 关闭会话
     ///
     /// 实现应调用 SessionManager::close_session()

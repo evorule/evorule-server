@@ -22,9 +22,9 @@ use chrono::Utc;
 use crate::db::WorkspaceDb;
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::models::{
-    CreateSessionRequest, CreateWorkspaceRequest, MemberRole, RuleSessionBinding, RuleState,
-    SessionBindingState, SessionRecord, UpdateWorkspaceRequest, WorkspaceMemberRecord,
-    WorkspaceRecord, WorkspaceState,
+    BundleImportRecord, CreateSessionRequest, CreateWorkspaceRequest, MemberRole,
+    RuleSessionBinding, RuleState, SessionBindingState, SessionRecord, UpdateWorkspaceRequest,
+    WorkspaceMemberRecord, WorkspaceRecord, WorkspaceState,
 };
 use crate::session_bridge::SessionOps;
 
@@ -365,6 +365,38 @@ impl WorkspaceService {
         }
         Ok(())
     }
+
+    /// 记录一次 bundle 导入溯源 (T5)
+    ///
+    /// 委托 db 层写入 `bundle_imports`；`imported_at` 由 db 层以墙钟生成 (管理元数据, 旁路)。
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_bundle_import(
+        &self,
+        bundle_id: &str,
+        dataset_id: &str,
+        source_version: &str,
+        selection_mode: &str,
+        resolved_version: Option<&str>,
+        content_hash: &str,
+        entry_count: i64,
+        imported_by: &str,
+    ) -> WorkspaceResult<i64> {
+        self.db.insert_bundle_import(
+            bundle_id,
+            dataset_id,
+            source_version,
+            selection_mode,
+            resolved_version,
+            content_hash,
+            entry_count,
+            imported_by,
+        )
+    }
+
+    /// 列出 bundle 导入溯源记录 (按导入时间倒序, 限制条数)
+    pub fn list_bundle_imports(&self, limit: i64) -> WorkspaceResult<Vec<BundleImportRecord>> {
+        self.db.list_bundle_imports(limit)
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +435,9 @@ mod tests {
             // 模拟 fork: 分配新 id
             let _ = parent;
             Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+        }
+        async fn session_exists(&self, id: u64) -> bool {
+            id < self.next_id.load(Ordering::SeqCst) && !self.closed.lock().unwrap().contains(&id)
         }
         async fn close_session(&self, id: u64) -> WorkspaceResult<()> {
             self.closed.lock().unwrap().push(id);

@@ -6,11 +6,13 @@ members = [
     "core/hot_reload",
     "core/io_handlers",
     "core/metrics",
+    "core/rule_schema",
     "core/rule_tools",
     "core/semantic_invariants",
     "core/time_machine",
     "core/workspace",
     "evorule-server",
+    "plugins/demo-services",
 ]
 
 [workspace.package]
@@ -48,3 +50,9 @@ all = { level = "warn", priority = -1 }
 opt-level = 3
 lto = true
 codegen-units = 1
+# 本地开发: 用 path 覆盖 crates.io 上的 evorule 核心 crates, 使服务端直接编译本地最新源码(含 permission 模块 / io_context 数据型)
+[patch.crates-io]
+evorule-tcb = { path = "../evorule/evorule-tcb" }
+evorule-reactor = { path = "../evorule/evorule-reactor" }
+evorule-governance = { path = "../evorule/evorule-governance" }
+evorule-bundle = { path = "../evorule-bundle" }

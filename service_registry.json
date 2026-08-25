@@ -1,0 +1,17 @@
+{
+  "echo_svc": {
+    "url": "http://127.0.0.1:9100/api/echo",
+    "method": "POST",
+    "headers": { "X-Source": "evorule-server" },
+    "timeout_ms": 5000,
+    "description": "Echo 验证服务（service_registry 示例）"
+  },
+  "llm_advisor": {
+    "url": "http://127.0.0.1:1/llm_advisor",
+    "method": "POST",
+    "headers": { "X-Source": "evorule-server" },
+    "timeout_ms": 30000,
+    "version": "1.0.0",
+    "description": "C6 敏感服务凭据配置位（声明性占位：路由由原生 demo-services 命中，本 URL 在 mock 阶段不会被调用；Phase 3 归位 evo-agent 时在此配置真实端点/凭据）"
+  }
+}

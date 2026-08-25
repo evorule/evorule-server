@@ -1,0 +1,69 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "evolution_scanner",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "attr": "audit.failure_count",
+            "operation": "add",
+            "value": "__exec__.instruction.params.inc"
+          },
+          "type": "set"
+        },
+        {
+          "params": {
+            "domain": {
+              "inner": {
+                "path": "payload.audit.failure_count",
+                "type": "lt",
+                "value": 3
+              },
+              "type": "not"
+            },
+            "on_false": [],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "audit.evolve_request.reason",
+                  "operation": "set",
+                  "value": "连续3次残差超标"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.evolve_request.context",
+                  "operation": "set",
+                  "value": "__exec__.payload.audit.compacted_log"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.evolve_request.target_rule",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.target_rule_type"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.failure_count",
+                  "operation": "set",
+                  "value": 0
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

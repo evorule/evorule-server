@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evorule.org/schemas/_meta/v1.0.json",
+  "title": "evorule System JSON Meta v1.0（固化版）",
+  "description": "所有 evorule 系统 JSON 共用的 5 顶层字段（外挂标注层）。其他 kind 的 schema 通过 allOf 引用本文件。v1.0 相对 v0.9 的变化：metadata 不再强制 title/created/updated（D7），license 枚举扩展 AGPL/CC0，明确 lifecycle 与业务规则生命周期分层。",
+  "type": "object",
+  "required": ["$schema", "kind", "id", "version", "metadata"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "指向 evorule-system-rules 仓的具体 schema 文件 URL。URL 用 v<主>.<次> 两段式（与迁移目录 vX.Y-to-vA.B 一致），正文不称 semver 三段。",
+      "pattern": "^https://evorule\\.org/schemas/[a-z_]+/v\\d+\\.\\d+\\.json$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "rule_set",
+        "agent_def",
+        "workflow_dag",
+        "service_registry",
+        "knowledge",
+        "migration"
+      ],
+      "description": "系统 JSON 的种类"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "description": "命名空间唯一 ID，推荐格式 <org>.<scope>.<name>，跨版本稳定。注意：rule_set 中引擎原生顶层字段 rule_id 与 id 并存（D4），id 为治理稳定 ID，rule_id 为引擎信息字段。",
+      "examples": ["com.evorule.tcb.core_eval", "com.acme.sales.validation"]
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[a-z0-9.-]+)?(\\+[a-z0-9.-]+)?$",
+      "description": "semver 内容版本（与 $schema 主版本正交）"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "治理标注元数据。v1.0 起 title/created/updated 为可选（D7）；additionalProperties 开放以兼容引擎文档键（如 core_eval.json 的 author/license/sections/constraints）。",
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "authors": {
+          "type": "array",
+          "items": { "type": "string", "format": "email" },
+          "minItems": 1
+        },
+        "created": { "type": "string", "format": "date" },
+        "updated": { "type": "string", "format": "date" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
+          "uniqueItems": true
+        },
+        "license": {
+          "type": "string",
+          "description": "许可策略（用户偏好 AGPL + 双许可）。CC0-1.0 用于核心宪法等公共领域文件。",
+          "enum": [
+            "AGPL-3.0-or-later",
+            "AGPL-3.0",
+            "Apache-2.0",
+            "MIT",
+            "BSD-3-Clause",
+            "CC0-1.0",
+            "CC0-1.0 Universal (Public Domain)",
+            "Proprietary",
+            "Custom"
+          ]
+        },
+        "lifecycle": {
+          "type": "object",
+          "description": "系统 JSON 自身的生命周期（draft/review/active/deprecated/retired），与 evorule-rule 平台业务规则 5 态生命周期（Draft→Candidate→Active→Published→Rejected）是两层，勿混淆。",
+          "properties": {
+            "state": {
+              "enum": ["draft", "review", "active", "deprecated", "retired"]
+            },
+            "since": { "type": "string", "format": "date" }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "enum": ["manual", "generated", "derived", "imported"]
+            },
+            "derived_from": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "governance": {
+          "type": "object",
+          "properties": {
+            "approvers": {
+              "type": "array",
+              "items": { "type": "string", "format": "email" }
+            },
+            "reviewers": {
+              "type": "array",
+              "items": { "type": "string", "format": "email" }
+            },
+            "approval_date": { "type": "string", "format": "date" }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "version"],
+            "properties": {
+              "id": { "type": "string" },
+              "version": {
+                "type": "string",
+                "pattern": "^>=?\\d+\\.\\d+\\.\\d+"
+              }
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

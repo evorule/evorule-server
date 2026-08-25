@@ -287,10 +287,13 @@ async fn reload_handler(
 }
 
 /// `GET /rules` — 列出规则文件路径
-async fn rules_handler(State(svc): State<HotReloadService>) -> Json<serde_json::Value> {
+async fn rules_handler(
+    State(svc): State<HotReloadService>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
     let config = svc.lock_config();
-    let files = loader::list_rule_files(Path::new(&config.rules_dir));
-    Json(serde_json::json!(files))
+    let files = loader::list_rule_files(Path::new(&config.rules_dir))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(serde_json::json!(files)))
 }
 
 /// 构建路由（公开以便测试）
@@ -345,6 +348,12 @@ mod tests {
         fs::write(&path, content).expect("写入测试文件失败");
     }
 
+    /// 一个通过 Schema 门禁的引擎原生规则（transform[]）
+    fn engine_native_rule() -> String {
+        r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#
+            .to_string()
+    }
+
     /// 构造带预设 session_id 的 service（不走网络创建会话）
     async fn new_service_with_session(rules_dir: String, server_url: String) -> HotReloadService {
         let config = HotReloadConfig {
@@ -390,8 +399,8 @@ mod tests {
     #[test]
     fn test_load_rules_multiple_files() {
         let dir = TempDir::new().expect("创建临时目录失败");
-        write_json_file(&dir, "rule1.json", r#"{"name": "rule1"}"#);
-        write_json_file(&dir, "rule2.json", r#"{"name": "rule2"}"#);
+        write_json_file(&dir, "rule1.json", &engine_native_rule());
+        write_json_file(&dir, "rule2.json", &engine_native_rule());
 
         let rules = load_rules(dir.path()).expect("加载应成功");
         assert_eq!(rules.len(), 2, "应加载 2 个规则文件");
@@ -414,7 +423,7 @@ mod tests {
     #[test]
     fn test_load_rules_skips_invalid_json() {
         let dir = TempDir::new().expect("创建临时目录失败");
-        write_json_file(&dir, "valid.json", r#"{"name": "ok"}"#);
+        write_json_file(&dir, "valid.json", &engine_native_rule());
         write_json_file(&dir, "invalid.json", r#"{ bad json }"#);
 
         let rules = load_rules(dir.path()).expect("整体不应报错");
@@ -424,13 +433,57 @@ mod tests {
     #[test]
     fn test_load_rules_ignores_non_json_files() {
         let dir = TempDir::new().expect("创建临时目录失败");
-        write_json_file(&dir, "rule.json", r#"{"name": "ok"}"#);
+        write_json_file(&dir, "rule.json", &engine_native_rule());
         // 非 JSON 文件应被忽略
         fs::write(dir.path().join("readme.txt"), "not a rule").expect("写入失败");
         fs::write(dir.path().join("config.yaml"), "key: value").expect("写入失败");
 
         let rules = load_rules(dir.path()).expect("加载应成功");
         assert_eq!(rules.len(), 1, "应只加载 .json 文件");
+    }
+
+    #[test]
+    fn test_load_rules_recursive_includes_bundle_subdir() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        write_json_file(&dir, "top.json", &engine_native_rule());
+        let bundle_dir = dir.path().join("bundles/bundle-1");
+        fs::create_dir_all(&bundle_dir).expect("创建 bundle 目录失败");
+        fs::write(bundle_dir.join("entry.json"), engine_native_rule()).expect("写入失败");
+        // bundle_manifest.json 应被排除（不当作规则文件解析）
+        fs::write(
+            bundle_dir.join(evorule_bundle::BUNDLE_MANIFEST_FILE),
+            r#"{"bundle_id":"bundle-1","entry_files":[]}"#,
+        )
+        .expect("写入失败");
+
+        let rules = load_rules(dir.path()).expect("加载应成功");
+        assert_eq!(
+            rules.len(),
+            2,
+            "递归应加载顶层 + bundle 子目录条目，排除 manifest"
+        );
+    }
+
+    #[test]
+    fn test_list_rule_files_recursive() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        write_json_file(&dir, "top.json", &engine_native_rule());
+        let bundle_dir = dir.path().join("bundles/bundle-1");
+        fs::create_dir_all(&bundle_dir).expect("创建 bundle 目录失败");
+        fs::write(bundle_dir.join("entry.json"), engine_native_rule()).expect("写入失败");
+        fs::write(
+            bundle_dir.join(evorule_bundle::BUNDLE_MANIFEST_FILE),
+            r#"{}"#,
+        )
+        .expect("写入失败");
+
+        let files = list_rule_files(dir.path()).expect("读取规则目录失败");
+        assert_eq!(files.len(), 2, "递归列出应排除 manifest");
+        assert!(
+            files.iter().any(|f| f.ends_with("bundles\\bundle-1\\entry.json")
+                || f.ends_with("bundles/bundle-1/entry.json")),
+            "应包含 bundle 子目录条目: {files:?}"
+        );
     }
 
     #[test]
@@ -467,7 +520,7 @@ mod tests {
         write_json_file(&dir, "b.json", "{}");
         fs::write(dir.path().join("c.txt"), "ignored").expect("写入失败");
 
-        let files = list_rule_files(dir.path());
+        let files = list_rule_files(dir.path()).expect("读取规则目录失败");
         assert_eq!(files.len(), 2, "应只列出 .json 文件");
     }
 
@@ -619,8 +672,8 @@ mod tests {
     #[tokio::test]
     async fn test_reload_rules_success() {
         let dir = TempDir::new().expect("创建临时目录失败");
-        write_json_file(&dir, "rule1.json", r#"{"name": "rule1"}"#);
-        write_json_file(&dir, "rule2.json", r#"{"name": "rule2"}"#);
+        write_json_file(&dir, "rule1.json", &engine_native_rule());
+        write_json_file(&dir, "rule2.json", &engine_native_rule());
 
         let mut server = mockito::Server::new_async().await;
         server
@@ -657,8 +710,8 @@ mod tests {
     #[tokio::test]
     async fn test_handler_status() {
         let dir = TempDir::new().expect("创建临时目录失败");
-        write_json_file(&dir, "rule1.json", r#"{"name": "rule1"}"#);
-        write_json_file(&dir, "rule2.json", r#"{"name": "rule2"}"#);
+        write_json_file(&dir, "rule1.json", &engine_native_rule());
+        write_json_file(&dir, "rule2.json", &engine_native_rule());
 
         let svc = new_service_with_session(
             dir.path().to_string_lossy().to_string(),
@@ -686,7 +739,7 @@ mod tests {
     #[tokio::test]
     async fn test_handler_reload_success() {
         let dir = TempDir::new().expect("创建临时目录失败");
-        write_json_file(&dir, "rule1.json", r#"{"name": "rule1"}"#);
+        write_json_file(&dir, "rule1.json", &engine_native_rule());
 
         let mut server = mockito::Server::new_async().await;
         server

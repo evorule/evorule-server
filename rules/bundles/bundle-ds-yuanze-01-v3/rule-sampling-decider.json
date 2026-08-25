@@ -1,0 +1,50 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "sampling_decider",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.__io_results__.call_service",
+              "type": "exists"
+            },
+            "on_false": [
+              {
+                "params": {
+                  "args": "__exec__.instruction.params",
+                  "io_type": "call_service",
+                  "service_name": "__exec__.instruction.params.sampling_service"
+                },
+                "type": "io_request"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "audit.trigger_shadow",
+                  "operation": "set",
+                  "value": "__exec__.payload.__io_results__.call_service.trigger"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.counter",
+                  "operation": "set",
+                  "value": "__exec__.payload.__io_results__.call_service.counter"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

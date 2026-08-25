@@ -1,0 +1,84 @@
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.demo.role13",
+  "rule_id": "role13.demo",
+  "version": "0.1.0",
+  "description": "角色 1/3 端到端演示规则 —— 触发 call_external 经 ServiceRegistry 路由到已注册的 echo_svc，并把结果存入 payload.demo_result",
+  "metadata": {
+    "author": "evo-agent",
+    "license": "AGPL-3.0-or-later",
+    "note": "本规则使用独立指令类型 role13_demo，避免与 core_eval.json 的 call_external/call_service 指令规则冲突。io_request 的 io_type 为 call_external，由 evorule-server 的 ServiceRegistryHandler 按 service_name 路由到 service_registry.json 中的 echo_svc。"
+  },
+  "transform": [
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "all",
+          "inner": [
+            { "type": "instruction", "instruction_type": "role13_demo" },
+            {
+              "type": "not",
+              "inner": {
+                "type": "exists",
+                "path": "__exec__.payload.__io_results__.call_external"
+              }
+            }
+          ]
+        },
+        "on_true": [
+          {
+            "type": "io_request",
+            "params": {
+              "io_type": "call_external",
+              "service_name": "echo_svc",
+              "args": "__exec__.instruction.params.args"
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "all",
+          "inner": [
+            { "type": "instruction", "instruction_type": "role13_demo" },
+            {
+              "type": "exists",
+              "path": "__exec__.payload.__io_results__.call_external"
+            }
+          ]
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "demo_result",
+              "operation": "set",
+              "value": "__exec__.payload.__io_results__.call_external"
+            }
+          },
+          {
+            "type": "set",
+            "params": {
+              "attr": "__exec__.payload.__io_results__.call_external",
+              "operation": "set",
+              "value": null
+            }
+          },
+          {
+            "type": "push",
+            "params": {
+              "instructions": [{ "type": "noop" }]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,142 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "safety_rollback",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "domain": {
+              "inner": {
+                "inner": [
+                  {
+                    "inner": {
+                      "path": "payload.shadow_result.diff_exceeded",
+                      "type": "eq",
+                      "value": true
+                    },
+                    "type": "not"
+                  },
+                  {
+                    "inner": {
+                      "inner": [
+                        {
+                          "path": "payload.audit.pending_alert",
+                          "type": "exists"
+                        },
+                        {
+                          "inner": {
+                            "path": "payload.audit.pending_alert",
+                            "type": "eq",
+                            "value": null
+                          },
+                          "type": "not"
+                        }
+                      ],
+                      "type": "all"
+                    },
+                    "type": "not"
+                  }
+                ],
+                "type": "all"
+              },
+              "type": "not"
+            },
+            "on_false": [],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "service_result",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.safe_fallback"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "audit.rollback_triggered",
+                  "operation": "set",
+                  "value": true
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_alert_args.tpl_alert.reason",
+                  "operation": "set",
+                  "value": "紧急：系统已触发看门狗回滚"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_alert_args.tpl_alert.cause",
+                  "operation": "set",
+                  "value": "影子差异超限或残差超标"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_alert_args.tpl_alert.safe_fallback",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.safe_fallback"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_alert_args.model",
+                  "operation": "set",
+                  "value": "__exec__.instruction.params.model"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "_alert_args.system",
+                  "operation": "set",
+                  "value": "你是一名紧急响应工程师，回复需简短有力。"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "domain": {
+                    "path": "__exec__.payload.__io_results__.call_service",
+                    "type": "exists"
+                  },
+                  "on_false": [
+                    {
+                      "params": {
+                        "args": "__exec__.payload._alert_args",
+                        "io_type": "call_service",
+                        "service_name": "llm_advisor"
+                      },
+                      "type": "io_request"
+                    }
+                  ],
+                  "on_true": [
+                    {
+                      "params": {
+                        "attr": "audit.rollback_alert",
+                        "operation": "set",
+                        "value": "__exec__.payload.__io_results__.call_service"
+                      },
+                      "type": "set"
+                    }
+                  ]
+                },
+                "type": "branch"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

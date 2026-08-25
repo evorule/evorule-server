@@ -1,4 +1,7 @@
 {
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.core.eval",
   "rule_id": "core.eval",
   "version": "0.3.1",
   "description": "TCB 宪法 - 完整 ReAct 循环支持（v0.3.1 修复同轮重复 push；顺序语义，token 聚合优化由 governance 层负责）",

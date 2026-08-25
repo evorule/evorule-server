@@ -1,0 +1,58 @@
+{
+  "bundle_id": "bundle-ds-yuanze-01-v3",
+  "dataset_id": "ds-yuanze-01",
+  "source_version": "v3",
+  "selection_mode": "auto_by_effective_date",
+  "effective_from": "2024-01-01",
+  "content_hash": "sha256:b80b6632d3f24f17e544db35fc55610961cc1eeaff5f3dfbba50810b0547a040",
+  "entry_files": [
+    {
+      "entry_id": "rule-audit-alert",
+      "file": "rule-audit-alert.json"
+    },
+    {
+      "entry_id": "rule-audit-compactor",
+      "file": "rule-audit-compactor.json"
+    },
+    {
+      "entry_id": "rule-compute-ik",
+      "file": "rule-compute-ik.json"
+    },
+    {
+      "entry_id": "rule-evolution-scanner",
+      "file": "rule-evolution-scanner.json"
+    },
+    {
+      "entry_id": "rule-generate-patch",
+      "file": "rule-generate-patch.json"
+    },
+    {
+      "entry_id": "rule-hotload-patch",
+      "file": "rule-hotload-patch.json"
+    },
+    {
+      "entry_id": "rule-robot-move",
+      "file": "rule-robot-move.json"
+    },
+    {
+      "entry_id": "rule-safety-rollback",
+      "file": "rule-safety-rollback.json"
+    },
+    {
+      "entry_id": "rule-sampling-decider",
+      "file": "rule-sampling-decider.json"
+    },
+    {
+      "entry_id": "rule-sandbox-validate",
+      "file": "rule-sandbox-validate.json"
+    },
+    {
+      "entry_id": "rule-shadow-validate",
+      "file": "rule-shadow-validate.json"
+    },
+    {
+      "entry_id": "rule-validate-precision",
+      "file": "rule-validate-precision.json"
+    }
+  ]
+}

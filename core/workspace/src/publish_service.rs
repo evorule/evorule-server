@@ -124,6 +124,16 @@ impl PublishService {
                     to: "published".to_string(),
                 });
             }
+            // 前置缺陷修复: 校验提交的版本是该规则的当前版本。
+            // 原实现未校验, 可提交被后续版本覆盖的旧版本 (Superseded) 内容, 造成发布过期规则。
+            if rule.current_version_id.as_deref() != Some(rv.id.as_str()) {
+                return Err(WorkspaceError::invalid_input(format!(
+                    "rule {} version {} is not the current version (current: {}) — publish only the current candidate version",
+                    rule.id,
+                    rv.id,
+                    rule.current_version_id.as_deref().unwrap_or("none")
+                )));
+            }
             // 解析规则内容
             let content: Value = serde_json::from_str(&rv.content).map_err(|e| {
                 WorkspaceError::internal(format!(
@@ -240,14 +250,6 @@ impl PublishService {
 
         match req.decision.as_str() {
             "approved" => {
-                // 更新队列状态为 approved
-                self.db.update_publish_queue_status(
-                    queue_id,
-                    PublishStatus::Approved,
-                    reviewed_by,
-                    req.comment.as_deref(),
-                )?;
-
                 // 缺口3: 记录 publish_reviewed (approved) 生命周期节点
                 // 在 execute_publish 改变版本前记录, ruleset_version 为当前生产版本。
                 let review_reason = format!(
@@ -268,10 +270,17 @@ impl PublishService {
                 )?;
 
                 // 触发滚动 session 热重载 (加全局发布锁)
+                // 前置缺陷修复: 发布期间队列保持 pending, 若发布失败队列仍为 pending 可重试,
+                // 不残留孤儿 approved 状态 (原实现先置 approved 再发布, 失败无法恢复)。
                 let published_version = self.execute_publish(queue_id, reviewed_by).await?;
 
-                // 标记队列为 published
-                self.db.complete_publish(queue_id, published_version)?;
+                // 发布成功 → 标记队列为 published (审批人/意见随 complete_publish 一并落库)
+                self.db.complete_publish(
+                    queue_id,
+                    published_version,
+                    reviewed_by,
+                    req.comment.as_deref(),
+                )?;
 
                 info!(
                     queue_id = queue_id,
@@ -474,31 +483,47 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::db::WorkspaceDb;
-    use crate::models::{CreateRuleRequest, CreateWorkspaceRequest, RuleVersionState};
+    use crate::models::{
+        CreateRuleRequest, CreateWorkspaceRequest, RuleVersionState, UpdateRuleContentRequest,
+    };
     use crate::rolling_session::RollingSessionService;
     use crate::session_bridge::SessionOps;
     use crate::session_switched::SessionSwitchedBroadcaster;
     use crate::workspace_service::WorkspaceService;
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Mutex;
 
     struct MockSessionOps {
         next_id: AtomicU64,
+        /// 注入 reload_rules 失败 (用于测试发布失败时队列保持 pending 可重试)
+        reload_fail: AtomicBool,
+        /// 已创建的 session id (session_exists 依据)
+        created: Mutex<std::collections::HashSet<u64>>,
     }
     impl MockSessionOps {
         fn new(start: u64) -> Self {
             Self {
                 next_id: AtomicU64::new(start),
+                reload_fail: AtomicBool::new(false),
+                created: Mutex::new(std::collections::HashSet::new()),
             }
         }
     }
     #[async_trait]
     impl SessionOps for MockSessionOps {
         async fn create_session(&self) -> WorkspaceResult<u64> {
-            Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            self.created.lock().unwrap().insert(id);
+            Ok(id)
         }
         async fn fork_session(&self, _parent: u64) -> WorkspaceResult<u64> {
-            Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            self.created.lock().unwrap().insert(id);
+            Ok(id)
+        }
+        async fn session_exists(&self, session_id: u64) -> bool {
+            self.created.lock().unwrap().contains(&session_id)
         }
         async fn close_session(&self, _id: u64) -> WorkspaceResult<()> {
             Ok(())
@@ -525,6 +550,11 @@ mod tests {
             Ok(serde_json::json!([]))
         }
         async fn reload_rules(&self) -> WorkspaceResult<()> {
+            if self.reload_fail.load(Ordering::SeqCst) {
+                return Err(WorkspaceError::internal(
+                    "mock reload_rules failed (injected)",
+                ));
+            }
             Ok(())
         }
         async fn flush_audit(&self, _id: u64) -> WorkspaceResult<usize> {
@@ -533,18 +563,22 @@ mod tests {
     }
 
     /// 构建测试用 PublishService + 依赖
+    ///
+    /// 返回 `Arc<MockSessionOps>` 句柄, 测试可注入 reload_rules 失败以模拟发布失败。
     async fn make_services() -> (
         PublishService,
         Arc<WorkspaceDb>,
         Arc<RuleMetaServiceHandle>,
         String,
+        Arc<MockSessionOps>,
     ) {
         let db = Arc::new(WorkspaceDb::in_memory().unwrap());
-        let ops: Arc<dyn SessionOps> = Arc::new(MockSessionOps::new(1000));
+        let ops = Arc::new(MockSessionOps::new(1000));
+        let dyn_ops: Arc<dyn SessionOps> = ops.clone();
         let switcher = SessionSwitchedBroadcaster::new();
-        let rolling = RollingSessionService::new(db.clone(), ops.clone(), switcher);
+        let rolling = RollingSessionService::new(db.clone(), dyn_ops.clone(), switcher);
         let publish_svc = PublishService::new(db.clone(), rolling);
-        let ws_svc = Arc::new(WorkspaceService::new(db.clone(), ops));
+        let ws_svc = Arc::new(WorkspaceService::new(db.clone(), dyn_ops));
         // 初始化 production_state
         db.update_production_state(100, 0, "init_hash", "system")
             .unwrap();
@@ -561,7 +595,7 @@ mod tests {
         let rule_svc = Arc::new(RuleMetaServiceHandle {
             inner: Arc::new(RuleMetaService::new(db.clone())),
         });
-        (publish_svc, db, rule_svc, ws_id)
+        (publish_svc, db, rule_svc, ws_id, ops)
     }
 
     /// 测试辅助: 包装 RuleMetaService 以便共享
@@ -603,7 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_publish_permission_denied_for_doctor() {
-        let (publish_svc, _db, _rule_svc, ws_id) = make_services().await;
+        let (publish_svc, _db, _rule_svc, ws_id, _ops) = make_services().await;
 
         let result = publish_svc
             .submit_publish(
@@ -622,7 +656,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_publish_by_department_head() {
-        let (publish_svc, db, rule_svc_handle, ws_id) = make_services().await;
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
 
         let item = publish_svc
@@ -648,7 +682,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_review_publish_full_flow() {
-        let (publish_svc, db, rule_svc_handle, ws_id) = make_services().await;
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
 
         // 科室主任提交
@@ -697,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_review_publish_rejected() {
-        let (publish_svc, _db, rule_svc_handle, ws_id) = make_services().await;
+        let (publish_svc, _db, rule_svc_handle, ws_id, _ops) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-1").await;
 
         let item = publish_svc
@@ -733,7 +767,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_review_permission_denied_for_head() {
-        let (publish_svc, _db, _rule_svc, _ws_id) = make_services().await;
+        let (publish_svc, _db, _rule_svc, _ws_id, _ops) = make_services().await;
 
         // 科室主任尝试审批 → Forbidden
         let result = publish_svc
@@ -752,7 +786,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_emergency_rollback_version_monotonic() {
-        let (publish_svc, db, rule_svc_handle, ws_id) = make_services().await;
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
 
         // v1: 发布
@@ -832,7 +866,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_permission_denied_for_head() {
-        let (publish_svc, _db, _rule_svc, _ws_id) = make_services().await;
+        let (publish_svc, _db, _rule_svc, _ws_id, _ops) = make_services().await;
 
         let result = publish_svc
             .emergency_rollback(
@@ -845,6 +879,147 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(WorkspaceError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_review_publish_publish_failure_keeps_queue_pending() {
+        // 前置缺陷修复回归: 发布失败时队列项必须保持 pending (可重试),
+        // 不残留孤儿 approved 状态 (原实现先置 approved 再发布, 失败永久卡死)。
+        let (publish_svc, db, rule_svc_handle, ws_id, ops) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+
+        let item = publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id.clone(),
+                    rule_version_ids: vec![rv_id],
+                    test_report_sandbox_id: None,
+                    description: None,
+                },
+                "head-1",
+                &PublishRole::DepartmentHead,
+            )
+            .await
+            .unwrap();
+
+        // 注入 reload_rules 失败 → execute_publish (rolling_swap) 返回 Err
+        ops.reload_fail.store(true, Ordering::SeqCst);
+
+        let result = publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: Some("通过".to_string()),
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await;
+        assert!(result.is_err());
+
+        // 队列项保持 pending (可重试), 不被孤儿 approved 卡死
+        let after = db.get_publish_queue_item(item.id).unwrap().unwrap();
+        assert_eq!(after.status, PublishStatus::Pending);
+
+        // production_state 未被改动 (发布未生效)
+        let state = db.get_production_state().unwrap();
+        assert_eq!(state.ruleset_version, 0);
+
+        // 恢复后重试 → 发布成功
+        ops.reload_fail.store(false, Ordering::SeqCst);
+        let published = publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: Some("重试通过".to_string()),
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await
+            .unwrap();
+        assert_eq!(published.status, PublishStatus::Published);
+        assert_eq!(published.published_version, Some(1));
+        assert_eq!(published.reviewed_by.as_deref(), Some("admin-1"));
+        assert_eq!(published.review_comment.as_deref(), Some("重试通过"));
+    }
+
+    #[tokio::test]
+    async fn test_submit_publish_rejects_stale_version() {
+        // 前置缺陷修复回归: 只能发布规则的当前版本, 禁止发布被覆盖的旧版本 (Superseded)。
+        let (publish_svc, _db, rule_svc_handle, ws_id, _ops) = make_services().await;
+        let rule_svc = &rule_svc_handle.inner;
+
+        // 建规则 (Draft, v1 为当前版本)
+        let rule = rule_svc
+            .create_rule(
+                &ws_id,
+                CreateRuleRequest {
+                    name: "rule-stale".to_string(),
+                    content: r#"{"transform":[{"type":"noop"}]}"#.to_string(),
+                    created_by: "head-1".to_string(),
+                    description: None,
+                },
+            )
+            .await
+            .unwrap();
+        let v1_id = rule.current_version_id.clone().unwrap();
+
+        // 更新内容 → 生成 v2, v1 被 superseded
+        rule_svc
+            .update_rule_content(
+                &ws_id,
+                &rule.id,
+                UpdateRuleContentRequest {
+                    content: r#"{"transform":[{"type":"noop"},{"type":"noop"}]}"#.to_string(),
+                    updated_by: "head-1".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let versions = rule_svc.list_rule_versions(&ws_id, &rule.id).await.unwrap();
+        let v2_id = versions
+            .iter()
+            .find(|v| v.state == RuleVersionState::Current)
+            .unwrap()
+            .id
+            .clone();
+
+        // 提交为 Candidate
+        rule_svc.submit_rule(&ws_id, &rule.id).await.unwrap();
+
+        // 提交旧版本 v1 → 拒绝
+        let result = publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id.clone(),
+                    rule_version_ids: vec![v1_id],
+                    test_report_sandbox_id: None,
+                    description: None,
+                },
+                "head-1",
+                &PublishRole::DepartmentHead,
+            )
+            .await;
+        assert!(matches!(result, Err(WorkspaceError::InvalidInput(_))));
+
+        // 提交当前版本 v2 → 成功
+        let item = publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id,
+                    rule_version_ids: vec![v2_id],
+                    test_report_sandbox_id: None,
+                    description: None,
+                },
+                "head-1",
+                &PublishRole::DepartmentHead,
+            )
+            .await
+            .unwrap();
+        assert_eq!(item.status, PublishStatus::Pending);
     }
 
     #[test]

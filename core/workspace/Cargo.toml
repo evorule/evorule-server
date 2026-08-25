@@ -33,6 +33,8 @@ tracing = "0.1"
 ulid = "1"
 # async trait (Rust 1.74 原生 async trait 尚不完全稳定)
 async-trait = "0.1"
+# Schema 门禁（线1 防御层）：rule_translate 输出 / 规则提交前的结构校验
+evorule-rule-schema = { path = "../rule_schema" }
 # HTTP API (与 evorule-server 保持一致: axum 0.8)
 axum = "0.8"
 # OpenAPI 单一真相源 (P2-1): workspace 端点标注 + 独立 OpenApi 聚合,由 evorule-server 合并

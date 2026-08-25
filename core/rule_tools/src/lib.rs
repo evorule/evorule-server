@@ -158,9 +158,25 @@ mod tests {
         (status, text)
     }
 
+    /// 引擎原生规则体（transform[]，Schema 门禁权威结构）
     fn valid_rule_body() -> String {
         serde_json::json!({
-            "rule_id": "test-001",
+            "id": "test-001",
+            "version": "0.1.0",
+            "transform": [
+                {
+                    "type": "set",
+                    "params": {"attr": "x", "operation": "set", "value": 1}
+                }
+            ]
+        })
+        .to_string()
+    }
+
+    /// 旧格式规则体（rule_id/rules/instruction），仅供 safety 分析测试使用
+    fn valid_safety_body() -> String {
+        serde_json::json!({
+            "rule_id": "safe-001",
             "rules": [{
                 "name": "main",
                 "instruction": {
@@ -213,7 +229,7 @@ mod tests {
             .method("POST")
             .uri("/safety")
             .header("content-type", "application/json")
-            .body(Body::from(valid_rule_body()))
+            .body(Body::from(valid_safety_body()))
             .unwrap();
         let (status, body) = send_request(app, req).await;
         assert_eq!(status, StatusCode::OK);

@@ -85,7 +85,10 @@
 │  ├── core/debug_control   pause / resume / step / inspect    │
 │  ├── core/semantic_invariants  规则一致性自检                  │
 │  ├── core/time_machine    rewind / diff / fork                │
-│  └── core/rule_tools      规则脚手架 + 校验                   │
+│  ├── core/rule_tools      规则脚手架 + 校验                   │
+│  ├── core/rule_schema     规则 Schema 门禁 (v0.3.0 新增)     │
+│  ├── core/workspace       多租户工作空间 + 规则元数据管理     │
+│  └── plugins/              业务服务插件 (v0.3.0 新增)         │
 ├─────────────────────────────────────────────────────────────┤
 │  evorule 核心 (crates.io 依赖)                               │
 │  ├── evorule-tcb      纯函数执行 + 类型安全                   │
@@ -167,9 +170,17 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `/api/sessions/{id}/interrupt`              | POST      | 中断反应器               |
 | `/api/sessions/{id}/snapshot`               | GET       | 完整快照                 |
 | `/api/rules/validate`                       | POST      | 规则校验                 |
+| `/api/bundles`                              | POST/GET  | 导入/列出规则包 (v0.3.0) |
+| `/api/bundles/imports`                      | GET       | 规则包导入历史 (v0.3.0)  |
+| `/api/permissions`                          | GET/POST  | 权限管理 (v0.3.0)        |
+| `/api/services`                             | GET       | 已绑定服务列表 (v0.3.0)  |
+| `/api/workspaces`                           | POST/GET  | 创建/列出工作空间         |
+| `/api/workspaces/{id}/rules`                | GET/POST  | 工作空间规则 CRUD         |
+| `/api/workspaces/{id}/rules/{rule_id}/versions` | GET  | 规则版本管理              |
+| `/api/workspaces/{id}/sandbox`              | POST      | 沙盒试运行                |
 | `/metrics`                                  | GET       | Prometheus 指标          |
 
-完整路由（约 50 条）见源码 `src/api/server.rs`。
+完整路由（约 60 条）见源码 `src/api/server.rs` + `src/api/bundles.rs` + `src/api/permissions.rs`。
 
 ### 深入阅读
 

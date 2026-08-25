@@ -81,6 +81,11 @@ use utoipa::OpenApi;
         crate::api::server::validate_rules_handler,
         crate::api::server::reload_rules_handler,
         crate::api::server::get_rules,
+        // bundles 组（T2 快照包导入 / T4 激活报告）
+        crate::api::bundles::import_bundle_handler,
+        crate::api::bundles::import_bundle_dry_run_handler,
+        crate::api::bundles::active_bundles_handler,
+        crate::api::bundles::list_bundle_imports_handler,
         // openapi 元数据
         crate::api::openapi::openapi_json,
     ),
@@ -134,6 +139,10 @@ use utoipa::OpenApi;
         crate::api::server::RulesReloadedResponse,
         crate::api::server::RulesResponse,
         crate::api::server::SharedFactsVersionResponse,
+        // bundles 组
+        crate::api::bundles::ImportResponse,
+        crate::api::bundles::ActiveBundlesResponse,
+        crate::api::bundles::ActiveBundleInfo,
         // 查询参数
         crate::api::server::CreateSessionFromParentParams,
         crate::api::server::CreateSessionForkParams,
