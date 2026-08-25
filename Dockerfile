@@ -22,10 +22,12 @@
 # ===== 阶段 1: 构建 =====
 FROM rust:1.92-slim AS builder
 
-# 安装构建依赖(SQLite 开发库 + pkg-config)
+# 安装构建依赖(SQLite 开发库 + OpenSSL + curl(utoipa-swagger-ui 构建时下载) + pkg-config)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libsqlite3-dev \
+    libssl-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -43,9 +45,14 @@ COPY core/debug_control/Cargo.toml ./core/debug_control/
 COPY core/hot_reload/Cargo.toml ./core/hot_reload/
 COPY core/io_handlers/Cargo.toml ./core/io_handlers/
 COPY core/metrics/Cargo.toml ./core/metrics/
+COPY core/rule_schema/Cargo.toml ./core/rule_schema/
 COPY core/rule_tools/Cargo.toml ./core/rule_tools/
 COPY core/semantic_invariants/Cargo.toml ./core/semantic_invariants/
 COPY core/time_machine/Cargo.toml ./core/time_machine/
+COPY core/workspace/Cargo.toml ./core/workspace/
+
+# plugins/* lib
+COPY plugins/demo-services/Cargo.toml ./plugins/demo-services/
 
 # ===== 第 2 层: 创建 dummy 源文件预编译依赖 =====
 # evorule-server (bin)
@@ -59,12 +66,16 @@ RUN mkdir -p \
         core/hot_reload/src \
         core/io_handlers/src \
         core/metrics/src \
+        core/rule_schema/src \
         core/rule_tools/src \
         core/semantic_invariants/src \
-        core/time_machine/src && \
-    for c in auth debug_control hot_reload io_handlers metrics rule_tools semantic_invariants time_machine; do \
+        core/time_machine/src \
+        core/workspace/src \
+        plugins/demo-services/src && \
+    for c in auth debug_control hot_reload io_handlers metrics rule_schema rule_tools semantic_invariants time_machine workspace; do \
         echo "pub fn _dummy() {}" > core/$c/src/lib.rs; \
-    done
+    done && \
+    echo "pub fn _dummy() {}" > plugins/demo-services/src/lib.rs
 
 # ===== 第 3 层: 预编译依赖(失败不阻断,因 dummy 与真实 features 可能不一致) =====
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -79,9 +90,12 @@ RUN rm -rf evorule-server/src \
            core/hot_reload/src \
            core/io_handlers/src \
            core/metrics/src \
+           core/rule_schema/src \
            core/rule_tools/src \
            core/semantic_invariants/src \
-           core/time_machine/src
+           core/time_machine/src \
+           core/workspace/src \
+           plugins/demo-services/src
 
 # 复制真实源码
 COPY evorule-server/src/ ./evorule-server/src/
@@ -90,13 +104,21 @@ COPY core/debug_control/src/ ./core/debug_control/src/
 COPY core/hot_reload/src/ ./core/hot_reload/src/
 COPY core/io_handlers/src/ ./core/io_handlers/src/
 COPY core/metrics/src/ ./core/metrics/src/
+COPY core/rule_schema/ ./core/rule_schema/
 COPY core/rule_tools/src/ ./core/rule_tools/src/
 COPY core/semantic_invariants/src/ ./core/semantic_invariants/src/
 COPY core/time_machine/src/ ./core/time_machine/src/
+COPY core/workspace/src/ ./core/workspace/src/
+COPY plugins/demo-services/src/ ./plugins/demo-services/src/
 
 # ===== 第 5 层: 真实构建 =====
+# 注意: dummy 预编译(target cache mount 共享)会缓存本地 crate 的 dummy rlib,
+# 真实源码覆盖后 cargo 可能误判 fresh 复用旧产物(如 io_handlers 缺 ServiceMeta)。
+# 根因: docker COPY 保留源文件 mtime(早于 dummy 创建时间), cargo 据此误判未变化。
+# 修复: 构建前 touch 所有 .rs, 强制 cargo 重新编译本地 crate(依赖仍走缓存)。
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
+    find /build -name '*.rs' -exec touch {} + && \
     cargo build --release --bin evorule-server && \
     cp /build/target/release/evorule-server /usr/local/bin/evorule-server
 
