@@ -897,6 +897,86 @@ causal_chain 长度=1 → 追溯的是根因 Command，换 IoResponse 追溯看�
 
 ---
 
+## 五、升级与发布（4 个坑，v0.3.0 新增）
+
+### 坑 20：audit_report() 返回值从 String 改为 Result → 编译错误
+
+**触发场景**：从 v0.2.x 升级到 v0.3.0，代码中调用 `api.audit_report().await` 或 `session.audit_report()`。
+
+**现象**：编译错误，`mismatched types: expected struct String, found enum Result<String, serde_json::Error>`。
+
+**根因**：v0.3.0 同步 evorule 核心 v0.3.2 的 Breaking Change，`auditor.report()`/`auditor.export()` 从 `String` 改为 `Result<String, serde_json::Error>`，不再静默退化为 `"{}"`。`GovernanceApi::audit_report()` 和 `session.audit_report()` 同步变更。
+
+**修复方案**：
+```rust
+// v0.2.x（旧）
+let report: String = api.audit_report().await;
+
+// v0.3.0（新）
+let report: String = api.audit_report().await?;  // 传播错误
+// 或
+let report: String = api.audit_report().await.unwrap_or_else(|e| {
+    tracing::error!("审计报告序列化失败: {e}");
+    "{}".to_string()
+});
+```
+
+**避坑要点**：HTTP API `GET /api/sessions/{id}/audit` 的返回格式不变（成功时仍是 JSON），但序列化失败时现在返回 500 而非空对象。客户端需处理 500 响应。
+
+---
+
+### 坑 21：元指令白名单修正 → noop/increment transform 被拒绝
+
+**触发场景**：v0.3.0 之前写的规则文件中，transform 规则的 `type` 字段使用了 `noop`、`increment`、`decrement`。
+
+**现象**：`POST /api/rules/validate` 返回校验失败，错误信息类似 `"transform[0].type: noop is not one of [set, push, branch, io_request, collect, merge]"`。
+
+**根因**：v0.3.0 同步 evorule 核心 v0.3.2 的元指令白名单修正。`noop`/`increment`/`decrement` 是**业务指令层**类型（队列中的指令），不是 meta 指令。之前的文档和校验器误将它们列为 meta 指令，导致假阳性/假阴性。
+
+**修复方案**：
+- transform 规则的 `type` 只能是 6 种：`set` / `push` / `branch` / `io_request` / `collect` / `merge`
+- `noop` 初始指令是 CLI/应用层构造的业务指令，不是 transform 规则类型
+- `increment`/`decrement` 如果需要，应通过 `set` 元指令的 `operation: "add"`/`"sub"` 实现
+
+**避坑要点**：提交规则前先用 `POST /api/rules/validate` 校验，该端点使用 `core/rule_schema` 的 JSON Schema 做权威校验，比 evorule TCB 内部校验更早发现问题。
+
+---
+
+### 坑 22：[patch.crates-io] 段导致发布构建失败
+
+**触发场景**：v0.3.0 开发阶段，根 `Cargo.toml` 新增了 `[patch.crates-io]` 段，用本地 path 覆盖 evorule-tcb/reactor/governance/bundle。
+
+**现象**：在其他机器上 clone 仓库后 `cargo build` 失败，报错 `path ../evorule/evorule-tcb does not exist`。或发布 Docker 镜像时构建失败。
+
+**根因**：`[patch.crates-io]` 是**本地开发专用**，依赖本地 `../evorule/` 和 `../evorule-bundle/` 目录存在。这些目录在其他机器或 Docker 构建环境中不存在。
+
+**修复方案**：
+- **本地开发**：保留 `[patch.crates-io]` 段，确保 `../evorule/` 和 `../evorule-bundle/` 存在
+- **发布前**：必须移除 `[patch.crates-io]` 段，使用 crates.io 上的正式版本
+- **Docker 构建**：Dockerfile 中不应包含 `[patch.crates-io]` 段，或在构建前用 `sed` 移除
+
+**避坑要点**：`docs/RELEASE_PROCESS.md` §1.2 的发布前就绪检查会检测 `[patch.crates-io]` 段是否存在。发布前务必运行 `scripts/validate-release.ps1`。
+
+---
+
+### 坑 23：规则包导入失败 → 原子回滚后无任何规则生效
+
+**触发场景**：`POST /api/bundles` 导入规则包，包内含 15 条规则，其中 1 条规则 schema 校验失败。
+
+**现象**：导入返回 `{"imported": false, "status": "rolled_back", "error": "..."}`，检查活跃规则包列表发现该包完全不存在，不是 14 条成功 1 条失败。
+
+**根因**：规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + **原子落盘**机制（T2：36 号集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。这是有意设计，避免"半生效"状态导致难以排查的问题。
+
+**修复方案**：
+1. 查看返回的 `error` 字段，定位失败的规则文件和具体原因
+2. 修复该规则文件（常见原因：meta 指令类型错误 / 必填字段缺失 / domain path 格式错误）
+3. 用 `POST /api/rules/validate` 单独校验修复后的规则
+4. 重新导入整个包
+
+**避坑要点**：导入前先用 `core/rule_schema` 校验包内所有规则。`scripts/check_schema_sync.py` 可批量校验目录下所有规则文件。
+
+---
+
 ## 文档维护
 
 - **更新时机**：每次集成 evorule-server 遇到新坑时，追加到对应分类

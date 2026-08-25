@@ -62,17 +62,18 @@ cargo build --release --workspace
 pwsh scripts/validate-all.ps1 -PreRelease
 ```
 
-此命令一次性运行 **7 项检查**：
+此命令一次性运行 **8 项检查**：
 
 | #   | 检查项                    | 检查内容                                                                                                       |
 | --- | ------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | 0   | **gate-bypass-check**     | 检测 `EVORULE_SKIP_GATE` 环境变量——如设置则 FAIL（门禁被绕过，禁止发布）                                       |
-| 1   | `validate-version.ps1`    | workspace + 9 个子 crate 版本号一致性（SemVer 2.0 + MAJOR 一致 + FULL version 一致）+ L1 文档版本号通用扫描    |
+| 1   | `validate-version.ps1`    | workspace + 11 个子 crate 版本号一致性（SemVer 2.0 + MAJOR 一致 + FULL version 一致）+ L1 文档版本号通用扫描  |
 | 2   | `validate-changelog.ps1`  | CHANGELOG 首段版本号 == Cargo.toml + 当前版本段存在 + 中文 `## [未发布]` 匹配                                  |
 | 3   | `validate-license.ps1`    | LICENSE 含 AGPL + 所有 .rs 文件 SPDX 头                                                                        |
 | 4   | `validate-cargolock.ps1`  | Cargo.lock 策略（binary workspace 必须提交仓根 Cargo.lock）                                                    |
-| 5   | `validate-release.ps1`    | tag 格式校验（`-SkipTagCheck` 跳过 tag 存在性，发布前用）                                                      |
+| 5   | `validate-release.ps1`    | tag 格式校验（`-SkipTagCheck` 跳过 tag 存在性，发布前用）+ **`[patch.crates-io]` 段检测**（发布前必须移除）  |
 | 6   | **`check_doc_safety.py`** | 文档安全 + 交叉引用完整性 + 基调合规（7 类规则，见下）                                                         |
+| 7   | **`check_schema_sync.py`** | 跨仓 Schema 同步检查（`core/rule_schema/schemas/` 与 `evorule-system-rules` 仓一致性）                        |
 
 `check_doc_safety.py` 检查 7 类规则：
 

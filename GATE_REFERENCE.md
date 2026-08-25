@@ -72,16 +72,32 @@ evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但�
 
 **有意重复**: evorule-server (bin) 和 core/io_handlers 用同一组 4 模式, 保证两个安全最敏感的 crate 不会走偏。与核心仓 tier1/tier2 "有意重复 14 模式" 的设计哲学一致。
 
-### 3.3 其余 8 个 core/* lib — 靠 L1' + L2 + L3
+### 3.3 其余 core/* lib — 靠 L1' + L2 + L3
 
-`core/{auth, debug_control, hot_reload, metrics, rule_tools, semantic_invariants, time_machine}` 不加 build.rs, 原因:
+`core/{auth, debug_control, hot_reload, metrics, rule_tools, semantic_invariants, time_machine, workspace}` 不加 build.rs, 原因:
 - 这些 lib 的 panic-prone 由 **L2 clippy deny** 守 (unwrap_used/expect_used/panic = deny)
 - unsafe 由 **L1' #![forbid(unsafe_code)]** 守
 - 安全敏感度低于 bin (直接面向网络) 和 io_handlers (直接操作 SQL/HTTP)
 
 如未来某个 lib 安全敏感度提升 (如 auth 加密相关), 可按需追加 build.rs。
 
-### 3.4 豁免机制
+### 3.4 core/rule_schema (lib) — Schema 完整性门禁 (v0.3.0 新增)
+
+实施文件: `core/rule_schema/build.rs` (4KB, 非字节子串扫描, 是 JSON Schema 完整性校验)
+
+**门控内容**:
+- 三个内嵌 schema 文件必须是合法 JSON: `schemas/rule_set/v1.0.json` / `schemas/_meta/v1.0.json` / `schemas/_shared/v1.0.json`
+- 跨文件 `$ref` 的 `$id` 自洽: rule_set `$id` = `https://evorule.org/schemas/rule_set/v1.0.json`, meta `$id` = `.../_meta/v1.0.json`, shared `$id` = `.../_shared/v1.0.json`
+- rule_set 的 `allOf[0]` 必须指向 meta, `transform.items` 必须指向 `shared#/$defs/transform_rule`
+- 把"schema 损坏"从运行时问题提前到构建期问题（与转译器同一纪律）
+
+**C5 纪律**: build.rs 本身禁止 unwrap/expect/panic（deny 级 lint），所有失败路径统一以 `Err(String)` 返回，由 `main` 转非零退出码令构建失败。
+
+### 3.5 plugins/demo-services (lib) — 靠 L1' + L2 + L3 (v0.3.0 新增)
+
+`plugins/demo-services` 不加 build.rs，原因同 §3.3：panic-prone 由 clippy deny 守，unsafe 由 `#![forbid(unsafe_code)]` 守。作为插件示例 crate，安全敏感度低于核心 bin 和 io_handlers。
+
+### 3.6 豁免机制
 
 - `strip_test_mod()`: 剥离 `#[cfg(test)] mod tests { ... }` 块, 不扫描测试代码
 - 注释行豁免: `//` 开头的行 (含 `///`、`//!`) 不扫描

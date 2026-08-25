@@ -317,16 +317,22 @@ Content-Type: application/gzip
 
 ### 4.1 meta 指令
 
-evorule TCB 只有 4 种合法 meta 指令：
+evorule TCB 有 **6 种合法 meta 指令**（v0.3.2 起，之前为 4 种）：
 
 | 指令 | 用途 | 示例 |
 |------|------|------|
 | `set` | 写 payload 字段 | `{"type":"set","params":{"attr":"x","operation":"set","value":1}}` |
 | `push` | 入队业务指令 | `{"type":"push","params":{"instruction":{...}}}` |
-| `branch` | 条件分支 | `{"type":"branch","params":{"condition":{...},"on_true":[...],"on_false":[...]}}` |
+| `branch` | 条件分支 | `{"type":"branch","params":{"domain":{...},"on_true":[...],"on_false":[...]}}` |
 | `io_request` | 发起 I/O | `{"type":"io_request","params":{"io_type":"call_service",...}}` |
+| `collect` | 遍历数组生成多条指令（多工具扇出） | `{"type":"collect","params":{"from":"__exec__.payload.items","template":{...}}}` |
+| `merge` | 将工具结果合并进消息历史 | `{"type":"merge","params":{"messages":"__exec__.payload.history","tool_result":"__exec__.payload._io_results.call_service"}}` |
 
 **任何其他 `type` 都不是 meta 指令**，会被当作业务指令 push 到队列。
+
+> **v0.3.2 重要变更**: `noop` / `increment` / `decrement` 是**业务指令层**类型（队列中的指令），不是 meta 指令。之前的文档误将它们列为 meta 指令，导致 `core/rule_schema` 校验出现假阳性/假阴性。`/api/rules/validate` 现在会明确拒绝 transform 规则中出现这些类型。
+
+> **规则 Schema 校验**: 提交规则前建议先通过 `POST /api/rules/validate` 校验，该端点使用 `core/rule_schema` crate 的 JSON Schema（`rule_set/v1.0.json` + `_meta/v1.0.json` + `_shared/v1.0.json`）做权威校验，比 evorule TCB 内部校验更早发现问题。
 
 ### 4.2 io_request 参数结构
 
@@ -561,6 +567,114 @@ curl http://127.0.0.1:18080/api/sessions/1/audit
 3. **--allow-loopback** 加了没？（没加 = 坑 5）
 4. **外部服务** curl 能直接访问吗？
 5. **__io_result__** 出现在 payload 了吗？（没出现 = IoSubscriber 没回写）
+
+---
+
+## 六、规则包（Bundles）API (v0.3.0 新增)
+
+规则包是一组相关规则的集合，支持原子导入、版本管理和回滚。规则包以目录形式存在，包含 `bundle_manifest.json`（元数据）和多条规则 JSON 文件。
+
+### 6.1 导入规则包
+
+```bash
+POST /api/bundles
+Content-Type: multipart/form-data
+file=@bundle-ds-yuanze-01-v3.zip
+```
+
+或直接指定目录路径（本地开发）：
+
+```bash
+POST /api/bundles
+Content-Type: application/json
+{"path": "/path/to/bundle-ds-yuanze-01-v3"}
+```
+
+导入流程：
+1. 校验 `bundle_manifest.json` 格式和必填字段
+2. 逐条校验规则文件通过 `core/rule_schema` JSON Schema 门禁
+3. 原子落盘（`land_bundle_atomically`）：全部成功或全部回滚
+4. 检测同数据集的陈旧目录，自动清理
+
+```json
+{"imported": true, "bundle_id": "bundle-ds-yuanze-01-v3", "rule_count": 15, "status": "ok"}
+```
+
+### 6.2 列出活跃规则包
+
+```bash
+GET /api/bundles
+```
+
+```json
+{
+  "bundles": [
+    {"id": "bundle-ds-yuanze-01-v3", "name": "原子规则演示包 v3", "version": "1.0.0", "rule_count": 15, "imported_at": "2026-08-26T10:00:00Z"},
+    {"id": "b_guard_shell_risky", "name": "Shell 风险防护", "version": "1.0.0", "rule_count": 1, "imported_at": "2026-08-26T11:00:00Z"}
+  ]
+}
+```
+
+### 6.3 查看导入历史
+
+```bash
+GET /api/bundles/imports
+```
+
+返回所有导入记录，含成功/失败状态、失败原因、回滚记录。
+
+### 6.4 规则包目录结构
+
+```
+bundle-ds-yuanze-01-v3/
+├── bundle_manifest.json      # 元数据（id/name/version/author/description）
+├── rule-audit-alert.json     # 规则文件
+├── rule-audit-compactor.json
+├── rule-compute-ik.json
+└── ... (最多 64 条规则，受 MAX_TRANSFORM_RULES 限制)
+```
+
+> **注意**: 规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + 原子落盘机制（T2：36 号集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。
+
+---
+
+## 七、权限（Permissions）API (v0.3.0 新增)
+
+权限 API 基于 `evorule-governance` 的 `permission` 模块，提供机制层权限原语。具体权限策略由应用层注入。
+
+### 7.1 权限模型
+
+- **PermissionTable**: 权限表，存储所有权限条目
+- **PermissionEntry**: 单条权限（subject/resource/action/effect）
+- **Verdict**: 判定结果（Allow/Deny/NotApplicable）
+- **ConditionEvaluator**: 条件评估器
+- **DefaultPolicy**: 默认策略（Allow/Deny）
+
+### 7.2 查询权限
+
+```bash
+GET /api/permissions?subject=user:alice&resource=session:1&action=read
+```
+
+```json
+{"verdict": "Allow", "matched_rule": "rule-123", "reason": "用户是 session 所有者"}
+```
+
+### 7.3 管理权限条目
+
+```bash
+# 列出所有权限条目
+GET /api/permissions/entries
+
+# 新增权限条目
+POST /api/permissions/entries
+{"subject": "user:bob", "resource": "session:*", "action": "read", "effect": "Allow"}
+
+# 删除权限条目
+DELETE /api/permissions/entries/{entry_id}
+```
+
+> **注意**: 权限 API 是机制层原语，不包含具体业务角色定义。应用层（如 evorule-console）负责将业务角色（admin/editor/viewer）映射为具体的 PermissionEntry。
 
 ---
 
