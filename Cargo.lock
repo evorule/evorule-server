@@ -570,6 +570,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "curve25519-dalek"
+version = "4.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "curve25519-dalek-derive",
+ "digest 0.10.7",
+ "fiat-crypto",
+ "rustc_version",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "dashmap"
 version = "6.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -652,6 +679,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "serde",
+ "sha2 0.10.9",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -708,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-auth"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "chrono",
@@ -726,16 +777,18 @@ dependencies = [
 [[package]]
 name = "evorule-bundle"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf3e9f2ccfc0f21b66d9aa3701ae127e39447d38e98d144781f54bd487bed6a"
 dependencies = [
+ "evorule-hash",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "evorule-debug-control"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -754,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-demo-services"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "evorule-io-handlers",
@@ -768,12 +821,16 @@ dependencies = [
 
 [[package]]
 name = "evorule-governance"
-version = "0.3.1"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64b8f9bc23df8eb4206bf094cb864bca3b289f0abc1620319c26ec600d2868d8"
 dependencies = [
  "blake3",
+ "ed25519-dalek",
  "evorule-reactor",
  "evorule-tcb",
  "flate2",
+ "getrandom 0.2.17",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -782,8 +839,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-hash"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41c5c4bc2f66e6ec73c2b2b5fba969ffc7001afabfafbe1033d3475b25843e46"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "evorule-hot-reload"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -805,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-io-handlers"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "evorule-reactor",
@@ -822,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-metrics"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -841,7 +909,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-reactor"
-version = "0.3.1"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6943ada4b340340e9d62c0bb4a0e8a977044d13d9be812d87f3909429f525ef6"
 dependencies = [
  "async-trait",
  "blake3",
@@ -853,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule-schema"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jsonschema",
  "once_cell",
@@ -863,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -880,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-semantic-invariants"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -899,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -937,11 +1007,13 @@ dependencies = [
 
 [[package]]
 name = "evorule-tcb"
-version = "0.3.1"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24965d24596df58f9803f9aa0ae0aeec5e6ff5434124931c277d64bb3d8c777d"
 
 [[package]]
 name = "evorule-time-machine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -959,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-workspace"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1005,6 +1077,12 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
+name = "fiat-crypto"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "filetime"
@@ -2686,6 +2764,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc_version"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+dependencies = [
+ "semver",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2789,6 +2876,12 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"

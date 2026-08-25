@@ -8,7 +8,7 @@
 **时间机器 —— rewind / diff / fork / replay（可审计的时间回溯）**
 
 > **crate 类型**: 内部 lib（`publish = false`）
-> **引入版本**: v0.1.0
+> **引入版本**: v0.3.0
 
 ---
 

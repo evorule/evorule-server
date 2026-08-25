@@ -98,7 +98,19 @@ try {
         }
     }
 
-    # 4. Status
+    # 4. [patch.crates-io] 段检测 —— 发布前必须移除（RELEASE_PROCESS.md §1.2 第 5 项）
+    # 本地开发 path 覆盖（evorule-tcb/reactor/governance/bundle）不得进入发布包；
+    # 用户 clone 后 path 不存在会静默回退到 crates.io 版本，但 evorule-bundle 等从未发布，
+    # 会导致构建失败。发布前必须移除 patch 段，依赖全部来自 crates.io。
+    $cargoToml = Get-Content "Cargo.toml" -Raw
+    if ($cargoToml -match '\[patch\.crates-io\]') {
+        Write-Host "[FAIL] Cargo.toml 含 [patch.crates-io] 段 — 本地开发 path 覆盖不得进入发布包, 发布前必须移除该段" -ForegroundColor Red
+        $failed = $true
+    } else {
+        Write-Host "[OK]   Cargo.toml 无 [patch.crates-io] 段（发布依赖全部来自 crates.io）" -ForegroundColor Green
+    }
+
+    # 5. Status
     if (-not $preRelease) {
         Write-Host "[INFO] Stable version, ready for release" -ForegroundColor Cyan
     } else {

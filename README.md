@@ -16,9 +16,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.3.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.2.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.3.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -34,16 +34,16 @@
 
 ---
 
-> ## ✅ v0.2.0 — 稳定发布 (2026-08-19)
+> ## ✅ v0.3.0 — 稳定发布 (2026-08-26)
 >
-> 这是 EvoRule Server 仓的**第二个版本**,也是首个独立稳定 release。
+> 这是 EvoRule Server 仓的**第三个版本**。
 > **本仓库独立 release**,不绑核心仓的发布节奏。
 >
-> v0.2.0 主要变化 (相对前一个内部基线版):核心库依赖 0.2.1 → 0.3.1;
-> 新增 `core/workspace` 多租户工作空间 (P10);OpenAPI 单一真相源
-> (`/api/openapi.json` + 可选 Swagger UI);InputSanitizer 第一层
-> 输入净化 (Phase 1);强制中止端点 (--allow-abort, 双保险);
-> gitee owner 从 `evo-rule-lab` 迁移到 `evorule`。
+> v0.3.0 主要变化:核心库依赖 crates.io 0.3.2(tcb / reactor / governance);
+> 新增 `core/rule_schema` 规则 Schema 门禁;/api/bundles 规则包 API(导入/列出/回滚);
+> /api/permissions 权限 API;plugins/demo-services 插件示例;
+> evorule-bundle 快照包共享校验(6 项校验链 + 原子落盘)。
+> ⚠️ Breaking:`audit_report()` 与 `GET /api/audit` 返回值改为显式 Result(不再静默退化)。
 >
 > 本仓库**不是** EvoRule 的核心引擎 —— 核心引擎以 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 形式发布到 crates.io。本仓的定位是**框架的官方 HTTP server 实现** + server 配套的 lib(auth / io_handlers / metrics / hot_reload / debug_control / semantic_invariants / time_machine / rule_tools / workspace)。
 >
@@ -170,7 +170,9 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `/api/sessions/{id}/interrupt`              | POST      | 中断反应器               |
 | `/api/sessions/{id}/snapshot`               | GET       | 完整快照                 |
 | `/api/rules/validate`                       | POST      | 规则校验                 |
-| `/api/bundles`                              | POST/GET  | 导入/列出规则包 (v0.3.0) |
+| `/api/bundles/import`                       | POST      | 导入规则包（6 项校验+原子落盘） (v0.3.0) |
+| `/api/bundles/import/dry-run`               | POST      | 规则包导入预检（只校验不落盘） (v0.3.0)  |
+| `/api/bundles/active`                       | GET       | 当前激活规则包列表 (v0.3.0) |
 | `/api/bundles/imports`                      | GET       | 规则包导入历史 (v0.3.0)  |
 | `/api/permissions`                          | GET/POST  | 权限管理 (v0.3.0)        |
 | `/api/services`                             | GET       | 已绑定服务列表 (v0.3.0)  |
@@ -214,6 +216,17 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `EVORULE_AUTO_VERIFY`     | `--auto-verify`     | `false`                      | 审计链实时验证                          |
 | `EVORULE_NO_RATE_LIMIT`   | `--no-rate-limit`   | `false`                      | 禁用速率限制（仅 benchmark）            |
 | `EVORULE_ALLOWED_ORIGINS` | `--allowed-origins` | (空)                         | CORS 允许的 Origin 列表（逗号分隔;空 = 仅同源;`*` = 全放行,仅开发）。需配合启动参数,否则浏览器跨源会被拒;vite dev 可用 `proxy` 绕过 |
+| `EVORULE_WORKSPACE_DB`    | `--workspace-db`    | `./data/workspace.db`        | Workspace 元数据库路径（P10, 独立于业务 db_path） |
+| `EVORULE_LOG_MAX_DAYS`    | `--log-max-days`    | `7`                          | 日志文件保留天数                  |
+| `EVORULE_LOG_MAX_SIZE_MB` | `--log-max-size-mb` | `1024`                       | 日志目录最大占用空间（MB）        |
+| `EVORULE_AUTO_VERIFY_THRESHOLD` | `--auto-verify-threshold` | `1000`            | 审计条目数超过此值时跳过验证（0 = 不限制） |
+| `EVORULE_AUTO_VERIFY_INTERVAL` | `--auto-verify-interval` | `1`               | 每 N 次 audit_new 验证一次        |
+| `EVORULE_SERVICE_REGISTRY` | `--service-registry` | (空)                        | service_name→URL 映射文件（call_service/call_external 用） |
+| `EVORULE_STATEMENT_WHITELIST` | `--statement-whitelist` | (空)                  | SQL 语句模板白名单文件（未设置则 QUERY_DB 全部返回错误） |
+| `EVORULE_ALLOW_LOOPBACK`  | `--allow-loopback`  | `false`                      | 允许 HTTP handler 访问 loopback 地址（仅本地开发, 生产禁用） |
+| `EVORULE_METRICS_AUTH`    | `--metrics-auth`    | `false`                      | 启用 /metrics 端点认证（需 Bearer token） |
+| `EVORULE_OPENAPI_UI`      | `--openapi-ui`      | `false`                      | 挂载 Swagger UI（`GET /api/docs`;`/api/openapi.json` 始终可用） |
+| `EVORULE_ALLOW_ABORT`     | `--allow-abort`     | `false`                      | 启用强制中止会话端点（`POST /api/sessions/{id}/abort`, 默认 404） |
 
 ### JSON 配置文件
 
@@ -245,8 +258,8 @@ evorule-server --config evorule.json
 ### Docker(推荐)
 
 ```bash
-docker build -t evorule-server:0.1.0 .
-docker run -d --name evorule-server -p 18080:18080 -v $(pwd)/data:/data evorule-server:0.1.0
+docker build -t evorule-server:0.3.0 .
+docker run -d --name evorule-server -p 18080:18080 -v $(pwd)/data:/data evorule-server:0.3.0
 ```
 
 ### 二进制

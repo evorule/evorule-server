@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 authors = ["EvoRule Project"]
@@ -50,9 +50,3 @@ all = { level = "warn", priority = -1 }
 opt-level = 3
 lto = true
 codegen-units = 1
-# 本地开发: 用 path 覆盖 crates.io 上的 evorule 核心 crates, 使服务端直接编译本地最新源码(含 permission 模块 / io_context 数据型)
-[patch.crates-io]
-evorule-tcb = { path = "../evorule/evorule-tcb" }
-evorule-reactor = { path = "../evorule/evorule-reactor" }
-evorule-governance = { path = "../evorule/evorule-governance" }
-evorule-bundle = { path = "../evorule-bundle" }

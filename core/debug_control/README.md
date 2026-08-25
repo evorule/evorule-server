@@ -8,7 +8,7 @@
 **调试 API 控制 —— pause / resume / step / inspect**
 
 > **crate 类型**: 内部 lib（`publish = false`）
-> **引入版本**: v0.1.0
+> **引入版本**: v0.3.0
 
 ---
 

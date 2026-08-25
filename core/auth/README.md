@@ -8,7 +8,7 @@
 **Bearer Token 认证 —— 速率限制 + 恒定时间比较 + 空 token 过滤**
 
 > **crate 类型**: 内部 lib（`publish = false`）
-> **引入版本**: v0.1.0
+> **引入版本**: v0.3.0（当前版本随 workspace 继承，见根 Cargo.toml）
 
 ---
 

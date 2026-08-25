@@ -346,6 +346,7 @@ mod tests {
                 exported_by: "publisher-01".into(),
                 source_version: "v1".into(),
                 content_hash: String::new(),
+                hash_algo: "blake3".into(),
             },
         };
         let hash = b.compute_content_hash();
