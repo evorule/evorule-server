@@ -25,6 +25,25 @@
 
 ---
 
+## [Unreleased]
+
+### 🆕 新增
+
+- **AGPL + 商业双许可体系** — 新增 `DUAL_LICENSE.md`(双轨许可说明 + Server 特有白标授权边界)、`COMMERCIAL_LICENSE.md`(商业许可协议模板)、`FREE_COMMERCIAL_LICENSE.md`(政府/学术界/非营利免费豁免)、`CLA-individual.md`(个人贡献者许可,赋能双许可可执行);对齐 evorule 核心仓双许可体系
+- **`CONTRIBUTING.md` 补充双许可声明与 CLA 必要性** — `协议` 扩为 `协议与 CLA`
+
+### 🔄 变更
+
+- **`core/workspace` 补 `publish = false`** — 与其余 11 个 workspace 成员一致(依赖 path crate,保持闭包,不进 crates.io)
+- **README / NOTICE 许可证段落改双轨声明** — 指向新增双许可文件,明确代码(AGPL/双许可)、文档(CC-BY-4.0)、宪法(CC0-1.0)分层
+
+### 🔒 安全
+
+- **升级依赖修复 RUSTSEC 漏洞** — prometheus 0.13→0.14(移除 protobuf 2.28.0, RUSTSEC-2024-0437)、sqlx 0.8→0.8.1(RUSTSEC-2024-0363)、rusqlite 0.31→0.32(解除与 sqlx 的 libsqlite3-sys 冲突)、h2 0.4.15→0.4.19(RUSTSEC-2026-0258)
+- **暂存待评估** — `rsa`(RUSTSEC-2023-0071, 无可修复版本)与 `paste`(未维护告警),当前无升级路径
+
+---
+
 ## [0.3.0] - 2026-08-26
 
 ### ⚠️ Breaking Changes
