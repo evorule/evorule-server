@@ -17,7 +17,7 @@ workspace = true
 
 [dependencies]
 # SQLite 持久化 (D1 决策: 应用层 DB 选 SQLite)
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 # 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

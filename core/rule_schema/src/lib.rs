@@ -229,14 +229,12 @@ pub fn validate_command_instruction(instr: &Value) -> SchemaReport {
     }
 }
 
-fn collect_report(
-    validator: &Validator,
-    instance: &Value,
-    mode: &'static str,
-) -> SchemaReport {
+fn collect_report(validator: &Validator, instance: &Value, mode: &'static str) -> SchemaReport {
     let mut errors: Vec<String> = match validator.validate(instance) {
         Ok(()) => Vec::new(),
-        Err(iter) => iter.map(|e| format!("{}: {}", e.instance_path, e)).collect(),
+        Err(iter) => iter
+            .map(|e| format!("{}: {}", e.instance_path, e))
+            .collect(),
     };
     // 引擎约束补充（schema 无法表达的边界，与 TCB 常量同源，SSOT 见 build.rs 注释）
     if mode == "transform_list" {
@@ -309,7 +307,11 @@ mod tests {
             } }
         ]));
         let report = validate_rule_set(&doc);
-        assert!(report.valid, "merge 用 tool_results 复数应通过: {:?}", report.errors);
+        assert!(
+            report.valid,
+            "merge 用 tool_results 复数应通过: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -321,14 +323,20 @@ mod tests {
             } }
         ]));
         let report = validate_rule_set(&doc);
-        assert!(!report.valid, "merge 无 tool_result 且无 tool_results 应被拒");
+        assert!(
+            !report.valid,
+            "merge 无 tool_result 且无 tool_results 应被拒"
+        );
     }
 
     #[test]
     fn unknown_transform_type_rejected() {
         let doc = rs(serde_json::json!([{ "type": "noop" }]));
         let report = validate_rule_set(&doc);
-        assert!(!report.valid, "noop 是指令层类型，不得作为元指令层 transform 类型（P0-01）");
+        assert!(
+            !report.valid,
+            "noop 是指令层类型，不得作为元指令层 transform 类型（P0-01）"
+        );
     }
 
     #[test]
@@ -337,7 +345,10 @@ mod tests {
             { "type": "branch", "params": { "domain": "payload.flag", "on_true": [] } }
         ]));
         let report = validate_rule_set(&doc);
-        assert!(!report.valid, "domain 字符串无 __ 前缀应被拒（运行时报 MissingField）");
+        assert!(
+            !report.valid,
+            "domain 字符串无 __ 前缀应被拒（运行时报 MissingField）"
+        );
     }
 
     #[test]
@@ -435,7 +446,11 @@ mod tests {
             }
         });
         let report = validate_command_instruction(&instr);
-        assert!(!report.valid, "单数 __io_result__ 应被拒: {:?}", report.errors);
+        assert!(
+            !report.valid,
+            "单数 __io_result__ 应被拒: {:?}",
+            report.errors
+        );
         assert!(report.errors.iter().any(|e| e.contains("__io_result__")));
     }
 
@@ -443,7 +458,11 @@ mod tests {
     fn cmd_sequence_missing_instructions_rejected() {
         let instr = serde_json::json!({ "type": "sequence", "params": {} });
         let report = validate_command_instruction(&instr);
-        assert!(!report.valid, "sequence 缺 instructions 应被拒: {:?}", report.errors);
+        assert!(
+            !report.valid,
+            "sequence 缺 instructions 应被拒: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -451,7 +470,11 @@ mod tests {
         // 指令层 set.attr 路径语法（Opt1）
         let instr = serde_json::json!({ "type": "set", "params": { "attr": "payload.x.", "operation": "set", "value": 1 } });
         let report = validate_command_instruction(&instr);
-        assert!(!report.valid, "set.attr 尾部空段应被拒: {:?}", report.errors);
+        assert!(
+            !report.valid,
+            "set.attr 尾部空段应被拒: {:?}",
+            report.errors
+        );
     }
 
     #[test]

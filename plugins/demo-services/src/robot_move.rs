@@ -71,10 +71,7 @@ mod tests {
         let args = JsonValue::object_from_pairs(&[("speed", JsonValue::string("0.5"))]);
         let r = svc.execute(&args).unwrap();
         assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("ERROR"));
-        assert!(r
-            .get("trajectory_id")
-            .map(|v| v.is_null())
-            .unwrap_or(false));
+        assert!(r.get("trajectory_id").map(|v| v.is_null()).unwrap_or(false));
     }
 
     #[test]
@@ -83,10 +80,7 @@ mod tests {
         let args = JsonValue::object_from_pairs(&[
             (
                 "joints",
-                JsonValue::Array(vec![
-                    JsonValue::string("0.1"),
-                    JsonValue::string("0.2"),
-                ]),
+                JsonValue::Array(vec![JsonValue::string("0.1"), JsonValue::string("0.2")]),
             ),
             ("speed", JsonValue::string("0.5")),
         ]);

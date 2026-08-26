@@ -43,9 +43,9 @@ impl NativeService for RuleSandbox {
         };
 
         // 复用 submit_command 同一门禁：补丁规则必须是可热加载的 transform_rule（6 元指令）
-        let report = evorule_rule_schema::validate_transform_list(&serde_json::Value::Array(
-            vec![jsonvalue_to_serde(&rule)],
-        ));
+        let report = evorule_rule_schema::validate_transform_list(&serde_json::Value::Array(vec![
+            jsonvalue_to_serde(&rule),
+        ]));
         let errors: Vec<String> = report.errors.clone();
         let passed = errors.is_empty();
 
@@ -126,10 +126,7 @@ fn summarize_rule(rule: &JsonValue) -> JsonValue {
         .get("params")
         .cloned()
         .unwrap_or_else(JsonValue::empty_object);
-    let domain = params
-        .get("domain")
-        .cloned()
-        .unwrap_or(JsonValue::Null);
+    let domain = params.get("domain").cloned().unwrap_or(JsonValue::Null);
     let field_from_domain = |key: &str| match &domain {
         JsonValue::Object(m) => m.get(key).cloned().unwrap_or(JsonValue::Null),
         _ => JsonValue::Null,
@@ -168,9 +165,7 @@ fn jsonvalue_to_serde(v: &JsonValue) -> serde_json::Value {
         JsonValue::Bool(b) => serde_json::Value::Bool(*b),
         JsonValue::Integer(i) => serde_json::Value::Number((*i).into()),
         JsonValue::String(s) => serde_json::Value::String(s.to_string()),
-        JsonValue::Array(a) => {
-            serde_json::Value::Array(a.iter().map(jsonvalue_to_serde).collect())
-        }
+        JsonValue::Array(a) => serde_json::Value::Array(a.iter().map(jsonvalue_to_serde).collect()),
         JsonValue::Object(m) => serde_json::Value::Object(
             m.iter()
                 .map(|(k, v)| (k.clone(), jsonvalue_to_serde(v)))

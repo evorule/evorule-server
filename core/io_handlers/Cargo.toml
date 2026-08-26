@@ -15,7 +15,7 @@ evorule-tcb = { version = "0.3.1" }
 evorule-reactor = { version = "0.3.1" }
 
 # I/O SDK
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] } # SQLite
+sqlx = { version = "0.8.1", features = ["runtime-tokio", "sqlite"] } # SQLite
 reqwest = { version = "0.12", features = ["json"] }                # HTTP 客户端
 url = "2"                                                          # URL 解析（SSRF 防护用）
 

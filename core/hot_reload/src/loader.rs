@@ -104,8 +104,5 @@ pub fn list_rule_files(dir: &Path) -> Result<Vec<String>, String> {
     let mut paths = Vec::new();
     collect_json_files_recursive(dir, &mut paths);
     paths.sort();
-    Ok(paths
-        .into_iter()
-        .map(|p| p.display().to_string())
-        .collect())
+    Ok(paths.into_iter().map(|p| p.display().to_string()).collect())
 }

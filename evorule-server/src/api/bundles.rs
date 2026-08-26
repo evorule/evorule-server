@@ -215,8 +215,7 @@ pub async fn active_bundles_handler(
             Json(serde_json::json!({ "error": e })),
         )
     })?;
-    let bundles: Vec<ActiveBundleInfo> =
-        manifests.iter().map(ActiveBundleInfo::from).collect();
+    let bundles: Vec<ActiveBundleInfo> = manifests.iter().map(ActiveBundleInfo::from).collect();
     let count = bundles.len();
     Ok(Json(ActiveBundlesResponse { bundles, count }))
 }
@@ -422,11 +421,9 @@ mod tests {
             .path()
             .join("rules/bundles/bundle-ds-tax-2024-v1/entry-tax-001.json");
         assert!(entry_path.is_file(), "条目未落盘: {}", entry_path.display());
-        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
-        assert_eq!(
-            doc["transform"][0]["params"]["service_name"],
-            "payroll_svc"
-        );
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
+        assert_eq!(doc["transform"][0]["params"]["service_name"], "payroll_svc");
         // T3: manifest 落盘且字段正确
         let manifest_path = tmp
             .path()
@@ -444,7 +441,10 @@ mod tests {
         assert_eq!(manifest["selection_mode"], "auto_by_effective_date");
         assert_eq!(manifest["effective_from"], "2024-01-01");
         assert!(
-            manifest["content_hash"].as_str().unwrap().starts_with("blake3:"),
+            manifest["content_hash"]
+                .as_str()
+                .unwrap()
+                .starts_with("blake3:"),
             "content_hash 应为 blake3: 前缀"
         );
         assert_eq!(manifest["entry_files"][0]["entry_id"], "entry-tax-001");
@@ -452,8 +452,14 @@ mod tests {
         // T3: loader 递归扫描 → reload 后 bundle 规则被实际加载（core_eval 1 + bundle 条目 1）
         assert_eq!(api.core_eval_len(), 2, "bundle 条目应随 reload 被加载");
         // 无半成品：无残留临时/备份目录
-        assert!(!tmp.path().join("rules/bundles/.bundle-ds-tax-2024-v1.tmp").exists());
-        assert!(!tmp.path().join("rules/bundles/.bundle-ds-tax-2024-v1.bak").exists());
+        assert!(!tmp
+            .path()
+            .join("rules/bundles/.bundle-ds-tax-2024-v1.tmp")
+            .exists());
+        assert!(!tmp
+            .path()
+            .join("rules/bundles/.bundle-ds-tax-2024-v1.bak")
+            .exists());
         // reload 已触发（core_eval 非空）
         assert!(api.core_eval_len() >= 1);
     }
@@ -514,12 +520,14 @@ mod tests {
         let api = test_api(&tmp);
         let mut bundle = valid_bundle(schema_valid_body());
         // 篡改条目内容但不重签名 → 防篡改哈希校验失败
-        bundle.entries[0].rule_body =
-            serde_json::json!({ "transform": [{ "type": "io_request", "params": { "io_type": "call_service", "service_name": "hacked" } }] });
+        bundle.entries[0].rule_body = serde_json::json!({ "transform": [{ "type": "io_request", "params": { "io_type": "call_service", "service_name": "hacked" } }] });
 
         let err = api.import_bundle(&bundle, false).await.unwrap_err();
         assert!(err.contains("校验失败"), "错误信息应显式: {err}");
-        assert!(!tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1").exists());
+        assert!(!tmp
+            .path()
+            .join("rules/bundles/bundle-ds-tax-2024-v1")
+            .exists());
     }
 
     #[tokio::test]
@@ -538,11 +546,11 @@ mod tests {
         bundle.audit.content_hash = hash;
 
         let err = api.import_bundle(&bundle, false).await.unwrap_err();
-        assert!(
-            err.contains("Schema 门禁"),
-            "应为 Schema 门禁硬失败: {err}"
-        );
-        assert!(!tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1").exists());
+        assert!(err.contains("Schema 门禁"), "应为 Schema 门禁硬失败: {err}");
+        assert!(!tmp
+            .path()
+            .join("rules/bundles/bundle-ds-tax-2024-v1")
+            .exists());
     }
 
     #[tokio::test]
@@ -579,7 +587,10 @@ mod tests {
 
         let err = api.import_bundle(&bundle, false).await.unwrap_err();
         assert!(err.contains("未绑定"), "应为服务绑定核对显式失败: {err}");
-        assert!(!tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1").exists());
+        assert!(!tmp
+            .path()
+            .join("rules/bundles/bundle-ds-tax-2024-v1")
+            .exists());
     }
 
     #[tokio::test]
@@ -595,11 +606,11 @@ mod tests {
         bundle.audit.content_hash = hash;
 
         let err = api.import_bundle(&bundle, false).await.unwrap_err();
-        assert!(
-            err.contains("sensitive"),
-            "应为敏感服务核对显式失败: {err}"
-        );
-        assert!(!tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1").exists());
+        assert!(err.contains("sensitive"), "应为敏感服务核对显式失败: {err}");
+        assert!(!tmp
+            .path()
+            .join("rules/bundles/bundle-ds-tax-2024-v1")
+            .exists());
     }
 
     #[tokio::test]
@@ -620,7 +631,9 @@ mod tests {
         let r = api.import_bundle(&bundle, false).await.unwrap();
         assert_eq!(r.entry_count, 1);
         assert!(
-            tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1").exists(),
+            tmp.path()
+                .join("rules/bundles/bundle-ds-tax-2024-v1")
+                .exists(),
             "sensitive 服务已注册表绑定应可导入"
         );
     }
@@ -647,7 +660,9 @@ mod tests {
             evorule_demo_services::DemoServiceRouter::native_service_names().to_vec();
         expected.sort_unstable();
         assert_eq!(natives, expected, "原生叶子能力应全部上报且 version=1.0.0");
-        assert!(out.iter().all(|b| b.source == "native" || b.source == "registry"));
+        assert!(out
+            .iter()
+            .all(|b| b.source == "native" || b.source == "registry"));
 
         let payroll = out
             .iter()
@@ -675,11 +690,15 @@ mod tests {
         api.import_bundle(&v2, false).await.unwrap();
 
         assert!(
-            !tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1").exists(),
+            !tmp.path()
+                .join("rules/bundles/bundle-ds-tax-2024-v1")
+                .exists(),
             "同 dataset 旧 bundle 应被替换（单激活）"
         );
         assert!(
-            tmp.path().join("rules/bundles/bundle-ds-tax-2024-v2").exists(),
+            tmp.path()
+                .join("rules/bundles/bundle-ds-tax-2024-v2")
+                .exists(),
             "新版本应就位"
         );
         // active 只报最新激活
@@ -737,8 +756,14 @@ mod tests {
         // 按 dataset_id 字典序稳定排序
         assert_eq!(active[0].dataset_id, "ds-med-2024");
         assert_eq!(active[1].dataset_id, "ds-tax-2024");
-        assert!(tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1").exists());
-        assert!(tmp.path().join("rules/bundles/bundle-ds-med-2024-v1").exists());
+        assert!(tmp
+            .path()
+            .join("rules/bundles/bundle-ds-tax-2024-v1")
+            .exists());
+        assert!(tmp
+            .path()
+            .join("rules/bundles/bundle-ds-med-2024-v1")
+            .exists());
     }
 
     #[tokio::test]

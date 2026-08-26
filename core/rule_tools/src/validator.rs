@@ -186,7 +186,11 @@ mod tests {
     fn validate_bare_transform_array() {
         let json = r#"[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]"#;
         let report = validate_rule_json(json);
-        assert!(report.valid, "裸 transform 数组应通过: {:?}", report.results);
+        assert!(
+            report.valid,
+            "裸 transform 数组应通过: {:?}",
+            report.results
+        );
     }
 
     #[test]
@@ -242,8 +246,7 @@ mod tests {
 
     #[test]
     fn validate_set_missing_attr() {
-        let json =
-            r#"{"transform":[{"type":"set","params":{"operation":"set","value":1}}]}"#;
+        let json = r#"{"transform":[{"type":"set","params":{"operation":"set","value":1}}]}"#;
         let report = validate_rule_json(json);
         assert!(!report.valid);
         assert!(report.results.iter().any(|r| r.message.contains("attr")));
@@ -261,7 +264,8 @@ mod tests {
     #[test]
     fn validate_branch_missing_on_true() {
         // branch 必填 domain + on_true
-        let json = r#"{"transform":[{"type":"branch","params":{"domain":{"type":"all","inner":[]}}}]}"#;
+        let json =
+            r#"{"transform":[{"type":"branch","params":{"domain":{"type":"all","inner":[]}}}]}"#;
         let report = validate_rule_json(json);
         assert!(!report.valid);
         assert!(report.results.iter().any(|r| r.message.contains("on_true")));
@@ -291,7 +295,8 @@ mod tests {
     #[test]
     fn validate_domain_string_without_prefix_rejected() {
         // domain 字符串无 __ 前缀应被拒（运行时报 MissingField）
-        let json = r#"{"transform":[{"type":"branch","params":{"domain":"payload.flag","on_true":[]}}]}"#;
+        let json =
+            r#"{"transform":[{"type":"branch","params":{"domain":"payload.flag","on_true":[]}}]}"#;
         let report = validate_rule_json(json);
         assert!(!report.valid);
     }

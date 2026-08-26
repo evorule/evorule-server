@@ -21,11 +21,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::models::{
-    BundleImportRecord, MemberRole, ProductionAuditRecord, ProductionStateRecord,
-    PublishQueueItem, PublishStatus, RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord,
-    RuleVersionState, SandboxSession, SandboxStatus, SessionBindingState, SessionRecord,
-    TestDatasetRecord, VerdictContractRecord, VersionClockMapRecord, WorkspaceMemberRecord,
-    WorkspaceRecord, WorkspaceState,
+    BundleImportRecord, MemberRole, ProductionAuditRecord, ProductionStateRecord, PublishQueueItem,
+    PublishStatus, RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord, RuleVersionState,
+    SandboxSession, SandboxStatus, SessionBindingState, SessionRecord, TestDatasetRecord,
+    VerdictContractRecord, VersionClockMapRecord, WorkspaceMemberRecord, WorkspaceRecord,
+    WorkspaceState,
 };
 
 /// 当前 schema 版本
@@ -1842,14 +1842,7 @@ impl WorkspaceDb {
                  SET status = 'published', published_version = ?1, published_at = ?2,
                      reviewed_by = ?3, reviewed_at = ?4, review_comment = ?5
                  WHERE id = ?6 AND status = 'pending'",
-                params![
-                    published_version,
-                    now,
-                    reviewed_by,
-                    now,
-                    review_comment,
-                    id
-                ],
+                params![published_version, now, reviewed_by, now, review_comment, id],
             )
             .map_err(WorkspaceError::from)?;
         if affected == 0 {

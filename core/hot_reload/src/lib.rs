@@ -480,8 +480,10 @@ mod tests {
         let files = list_rule_files(dir.path()).expect("读取规则目录失败");
         assert_eq!(files.len(), 2, "递归列出应排除 manifest");
         assert!(
-            files.iter().any(|f| f.ends_with("bundles\\bundle-1\\entry.json")
-                || f.ends_with("bundles/bundle-1/entry.json")),
+            files
+                .iter()
+                .any(|f| f.ends_with("bundles\\bundle-1\\entry.json")
+                    || f.ends_with("bundles/bundle-1/entry.json")),
             "应包含 bundle 子目录条目: {files:?}"
         );
     }

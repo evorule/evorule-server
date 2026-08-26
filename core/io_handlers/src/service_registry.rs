@@ -213,7 +213,10 @@ fn parse_service_entry(name: &str, val: &serde_json::Value) -> Result<ServiceEnt
         method,
         headers,
         timeout_ms,
-        version: obj.get("version").and_then(|v| v.as_str()).map(String::from),
+        version: obj
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         description: obj
             .get("description")
             .and_then(|v| v.as_str())

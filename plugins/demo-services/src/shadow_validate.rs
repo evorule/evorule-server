@@ -53,7 +53,10 @@ mod tests {
         let args = JsonValue::object_from_pairs(&[("max_diff", JsonValue::string("5.0"))]);
         let r = svc.execute(&args).unwrap();
         assert_eq!(r.get("converged_ok").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(r.get("diff_exceeded").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            r.get("diff_exceeded").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         assert_eq!(r.get("solver").and_then(|v| v.as_str()), Some("shadow-LMA"));
     }
 

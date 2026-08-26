@@ -45,8 +45,15 @@ use crate::error::{WorkspaceError, WorkspaceResult};
 
 const VALID_META_INSTRUCTIONS: &[&str] =
     &["set", "push", "branch", "io_request", "collect", "merge"];
-const VALID_DOMAIN_TYPES: &[&str] =
-    &["eq", "lt", "exists", "instruction", "all", "not", "has_fields"];
+const VALID_DOMAIN_TYPES: &[&str] = &[
+    "eq",
+    "lt",
+    "exists",
+    "instruction",
+    "all",
+    "not",
+    "has_fields",
+];
 // UX 门禁: 整体递归深度 ≤ 64。
 // 注意与权威层 MAX_NESTING_DEPTH=64 (branch 嵌套层数, 对齐 TCB MAX_BRANCH_DEPTH, P2-02)
 // 是不同量, 勿混; 仅需在边界输入下两者放行/拒绝结论一致即可。
@@ -572,9 +579,8 @@ pub fn translate_to_transform(
     // Schema 门禁（线1 权威拦截, records/77）：转译输出必须是引擎原生合法结构。
     // 不通过则整体拒绝返回——任何转译产物不得携带 Schema 非法结构流出本层
     // （防止"编辑器转译出来的规则跑不起来"的 P0-03 类问题扩散到上层应用）。
-    let schema_report = evorule_rule_schema::validate_transform_list(&serde_json::Value::Array(
-        transform.clone(),
-    ));
+    let schema_report =
+        evorule_rule_schema::validate_transform_list(&serde_json::Value::Array(transform.clone()));
     if !schema_report.valid {
         let detail = schema_report.errors.join("; ");
         return Err(WorkspaceError::invalid_input(format!(
@@ -708,9 +714,8 @@ pub fn translate_to_conditional(
                                 }
                             }
                         } else {
-                            lost_items.push(format!(
-                                "transform[{i}]: not 缺少 inner 子域, 超出回译子集"
-                            ));
+                            lost_items
+                                .push(format!("transform[{i}]: not 缺少 inner 子域, 超出回译子集"));
                         }
                     }
                     _ => {

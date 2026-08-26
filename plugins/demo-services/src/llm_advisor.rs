@@ -111,10 +111,7 @@ impl NativeService for LlmAdvisor {
             "告警: {{ alert }}, 输入: {{ snapshot }}，请生成 3 条中文排查建议。",
         );
         let alert = args.get("tpl_alert").cloned().unwrap_or(JsonValue::Null);
-        let snapshot = args
-            .get("tpl_snapshot")
-            .cloned()
-            .unwrap_or(JsonValue::Null);
+        let snapshot = args.get("tpl_snapshot").cloned().unwrap_or(JsonValue::Null);
         let mut variables = BTreeMap::new();
         variables.insert("alert".to_string(), alert);
         variables.insert("snapshot".to_string(), snapshot);
@@ -162,10 +159,7 @@ mod tests {
         );
         vars.insert("snapshot".to_string(), JsonValue::Integer(42));
         let out = jinja_substitute(template, &vars);
-        assert_eq!(
-            out,
-            "告警: {\"error\": \"出界\"}, 输入: 42。"
-        );
+        assert_eq!(out, "告警: {\"error\": \"出界\"}, 输入: 42。");
     }
 
     #[test]

@@ -17,10 +17,7 @@ impl NativeService for ConfigPersist {
     fn execute(&self, args: &JsonValue) -> evorule_reactor::IoResult {
         let operation = arg_str(args, "operation", "append_transform");
         let rule_type = match args.get("rule") {
-            Some(JsonValue::Object(m)) => m
-                .get("type")
-                .cloned()
-                .unwrap_or(JsonValue::Null),
+            Some(JsonValue::Object(m)) => m.get("type").cloned().unwrap_or(JsonValue::Null),
             _ => JsonValue::Null,
         };
         Ok(obj(vec![
@@ -60,10 +57,7 @@ mod tests {
     #[test]
     fn test_persist_without_rule() {
         let svc = ConfigPersist;
-        let args = JsonValue::object_from_pairs(&[(
-            "operation",
-            JsonValue::string("replace_all"),
-        )]);
+        let args = JsonValue::object_from_pairs(&[("operation", JsonValue::string("replace_all"))]);
         let r = svc.execute(&args).unwrap();
         assert!(r.get("rule_type").map(|v| v.is_null()).unwrap_or(false));
         assert!(r.get("success").and_then(|v| v.as_bool()).unwrap());

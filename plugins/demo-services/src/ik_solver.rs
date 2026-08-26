@@ -21,10 +21,7 @@ fn mat4_mul(x: [[f64; 4]; 4], y: [[f64; 4]; 4]) -> [[f64; 4]; 4] {
     let mut r = [[0.0; 4]; 4];
     for i in 0..4 {
         for j in 0..4 {
-            r[i][j] = x[i][0] * y[0][j]
-                + x[i][1] * y[1][j]
-                + x[i][2] * y[2][j]
-                + x[i][3] * y[3][j];
+            r[i][j] = x[i][0] * y[0][j] + x[i][1] * y[1][j] + x[i][2] * y[2][j] + x[i][3] * y[3][j];
         }
     }
     r
@@ -193,13 +190,14 @@ impl NativeService for IkSolver {
         Ok(obj(vec![
             (
                 "joint_positions",
-                JsonValue::Array(
-                    joint_positions.iter().map(|x| float_str(*x)).collect(),
-                ),
+                JsonValue::Array(joint_positions.iter().map(|x| float_str(*x)).collect()),
             ),
             ("converged", JsonValue::Bool(converged)),
             ("residual", float_str(residual)),
-            ("converged_ok", JsonValue::Bool(converged && residual <= tolerance.max(0.0))),
+            (
+                "converged_ok",
+                JsonValue::Bool(converged && residual <= tolerance.max(0.0)),
+            ),
         ]))
     }
 }
@@ -221,8 +219,7 @@ mod tests {
     #[test]
     fn test_ik_converges_near_target() {
         // 与 Python 基线一致：{0.5, 0.3, 0.2}、tolerance 1e-3 应收敛
-        let (joints, converged, residual) =
-            solve_ik([0.5, 0.3, 0.2], [0.0; 6], 100, 1e-3);
+        let (joints, converged, residual) = solve_ik([0.5, 0.3, 0.2], [0.0; 6], 100, 1e-3);
         assert!(converged, "近目标应收敛, residual={residual}");
         assert!(residual <= 1e-3);
         assert_eq!(joints.len(), 6);
@@ -253,7 +250,9 @@ mod tests {
         let r = svc.execute(&args).unwrap();
         assert_eq!(r.get("converged_ok").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(
-            r.get("joint_positions").and_then(|v| v.as_array()).map(|a| a.len()),
+            r.get("joint_positions")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
             Some(6)
         );
         assert!(r.get("residual").and_then(|v| v.as_str()).is_some());

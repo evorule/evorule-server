@@ -55,7 +55,9 @@ fn err(status: StatusCode, message: impl Into<String>) -> (StatusCode, Json<serd
 }
 
 /// 团结快照错误
-fn snapshot(shared: &SharedFactsLog) -> Result<PermissionTable, (StatusCode, Json<serde_json::Value>)> {
+fn snapshot(
+    shared: &SharedFactsLog,
+) -> Result<PermissionTable, (StatusCode, Json<serde_json::Value>)> {
     PermissionTable::snapshot_at(shared, shared.version())
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
@@ -85,14 +87,20 @@ async fn get_permission(
             let body = serde_json::to_value(entry).unwrap_or(serde_json::Value::Null);
             Ok(Json(serde_json::json!({ "success": true, "entry": body })))
         }
-        None => Err(err(StatusCode::NOT_FOUND, format!("permission entry not found: {id}"))),
+        None => Err(err(
+            StatusCode::NOT_FOUND,
+            format!("permission entry not found: {id}"),
+        )),
     }
 }
 
 /// 校验主体字段合法（非任何主体必须有非空 id 或角色键）
 fn validate_identity(req: &PermissionEntry) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if req.id.trim().is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "permission id must not be empty"));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "permission id must not be empty",
+        ));
     }
     Ok(())
 }
@@ -108,7 +116,10 @@ async fn create_permission(
 
     let table = snapshot(&shared)?;
     if table.get(&entry.id).is_some() {
-        return Err(err(StatusCode::CONFLICT, format!("duplicate permission id: {}", entry.id)));
+        return Err(err(
+            StatusCode::CONFLICT,
+            format!("duplicate permission id: {}", entry.id),
+        ));
     }
 
     match PermissionTable::store_entry(&shared, &entry, GLOBAL_SESSION) {
@@ -140,7 +151,9 @@ async fn update_permission(
     entry.version = 0;
 
     match PermissionTable::store_entry(&shared, &entry, GLOBAL_SESSION) {
-        Ok(version) => Ok(Json(serde_json::json!({ "success": true, "id": id, "version": version }))),
+        Ok(version) => Ok(Json(
+            serde_json::json!({ "success": true, "id": id, "version": version }),
+        )),
         Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -162,15 +175,21 @@ async fn submit_permission(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let table = snapshot(&shared)?;
-    let mut entry = table
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("permission entry not found: {id}")))?;
-    entry.submit().map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mut entry = table.get(&id).cloned().ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            format!("permission entry not found: {id}"),
+        )
+    })?;
+    entry
+        .submit()
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))?;
     entry.version = 0;
 
     match PermissionTable::store_entry(&shared, &entry, GLOBAL_SESSION) {
-        Ok(version) => Ok(Json(serde_json::json!({ "success": true, "id": id, "state": "candidate", "version": version }))),
+        Ok(version) => Ok(Json(
+            serde_json::json!({ "success": true, "id": id, "state": "candidate", "version": version }),
+        )),
         Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -189,10 +208,12 @@ async fn review_permission(
     Json(req): Json<ReviewRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let table = snapshot(&shared)?;
-    let mut entry = table
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("permission entry not found: {id}")))?;
+    let mut entry = table.get(&id).cloned().ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            format!("permission entry not found: {id}"),
+        )
+    })?;
     entry
         .review(req.approve)
         .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -200,7 +221,9 @@ async fn review_permission(
 
     let state = if req.approve { "active" } else { "rejected" };
     match PermissionTable::store_entry(&shared, &entry, GLOBAL_SESSION) {
-        Ok(version) => Ok(Json(serde_json::json!({ "success": true, "id": id, "state": state, "version": version }))),
+        Ok(version) => Ok(Json(
+            serde_json::json!({ "success": true, "id": id, "state": state, "version": version }),
+        )),
         Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }

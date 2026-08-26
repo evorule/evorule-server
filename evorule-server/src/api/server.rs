@@ -733,10 +733,7 @@ impl SessionApi {
     }
 
     /// 递归收集规则 .json 文件路径（T3）：跳过子目录的 manifest，其余按目录展开
-    fn collect_json_files_recursive(
-        dir: &std::path::Path,
-        out: &mut Vec<std::path::PathBuf>,
-    ) {
+    fn collect_json_files_recursive(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(read_dir) = std::fs::read_dir(dir) else {
             return;
         };
@@ -956,8 +953,8 @@ impl SessionApi {
         if !base.exists() {
             return Ok(Vec::new());
         }
-        let read_dir = std::fs::read_dir(&base)
-            .map_err(|e| format!("读取 bundles 目录失败: {e}"))?;
+        let read_dir =
+            std::fs::read_dir(&base).map_err(|e| format!("读取 bundles 目录失败: {e}"))?;
         let mut out = Vec::new();
         for entry in read_dir.flatten() {
             let p = entry.path();
@@ -1013,7 +1010,10 @@ impl SessionApi {
             || bundle.bundle_id.contains(['/', '\\'])
             || bundle.bundle_id.contains("..")
         {
-            return Err(format!("非法 bundle_id `{}`（拒绝路径穿越）", bundle.bundle_id));
+            return Err(format!(
+                "非法 bundle_id `{}`（拒绝路径穿越）",
+                bundle.bundle_id
+            ));
         }
 
         let base = self.rules_dir.join("bundles");
@@ -1024,8 +1024,7 @@ impl SessionApi {
         // 清理上次残留的临时/备份目录
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_dir_all(&backup);
-        std::fs::create_dir_all(&tmp)
-            .map_err(|e| format!("创建临时目录失败: {e}"))?;
+        std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
         // 写入条目（任一失败 → 清理临时目录，不留半成品）
         let write_result = (|| -> Result<(), String> {
@@ -1068,8 +1067,11 @@ impl SessionApi {
             };
             let manifest_json = serde_json::to_string_pretty(&manifest)
                 .map_err(|e| format!("序列化 bundle_manifest.json 失败: {e}"))?;
-            std::fs::write(tmp.join(crate::api::bundles::BUNDLE_MANIFEST_FILE), manifest_json)
-                .map_err(|e| format!("写入 bundle_manifest.json 失败: {e}"))?;
+            std::fs::write(
+                tmp.join(crate::api::bundles::BUNDLE_MANIFEST_FILE),
+                manifest_json,
+            )
+            .map_err(|e| format!("写入 bundle_manifest.json 失败: {e}"))?;
             Ok(())
         })();
         if let Err(e) = write_result {
@@ -1083,7 +1085,7 @@ impl SessionApi {
 
         // 原子替换：旧版先移走为备份，新版本 rename 就位后清理备份；任一失败回滚
         let mut moved: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new(); // (原路径, 备份路径)
-        // 1) 同 bundle_id 旧目录
+                                                                                   // 1) 同 bundle_id 旧目录
         if target.exists() {
             std::fs::rename(&target, &backup).map_err(|e| {
                 let _ = std::fs::remove_dir_all(&tmp);
@@ -2921,7 +2923,9 @@ async fn get_state(State(api): State<GovernanceApi>) -> Json<serde_json::Value> 
 
 )]
 
-async fn get_audit(State(api): State<GovernanceApi>) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn get_audit(
+    State(api): State<GovernanceApi>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
     api.audit_new().await;
 
     let report = api.audit_report().await.map_err(|e| {
@@ -6547,9 +6551,7 @@ pub struct BoundServiceInfo {
 /// service_registry.json（`registry`，带配置的 version/description）。
 /// 供场景包导入前的服务需求预检（02 方案 §3.5）与治理侧服务目录
 /// （`GET /v1/services`）做服务需求核对。
-pub async fn list_services_handler(
-    State(api): State<SessionApi>,
-) -> Json<Vec<BoundServiceInfo>> {
+pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<BoundServiceInfo>> {
     let mut out: Vec<BoundServiceInfo> = DemoServiceRouter::native_service_names()
         .iter()
         .map(|name| BoundServiceInfo {
@@ -7597,9 +7599,10 @@ mod tests {
     async fn test_validate_single_transform_object() {
         // 单条 transform 对象(非数组,非标准 transform 包装)
 
-        let (status, body) = call_validate(r#"{"type":"set","params":{"attr":"x","operation":"set","value":1}}"#)
-            .await
-            .unwrap();
+        let (status, body) =
+            call_validate(r#"{"type":"set","params":{"attr":"x","operation":"set","value":1}}"#)
+                .await
+                .unwrap();
 
         assert_eq!(status, StatusCode::OK);
 
@@ -7684,9 +7687,11 @@ mod tests {
     async fn test_validate_response_structure() {
         // 验证响应体的完整结构(所有必需字段都存在)
 
-        let (status, body) = call_validate(r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#)
-            .await
-            .unwrap();
+        let (status, body) = call_validate(
+            r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(status, StatusCode::OK);
 
@@ -8387,7 +8392,10 @@ mod tests {
             oneshot_json(make_test_router(&state), "POST", "/api/command", Some(body)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["success"], false);
-        assert!(json["message"].as_str().unwrap_or("").contains("__io_result__"));
+        assert!(json["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("__io_result__"));
     }
 
     #[tokio::test]
