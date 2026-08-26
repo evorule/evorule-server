@@ -104,10 +104,23 @@ Closes #123
 
 ---
 
-## 协议
+## 协议与 CLA
 
 提交 PR 即表示您同意按 AGPL-3.0-or-later 协议贡献代码。
 本仓**不接收**任何"贡献即视为放弃权利"的协议 —— 您的版权仍然属于您。
+
+### 双许可声明
+
+本项目采用 **AGPL + 商业授权双轨许可**(详见 [DUAL_LICENSE.md](DUAL_LICENSE.md)、[COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md))。AGPL 用于开源采用;商业许可覆盖闭源商业 / 白标场景。
+
+### 为什么需要 CLA
+
+要让商业授权在法律上**可执行**,第三方贡献者的版权需通过 **Contributor License Agreement(CLA)** **非独占授权**给 EvoRule Project,供其纳入双许可体系进行商业转授权。**您的版权仍归您所有**,只是授予了 EvoRule Project 非独占使用、修改与再许可的权利。
+
+- **个人贡献者**:需签署 `CLA-individual.md`(模板参照[核心仓](https://gitee.com/evorule/evorule)的 `CLA-individual.md`,发布前可联系 <evorulelab@gmail.com> 索取)
+- **企业贡献者**:通过所在机构签署,请联系 <evorulelab@gmail.com>
+
+> ⚠️ 若无 CLA,第三方贡献的版权无法被纳入商业授权,双许可会存在**版权瑕疵**。因此所有外部提交在 **PR 合并前需完成 CLA 签署**。
 
 ---
 
