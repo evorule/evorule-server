@@ -10,6 +10,8 @@ license.workspace = true
 authors.workspace = true
 description = "Workspace crate: 多租户工作空间 + 规则元数据管理 (P10 基础设施层)"
 repository.workspace = true
+# 依赖 path crate (evorule-rule-schema), 与应用层一致保持闭包, 不发布到 crates.io
+publish = false
 
 [lints]
 # 继承顶层 [workspace.lints] (C4 forbid unsafe / C5 unwrap·expect·panic = deny)
