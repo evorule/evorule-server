@@ -215,7 +215,7 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `EVORULE_WAL_MAX_SIZE_MB` | `--wal-max-size-mb` | `100`                        | 单个 WAL 文件最大大小（0 = 不轮换）     |
 | `EVORULE_AUTO_VERIFY`     | `--auto-verify`     | `false`                      | 审计链实时验证                          |
 | `EVORULE_NO_RATE_LIMIT`   | `--no-rate-limit`   | `false`                      | 禁用速率限制（仅 benchmark）            |
-| `EVORULE_ALLOWED_ORIGINS` | `--allowed-origins` | (空)                         | CORS 允许的 Origin 列表（逗号分隔;空 = 仅同源;`*` = 全放行,仅开发）。需配合启动参数,否则浏览器跨源会被拒;vite dev 可用 `proxy` 绕过 |
+| `EVORULE_ALLOWED_ORIGINS` | `--allowed-origins` | (空) | CORS 允许的 Origin 列表（逗号分隔;空 = 仅同源;`*` = 全放行，仅开发）。需配合启动参数，否则浏览器跨源请求会被拒;vite dev 可用 `proxy` 绕过 |
 | `EVORULE_WORKSPACE_DB`    | `--workspace-db`    | `./data/workspace.db`        | Workspace 元数据库路径（P10, 独立于业务 db_path） |
 | `EVORULE_LOG_MAX_DAYS`    | `--log-max-days`    | `7`                          | 日志文件保留天数                  |
 | `EVORULE_LOG_MAX_SIZE_MB` | `--log-max-size-mb` | `1024`                       | 日志目录最大占用空间（MB）        |
@@ -237,7 +237,7 @@ evorule-server --config evorule.json
 ```json
 {
   "server": { "addr": "0.0.0.0:18080", "max_rounds": 1000 },
-  "auth": { "token": "secret123" },
+  "auth": { "token": "<your-bearer-token>" },
   "paths": {
     "core_eval": "./resources/core_eval.json",
     "rules_dir": "./rules",

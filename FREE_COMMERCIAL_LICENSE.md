@@ -191,8 +191,8 @@ EvoRule Project 审核团队将在 10 个工作日内:
 
 **疑问咨询**:
 
-- 📧 邮箱:<evorulelab@gmail.com>(主题加 `[Free Commercial License]`)
-- 🌐 Gitee Issues:<https://gitee.com/evorule/evorule-server/issues>
+- 邮箱:<evorulelab@gmail.com>(主题加 `[Free Commercial License]`)
+- Gitee Issues:<https://gitee.com/evorule/evorule-server/issues>
 
 ---
 
