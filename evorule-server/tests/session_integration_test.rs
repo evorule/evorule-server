@@ -592,9 +592,9 @@ async fn test_session_rule_hot_reload() {
     let tmp_dir = TempDir::new().expect("Failed to create temp dir");
     let tmp_path = tmp_dir.path();
 
-    // 复制 TCB 宪法 core_eval.json 到临时目录
+    // 复制本仓宪法 resources/core_eval.json 到临时目录(T8 属地原则:不再跨仓引用 evorule-tcb 资产)
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_source = manifest_dir.join("../../../evorule/evorule-tcb/core_eval.json");
+    let core_eval_source = manifest_dir.join("../resources/core_eval.json");
     let core_eval_content = fs::read_to_string(&core_eval_source).unwrap_or_else(|e| {
         panic!(
             "Failed to read core_eval.json at {}: {}",

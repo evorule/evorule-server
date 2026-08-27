@@ -34,6 +34,8 @@
 
 ### 🔄 变更
 
+- **T8 宪法同步:`resources/core_eval.json` v0.3.1 → v0.4.0** — 同步核心仓最小引擎自评估集(原子计算+控制流+兜底),ReAct 应用剧本整体迁出至消费方自持(范式见 app.evoagent.agent v0.4.0)
+- **T8 测试夹具属地化** — `integration_test.rs` / `fault_recovery_test.rs` / `session_integration_test.rs` 不再跨仓读取 `evorule/evorule-tcb/core_eval.json`,统一改读本仓 `resources/core_eval.json`;机制层验证所需的 call_service 等指令规则以内联应用剧本形态附加(属地原则:运行宪法由消费方自持)
 - **`core/workspace` 补 `publish = false`** — 与其余 11 个 workspace 成员一致(依赖 path crate,保持闭包,不进 crates.io)
 - **README / NOTICE 许可证段落改双轨声明** — 指向新增双许可文件,明确代码(AGPL/双许可)、文档(CC-BY-4.0)、宪法(CC0-1.0)分层
 

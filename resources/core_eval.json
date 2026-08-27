@@ -3,33 +3,31 @@
   "kind": "rule_set",
   "id": "org.evorule.core.eval",
   "rule_id": "core.eval",
-  "version": "0.3.1",
-  "description": "TCB 宪法 - 完整 ReAct 循环支持（v0.3.1 修复同轮重复 push；顺序语义，token 聚合优化由 governance 层负责）",
+  "version": "0.4.0",
+  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（T8,2026-08-27），应用可参照 app.evoagent.agent v0.4.0 范式",
   "metadata": {
     "author": "evorule-core",
     "license": "CC0-1.0 Universal (Public Domain)",
     "public_domain_notice": "本文件(core_eval.json,即 EvoRule 宪法)以 CC0 1.0 公共领域奉献。任何人都可以自由使用、修改、再分发,无需保留版权声明。EvoRule 代码本身采用 AGPL-3.0-or-later,但本解释器规范是公共领域 —— 任何人都可以实现兼容的 EvoRule 引擎。",
     "spdx_license_id": "CC0-1.0",
+    "provenance": {
+      "note": "v0.3.1 及此前版本含 ReAct 循环规则(call_external/call_service 剧本),2026-08-27 经 T8 专项迁出至消费方;机制层(6 元指令/9 指令类型/has_fields 等域函数)始终属于语言规范,不受本次迁出影响"
+    },
     "sections": [
       "1. 原子计算指令: increment, decrement, set",
       "2. 控制流指令: sequence, conditional, while_loop",
-      "3. ReAct 循环: call_external → tool_calls → collect → call_service → merge → 循环",
-      "4. 默认处理: all([]) 兜底规则"
+      "3. 默认处理: all([]) 兜底规则"
     ],
     "constraints": [
       "每条 transform 规则中最多包含一个 io_request 元指令",
       "原因: __io_results__ 是按 io_type 隔离的字段，多个 io_request 会冲突",
       "io_request 必须是 branch 的叶子节点（on_false 分支），之前不能有 set/push 操作",
-      "v0.3.0 新增: has_fields 域类型、collect 元指令、merge 元指令",
-      "v0.3.1 修复: 移除独立 react_iteration 规则（与 call_external 同轮执行导致重复 push），循环改由 call_service 分支内的 merge 驱动",
-      "设计决策: fork-join 批处理聚合（counter_attr/push_domain/tools_remaining/原位写回）已整体移除——批处理策略违反 TCB 最小顺序语义，多工具的 token 聚合优化改由 governance 层负责",
-      "ReAct 循环最大迭代次数: 10（call_service 消费结果时检查 react_iteration < 10，达标后不再 merge）",
-      "react_iteration 由首条 ReAct 规则自动初始化为 0（首次执行 call_external 时），无需反应器预置",
+      "v0.3.0 新增: has_fields 域类型、collect 元指令、merge 元指令（语言层能力，本最小集未使用但引擎持续支持）",
+      "设计决策: fork-join 批处理聚合已整体移除——批处理策略违反 TCB 最小顺序语义，多工具的 token 聚合优化由 governance 层负责",
       "I/O 结果按类型隔离: __io_results__.{io_type}；消费后以 JSON null 清除（exists 将 null 视为不存在）",
-      "v0.3.1: call_external 消费结果时将 tools 持久化到 payload.tools，merge 模板通过 {{tools}} 引用（原指令的 tools 在 call_service 轮已不可达）",
       "v0.3.1: set 的 attr 引用 payload 内以 __ 开头的字段时必须写显式前缀（如 __exec__.payload.__io_results__.call_external），否则会被误判为状态根路径",
-      "本版撤销兼容说明: query_db/http_get/save_memory 不再是内置指令类型（v0.3.1 宪法未定义对应 transform 规则，提交会触发显式警告——TCB 层检测到 noop 效果返回 TransitionResult::Ignored，反应器产生 Error 事实）；应用层应用 call_service 实现这些能力，由 governance 层按 service_name 路由",
-      "本版 call_external 参数: 仅使用 messages（LLM 消息历史数组）与 tools（可选工具描述）；prompt/system 不再作为指令参数（live handler 可直接从 messages 透传）",
+      "本版撤销兼容说明: query_db/http_get/save_memory 不再是内置指令类型（宪法未定义对应 transform 规则，提交会触发显式警告——TCB 层检测到 noop 效果返回 TransitionResult::Ignored，反应器产生 Error 事实）；需要这些能力的应用在其自有 rule_set 中定义 call_service 类规则",
+      "本版 call_external 参数: 仅使用 messages（LLM 消息历史数组）与 tools（可选工具描述）；prompt/system 不再作为指令参数（live handler 可直接从 messages 透传）。注意: 本最小评估集不定义 call_external 规则,需 LLM 循环的应用自带剧本（范式见 app.evoagent.agent）",
       "语义澄清: 业务 set 指令为纯覆盖语义——宪法规则硬编码元指令 operation=set，指令 params 中的 operation 字段（如 add/sub）被忽略；算术更新必须使用 increment（add）/decrement（sub）指令。误用 set+add 做循环体累加会导致计数器每轮被覆盖回常量、while_loop 条件永真（差分测试回归教训）"
     ]
   },
@@ -169,226 +167,6 @@
                 }
               ],
               "on_false": []
-            }
-          }
-        ]
-      }
-    },
-    {
-      "type": "branch",
-      "params": {
-        "domain": {
-          "type": "all",
-          "inner": [
-            { "type": "instruction", "instruction_type": "call_external" },
-            {
-              "type": "not",
-              "inner": {
-                "type": "exists",
-                "path": "__exec__.payload.react_iteration"
-              }
-            }
-          ]
-        },
-        "on_true": [
-          {
-            "type": "set",
-            "params": {
-              "attr": "react_iteration",
-              "operation": "set",
-              "value": 0
-            }
-          }
-        ],
-        "on_false": []
-      }
-    },
-    {
-      "type": "branch",
-      "params": {
-        "domain": {
-          "type": "instruction",
-          "instruction_type": "call_external"
-        },
-        "on_true": [
-          {
-            "type": "branch",
-            "params": {
-              "domain": {
-                "type": "exists",
-                "path": "__exec__.payload.__io_results__.call_external"
-              },
-              "on_true": [
-                {
-                  "type": "set",
-                  "params": {
-                    "attr": "llm_response",
-                    "operation": "set",
-                    "value": "__exec__.payload.__io_results__.call_external"
-                  }
-                },
-                {
-                  "type": "branch",
-                  "params": {
-                    "domain": {
-                      "type": "exists",
-                      "path": "__exec__.instruction.params.tools"
-                    },
-                    "on_true": [
-                      {
-                        "type": "set",
-                        "params": {
-                          "attr": "tools",
-                          "operation": "set",
-                          "value": "__exec__.instruction.params.tools"
-                        }
-                      }
-                    ],
-                    "on_false": []
-                  }
-                },
-                {
-                  "type": "set",
-                  "params": {
-                    "attr": "__exec__.payload.__io_results__.call_external",
-                    "operation": "set",
-                    "value": null
-                  }
-                },
-                {
-                  "type": "branch",
-                  "params": {
-                    "domain": {
-                      "type": "has_fields",
-                      "path": "__exec__.payload.llm_response",
-                      "fields": ["tool_calls"]
-                    },
-                    "on_true": [
-                      {
-                        "type": "collect",
-                        "params": {
-                          "from": "__exec__.payload.llm_response.tool_calls",
-                          "each": {
-                            "type": "call_service",
-                            "params": {
-                              "service_name": "{{name}}",
-                              "args": "{{args}}"
-                            }
-                          }
-                        }
-                      }
-                    ],
-                    "on_false": [
-                      {
-                        "type": "push",
-                        "params": {
-                          "instructions": [{ "type": "noop" }]
-                        }
-                      }
-                    ]
-                  }
-                }
-              ],
-              "on_false": [
-                {
-                  "type": "io_request",
-                  "params": {
-                    "io_type": "call_external",
-                    "messages": "__exec__.instruction.params.messages",
-                    "tools?": "__exec__.instruction.params.tools"
-                  }
-                }
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
-      "type": "branch",
-      "params": {
-        "domain": {
-          "type": "instruction",
-          "instruction_type": "call_service"
-        },
-        "on_true": [
-          {
-            "type": "branch",
-            "params": {
-              "domain": {
-                "type": "exists",
-                "path": "__exec__.payload.__io_results__.call_service"
-              },
-              "on_true": [
-                {
-                  "type": "set",
-                  "params": {
-                    "attr": "service_result",
-                    "operation": "set",
-                    "value": "__exec__.payload.__io_results__.call_service"
-                  }
-                },
-                {
-                  "type": "set",
-                  "params": {
-                    "attr": "__exec__.payload.__io_results__.call_service",
-                    "operation": "set",
-                    "value": null
-                  }
-                },
-                {
-                  "type": "branch",
-                  "params": {
-                    "domain": {
-                      "type": "lt",
-                      "path": "__exec__.payload.react_iteration",
-                      "value": 10
-                    },
-                    "on_true": [
-                      {
-                        "type": "set",
-                        "params": {
-                          "attr": "react_iteration",
-                          "operation": "add",
-                          "value": 1
-                        }
-                      },
-                      {
-                        "type": "merge",
-                        "params": {
-                          "messages": "__exec__.payload.llm_response.messages",
-                          "tool_result": "__exec__.payload.service_result",
-                          "next_instruction": {
-                            "type": "call_external",
-                            "params": {
-                              "messages": "{{messages}}",
-                              "tools": "{{tools}}"
-                            }
-                          }
-                        }
-                      }
-                    ],
-                    "on_false": [
-                      {
-                        "type": "push",
-                        "params": {
-                          "instructions": [{ "type": "noop" }]
-                        }
-                      }
-                    ]
-                  }
-                }
-              ],
-              "on_false": [
-                {
-                  "type": "io_request",
-                  "params": {
-                    "io_type": "call_service",
-                    "service_name": "__exec__.instruction.params.service_name",
-                    "args?": "__exec__.instruction.params.args"
-                  }
-                }
-              ]
             }
           }
         ]

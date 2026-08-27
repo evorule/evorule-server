@@ -54,14 +54,14 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     }
 }
 
-/// 从 core_eval.json 加载 transform 列表,并附加 v0.2.x → v0.3.1 兼容规则
+/// 从本仓 resources/core_eval.json 加载 transform 列表,并附加应用剧本兼容规则
 ///
-/// v0.3.1 起 `save_memory` / `query_db` / `http_get` 不再是核心指令类型,
-/// 应用层应通过 `call_service` 路由。本测试为验证 IoSubscriber/IoDispatcher
-/// 机制层行为,附加兼容 transform 规则使旧指令仍可映射到相应 IoType。
+/// T8 迁出后 core_eval.json 为最小评估集(原子+控制流+兜底)。本测试为验证
+/// IoSubscriber/IoDispatcher 机制层行为,附加旧指令(save_memory/query_db/http_get)
+/// 与 call_service 的应用剧本形态 transform 规则——运行宪法由消费方自持(属地原则)。
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_path = manifest_dir.join("../../../evorule/evorule-tcb/core_eval.json");
+    let core_eval_path = manifest_dir.join("../resources/core_eval.json");
 
     let json_str = std::fs::read_to_string(&core_eval_path)
         .unwrap_or_else(|e| panic!("Failed to read core_eval.json: {}", e));
@@ -137,6 +137,29 @@ fn load_core_eval() -> Vec<JsonValue> {
                         ],
                         "on_false": [
                             { "type": "io_request", "params": { "io_type": "http_get", "url": "__exec__.instruction.params.url" } }
+                        ]
+                    }
+                }
+            ]
+        }
+    })));
+
+    // 附加应用剧本规则: call_service 触发/消费(与 save_memory 等同构的最小形态)
+    transforms.push(serde_to_tcb(serde_json::json!({
+        "type": "branch",
+        "params": {
+            "domain": { "type": "instruction", "instruction_type": "call_service" },
+            "on_true": [
+                {
+                    "type": "branch",
+                    "params": {
+                        "domain": { "type": "exists", "path": "__exec__.payload.__io_results__.call_service" },
+                        "on_true": [
+                            { "type": "set", "params": { "attr": "service_result", "operation": "set", "value": "__exec__.payload.__io_results__.call_service" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.__io_results__.call_service", "operation": "set", "value": null } }
+                        ],
+                        "on_false": [
+                            { "type": "io_request", "params": { "io_type": "call_service", "service_name": "__exec__.instruction.params.service_name", "args?": "__exec__.instruction.params.args" } }
                         ]
                     }
                 }

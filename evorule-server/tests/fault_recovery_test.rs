@@ -54,21 +54,48 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     }
 }
 
-/// 从 core_eval.json 加载 transform 列表
+/// 从本仓 resources/core_eval.json 加载 transform 列表,并附加应用剧本规则
 ///
-/// H5: CARGO_MANIFEST_DIR 现在是 evorule-server crate 目录,
-/// 路径需多回溯一层到达 evorule/evorule-tcb/core_eval.json。
+/// T8 迁出后 core_eval.json 为最小评估集(原子+控制流+兜底),且不再跨仓引用
+/// evorule-tcb 资产(属地原则:运行宪法由消费方自持)。本测试为验证故障恢复
+/// 机制层行为,附加 call_service 的应用剧本形态 transform 规则。
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_path = manifest_dir.join("../../../evorule/evorule-tcb/core_eval.json");
+    let core_eval_path = manifest_dir.join("../resources/core_eval.json");
     let json_str = std::fs::read_to_string(&core_eval_path)
         .unwrap_or_else(|e| panic!("Failed to read core_eval.json: {}", e));
     let json: serde_json::Value =
         serde_json::from_str(&json_str).expect("Failed to parse core_eval.json");
-    json.get("transform")
+    let mut transforms: Vec<JsonValue> = json
+        .get("transform")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().cloned().map(serde_to_tcb).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // 附加应用剧本规则: call_service 触发/消费(最小同构形态)
+    transforms.push(serde_to_tcb(serde_json::json!({
+        "type": "branch",
+        "params": {
+            "domain": { "type": "instruction", "instruction_type": "call_service" },
+            "on_true": [
+                {
+                    "type": "branch",
+                    "params": {
+                        "domain": { "type": "exists", "path": "__exec__.payload.__io_results__.call_service" },
+                        "on_true": [
+                            { "type": "set", "params": { "attr": "service_result", "operation": "set", "value": "__exec__.payload.__io_results__.call_service" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.__io_results__.call_service", "operation": "set", "value": null } }
+                        ],
+                        "on_false": [
+                            { "type": "io_request", "params": { "io_type": "call_service", "service_name": "__exec__.instruction.params.service_name", "args?": "__exec__.instruction.params.args" } }
+                        ]
+                    }
+                }
+            ]
+        }
+    })));
+
+    transforms
 }
 
 /// 构造 call_service 指令
