@@ -1,16 +1,30 @@
 {
   "rule_id": "guard_shell_risky_v1",
+  "version": "0.2.0",
   "transform": [
     {
+      "type": "branch",
       "params": {
-        "command_regex": "rm\\s+-rf|sudo|curl\\s|bash\\s+-c",
-        "io_type": "call_service",
-        "reason": "高风险命令须人工确认（自进化生成）",
-        "require_approval": "candidate",
-        "service_name": "shell_exec"
-      },
-      "type": "io_request"
+        "domain": {
+          "type": "has_fields",
+          "path": "__exec__.instruction.params",
+          "fields": ["command"]
+        },
+        "on_true": [
+          {
+            "type": "io_request",
+            "params": {
+              "io_type": "call_service",
+              "service_name": "shell_exec",
+              "args": "__exec__.instruction.params.command",
+              "command_regex": "rm\\s+-rf|sudo|curl\\s|bash\\s+-c",
+              "reason": "高风险命令须人工确认",
+              "require_approval": "candidate"
+            }
+          }
+        ],
+        "on_false": []
+      }
     }
-  ],
-  "version": "0.1.0"
+  ]
 }
