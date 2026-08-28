@@ -822,8 +822,6 @@ dependencies = [
 [[package]]
 name = "evorule-governance"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64b8f9bc23df8eb4206bf094cb864bca3b289f0abc1620319c26ec600d2868d8"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -910,8 +908,6 @@ dependencies = [
 [[package]]
 name = "evorule-reactor"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6943ada4b340340e9d62c0bb4a0e8a977044d13d9be812d87f3909429f525ef6"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1008,8 +1004,6 @@ dependencies = [
 [[package]]
 name = "evorule-tcb"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24965d24596df58f9803f9aa0ae0aeec5e6ff5434124931c277d64bb3d8c777d"
 
 [[package]]
 name = "evorule-time-machine"

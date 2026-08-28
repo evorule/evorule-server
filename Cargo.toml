@@ -24,6 +24,13 @@ repository = "https://gitee.com/evorule/evorule-server"
 homepage = "https://gitee.com/evorule/evorule-server"
 rust-version = "1.74"
 
+# AUDIT-A1 修复验证用：临时将 governance/reactor 指向本地工作副本
+# （WalUnavailable 变体尚未随新版本发布，发布审批后移除此段）
+[patch.crates-io]
+evorule-governance = { path = "../evorule/evorule-governance" }
+evorule-reactor = { path = "../evorule/evorule-reactor" }
+evorule-tcb = { path = "../evorule/evorule-tcb" }
+
 
 [workspace.lints.rust]
 # kani cfg 由 kani 工具链注入, Cargo 不识别, 显式声明以抑制 warning
