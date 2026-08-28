@@ -2758,6 +2758,10 @@ async fn submit_command(
     // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
     let (instruction_value, sanitize_report) = sanitizer.sanitize_value(&req.instruction);
     if sanitize_report.has_hits() {
+        // P5-A1：命中指标化（按 rule），攻击态势可监控告警
+        for rule in sanitize_report.unique_hits() {
+            metrics.inc_sanitize_hits(rule);
+        }
         tracing::warn!(
             hits = ?sanitize_report.unique_hits(),
             hit_count = sanitize_report.hit_count(),
@@ -2836,9 +2840,26 @@ async fn submit_command(
 async fn update_payload(
     State(api): State<GovernanceApi>,
 
+    State(metrics): State<SharedMetrics>,
+    State(sanitizer): State<Arc<InputSanitizer>>,
+
     Json(req): Json<PayloadUpdateRequest>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
-    let value = serde_to_tcb(req.value);
+    // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
+    let (sanitized_value, sanitize_report) = sanitizer.sanitize_value(&req.value);
+    if sanitize_report.has_hits() {
+        // P5-A1：命中指标化（按 rule）
+        for rule in sanitize_report.unique_hits() {
+            metrics.inc_sanitize_hits(rule);
+        }
+        tracing::warn!(
+            hits = ?sanitize_report.unique_hits(),
+            hit_count = sanitize_report.hit_count(),
+            path = %req.path,
+            "update_payload 输入净化命中（已静默改写）"
+        );
+    }
+    let value = serde_to_tcb(sanitized_value);
 
     match api.send_payload_update(req.path, value) {
         Ok(id) => Ok(Json(ApiResponse {
@@ -3027,6 +3048,19 @@ async fn create_session(
             tracing::warn!(current, max, "Session creation rejected: limit exceeded");
 
             Err(StatusCode::TOO_MANY_REQUESTS)
+        }
+
+        Err(evorule_governance::session::SessionError::WalUnavailable {
+            session_id,
+            source,
+        }) => {
+            tracing::error!(
+                session_id,
+                error = %source,
+                "Session creation rejected: WAL unavailable (audit chain cannot be established)"
+            );
+
+            Err(StatusCode::SERVICE_UNAVAILABLE)
         }
 
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -3300,6 +3334,19 @@ async fn create_session_from_parent(
 
             Err(StatusCode::BAD_REQUEST)
         }
+
+        Err(evorule_governance::session::SessionError::WalUnavailable {
+            session_id,
+            source,
+        }) => {
+            tracing::error!(
+                session_id,
+                error = %source,
+                "Session creation rejected: WAL unavailable (audit chain cannot be established)"
+            );
+
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
     }
 }
 
@@ -3391,6 +3438,19 @@ async fn create_session_fork(
 
             Err(StatusCode::BAD_REQUEST)
         }
+
+        Err(evorule_governance::session::SessionError::WalUnavailable {
+            session_id,
+            source,
+        }) => {
+            tracing::error!(
+                session_id,
+                error = %source,
+                "Session fork rejected: WAL unavailable (audit chain cannot be established)"
+            );
+
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
     }
 }
 
@@ -3431,6 +3491,10 @@ async fn session_command(
     // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
     let (instruction_value, sanitize_report) = sanitizer.sanitize_value(&req.instruction);
     if sanitize_report.has_hits() {
+        // P5-A1：命中指标化（按 rule）
+        for rule in sanitize_report.unique_hits() {
+            metrics.inc_sanitize_hits(rule);
+        }
         tracing::warn!(
             hits = ?sanitize_report.unique_hits(),
             hit_count = sanitize_report.hit_count(),
@@ -4164,13 +4228,32 @@ async fn session_payload(
 
     State(shared_facts): State<SharedFactsLog>,
 
+    State(metrics): State<SharedMetrics>,
+
+    State(sanitizer): State<Arc<InputSanitizer>>,
+
     Path(session_id): Path<u64>,
 
     Json(req): Json<PayloadUpdateRequest>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
     let id = api.next_id();
 
-    let value = serde_to_tcb(req.value);
+    // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
+    let (sanitized_value, sanitize_report) = sanitizer.sanitize_value(&req.value);
+    if sanitize_report.has_hits() {
+        // P5-A1：命中指标化（按 rule）
+        for rule in sanitize_report.unique_hits() {
+            metrics.inc_sanitize_hits(rule);
+        }
+        tracing::warn!(
+            hits = ?sanitize_report.unique_hits(),
+            hit_count = sanitize_report.hit_count(),
+            session_id = session_id,
+            path = %req.path,
+            "session_payload 输入净化命中（已静默改写）"
+        );
+    }
+    let value = serde_to_tcb(sanitized_value);
 
     let sessions = api.sessions.lock().await;
 

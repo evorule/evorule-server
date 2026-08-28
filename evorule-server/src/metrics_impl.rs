@@ -16,6 +16,9 @@
 //! | `evorule_facts_log_version` | Gauge | — | FactsLog 当前版本号 |
 //! | `evorule_sse_connections_active` | Gauge | — | 当前活跃 SSE 连接数 |
 //! | `evorule_http_requests_total` | Counter | `method`, `path`, `status` | HTTP 请求总数 |
+//! | `evorule_sanitize_hits_total` | Counter | `rule` | L1 输入净化命中数（P5-A1，2026-08-27） |
+//! | `evorule_auto_verify_failures_total` | Counter | — | 实时审计验证失败次数（P5-A2，2026-08-27） |
+//! | `evorule_auto_verify_skips_total` | Counter | — | 自动审计验证跳过次数（P5-A2，2026-08-27） |
 
 use std::fmt;
 use std::sync::Arc;
@@ -77,6 +80,12 @@ pub struct PrometheusMetrics {
     facts_log_version: IntGauge,
     sse_connections_active: IntGauge,
     http_requests_total: IntCounterVec,
+    /// P5-A1：L1 净化命中计数（按 rule 标签）
+    sanitize_hits_total: IntCounterVec,
+    /// P5-A2：实时审计验证失败计数
+    auto_verify_failures_total: prometheus::IntCounter,
+    /// P5-A2：自动验证跳过计数
+    auto_verify_skips_total: prometheus::IntCounter,
 }
 
 impl PrometheusMetrics {
@@ -133,6 +142,29 @@ impl PrometheusMetrics {
             &["method", "path", "status"],
         )
         .map_err(|_| MetricsError::CounterCreation("evorule_http_requests_total".to_string()))?;
+        // P5-A1：净化命中按 rule 打标签，攻击态势可告警
+        let sanitize_hits_total = IntCounterVec::new(
+            Opts::new(
+                "evorule_sanitize_hits_total",
+                "L1 input sanitizer hits by rule name",
+            ),
+            &["rule"],
+        )
+        .map_err(|_| MetricsError::CounterCreation("evorule_sanitize_hits_total".to_string()))?;
+        let auto_verify_failures_total = prometheus::IntCounter::new(
+            "evorule_auto_verify_failures_total",
+            "Realtime audit-chain verify failures (tamper indicator, alert on >0)",
+        )
+        .map_err(|_| {
+            MetricsError::CounterCreation("evorule_auto_verify_failures_total".to_string())
+        })?;
+        let auto_verify_skips_total = prometheus::IntCounter::new(
+            "evorule_auto_verify_skips_total",
+            "Auto audit-verify skips (threshold/interval), measures real verification coverage",
+        )
+        .map_err(|_| {
+            MetricsError::CounterCreation("evorule_auto_verify_skips_total".to_string())
+        })?;
 
         registry
             .register(Box::new(sessions_active.clone()))
@@ -169,6 +201,21 @@ impl PrometheusMetrics {
             .map_err(|_| {
                 MetricsError::RegistryRegistration("evorule_http_requests_total".to_string())
             })?;
+        registry
+            .register(Box::new(sanitize_hits_total.clone()))
+            .map_err(|_| {
+                MetricsError::RegistryRegistration("evorule_sanitize_hits_total".to_string())
+            })?;
+        registry
+            .register(Box::new(auto_verify_failures_total.clone()))
+            .map_err(|_| {
+                MetricsError::RegistryRegistration("evorule_auto_verify_failures_total".to_string())
+            })?;
+        registry
+            .register(Box::new(auto_verify_skips_total.clone()))
+            .map_err(|_| {
+                MetricsError::RegistryRegistration("evorule_auto_verify_skips_total".to_string())
+            })?;
 
         Ok(Self {
             registry,
@@ -179,6 +226,9 @@ impl PrometheusMetrics {
             facts_log_version,
             sse_connections_active,
             http_requests_total,
+            sanitize_hits_total,
+            auto_verify_failures_total,
+            auto_verify_skips_total,
         })
     }
 }
@@ -232,6 +282,18 @@ impl IoMetrics for PrometheusMetrics {
         self.http_requests_total
             .with_label_values(&[method, path, status])
             .inc();
+    }
+
+    fn inc_sanitize_hits(&self, rule: &str) {
+        self.sanitize_hits_total.with_label_values(&[rule]).inc();
+    }
+
+    fn inc_auto_verify_failures(&self) {
+        self.auto_verify_failures_total.inc();
+    }
+
+    fn inc_auto_verify_skips(&self) {
+        self.auto_verify_skips_total.inc();
     }
 
     fn render_as_text(&self) -> String {
@@ -382,5 +444,26 @@ mod tests {
         m.inc_sessions();
         let output = m.render_as_text();
         assert!(output.contains("evorule_sessions_active 1"));
+    }
+
+    /// P5-A1/A2 审计指标：sanit化命中按 rule 分桶、auto_verify 失败/跳过计数
+    #[test]
+    fn test_audit_counters_via_trait_object() {
+        let m = make_metrics();
+        let shared: Arc<dyn IoMetrics> = Arc::new(m);
+        shared.inc_sanitize_hits("regex_injection");
+        shared.inc_sanitize_hits("regex_injection");
+        shared.inc_sanitize_hits("tool_prompt_block");
+        shared.inc_auto_verify_failures();
+        shared.inc_auto_verify_skips();
+        let output = shared.render_as_text();
+        assert!(output.contains(
+            "evorule_sanitize_hits_total{rule=\"regex_injection\"} 2"
+        ));
+        assert!(output.contains(
+            "evorule_sanitize_hits_total{rule=\"tool_prompt_block\"} 1"
+        ));
+        assert!(output.contains("evorule_auto_verify_failures_total 1"));
+        assert!(output.contains("evorule_auto_verify_skips_total 1"));
     }
 }
