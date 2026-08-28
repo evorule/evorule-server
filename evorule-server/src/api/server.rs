@@ -1861,6 +1861,12 @@ pub struct AuditEntryResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<u64>,
+
+    /// F5：完整 Fact 内容 JSON（仅查询参数 include_content=true 时存在；
+    /// Auditor 条目本身不含内容，server 从 FactsLog 按 fact_id 关联注入）
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_json: Option<serde_json::Value>,
 }
 
 /// 审计报告响应（GET /api/sessions/{id}/audit）
@@ -3682,7 +3688,10 @@ async fn session_state(
 
     tag = "sessions",
 
-    params(("id" = u64, Path, description = "会话 ID")),
+    params(
+        ("id" = u64, Path, description = "会话 ID"),
+        ("include_content" = Option<bool>, Query, description = "F5: 为 true 时每条审计条目附加 content_json（完整 Fact 内容 JSON，含 IoRequest params / IoResponse result 等）；默认 false 保持轻量响应")
+    ),
 
     responses(
 
@@ -3698,6 +3707,8 @@ async fn session_audit(
     State(api): State<SessionApi>,
 
     Path(session_id): Path<u64>,
+
+    axum::extract::Query(query): axum::extract::Query<AuditReportQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let sessions = api.sessions.lock().await;
 
@@ -3720,6 +3731,24 @@ async fn session_audit(
         tracing::error!(session_id, "audit report parse failed: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    // F5（audit-chain 专项 2026-08-28）：按需注入完整 Fact 内容。
+    // Auditor 自持条目只含哈希/因果元数据（P1-F4 设计），不存内容——
+    // 外部审计者此前无法从 API 重建"LLM 看到什么/回了什么"（P3-N1）。
+    // include_content=true 时从 FactsLog 内存投影按 fact_id 关联，
+    // 注入 content_json（Fact::to_json 完整内容）。默认关闭，保持轻量。
+
+    let content_index: std::collections::BTreeMap<u64, serde_json::Value> =
+        if query.include_content.unwrap_or(false) {
+            session
+                .facts_log
+                .history()
+                .iter()
+                .map(|f| (f.id().0, tcb_to_serde(&f.to_json())))
+                .collect()
+        } else {
+            std::collections::BTreeMap::new()
+        };
 
     // 重新映射字段名以符合 API 文档规范
 
@@ -3745,15 +3774,38 @@ async fn session_audit(
 
     normalized.insert("verified".into(), serde_json::json!(session.audit_verify()));
 
-    normalized.insert(
-        "entries".into(),
-        report
-            .get("entries")
-            .cloned()
-            .unwrap_or(serde_json::json!([])),
-    );
+    let mut entries = report
+        .get("entries")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
+
+    if !content_index.is_empty() {
+        if let Some(arr) = entries.as_array_mut() {
+            for entry in arr.iter_mut() {
+                if let Some(fid) = entry.get("fact_id").and_then(|v| v.as_u64()) {
+                    if let Some(content) = content_index.get(&fid) {
+                        if let Some(obj) = entry.as_object_mut() {
+                            obj.insert("content_json".into(), content.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    normalized.insert("entries".into(), entries);
 
     Ok(Json(serde_json::Value::Object(normalized)))
+}
+
+/// F5：审计报告查询参数
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+
+pub struct AuditReportQuery {
+    /// 为 true 时每条审计条目附加 content_json（完整 Fact 内容）
+    #[serde(default)]
+
+    pub include_content: Option<bool>,
 }
 
 /// 会话审计链验证 handler
@@ -8249,6 +8301,88 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         assert_eq!(json["message"], "Session closed");
+    }
+
+    /// F5 回归（audit-chain 2026-08-28）：审计报告按需注入完整 Fact 内容。
+    /// - 默认（include_content 缺省）：entries 无 content_json（向后兼容，轻量）；
+    /// - include_content=true：每条 entry 附 content_json（Fact::to_json 全量内容），
+    ///   外部审计者可从 API 重建"命令/IO 参数与结果"（P3-N1 兑现）。
+    #[tokio::test]
+
+    async fn test_session_audit_include_content_oneshot() {
+        let (state, _) = make_test_state();
+
+        // 1. 创建会话
+
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "POST", "/api/sessions", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        let session_id = json["session_id"].as_u64().unwrap();
+
+        // 2. 提交命令产生 Command fact（noop 指令，与全流程测试一致）
+
+        let uri = format!("/api/sessions/{session_id}/command");
+
+        let body = r#"{"instruction":{"type":"noop","note":"f5-audit-content"}}"#;
+
+        let (status, _) = oneshot_json(make_test_router(&state), "POST", &uri, Some(body)).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        // 3. 默认请求：entries 不含 content_json
+        // （command 经 channel 异步进 reactor，轮询等待审计条目出现）
+
+        let uri = format!("/api/sessions/{session_id}/audit");
+
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+
+        for _ in 0..40 {
+            let (status, json) = oneshot_json(make_test_router(&state), "GET", &uri, None).await;
+
+            assert_eq!(status, StatusCode::OK);
+
+            assert_eq!(json["verified"], true);
+
+            entries = json["entries"].as_array().cloned().unwrap_or_default();
+
+            if !entries.is_empty() {
+                break;
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        assert!(!entries.is_empty(), "提交命令后应有审计条目");
+
+        assert!(
+            entries.iter().all(|e| e.get("content_json").is_none()),
+            "默认响应不得包含 content_json"
+        );
+
+        // 4. include_content=true：entries 附 content_json，且能找到提交的命令内容
+
+        let uri = format!("/api/sessions/{session_id}/audit?include_content=true");
+
+        let (status, json) = oneshot_json(make_test_router(&state), "GET", &uri, None).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        let entries = json["entries"].as_array().unwrap();
+
+        assert!(!entries.is_empty());
+        assert!(
+            entries.iter().any(|e| e.get("content_json").is_some()),
+            "include_content=true 时 entries 应含 content_json"
+        );
+
+        let serialized = serde_json::to_string(&json).unwrap();
+
+        assert!(
+            serialized.contains("f5-audit-content"),
+            "content_json 应包含提交命令的完整内容（LLM 看到什么可从 API 重建）"
+        );
     }
 
     // --- 014 新增端点单元测试 ---
