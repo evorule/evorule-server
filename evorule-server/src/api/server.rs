@@ -26,7 +26,8 @@
 
 //! - `GET /api/health` — 健康检查
 
-use crate::auth::AuthConfig;
+use crate::auth::{AuthConfig, CallerIdentity, requires_service_identity};
+use axum::Extension;
 use crate::input_sanitizer::InputSanitizer;
 use axum::http::Method;
 
@@ -2837,6 +2838,8 @@ async fn submit_command(
 
         (status = 200, description = "PayloadUpdate 已提交，返回 fact_id", body = ApiResponse),
 
+        (status = 403, description = "受保护域写入被拒绝（需 service 身份，B5-server）"),
+
         (status = 401, description = "未认证")
 
     )
@@ -2849,8 +2852,29 @@ async fn update_payload(
     State(metrics): State<SharedMetrics>,
     State(sanitizer): State<Arc<InputSanitizer>>,
 
+    identity: Option<Extension<CallerIdentity>>,
+
     Json(req): Json<PayloadUpdateRequest>,
-) -> Result<Json<ApiResponse>, StatusCode> {
+) -> Result<(StatusCode, Json<ApiResponse>), StatusCode> {
+    // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
+    // 身份由认证中间件注入：认证启用时必注入（User/Service）；identity 为 None
+    // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
+    if requires_service_identity(&req.path) && matches!(identity, Some(Extension(CallerIdentity::User))) {
+        tracing::warn!(path = %req.path, "update_payload 受保护域写入被拒绝（需 service 身份）");
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(ApiResponse {
+                success: false,
+                message: format!(
+                    "写入受保护域 {} 被拒绝：stable.llm / stable.system 仅受信服务管道可写。\
+                     服务端需配置 EVORULE_SERVICE_TOKEN，调用方（如 evo-agent）需携带该 service token。",
+                    req.path
+                ),
+                fact_id: None,
+            }),
+        ));
+    }
+
     // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
     let (sanitized_value, sanitize_report) = sanitizer.sanitize_value(&req.value);
     if sanitize_report.has_hits() {
@@ -2868,21 +2892,27 @@ async fn update_payload(
     let value = serde_to_tcb(sanitized_value);
 
     match api.send_payload_update(req.path, value) {
-        Ok(id) => Ok(Json(ApiResponse {
-            success: true,
+        Ok(id) => Ok((
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
 
-            message: "PayloadUpdate submitted".to_string(),
+                message: "PayloadUpdate submitted".to_string(),
 
-            fact_id: Some(id.0),
-        })),
+                fact_id: Some(id.0),
+            }),
+        )),
 
-        Err(msg) => Ok(Json(ApiResponse {
-            success: false,
+        Err(msg) => Ok((
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: false,
 
-            message: msg,
+                message: msg,
 
-            fact_id: None,
-        })),
+                fact_id: None,
+            }),
+        )),
     }
 }
 
@@ -4269,6 +4299,8 @@ async fn session_audit_import_compressed(
 
         (status = 200, description = "PayloadUpdate 已提交，返回 fact_id", body = ApiResponse),
 
+        (status = 403, description = "受保护域写入被拒绝（需 service 身份，B5-server）"),
+
         (status = 404, description = "会话不存在")
 
     )
@@ -4286,9 +4318,30 @@ async fn session_payload(
 
     Path(session_id): Path<u64>,
 
+    identity: Option<Extension<CallerIdentity>>,
+
     Json(req): Json<PayloadUpdateRequest>,
-) -> Result<Json<ApiResponse>, StatusCode> {
+) -> Result<(StatusCode, Json<ApiResponse>), StatusCode> {
     let id = api.next_id();
+
+    // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
+    // 身份由认证中间件注入：认证启用时必注入（User/Service）；identity 为 None
+    // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
+    if requires_service_identity(&req.path) && matches!(identity, Some(Extension(CallerIdentity::User))) {
+        tracing::warn!(session_id, path = %req.path, "session_payload 受保护域写入被拒绝（需 service 身份）");
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(ApiResponse {
+                success: false,
+                message: format!(
+                    "写入受保护域 {} 被拒绝：stable.llm / stable.system 仅受信服务管道可写。\
+                     服务端需配置 EVORULE_SERVICE_TOKEN，调用方（如 evo-agent）需携带该 service token。",
+                    req.path
+                ),
+                fact_id: None,
+            }),
+        ));
+    }
 
     // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
     let (sanitized_value, sanitize_report) = sanitizer.sanitize_value(&req.value);
@@ -4332,21 +4385,27 @@ async fn session_payload(
 
         value,
     }) {
-        Ok(()) => Ok(Json(ApiResponse {
-            success: true,
+        Ok(()) => Ok((
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
 
-            message: "PayloadUpdate submitted".to_string(),
+                message: "PayloadUpdate submitted".to_string(),
 
-            fact_id: Some(id.0),
-        })),
+                fact_id: Some(id.0),
+            }),
+        )),
 
-        Err(_) => Ok(Json(ApiResponse {
-            success: false,
+        Err(_) => Ok((
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: false,
 
-            message: "Command channel closed (reactor exited)".to_string(),
+                message: "Command channel closed (reactor exited)".to_string(),
 
-            fact_id: None,
-        })),
+                fact_id: None,
+            }),
+        )),
     }
 }
 
@@ -8784,5 +8843,163 @@ mod tests {
         let (status, _) = oneshot_json(router, "GET", "/api/health", None).await;
 
         assert_eq!(status, StatusCode::OK);
+    }
+
+    // --- B5-server：受保护域准入（stable.llm / stable.system 仅 service 身份可写） ---
+
+    /// 构造启用认证的测试 Router（user token + service token 双凭据）
+    fn make_authed_router(state: &AppState, user_token: &str, service_token: &str) -> Router {
+        GovernanceServer::new(
+            state.clone(),
+            AuthConfig::new(vec![user_token.to_string()], true)
+                .with_service_tokens(vec![service_token.to_string()]),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            // S2：测试中 /metrics 无需认证
+            false,
+            // 测试不挂载 Swagger UI
+            false,
+            // 测试不启用 abort
+            false,
+        )
+        .build_router()
+    }
+
+    /// 发送带 Bearer token 的 oneshot JSON 请求并返回 (状态码, 响应体 JSON)
+    async fn oneshot_json_with_token(
+        router: Router,
+        method: &str,
+        uri: &str,
+        token: &str,
+        body: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"));
+
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+
+        let request = if let Some(b) = body {
+            builder.body(axum::body::Body::from(b.to_string())).unwrap()
+        } else {
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+
+        let response = router.oneshot(request).await.unwrap();
+
+        let status = response.status();
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+
+        (status, json)
+    }
+
+    /// user token 写受保护域 `stable.llm` → 403 + 指引文案（fail-visible）
+    #[tokio::test]
+    async fn test_b5_protected_domain_rejects_user_token_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_authed_router(&state, "user_token", "service_token");
+
+        let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}"#;
+
+        let (status, json) =
+            oneshot_json_with_token(router, "POST", "/api/payload", "user_token", Some(body))
+                .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["success"], false);
+        let msg = json["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("EVORULE_SERVICE_TOKEN"),
+            "403 错误信息应含配置指引，实际: {msg}"
+        );
+    }
+
+    /// service token 写受保护域 → 放行
+    #[tokio::test]
+    async fn test_b5_protected_domain_allows_service_token_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_authed_router(&state, "user_token", "service_token");
+
+        let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"extracted"}"#;
+
+        let (status, json) =
+            oneshot_json_with_token(router, "POST", "/api/payload", "service_token", Some(body))
+                .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+    }
+
+    /// user token 写非受保护 shared 路径 → 放行（权限差异仅受保护域）
+    #[tokio::test]
+    async fn test_b5_non_protected_shared_path_allows_user_token_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_authed_router(&state, "user_token", "service_token");
+
+        let body = r#"{"path":"shared.default.user.notes","value":"ok"}"#;
+
+        let (status, json) =
+            oneshot_json_with_token(router, "POST", "/api/payload", "user_token", Some(body))
+                .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+    }
+
+    /// 会话 payload 端点：user token 写受保护域 → 403，service token → 200
+    #[tokio::test]
+    async fn test_b5_session_payload_protected_domain_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_authed_router(&state, "user_token", "service_token");
+
+        // 创建会话（user token 即可）
+        let (status, json) =
+            oneshot_json_with_token(router.clone(), "POST", "/api/sessions", "user_token", None)
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        let session_id = json["session_id"].as_u64().unwrap();
+
+        // user token 写受保护域 → 403
+        let uri = format!("/api/sessions/{session_id}/payload");
+        let body = r#"{"path":"shared.default.stable.system.pipeline","value":"forged"}"#;
+        let (status, json) =
+            oneshot_json_with_token(router.clone(), "POST", &uri, "user_token", Some(body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["success"], false);
+
+        // service token 写受保护域 → 放行
+        let (status, json) =
+            oneshot_json_with_token(router, "POST", &uri, "service_token", Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+    }
+
+    /// 认证禁用（loopback 开发模式）时不注入身份 → 受保护域按放行处理（语义不变）
+    #[tokio::test]
+    async fn test_b5_dev_mode_allows_protected_domain_oneshot() {
+        let (state, _) = make_test_state();
+
+        let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"dev"}"#;
+
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "POST", "/api/payload", Some(body)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
     }
 }

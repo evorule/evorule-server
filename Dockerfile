@@ -17,7 +17,7 @@
 # 由 scripts/build-docker.ps1 或 CI workflow 调用。
 #
 # 环境变量覆盖（优先级高于 CLI 默认值）:
-#   EVORULE_ADDR, EVORULE_AUTH_TOKEN, EVORULE_LOG_LEVEL
+#   EVORULE_ADDR, EVORULE_AUTH_TOKEN, EVORULE_SERVICE_TOKEN, EVORULE_LOG_LEVEL
 
 # ===== 阶段 1: 构建 =====
 FROM rust:1.92-slim AS builder

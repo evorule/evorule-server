@@ -113,6 +113,9 @@ struct FileServerConfig {
 #[derive(Debug, Default, serde::Deserialize)]
 struct FileAuthConfig {
     token: Option<String>,
+    /// B5-server：受信服务管道 token（service 身份，可写受保护域）
+    #[serde(default)]
+    service_token: Option<String>,
     /// CORS 允许的 Origin 列表（空列表 = 仅允许同源）
     /// 例：["https://app.example.com", "http://localhost:5173"]
     allowed_origins: Option<Vec<String>>,
@@ -210,6 +213,15 @@ struct Cli {
     /// 生产环境优先使用 `EVORULE_AUTH_TOKEN` 环境变量或 JSON 配置文件。
     #[arg(long, env = "EVORULE_AUTH_TOKEN")]
     auth_token: Option<String>,
+
+    /// B5-server：受信服务管道 token（service 身份，可写受保护域）
+    ///
+    /// 与 `EVORULE_AUTH_TOKEN` 独立的 env/CLI（凭据分层）：user token 禁止写
+    /// `shared.*.stable.llm.*` / `stable.system.*` 受保护域，service token 可写。
+    /// 仅在认证启用（设置了 auth_token）时生效；认证禁用（loopback 开发模式）
+    /// 时服务 token 被忽略且不注入身份。
+    #[arg(long, env = "EVORULE_SERVICE_TOKEN")]
+    service_token: Option<String>,
 
     /// 宪法文件路径（core_eval.json，不可热重载）
     #[arg(long, env = "EVORULE_CORE_EVAL")]
@@ -328,6 +340,8 @@ struct Cli {
 struct ResolvedConfig {
     addr: String,
     auth_token: Option<String>,
+    /// B5-server：受信服务管道 token（仅认证启用时生效）
+    service_token: Option<String>,
     core_eval: PathBuf,
     rules_dir: PathBuf,
     db_path: PathBuf,
@@ -386,6 +400,7 @@ impl ResolvedConfig {
                 .or(file.server.addr)
                 .unwrap_or_else(|| "0.0.0.0:18080".to_string()),
             auth_token: cli.auth_token.or(file.auth.token),
+            service_token: cli.service_token.or(file.auth.service_token),
             core_eval: cli
                 .core_eval
                 .or(file.paths.core_eval)
@@ -1083,8 +1098,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8. 构建服务器（带认证）
     let step_start = Instant::now();
     let auth = match &cfg.auth_token {
-        Some(token) => AuthConfig::new(vec![token.clone()], true),
+        Some(token) => {
+            // B5-server：service token 仅在认证启用时生效（disabled 模式无身份区分）
+            AuthConfig::new(vec![token.clone()], true)
+                .with_service_tokens(cfg.service_token.iter().cloned().collect())
+        }
         None => {
+            if cfg.service_token.is_some() {
+                warn!("EVORULE_SERVICE_TOKEN 已设置但认证未启用（无 auth_token，loopback 开发模式），服务 token 被忽略");
+            }
             // B3 修复（fail-closed 安全策略）：无 token + 非 loopback 地址时拒绝启动。
             //
             // 旧实现仅 warn 不阻止启动，公网部署时若用户漏看日志，所有 session
@@ -1547,6 +1569,7 @@ mod tests {
             },
             auth: FileAuthConfig {
                 token: Some("filetoken".to_string()),
+                service_token: None,
                 allowed_origins: None,
             },
             ..Default::default()
@@ -1555,6 +1578,32 @@ mod tests {
         assert_eq!(cfg.addr, "0.0.0.0:7777", "file 应填充 CLI 缺失的 addr");
         assert_eq!(cfg.max_rounds, 300);
         assert_eq!(cfg.auth_token.as_deref(), Some("filetoken"));
+    }
+
+    #[test]
+    fn test_resolve_service_token() {
+        // CLI > env > file；此处验证 CLI 与 file 两条来源
+        let cli = Cli::parse_from([
+            "evorule-server",
+            "--auth-token",
+            "usertoken",
+            "--service-token",
+            "svctoken",
+        ]);
+        let cfg = ResolvedConfig::resolve(cli, FileConfig::default());
+        assert_eq!(cfg.auth_token.as_deref(), Some("usertoken"));
+        assert_eq!(cfg.service_token.as_deref(), Some("svctoken"));
+
+        let file = FileConfig {
+            auth: FileAuthConfig {
+                token: Some("fileuser".to_string()),
+                service_token: Some("filesvc".to_string()),
+                allowed_origins: None,
+            },
+            ..Default::default()
+        };
+        let cfg = ResolvedConfig::resolve(minimal_cli(), file);
+        assert_eq!(cfg.service_token.as_deref(), Some("filesvc"));
     }
 
     #[test]

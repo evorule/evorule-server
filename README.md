@@ -202,6 +202,7 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `EVORULE_CONFIG`          | `--config`          | (无)                         | JSON 配置文件路径                       |
 | `EVORULE_ADDR`            | `--addr`            | `0.0.0.0:18080`              | 监听地址                                |
 | `EVORULE_AUTH_TOKEN`      | `--auth-token`      | (空)                         | Bearer token（留空 = 关闭认证，仅 dev） |
+| `EVORULE_SERVICE_TOKEN`   | `--service-token`   | (空)                         | 受信服务管道 token（service 身份，可写受保护域 `stable.llm`/`stable.system`；仅认证启用时生效，B5） |
 | `EVORULE_CORE_EVAL`       | `--core-eval`       | `./resources/core_eval.json` | 宪法文件路径（不可热重载）              |
 | `EVORULE_RULES_DIR`       | `--rules-dir`       | `./rules`                    | 业务规则目录（热重载监听）              |
 | `EVORULE_DB_PATH`         | `--db-path`         | `./data/evorule.db`          | SQLite 数据库路径                       |

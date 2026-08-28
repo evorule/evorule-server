@@ -74,6 +74,7 @@ evorule-server --config evorule.json --log-format json
 |------|----------|--------|------|
 | `--addr` | `EVORULE_ADDR` | `0.0.0.0:18080` | 监听地址 |
 | `--auth-token` | `EVORULE_AUTH_TOKEN` | (空) | Bearer token（留空=关闭认证，仅 dev） |
+| `--service-token` | `EVORULE_SERVICE_TOKEN` | (空) | 受信服务管道 token（service 身份，可写受保护域 `stable.llm`/`stable.system`；仅认证启用时生效，B5） |
 | `--config` | `EVORULE_CONFIG` | (无) | JSON 配置文件路径 |
 | `--log-format` | `EVORULE_LOG_FORMAT` | `text` | 日志格式：text / json |
 | `--rules-dir` | `EVORULE_RULES_DIR` | `./rules` | 规则目录（hot_reload 监控） |
