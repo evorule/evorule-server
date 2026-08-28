@@ -979,6 +979,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 创建跨会话共享事实存储
     // 当 wal_dir 配置时，从 WAL + metadata 恢复历史共享事实；否则纯内存模式
+    // AUDIT-A1 同款修复（2026-08-27）：恢复失败时拒绝启动而非静默降级——
+    // 共享事实是跨会话审计链的一部分，残缺状态下继续服务会破坏可回放性承诺。
     let shared_facts = if let Some(wal_dir) = &cfg.wal_dir {
         let shared_wal = wal_dir.join("shared_facts.wal");
         let shared_meta = wal_dir.join("shared_facts_meta.json");
@@ -992,8 +994,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 log
             }
             Err(e) => {
-                warn!("共享事实 WAL 恢复失败，退化为纯内存模式：{}", e);
-                SharedFactsLog::new()
+                error!(
+                    "共享事实 WAL 恢复失败，拒绝启动（请检查磁盘/权限或备份后清理 wal_dir）：{}",
+                    e
+                );
+                return Err(format!("shared facts WAL recovery failed: {e}").into());
             }
         }
     } else {
