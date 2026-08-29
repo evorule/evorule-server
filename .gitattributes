@@ -1,0 +1,5 @@
+# EvoRule .gitattributes
+# 控制 git 换行符和文件类型处理
+
+# TCB 宪法双仓同步:钉死 LF,保证 resources/core_eval.json 与 evorule 仓 evorule-tcb/ 工作区字节一致
+resources/core_eval.json text eol=lf
