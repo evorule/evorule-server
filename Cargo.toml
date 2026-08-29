@@ -30,6 +30,10 @@ rust-version = "1.74"
 evorule-governance = { path = "../evorule/evorule-governance" }
 evorule-reactor = { path = "../evorule/evorule-reactor" }
 evorule-tcb = { path = "../evorule/evorule-tcb" }
+# SSOT 对称化(审计⑤ S2)：bundle 校验逻辑与治理侧(evorule-rule)同吃本地源,
+# 消除"治理侧本地改动未发版 → 两侧校验口径分裂"的通道
+evorule-bundle = { path = "../evorule-bundle" }
+evorule-hash = { path = "../evorule-hash" }
 
 
 [workspace.lints.rust]
