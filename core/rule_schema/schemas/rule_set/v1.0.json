@@ -3,7 +3,7 @@
   "$id": "https://evorule.org/schemas/rule_set/v1.0.json",
   "title": "evorule rule_set v1.0（固化版）",
   "description": "业务规则集合 / TCB 规则集合。v1.0 相对 v0.9 的根本变化：body 由 rules[]+when/then 伪语言改为引擎原生 transform[]（元指令层，与 core_eval.json 同构，zero-translation）。双层语言见 records/75：branch.on_true/on_false 装元指令层 transform_rule；push.instructions 装指令层业务指令。domain/instruction/transform_rule 定义引用 _shared/v1.0.json（SSOT，records/70）。本 schema 是 rule_translate 的输出契约（records/73）与 server 侧规则拦截门禁基准（records/77）。",
-  "x_legal_authority_notice": "本 schema 由 EvoRule 团队维护,采用 AGPL-3.0-or-later + 商业双模式;通过本 schema 校验或创作的 system JSON 内容 IP 归作者所有,evorule 不主张。详见 ../../LEGAL_NOTES.md 与 ../../docs/adr/scope-split-ip-model.md",
+  "x_legal_authority_notice": "本 schema 由 EvoRule 团队维护,以 CC0 1.0 公共领域奉献(见 schemas/LICENSE-SCHEMAS.md);通过本 schema 校验或创作的 system JSON 内容 IP 归作者所有,evorule 不主张。详见 ../../LEGAL_NOTES.md 与 ../../docs/adr/scope-split-ip-model.md",
   "allOf": [
     { "$ref": "../_meta/v1.0.json" },
     {
