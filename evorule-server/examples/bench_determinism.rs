@@ -95,7 +95,7 @@ async fn main() {
         let payload = state["payload"].clone();
         // Hash the payload (excluding the version field which changes)
         let payload_str = serde_json::to_string(&payload).expect("serialize payload");
-        let payload_hash = blake3::hash(payload_str.as_bytes()).to_hex().to_string();
+        let payload_hash = evorule_hash::digest(payload_str.as_bytes());
 
         if iter == 0 {
             first_payload_hash = payload_hash.clone();

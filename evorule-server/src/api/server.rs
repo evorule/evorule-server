@@ -2151,6 +2151,9 @@ pub struct SessionMetadataResponse {
     /// 初始内容哈希（基于父会话最终状态或初始 payload 计算）
     pub initial_content_hash: Option<String>,
 
+    /// 初始内容哈希口径（审计⑥ C2）: "audit_chain_compact"（当前,与审计链同源）或 "tcb_display"（历史兼容）
+    pub content_hash_scheme: Option<&'static str>,
+
     /// 距最近活动的空闲秒数（单调时钟，便于观察活跃度）
     pub idle_secs: f64,
 
@@ -3179,6 +3182,13 @@ async fn session_metadata(
         parent_session_id: session.parent_session_id(),
 
         initial_content_hash: session.initial_content_hash().map(String::from),
+
+        content_hash_scheme: match session.content_hash_scheme() {
+            evorule_governance::session::ContentHashScheme::AuditChainCompact => {
+                Some("audit_chain_compact")
+            }
+            evorule_governance::session::ContentHashScheme::TcbDisplay => Some("tcb_display"),
+        },
 
         idle_secs: session.last_activity().elapsed().as_secs_f64(),
 

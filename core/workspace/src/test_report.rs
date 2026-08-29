@@ -256,10 +256,9 @@ impl TestReportBuilder {
             generated_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        // BLAKE3 签名 (防篡改)
+        // BLAKE3 签名 (防篡改) — 审计⑥ C3: 哈希实现统一走 evorule-hash (输入字节不变)
         let report_json = serde_json::to_string(&report).unwrap_or_default();
-        let hash = blake3::hash(report_json.as_bytes());
-        report.report_hash = hash.to_hex().to_string();
+        report.report_hash = evorule_hash::digest(report_json.as_bytes());
 
         report
     }

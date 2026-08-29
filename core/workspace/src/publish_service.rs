@@ -468,14 +468,15 @@ impl PublishService {
 /// - sandbox 按 rule_version_id + content_hash 计算 (沙盒阶段规则版本固定)
 /// - publish 按规则内容 JSON 计算 (发布阶段规则内容固定)
 fn compute_publish_ruleset_hash(rules: &[Value]) -> String {
-    let mut hasher = blake3::Hasher::new();
+    // 审计⑥ C3: 哈希实现统一走 evorule-hash; 输入字节构造保持不变 (逐条 JSON 串 + '\n')
+    let mut buf: Vec<u8> = Vec::new();
     for rule in rules {
         // 使用规范化的 JSON 字符串参与哈希
         let rule_str = serde_json::to_string(rule).unwrap_or_default();
-        hasher.update(rule_str.as_bytes());
-        hasher.update(b"\n");
+        buf.extend_from_slice(rule_str.as_bytes());
+        buf.extend_from_slice(b"\n");
     }
-    hasher.finalize().to_hex().to_string()
+    evorule_hash::digest(&buf)
 }
 
 #[cfg(test)]

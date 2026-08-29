@@ -539,14 +539,15 @@ fn compute_ruleset_hash(versions: &[crate::models::RuleVersionRecord]) -> String
     let mut sorted: Vec<&crate::models::RuleVersionRecord> = versions.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
 
-    let mut hasher = blake3::Hasher::new();
+    // 审计⑥ C3: 哈希实现统一走 evorule-hash; 输入字节构造保持不变 (id + '\n' + content_hash + '\n')
+    let mut buf: Vec<u8> = Vec::new();
     for rv in &sorted {
-        hasher.update(rv.id.as_bytes());
-        hasher.update(b"\n");
-        hasher.update(rv.content_hash.as_bytes());
-        hasher.update(b"\n");
+        buf.extend_from_slice(rv.id.as_bytes());
+        buf.extend_from_slice(b"\n");
+        buf.extend_from_slice(rv.content_hash.as_bytes());
+        buf.extend_from_slice(b"\n");
     }
-    hasher.finalize().to_hex().to_string()
+    evorule_hash::digest(&buf)
 }
 
 #[cfg(test)]

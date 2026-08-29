@@ -39,8 +39,8 @@ impl RuleMetaService {
     /// - 版本去重 (相同内容哈希相同)
     /// - 审计追踪 (内容不可篡改)
     fn compute_content_hash(content: &str) -> String {
-        let hash = blake3::hash(content.as_bytes());
-        hash.to_hex().to_string()
+        // 审计⑥ C3: 哈希实现统一走 evorule-hash (输入字节不变)
+        evorule_hash::digest(content.as_bytes())
     }
 
     /// 校验规则内容是否为合法 JSON

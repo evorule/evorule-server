@@ -95,8 +95,8 @@ regex = "1"
 # H6: benchmarks 迁移到应用层后需要的依赖
 # bench_determinism/long_session/throughput 通过 HTTP 调用 evorule-server 进行压测
 reqwest = { version = "0.12", features = ["json"] }
-# bench_determinism 用 blake3 计算 payload hash 对比确定性
-blake3 = "1"
+# bench_determinism 计算 payload hash (审计⑥ C3: 统一走 evorule-hash)
+evorule-hash = "0.1.3"
 # 配置解析测试需要临时文件
 tempfile = "3"
 # handler oneshot 测试需要 ServiceExt::oneshot（util feature）
