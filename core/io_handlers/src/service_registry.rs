@@ -100,12 +100,26 @@ impl ServiceRegistry {
     }
 
     /// 从 JSON 字符串解析（便于测试和内存注入）
+    ///
+    /// C9：解析后先跑 schema 门禁（evorule-rule-schema::validate_service_registry，
+    /// $defs 权威源 = 本文件 ServiceEntry），失败显式报错——防止结构非法的注册表
+    /// 静默失效到运行时才在 call_service 处暴露。之后逐条目 parse 校验语义
+    /// （url scheme 白名单等 schema 无法表达的部分）。
     pub fn load_from_str(json: &str) -> Result<Self, String> {
         let obj: serde_json::Value = serde_json::from_str(json)
             .map_err(|e| format!("parse service_registry json failed: {}", e))?;
         let map = obj
             .as_object()
             .ok_or_else(|| "service_registry 顶层必须是 JSON object".to_string())?;
+
+        // C9: schema 门禁（加载期 fail-fast，与"JSON 解析失败报错防静默失效"同语义）
+        let report = evorule_rule_schema::validate_service_registry(&obj);
+        if !report.valid {
+            return Err(format!(
+                "service_registry 未通过 schema 门禁: {}",
+                report.errors.join("; ")
+            ));
+        }
 
         let mut entries = BTreeMap::new();
         for (name, val) in map {
@@ -439,8 +453,31 @@ mod tests {
 
     #[test]
     fn test_load_entry_missing_url() {
+        // C9: 缺 url 现在由 schema 门禁先行拦截（报错消息为 schema 门禁前缀）
         let err = ServiceRegistry::load_from_str(r#"{"a": {"method":"POST"}}"#).unwrap_err();
-        assert!(err.contains("missing required field 'url'"));
+        assert!(
+            err.contains("schema 门禁"),
+            "缺 url 应由 schema 门禁拦截, got: {err}"
+        );
+    }
+
+    /// C9: schema 门禁拦截结构非法条目（headers 值非字符串 / timeout_ms 负数）——
+    /// 这类错误 parse 层各报一条，schema 层加载期一次性拦截
+    #[test]
+    fn test_load_rejected_by_schema_gate() {
+        let json = r#"{
+            "bad": {"url": "http://x/y", "headers": {"X-Auth": 12345}, "timeout_ms": -1}
+        }"#;
+        let err = ServiceRegistry::load_from_str(json).unwrap_err();
+        assert!(err.contains("schema 门禁"), "结构非法应被门禁拦截, got: {err}");
+    }
+
+    /// C9: 未知字段向前兼容（schema additionalProperties 开放），不得拒绝
+    #[test]
+    fn test_load_unknown_fields_forward_compatible() {
+        let json = r#"{"ok":{"url":"http://good/endpoint","body_template":{"a":1}}}"#;
+        let r = ServiceRegistry::load_from_str(json).unwrap();
+        assert_eq!(r.len(), 1);
     }
 
     #[test]

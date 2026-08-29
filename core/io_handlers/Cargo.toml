@@ -32,6 +32,9 @@ tracing = "0.1"
 # H5: IoHandler trait object-safety
 async-trait = "0.1"
 
+# C9: service_registry.json 加载期 schema 门禁（workspace 内 crate，path 依赖）
+evorule-rule-schema = { path = "../rule_schema" }
+
 [dev-dependencies]
 # 测试用 async runtime（#[tokio::test] 需要 macros + rt）
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

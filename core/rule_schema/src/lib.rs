@@ -110,6 +110,7 @@ struct Validators {
     rule_set: Validator,
     transform_list: Validator,
     instruction: Validator,
+    service_registry: Validator,
 }
 
 // build.rs 已在构建期保证三个 schema 合法且 $id 自洽，故此处的
@@ -158,10 +159,30 @@ fn build_validators() -> Validators {
         .build(&instruction_schema)
         .expect("构建 instruction 校验器失败（build.rs 已保证 schema 合法）");
 
+    // service_registry 门禁（C9）：顶层 object，每个 value $ref _shared 的 service_entry
+    // $defs（权威源 io_handlers/service_registry.rs ServiceEntry）。加载期拦截结构非法条目，
+    // 与 parse_service_entry 的语义校验（scheme 白名单等）形成双层防御。
+    let service_registry_schema: Value = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://evorule.org/schemas/rule_set/_service_registry.json",
+        "title": "service_registry.json 门禁（服务注册表顶层 object）",
+        "type": "object",
+        "additionalProperties": {
+            "$ref": "https://evorule.org/schemas/_shared/v1.0.json#/$defs/service_entry"
+        }
+    });
+    let mut sr_opts = Validator::options();
+    sr_opts.with_draft(Draft::Draft202012);
+    sr_opts.with_retriever(EmbeddedRetriever);
+    let service_registry_v = sr_opts
+        .build(&service_registry_schema)
+        .expect("构建 service_registry 校验器失败（内嵌 schema 静态合法）");
+
     Validators {
         rule_set: rule_set_v,
         transform_list: transform_list_v,
         instruction: instruction_v,
+        service_registry: service_registry_v,
     }
 }
 
@@ -227,6 +248,15 @@ pub fn validate_command_instruction(instr: &Value) -> SchemaReport {
     } else {
         collect_report(&VALIDATORS.instruction, instr, "command_instruction")
     }
+}
+
+/// 校验 service_registry.json 全文（C9：服务注册表加载期 schema 门禁）。
+///
+/// 顶层必须是 JSON object，每个条目按 `_shared` 的 `service_entry` $defs 校验
+/// （url 必填、headers 值必须字符串、timeout_ms 非负整数等；未知字段开放以向前兼容）。
+/// 与 io_handlers `parse_service_entry` 的语义校验（scheme 白名单等）形成双层防御。
+pub fn validate_service_registry(doc: &Value) -> SchemaReport {
+    collect_report(&VALIDATORS.service_registry, doc, "service_registry")
 }
 
 fn collect_report(validator: &Validator, instance: &Value, mode: &'static str) -> SchemaReport {
@@ -489,5 +519,60 @@ mod tests {
         let instr = serde_json::json!({ "type": "set", "params": { "attr": "system.running", "operation": "set", "value": false } });
         let report = validate_command_instruction(&instr);
         assert!(report.valid, "合法 set 指令应通过: {:?}", report.errors);
+    }
+
+    // ===== C9：validate_service_registry（服务注册表加载期门禁）=====
+
+    #[test]
+    fn service_registry_valid_passes() {
+        let doc = serde_json::json!({
+            "echo_svc": {
+                "url": "http://127.0.0.1:5001/echo",
+                "method": "POST",
+                "headers": { "X-Source": "evorule" },
+                "timeout_ms": 5000
+            },
+            "llm_advisor": { "url": "http://127.0.0.1:18081/v1", "version": "1.0.0" }
+        });
+        let report = validate_service_registry(&doc);
+        assert!(report.valid, "合法注册表应通过: {:?}", report.errors);
+    }
+
+    #[test]
+    fn service_registry_missing_url_rejected() {
+        let doc = serde_json::json!({ "bad_svc": { "method": "POST" } });
+        let report = validate_service_registry(&doc);
+        assert!(!report.valid, "缺 url 应被拒");
+    }
+
+    #[test]
+    fn service_registry_bad_headers_and_timeout_rejected() {
+        // headers 值非字符串 + timeout_ms 负数（schema 层拦截，parse 层各报一条）
+        let doc = serde_json::json!({
+            "bad_svc": {
+                "url": "http://127.0.0.1:5001/x",
+                "headers": { "X-Auth": 12345 },
+                "timeout_ms": -1
+            }
+        });
+        let report = validate_service_registry(&doc);
+        assert!(!report.valid, "headers 非字符串值 / timeout_ms 负数应被拒: {:?}", report.errors);
+        assert!(report.errors.len() >= 2);
+    }
+
+    #[test]
+    fn service_registry_non_object_rejected() {
+        let report = validate_service_registry(&serde_json::json!([1, 2]));
+        assert!(!report.valid, "顶层数组应被拒（必须 object）");
+    }
+
+    #[test]
+    fn service_registry_unknown_fields_forward_compatible() {
+        // 未知字段开放（additionalProperties: true）——向前兼容，不得拒绝
+        let doc = serde_json::json!({
+            "svc": { "url": "http://127.0.0.1:5001/x", "body_template": { "a": 1 } }
+        });
+        let report = validate_service_registry(&doc);
+        assert!(report.valid, "未知字段应开放: {:?}", report.errors);
     }
 }
