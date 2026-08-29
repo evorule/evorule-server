@@ -38,6 +38,9 @@ ulid = "1"
 async-trait = "0.1"
 # Schema 门禁（线1 防御层）：rule_translate 输出 / 规则提交前的结构校验
 evorule-rule-schema = { path = "../rule_schema" }
+# 发布链闭环（审计⑥ 批 B C1+C5）：发布审批通过时构造 DatasetBundle + BundleImporter 校验 + 原子落盘
+# （[patch.crates-io] 已指向 ../evorule-bundle 本地源，与治理侧校验口径同源）
+evorule-bundle = "0.2.1"
 # HTTP API (与 evorule-server 保持一致: axum 0.8)
 axum = "0.8"
 # OpenAPI 单一真相源 (P2-1): workspace 端点标注 + 独立 OpenApi 聚合,由 evorule-server 合并

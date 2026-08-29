@@ -999,179 +999,14 @@ impl SessionApi {
     /// 原子落盘：`rules/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
     /// + `bundle_manifest.json`（T3：版本语义/法规基准/哈希/条目→文件映射）。
     ///
-    /// - 同 dataset 再次导入 → 替换旧 bundle 目录（单激活替换语义，T4 细化）；
-    /// - 写入失败 → 清理临时目录，无半成品；
-    /// - rename 失败 → 回滚恢复旧版。
+    /// 审计⑥ 批 B（C5）: 实现下沉至 evorule-workspace（落盘 SSOT，发布链共用一份），
+    /// 此处为薄委托。
     fn land_bundle_atomically(
         &self,
         bundle: &evorule_bundle::DatasetBundle,
         result: &evorule_bundle::ImportResult,
     ) -> Result<(), String> {
-        if bundle.bundle_id.is_empty()
-            || bundle.bundle_id.contains(['/', '\\'])
-            || bundle.bundle_id.contains("..")
-        {
-            return Err(format!(
-                "非法 bundle_id `{}`（拒绝路径穿越）",
-                bundle.bundle_id
-            ));
-        }
-
-        let base = self.rules_dir.join("bundles");
-        let target = base.join(&bundle.bundle_id);
-        let tmp = base.join(format!(".{}.tmp", bundle.bundle_id));
-        let backup = base.join(format!(".{}.bak", bundle.bundle_id));
-
-        // 清理上次残留的临时/备份目录
-        let _ = std::fs::remove_dir_all(&tmp);
-        let _ = std::fs::remove_dir_all(&backup);
-        std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
-
-        // 写入条目（任一失败 → 清理临时目录，不留半成品）
-        let write_result = (|| -> Result<(), String> {
-            for entry in &bundle.entries {
-                if entry.entry_id.is_empty()
-                    || entry.entry_id.contains(['/', '\\'])
-                    || entry.entry_id.contains("..")
-                {
-                    return Err(format!(
-                        "条目 `{}` 含非法路径字符（拒绝写入）",
-                        entry.entry_id
-                    ));
-                }
-                let doc = serde_json::to_string_pretty(&entry.rule_body)
-                    .map_err(|e| format!("序列化条目 `{}` 失败: {e}", entry.entry_id))?;
-                std::fs::write(tmp.join(format!("{}.json", entry.entry_id)), doc)
-                    .map_err(|e| format!("写入条目 `{}` 失败: {e}", entry.entry_id))?;
-            }
-            // T3: 写 manifest（与条目同目录，随原子替换一并落盘）
-            let manifest = crate::api::bundles::BundleManifest {
-                bundle_id: bundle.bundle_id.clone(),
-                dataset_id: result.dataset_id.clone(),
-                source_version: result.source_version.clone(),
-                selection_mode: result.selection_mode,
-                resolved_version: result.resolved_version.clone(),
-                effective_from: bundle
-                    .dataset
-                    .law_ref
-                    .as_ref()
-                    .and_then(|l| l.effective_from.clone()),
-                content_hash: bundle.audit.content_hash.clone(),
-                entry_files: bundle
-                    .entries
-                    .iter()
-                    .map(|e| crate::api::bundles::EntryFileManifest {
-                        entry_id: e.entry_id.clone(),
-                        file: format!("{}.json", e.entry_id),
-                    })
-                    .collect(),
-            };
-            let manifest_json = serde_json::to_string_pretty(&manifest)
-                .map_err(|e| format!("序列化 bundle_manifest.json 失败: {e}"))?;
-            std::fs::write(
-                tmp.join(crate::api::bundles::BUNDLE_MANIFEST_FILE),
-                manifest_json,
-            )
-            .map_err(|e| format!("写入 bundle_manifest.json 失败: {e}"))?;
-            Ok(())
-        })();
-        if let Err(e) = write_result {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Err(e);
-        }
-
-        // T4: 收集同 dataset 的旧 bundle 目录（不同 bundle_id），单激活替换
-        let stale_dirs =
-            Self::find_same_dataset_stale_dirs(&base, &result.dataset_id, &bundle.bundle_id);
-
-        // 原子替换：旧版先移走为备份，新版本 rename 就位后清理备份；任一失败回滚
-        let mut moved: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new(); // (原路径, 备份路径)
-                                                                                   // 1) 同 bundle_id 旧目录
-        if target.exists() {
-            std::fs::rename(&target, &backup).map_err(|e| {
-                let _ = std::fs::remove_dir_all(&tmp);
-                format!("移走旧版 bundle 目录失败: {e}")
-            })?;
-            moved.push((target.clone(), backup.clone()));
-        }
-        // 2) 同 dataset 的其它旧 bundle 目录（单激活替换：仅最新激活）
-        for (i, stale) in stale_dirs.iter().enumerate() {
-            let stale_bak = base.join(format!(".stale.{}.{}", bundle.bundle_id, i));
-            let _ = std::fs::remove_dir_all(&stale_bak);
-            if let Err(e) = std::fs::rename(stale, &stale_bak) {
-                Self::rollback_bundle_moves(&moved);
-                let _ = std::fs::remove_dir_all(&tmp);
-                return Err(format!(
-                    "移走同 dataset 旧 bundle `{}` 失败（已回滚）: {e}",
-                    stale.display()
-                ));
-            }
-            moved.push((stale.clone(), stale_bak));
-        }
-        // 3) 新版本就位
-        if let Err(e) = std::fs::rename(&tmp, &target) {
-            Self::rollback_bundle_moves(&moved);
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Err(format!("原子落盘 rename 失败（已回滚）: {e}"));
-        }
-        // 4) 清理备份（隐藏目录：loader 已跳过 `.` 前缀，残留不污染加载）
-        for (_, bak) in &moved {
-            let _ = std::fs::remove_dir_all(bak);
-        }
-
-        tracing::info!(
-            bundle_id = %bundle.bundle_id,
-            dataset_id = %result.dataset_id,
-            entry_count = bundle.entries.len(),
-            replaced_stale = stale_dirs.len(),
-            "bundle 已原子落盘（单激活替换）"
-        );
-        Ok(())
-    }
-
-    /// 找出 base 下与指定 dataset 相同（且 bundle_id 不同）的旧 bundle 目录（T4 单激活）。
-    ///
-    /// 跳过隐藏目录（临时/备份目录）与不含 manifest 的目录；manifest 读取失败静默跳过。
-    fn find_same_dataset_stale_dirs(
-        base: &std::path::Path,
-        dataset_id: &str,
-        bundle_id: &str,
-    ) -> Vec<std::path::PathBuf> {
-        let Ok(read_dir) = std::fs::read_dir(base) else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for entry in read_dir.flatten() {
-            let p = entry.path();
-            if !p.is_dir() {
-                continue;
-            }
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('.') {
-                continue; // 临时/备份目录
-            }
-            let manifest_path = p.join(crate::api::bundles::BUNDLE_MANIFEST_FILE);
-            if !manifest_path.is_file() {
-                continue;
-            }
-            let Ok(raw) = std::fs::read_to_string(&manifest_path) else {
-                continue;
-            };
-            let Ok(m) = serde_json::from_str::<crate::api::bundles::BundleManifest>(&raw) else {
-                continue;
-            };
-            if m.dataset_id == dataset_id && m.bundle_id != bundle_id {
-                out.push(p);
-            }
-        }
-        out
-    }
-
-    /// 回滚 bundle 落盘的目录移动：按逆序把备份目录还原到原路径
-    fn rollback_bundle_moves(moved: &[(std::path::PathBuf, std::path::PathBuf)]) {
-        for (orig, bak) in moved.iter().rev() {
-            let _ = std::fs::rename(bak, orig);
-        }
+        evorule_workspace::bundle_land::land_bundle_atomically(&self.rules_dir, bundle, result)
     }
 }
 
@@ -8039,6 +7874,8 @@ mod tests {
         let publish_service = Arc::new(evorule_workspace::PublishService::new(
             ws_db.clone(),
             rolling_session,
+            // 审计⑥ 批 B C5: 发布链落盘目标; 此测试不触发发布, 临时目录占位
+            std::env::temp_dir().join("evorule-apitest-rules"),
         ));
 
         let verdict_service = Arc::new(evorule_workspace::VerdictService::new(ws_db.clone()));

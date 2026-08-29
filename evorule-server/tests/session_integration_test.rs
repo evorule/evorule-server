@@ -102,9 +102,13 @@ fn make_workspace_state(sessions: &SessionApi) -> evorule_workspace::api::Worksp
     ));
     let rolling_session =
         evorule_workspace::RollingSessionService::new(ws_db.clone(), session_ops, switcher.clone());
+    // 审计⑥ 批 B C5: PublishService 需 rules_dir (发布链落盘目标); 集成测试不触发发布,
+    // 用 std::env::temp_dir 下的专用目录占位, 不污染仓库工作目录
+    let rules_dir = std::env::temp_dir().join("evorule-itest-rules");
     let publish_service = Arc::new(evorule_workspace::PublishService::new(
         ws_db.clone(),
         rolling_session,
+        rules_dir,
     ));
     // 界面升级 v1.0 阶段 A: 新增 verdict_service (判定契约 + wall-clock 旁路, 第 6 参)
     let verdict_service = Arc::new(evorule_workspace::VerdictService::new(ws_db));

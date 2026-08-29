@@ -1026,6 +1026,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "evorule-bundle",
  "evorule-hash",
  "evorule-rule-schema",
  "rusqlite",

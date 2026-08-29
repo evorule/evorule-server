@@ -1059,9 +1059,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         switcher.clone(),
     );
     // PublishService: 发布队列 + 三级权限 (持有 RollingSessionService)
+    // 审计⑥ 批 B C5: 注入 rules_dir, 发布审批通过时规范 DatasetBundle 原子落盘
     let publish_service = Arc::new(evorule_workspace::PublishService::new(
         workspace_db.clone(),
         rolling_session,
+        cfg.rules_dir.clone(),
     ));
     // VerdictService: 判定契约 + wall-clock 旁路 (界面升级 v1.0 阶段 A.3/A.4)
     let verdict_service = Arc::new(evorule_workspace::VerdictService::new(workspace_db.clone()));

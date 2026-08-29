@@ -8,7 +8,8 @@
 //! # 职责
 //! - 发布队列 CRUD + 三级权限校验 (PublishRole)
 //! - 状态机: Pending → Approved → Published / Rejected / Cancelled
-//! - 审批通过后触发滚动 session 热重载 (委托 RollingSessionService)
+//! - 发布链闭环 (审计⑥ 批 B C1+C5): 审批通过 → 闸门一证据检查 → Schema 门禁 →
+//!   构造 DatasetBundle + BundleImporter 校验 → 原子落盘 rules_dir → 滚动 session 热重载
 //! - 紧急回滚 (用旧规则集快照 + 新版本号, 版本号只增不减)
 //!
 //! # 三级权限 (Q3 决策)
@@ -18,6 +19,7 @@
 //! | DepartmentHead | ✅ (本科室 WS) | ❌ | ❌ |
 //! | Admin | ❌ | ✅ (全院) | ✅ |
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -41,15 +43,22 @@ pub struct PublishService {
     rolling_session: RollingSessionService,
     /// 全局发布锁 (同时只允许一个发布动作执行)
     publish_lock: Arc<Mutex<()>>,
+    /// 业务规则目录 (审计⑥ 批 B C5: 发布产物 DatasetBundle 落盘目标)
+    rules_dir: PathBuf,
 }
 
 impl PublishService {
     /// 创建新服务实例
-    pub fn new(db: Arc<WorkspaceDb>, rolling_session: RollingSessionService) -> Self {
+    ///
+    /// `rules_dir` 为业务规则目录（与 server 启动加载的 rules_dir 同源），
+    /// 发布时规范 DatasetBundle 原子落盘至 `{rules_dir}/bundles/{bundle_id}/`，
+    /// 后续热重载/重启加载自然生效。
+    pub fn new(db: Arc<WorkspaceDb>, rolling_session: RollingSessionService, rules_dir: PathBuf) -> Self {
         Self {
             db,
             rolling_session,
             publish_lock: Arc::new(Mutex::new(())),
+            rules_dir,
         }
     }
 
@@ -332,9 +341,17 @@ impl PublishService {
             .ok_or_else(|| WorkspaceError::not_found("publish_queue", queue_id.to_string()))
     }
 
-    /// 执行发布 (滚动 session 热重载)
+    /// 执行发布 (发布链闭环 + 滚动 session 热重载)
     ///
-    /// 获取全局发布锁 → 调用 RollingSessionService.rolling_swap
+    /// 获取全局发布锁 → 审计⑥ 批 B (C1+C5) 发布链闭环:
+    /// 1. 闸门一证据检查 (T0 决策: 未验证不得默认 Pass)
+    /// 2. 逐条 Schema 门禁 (与外部导入通道 import_bundle 第 7 项同级硬失败)
+    /// 3. 构造规范 DatasetBundle + BundleImporter::validate (6 项硬校验)
+    /// 4. 原子落盘 rules_dir (C5, 补 H4 缺失的写盘)
+    /// 5. 滚动 session 热重载 (rolling_swap 内部 reload 从 rules_dir 重扫,
+    ///    故落盘必须在前, 新会话才真正运行新规则)
+    ///
+    /// 任一步骤失败 → 发布失败 (队列保持 pending 可重试), 杜绝绕过。
     async fn execute_publish(&self, queue_id: i64, published_by: &str) -> WorkspaceResult<i64> {
         let _lock = self.publish_lock.lock().await;
 
@@ -359,7 +376,48 @@ impl PublishService {
             None => None,
         };
 
-        // 执行滚动 session 热重载
+        // ===== 发布链闭环 (审计⑥ 批 B C1+C5) =====
+
+        // 新版本号 (与 rolling_swap 内部计算口径一致: current + 1)
+        let prod_state = self.db.get_production_state()?;
+        let new_version = prod_state.ruleset_version + 1;
+
+        // 1. 闸门一证据检查 (T0 决策: 未跑真实沙箱验证的发布不得默认 Pass)
+        let sandbox_verdict_pass = match item.test_report_sandbox_id {
+            Some(sandbox_id) => self.db.get_sandbox_session(sandbox_id)?.is_some(),
+            None => false,
+        };
+        if !sandbox_verdict_pass {
+            return Err(WorkspaceError::invalid_input(format!(
+                "发布被拒绝（闸门一证据缺失）: 队列项 {queue_id} 未关联已完成的沙盒测试。\
+                 请先在沙盒中验证规则集，提交发布时携带 test_report_sandbox_id 后重试"
+            )));
+        }
+
+        // 2. 逐条 Schema 门禁 (硬失败, 防 loader fail-soft 静默跳过非法规则)
+        for (i, rule) in rules.iter().enumerate() {
+            let report = evorule_rule_schema::validate_rule_input(rule);
+            if !report.valid {
+                return Err(WorkspaceError::invalid_input(format!(
+                    "规则 #{i} 未通过 Schema 门禁（引擎原生结构非法）: {}",
+                    report.errors.join("; ")
+                )));
+            }
+        }
+
+        // 3. 构造规范 DatasetBundle + BundleImporter::validate (6 项硬校验)
+        let bundle = build_publish_bundle(&rules, &item, new_version, published_by);
+        let import_result = evorule_bundle::BundleImporter::validate(&bundle).map_err(|e| {
+            WorkspaceError::internal(format!("发布校验失败（不落盘不生效）: {e}"))
+        })?;
+
+        // 4. 原子落盘 rules_dir (失败则发布失败, 队列保持 pending 可重试)
+        crate::bundle_land::land_bundle_atomically(&self.rules_dir, &bundle, &import_result)
+            .map_err(|e| {
+                WorkspaceError::internal(format!("发布落盘失败（不生效，可重试）: {e}"))
+            })?;
+
+        // 5. 执行滚动 session 热重载 (内部 reload 从 rules_dir 读到刚落盘的 bundle)
         let result = self
             .rolling_session
             .rolling_swap(
@@ -479,6 +537,95 @@ fn compute_publish_ruleset_hash(rules: &[Value]) -> String {
     evorule_hash::digest(&buf)
 }
 
+/// 由发布队列项构造规范 DatasetBundle (审计⑥ 批 B C5)
+///
+/// 构造是确定性的:
+/// - `bundle_id` = `publish-{ruleset_hash 前 16 hex}` — 同规则集同 bundle_id (重试幂等落盘替换);
+/// - `entry_id` = `rule-{序号}-{内容哈希前 12 hex}` — 确定性 + 同 bundle 内防碰撞;
+/// - 版本选择 `pinned` 到 `v1` (Versioning::default 链), 无墙钟依赖;
+/// - `tests.verdict = Pass` 仅在闸门一证据检查通过后才会被调用 (execute_publish 前置);
+/// - `data_dependencies = None` — 治理侧数据依赖声明属 dataset 资产范畴,
+///   MVP 发布链规则集为原生 JSON 规则数组, 无服务依赖声明 (符号三方一致校验自然通过)。
+///
+/// 全包哈希在构造末尾计算 (`compute_content_hash`), 保证 BundleImporter 防篡改校验通过。
+fn build_publish_bundle(
+    rules: &[Value],
+    item: &PublishQueueItem,
+    new_version: i64,
+    published_by: &str,
+) -> evorule_bundle::DatasetBundle {
+    use evorule_bundle::{
+        BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, Provenance, VersionSelection,
+        VersionSelectionMode, Versioning, BUNDLE_SCHEMA_VERSION,
+    };
+
+    let hash_prefix = item.ruleset_hash.get(..16).unwrap_or(&item.ruleset_hash);
+    let bundle_id = format!("publish-{hash_prefix}");
+
+    let entries: Vec<BundleEntry> = rules
+        .iter()
+        .enumerate()
+        .map(|(i, rule)| {
+            let rule_str = serde_json::to_string(rule).unwrap_or_default();
+            let content_hash = evorule_hash::digest(rule_str.as_bytes());
+            let hash_prefix = content_hash.get(..12).unwrap_or(&content_hash);
+            BundleEntry {
+                entry_id: format!("rule-{i:02}-{hash_prefix}"),
+                rule_body: rule.clone(),
+                provenance: Provenance {
+                    source: format!("publish_queue#{}", item.id),
+                    clause: None,
+                    document_id: None,
+                    effective_from: None,
+                    effective_to: None,
+                    last_verified: None,
+                    verified_by: Some(published_by.to_string()),
+                },
+                domain: "general".to_string(),
+                tags: Vec::new(),
+                dependencies: Vec::new(),
+            }
+        })
+        .collect();
+
+    let mut bundle = evorule_bundle::DatasetBundle {
+        bundle_schema_version: BUNDLE_SCHEMA_VERSION.to_string(),
+        bundle_id,
+        dataset: BundleDatasetMeta {
+            dataset_id: item.workspace_id.clone(),
+            name: format!("publish:{}:{}", item.workspace_id, item.id),
+            tenant_id: "local".to_string(),
+            instance_id: "evorule-server".to_string(),
+            versioning: Versioning::default(),
+            version_selection: Some(VersionSelection {
+                mode: VersionSelectionMode::Pinned,
+                pinned_version: Some("v1".to_string()),
+                pinned_include_patch: None,
+            }),
+            law_ref: None,
+            view_of: None,
+        },
+        entries,
+        data_dependencies: None,
+        tests: BundleTests {
+            subset: Vec::new(),
+            fixtures: Vec::new(),
+            verdict: evorule_bundle::TestVerdict::Pass,
+        },
+        audit: BundleAudit {
+            // exported_at 为管理元数据 (墙钟旁路): 参与 bundle 自身防篡改哈希,
+            // 但不渗入 fact / 审计验证链 (与 bundle_imports 溯源同口径)
+            exported_at: chrono::Utc::now().to_rfc3339(),
+            exported_by: published_by.to_string(),
+            source_version: format!("v{new_version}"),
+            content_hash: String::new(),
+            hash_algo: "blake3".to_string(),
+        },
+    };
+    bundle.audit.content_hash = bundle.compute_content_hash();
+    bundle
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -565,20 +712,25 @@ mod tests {
 
     /// 构建测试用 PublishService + 依赖
     ///
-    /// 返回 `Arc<MockSessionOps>` 句柄, 测试可注入 reload_rules 失败以模拟发布失败。
+    /// 返回 `Arc<MockSessionOps>` 句柄 (测试可注入 reload_rules 失败以模拟发布失败)
+    /// 与临时 rules_dir (TempDir guard, 供发布链落盘断言)。
     async fn make_services() -> (
         PublishService,
         Arc<WorkspaceDb>,
         Arc<RuleMetaServiceHandle>,
         String,
         Arc<MockSessionOps>,
+        tempfile::TempDir,
     ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
         let db = Arc::new(WorkspaceDb::in_memory().unwrap());
         let ops = Arc::new(MockSessionOps::new(1000));
         let dyn_ops: Arc<dyn SessionOps> = ops.clone();
         let switcher = SessionSwitchedBroadcaster::new();
         let rolling = RollingSessionService::new(db.clone(), dyn_ops.clone(), switcher);
-        let publish_svc = PublishService::new(db.clone(), rolling);
+        let publish_svc = PublishService::new(db.clone(), rolling, rules_dir);
         let ws_svc = Arc::new(WorkspaceService::new(db.clone(), dyn_ops));
         // 初始化 production_state
         db.update_production_state(100, 0, "init_hash", "system")
@@ -596,7 +748,17 @@ mod tests {
         let rule_svc = Arc::new(RuleMetaServiceHandle {
             inner: Arc::new(RuleMetaService::new(db.clone())),
         });
-        (publish_svc, db, rule_svc, ws_id, ops)
+        (publish_svc, db, rule_svc, ws_id, ops, tmp)
+    }
+
+    /// 测试辅助: 创建已关闭 (closed) 的沙盒会话, 提供闸门一证据
+    fn make_sandbox_evidence(db: &WorkspaceDb, ws_id: &str) -> i64 {
+        let sid = db
+            .insert_sandbox_session(None, ws_id, 100, None, 1, "head-1")
+            .unwrap();
+        db.close_sandbox_session(sid, "./data/test_reports/report.json")
+            .unwrap();
+        sid
     }
 
     /// 测试辅助: 包装 RuleMetaService 以便共享
@@ -611,12 +773,15 @@ mod tests {
         ws_id: &str,
         name: &str,
     ) -> String {
+        // 合法元指令 (set): 发布链 Schema 门禁 (审计⑥ 批 B C1) 会拦截非法结构,
+        // 测试规则必须通过 evorule_rule_schema::validate_rule_input
+        let content = r#"{"transform":[{"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}}]}"#;
         let rule = rule_svc
             .create_rule(
                 ws_id,
                 CreateRuleRequest {
                     name: name.to_string(),
-                    content: r#"{"transform":[{"type":"noop"}]}"#.to_string(),
+                    content: content.to_string(),
                     created_by: "head-1".to_string(),
                     description: None,
                 },
@@ -638,7 +803,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_publish_permission_denied_for_doctor() {
-        let (publish_svc, _db, _rule_svc, ws_id, _ops) = make_services().await;
+        let (publish_svc, _db, _rule_svc, ws_id, _ops, _tmp) = make_services().await;
 
         let result = publish_svc
             .submit_publish(
@@ -657,7 +822,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_publish_by_department_head() {
-        let (publish_svc, db, rule_svc_handle, ws_id, _ops) = make_services().await;
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
 
         let item = publish_svc
@@ -678,21 +843,22 @@ mod tests {
         assert_eq!(item.status, PublishStatus::Pending);
         assert_eq!(item.submitted_by, "head-1");
         assert!(!item.ruleset_hash.is_empty());
-        assert!(item.final_candidate_rules.contains("noop"));
+        assert!(item.final_candidate_rules.contains("payload.result"));
     }
 
     #[tokio::test]
     async fn test_review_publish_full_flow() {
-        let (publish_svc, db, rule_svc_handle, ws_id, _ops) = make_services().await;
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, tmp) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
 
-        // 科室主任提交
+        // 科室主任提交 (携带闸门一证据)
         let item = publish_svc
             .submit_publish(
                 SubmitPublishRequest {
                     workspace_id: ws_id.clone(),
                     rule_version_ids: vec![rv_id],
-                    test_report_sandbox_id: None,
+                    test_report_sandbox_id: Some(sandbox_id),
                     description: None,
                 },
                 "head-1",
@@ -728,11 +894,45 @@ mod tests {
         let audit = db.get_production_audit_by_version(1).unwrap().unwrap();
         assert_eq!(audit.event_type, "ruleset_published");
         assert!(audit.ruleset_snapshot.is_some());
+
+        // 审计⑥ 批 B C5: 发布链闭环 — DatasetBundle 已落盘 rules_dir
+        let bundles_dir = tmp.path().join("rules/bundles");
+        let entries = std::fs::read_dir(&bundles_dir).unwrap().count();
+        assert_eq!(entries, 1, "应恰好落盘一个 bundle 目录");
+        let bundle_dir = std::fs::read_dir(&bundles_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(
+            bundle_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("publish-"))
+                .unwrap_or(false),
+            "bundle_id 应为 publish-{{hash}} 形式: {:?}",
+            bundle_dir
+        );
+        // manifest 落盘且 dataset_id = workspace_id
+        let manifest_raw =
+            std::fs::read_to_string(bundle_dir.join(evorule_bundle::BUNDLE_MANIFEST_FILE))
+                .unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
+        assert_eq!(manifest["dataset_id"], ws_id);
+        assert_eq!(manifest["source_version"], "v1");
+        // 规则条目落盘 (rule_body 原样零转译)
+        let rule_files: Vec<_> = std::fs::read_dir(&bundle_dir)
+            .unwrap()
+            .filter_map(|e| e.unwrap().file_name().into_string().ok())
+            .filter(|n| n.ends_with(".json") && n != evorule_bundle::BUNDLE_MANIFEST_FILE)
+            .collect();
+        assert_eq!(rule_files.len(), 1, "应落盘恰好一个规则条目文件");
     }
 
     #[tokio::test]
     async fn test_review_publish_rejected() {
-        let (publish_svc, _db, rule_svc_handle, ws_id, _ops) = make_services().await;
+        let (publish_svc, _db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-1").await;
 
         let item = publish_svc
@@ -768,7 +968,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_review_permission_denied_for_head() {
-        let (publish_svc, _db, _rule_svc, _ws_id, _ops) = make_services().await;
+        let (publish_svc, _db, _rule_svc, _ws_id, _ops, _tmp) = make_services().await;
 
         // 科室主任尝试审批 → Forbidden
         let result = publish_svc
@@ -787,8 +987,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_emergency_rollback_version_monotonic() {
-        let (publish_svc, db, rule_svc_handle, ws_id, _ops) = make_services().await;
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
 
         // v1: 发布
         let item = publish_svc
@@ -796,7 +997,7 @@ mod tests {
                 SubmitPublishRequest {
                     workspace_id: ws_id.clone(),
                     rule_version_ids: vec![rv_id.clone()],
-                    test_report_sandbox_id: None,
+                    test_report_sandbox_id: Some(sandbox_id),
                     description: None,
                 },
                 "head-1",
@@ -823,7 +1024,7 @@ mod tests {
                 SubmitPublishRequest {
                     workspace_id: ws_id.clone(),
                     rule_version_ids: vec![rv_id],
-                    test_report_sandbox_id: None,
+                    test_report_sandbox_id: Some(sandbox_id),
                     description: None,
                 },
                 "head-1",
@@ -867,7 +1068,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rollback_permission_denied_for_head() {
-        let (publish_svc, _db, _rule_svc, _ws_id, _ops) = make_services().await;
+        let (publish_svc, _db, _rule_svc, _ws_id, _ops, _tmp) = make_services().await;
 
         let result = publish_svc
             .emergency_rollback(
@@ -886,15 +1087,16 @@ mod tests {
     async fn test_review_publish_publish_failure_keeps_queue_pending() {
         // 前置缺陷修复回归: 发布失败时队列项必须保持 pending (可重试),
         // 不残留孤儿 approved 状态 (原实现先置 approved 再发布, 失败永久卡死)。
-        let (publish_svc, db, rule_svc_handle, ws_id, ops) = make_services().await;
+        let (publish_svc, db, rule_svc_handle, ws_id, ops, _tmp) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
 
         let item = publish_svc
             .submit_publish(
                 SubmitPublishRequest {
                     workspace_id: ws_id.clone(),
                     rule_version_ids: vec![rv_id],
-                    test_report_sandbox_id: None,
+                    test_report_sandbox_id: Some(sandbox_id),
                     description: None,
                 },
                 "head-1",
@@ -950,7 +1152,7 @@ mod tests {
     #[tokio::test]
     async fn test_submit_publish_rejects_stale_version() {
         // 前置缺陷修复回归: 只能发布规则的当前版本, 禁止发布被覆盖的旧版本 (Superseded)。
-        let (publish_svc, _db, rule_svc_handle, ws_id, _ops) = make_services().await;
+        let (publish_svc, _db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let rule_svc = &rule_svc_handle.inner;
 
         // 建规则 (Draft, v1 为当前版本)
@@ -959,7 +1161,7 @@ mod tests {
                 &ws_id,
                 CreateRuleRequest {
                     name: "rule-stale".to_string(),
-                    content: r#"{"transform":[{"type":"noop"}]}"#.to_string(),
+                    content: r#"{"transform":[{"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}}]}"#.to_string(),
                     created_by: "head-1".to_string(),
                     description: None,
                 },
@@ -974,7 +1176,7 @@ mod tests {
                 &ws_id,
                 &rule.id,
                 UpdateRuleContentRequest {
-                    content: r#"{"transform":[{"type":"noop"},{"type":"noop"}]}"#.to_string(),
+                    content: r#"{"transform":[{"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}},{"type":"set","params":{"attr":"payload.extra","operation":"set","value":1}}]}"#.to_string(),
                     updated_by: "head-1".to_string(),
                 },
             )
@@ -1021,6 +1223,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(item.status, PublishStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_publish_requires_sandbox_evidence() {
+        // 审计⑥ 批 B C1: 闸门一证据检查 (T0 决策: 未验证不得默认 Pass) —
+        // 未关联沙盒测试的发布必须被拒绝, 不落盘不生效, 队列保持 pending 可重试。
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+
+        // 提交时不携带 test_report_sandbox_id
+        let item = publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id.clone(),
+                    rule_version_ids: vec![rv_id],
+                    test_report_sandbox_id: None,
+                    description: None,
+                },
+                "head-1",
+                &PublishRole::DepartmentHead,
+            )
+            .await
+            .unwrap();
+
+        let result = publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: None,
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await;
+        assert!(matches!(result, Err(WorkspaceError::InvalidInput(msg)) if msg.contains("闸门一")));
+
+        // 队列保持 pending (补齐证据后可重试)
+        let after = db.get_publish_queue_item(item.id).unwrap().unwrap();
+        assert_eq!(after.status, PublishStatus::Pending);
+
+        // production_state 未改动, rules_dir 无落盘 (发布未生效)
+        let state = db.get_production_state().unwrap();
+        assert_eq!(state.ruleset_version, 0);
+        assert!(!tmp.path().join("rules/bundles").exists());
     }
 
     #[test]

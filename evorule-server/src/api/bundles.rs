@@ -30,30 +30,10 @@ pub struct ImportReq {
 /// 记录单版本快照的运行配置元数据：版本语义（source_version/selection_mode/
 /// resolved_version）+ 法规生效基准（law_ref.effective_from）+ 防篡改哈希 + 条目→文件映射。
 /// 仅供溯源/运行配置读取，**不参与** loader 加载路径（loader 递归扫描条目 .json 原样加载）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BundleManifest {
-    pub bundle_id: String,
-    pub dataset_id: String,
-    pub source_version: String,
-    pub selection_mode: VersionSelectionMode,
-    /// pinned 已解析版本；auto 运行时按事件日期解析（None）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_version: Option<String>,
-    /// law_ref.effective_from 基准（auto 模式的运行配置元数据，T4 细化）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_from: Option<String>,
-    /// 全包防篡改哈希（blake3）
-    pub content_hash: String,
-    /// 条目 → 落盘文件映射（`{entry_id}.json`）
-    pub entry_files: Vec<EntryFileManifest>,
-}
-
-/// manifest 中的单条目文件映射
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EntryFileManifest {
-    pub entry_id: String,
-    pub file: String,
-}
+///
+/// 审计⑥ 批 B（C5）: 类型下沉至 evorule-workspace（落盘 SSOT），
+/// 发布链与外部导入通道共用一份落盘实现，此处 re-export 保持路径兼容。
+pub use evorule_workspace::bundle_land::{BundleManifest, EntryFileManifest};
 
 /// loader 扫描时排除的 manifest 文件名（约定 SSOT 在 evorule-bundle）
 pub use evorule_bundle::BUNDLE_MANIFEST_FILE;
