@@ -8849,4 +8849,336 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["success"], true);
     }
+
+    // ====================================================================
+    // 审计⑥ C14：HTTP 层端到端 —— bundles/import 校验失败即 400 + 发布队列全流程
+    // ====================================================================
+
+    /// 同 make_test_state，但 SessionApi 与 PublishService 共享同一 rules_dir。
+    ///
+    /// 发布队列 e2e 用：审批通过 → bundle 落盘 rules_dir → GET /api/bundles/active
+    /// （扫描 {rules_dir}/bundles manifest）即可观测发布链闭环，无需窥探文件系统。
+    /// 返回 ws_db 供测试引导 production session（见 test_publish_queue_full_flow_oneshot
+    /// 头注：沙盒 fork 依赖已存在的生产会话）。
+    fn make_publish_e2e_state(
+        rules_dir: std::path::PathBuf,
+    ) -> (AppState, Arc<evorule_workspace::WorkspaceDb>) {
+        let mut instr = std::collections::BTreeMap::new();
+        instr.insert("type".to_string(), JsonValue::string("noop"));
+        let core_eval = vec![JsonValue::Object(instr)];
+        let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
+        let (tx, _rx, _event_tx, _handle, facts_log) = reactor.spawn();
+        let auditor = Auditor::new(facts_log.clone());
+        let governance = GovernanceApi::new(tx, facts_log, auditor);
+        let sessions = SessionApi::new_with_full_config(
+            core_eval,
+            100,
+            None,
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            // TCB 宪法路径：相对仓库根定位（测试 CWD 为 crate 目录，
+            // "./resources/core_eval.json" 解析不到，滚动热重载 reload_from_disk 必读该文件）
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json"),
+            rules_dir.clone(),
+        );
+        let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
+        let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
+        let shared_facts = SharedFactsLog::new();
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(sessions.clone());
+        let ws_service = Arc::new(evorule_workspace::WorkspaceService::new(
+            ws_db.clone(),
+            session_ops.clone(),
+        ));
+        let rule_meta_service = Arc::new(evorule_workspace::RuleMetaService::new(ws_db.clone()));
+        let switcher = evorule_workspace::SessionSwitchedBroadcaster::new();
+        let sandbox_service = Arc::new(evorule_workspace::SandboxService::new(
+            ws_db.clone(),
+            session_ops.clone(),
+        ));
+        let rolling_session = evorule_workspace::RollingSessionService::new(
+            ws_db.clone(),
+            session_ops,
+            switcher.clone(),
+        );
+        let publish_service = Arc::new(evorule_workspace::PublishService::new(
+            ws_db.clone(),
+            rolling_session,
+            rules_dir,
+        ));
+        let verdict_service = Arc::new(evorule_workspace::VerdictService::new(ws_db.clone()));
+        let workspace_state = evorule_workspace::WorkspaceState::new(
+            ws_service,
+            rule_meta_service,
+            sandbox_service,
+            publish_service,
+            Arc::new(switcher),
+            verdict_service,
+        );
+        let state = AppState::new(
+            governance,
+            sessions,
+            metrics,
+            readiness,
+            shared_facts,
+            workspace_state,
+            Arc::new(InputSanitizer::with_default_rules()),
+        );
+        (state, ws_db)
+    }
+
+    /// C14：/api/bundles/import 校验失败必须 HTTP 400（显式错误体，不静默）。
+    ///
+    /// 构造合法 DatasetBundle（content_hash 正确），再篡改条目 rule_body →
+    /// 防篡改哈希校验失败 → 400 + {"error":…, "imported":false}。
+    #[tokio::test]
+    async fn test_bundles_import_tampered_bundle_400_oneshot() {
+        use evorule_bundle::{
+            BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetBundle, Provenance,
+            TestVerdict, BUNDLE_SCHEMA_VERSION,
+        };
+
+        let (state, _) = make_test_state();
+
+        let mut bundle = DatasetBundle {
+            bundle_schema_version: BUNDLE_SCHEMA_VERSION.to_string(),
+            bundle_id: "bundle-itest-400".into(),
+            dataset: BundleDatasetMeta {
+                dataset_id: "ds-itest-400".into(),
+                name: "itest-400".into(),
+                tenant_id: "org-evorule".into(),
+                instance_id: "org-evorule".into(),
+                versioning: evorule_bundle::Versioning::default(),
+                version_selection: None,
+                law_ref: None,
+                view_of: None,
+            },
+            entries: vec![BundleEntry {
+                entry_id: "e-400".into(),
+                rule_body: serde_json::json!({
+                    "transform": [
+                        {"type": "set", "params": {"attr": "x", "value": 1}}
+                    ]
+                }),
+                provenance: Provenance {
+                    source: "itest".into(),
+                    clause: None,
+                    document_id: None,
+                    effective_from: None,
+                    effective_to: None,
+                    last_verified: None,
+                    verified_by: None,
+                },
+                domain: "d".into(),
+                tags: vec![],
+                dependencies: vec![],
+            }],
+            data_dependencies: None,
+            tests: BundleTests {
+                subset: vec![],
+                fixtures: vec![],
+                verdict: TestVerdict::Pass,
+            },
+            audit: BundleAudit {
+                exported_at: "2026-08-29T00:00:00Z".into(),
+                exported_by: "itest".into(),
+                source_version: "v1".into(),
+                content_hash: String::new(),
+                hash_algo: "blake3".into(),
+            },
+        };
+        bundle.audit.content_hash = bundle.compute_content_hash();
+        // 篡改条目内容但不重算哈希 → 防篡改校验失败
+        bundle.entries[0].rule_body = serde_json::json!({
+            "transform": [
+                {"type": "io_request", "params": {"io_type": "call_service", "service_name": "hacked"}}
+            ]
+        });
+        let body = format!(r#"{{"bundle":{}}}"#, serde_json::to_string(&bundle).unwrap());
+
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            "/api/bundles/import",
+            Some(&body),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "校验失败必须 400: {json}");
+        assert_eq!(json["imported"], false);
+        assert!(
+            json["error"].as_str().unwrap_or("").contains("校验失败"),
+            "错误体应显式: {json}"
+        );
+    }
+
+    /// C14：发布队列 HTTP 层全流程端到端。
+    ///
+    /// 前置引导：创建一个生产会话并写入 production_state（模拟"已发布过 v1"
+    /// 的部署——沙盒 fork 依赖已存在的生产会话；全新部署的首发布引导路径
+    /// 属产品缺口，另立台账观察，不在本测试范围内伪造）。
+    ///
+    /// 流程：建工作区 → 建规则 → Draft→Candidate → 建测试集 → 沙盒测试 →
+    /// 关闭（闸门一证据）→ 科室主任提交发布 → Admin 审批通过 → bundle 落盘
+    /// rules_dir → GET /api/bundles/active 可观测（发布链闭环）。
+    #[tokio::test]
+    async fn test_publish_queue_full_flow_oneshot() {
+        let _ = tracing_subscriber::fmt::try_init();
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let (state, ws_db) = make_publish_e2e_state(rules_dir);
+
+        // 0. 引导生产会话
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let prod_sid = json["session_id"].as_u64().unwrap();
+        ws_db
+            .update_production_state(prod_sid as i64, 0, "init_hash", "system")
+            .unwrap();
+
+        // 1. 建工作区
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            "/api/workspaces",
+            Some(r#"{"name":"e2e-ws","owner_id":"head-1","description":null}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "建工作区失败: {json}");
+        let ws_id = json["id"].as_str().unwrap().to_string();
+
+        // 2. 建规则（合法 set 元指令，过发布链 Schema 门禁）
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            &format!("/api/workspaces/{ws_id}/rules"),
+            Some(
+                r#"{"name":"rule-e2e","content":"{\"transform\":[{\"type\":\"set\",\"params\":{\"attr\":\"payload.result\",\"operation\":\"set\",\"value\":\"ok\"}}]}","created_by":"head-1","description":null}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "建规则失败: {json}");
+        let rule_id = json["id"].as_str().unwrap().to_string();
+
+        // 3. Draft → Candidate
+        let (status, _) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            &format!("/api/workspaces/{ws_id}/rules/{rule_id}/submit"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // 4. 取当前版本 ID
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "GET",
+            &format!("/api/workspaces/{ws_id}/rules/{rule_id}/versions"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let versions = if json.is_array() {
+            json.clone()
+        } else {
+            json["versions"].clone()
+        };
+        let rv_id = versions
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v["id"].as_str())
+            .unwrap_or_else(|| panic!("版本列表异常: {json}"))
+            .to_string();
+
+        // 5. 建测试数据集
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            &format!("/api/workspaces/{ws_id}/test-datasets"),
+            Some(r#"{"name":"ds-e2e","cases_json":"[]","created_by":"head-1"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "建测试集失败: {json}");
+        let ds_id = json["id"].as_i64().expect("测试集 id 缺失");
+
+        // 6. 沙盒测试 → 关闭（闸门一证据）
+        let body = format!(
+            r#"{{"rule_version_ids":["{rv_id}"],"test_dataset_id":{ds_id},"started_by":"head-1"}}"#
+        );
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            &format!("/api/workspaces/{ws_id}/sandboxes"),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "启动沙盒失败: {json}");
+        let sandbox_id = json["sandbox_id"].as_i64().expect("沙盒 id 缺失");
+
+        let (status, _) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            &format!("/api/workspaces/{ws_id}/sandboxes/{sandbox_id}/close"),
+            Some(r#"{"closed_by":"head-1"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "关闭沙盒失败");
+
+        // 7. 科室主任提交发布
+        let body = format!(
+            r#"{{"workspace_id":"{ws_id}","rule_version_ids":["{rv_id}"],"test_report_sandbox_id":{sandbox_id},"submitted_by":"head-1","role":"department_head"}}"#
+        );
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            "/api/publish/queue",
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "提交发布失败: {json}");
+        let queue_id = json["id"].as_i64().expect("队列项 id 缺失");
+
+        // 8. Admin 审批通过 → 触发校验/落盘/热重载
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            &format!("/api/publish/queue/{queue_id}/review"),
+            Some(r#"{"decision":"approved","comment":"e2e","reviewed_by":"admin-1","role":"admin"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "审批失败: {json}");
+        assert_eq!(json["status"], "published", "审批通过应进入 published: {json}");
+
+        // 9. 发布链闭环可观测：bundle 已落盘 rules_dir 并被 active 列表扫描到
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "GET",
+            "/api/bundles/active",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json["count"].as_u64(),
+            Some(1),
+            "发布落盘的 bundle 应出现在 active 列表: {json}"
+        );
+        let ds = json["bundles"][0].clone();
+        assert!(
+            ds["dataset_id"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+            "active bundle 的 dataset_id 应非空: {json}"
+        );
+        assert!(
+            ds["content_hash"]
+                .as_str()
+                .map(|s| s.starts_with("blake3:"))
+                .unwrap_or(false),
+            "active bundle 的 content_hash 应为 blake3: 前缀: {json}"
+        );
+    }
 }
