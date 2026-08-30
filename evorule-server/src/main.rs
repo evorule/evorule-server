@@ -921,7 +921,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Prometheus 指标通过 IoSubscriber 注入到 I/O 调度路径
     let metrics: SharedMetrics =
         shared_prometheus_metrics().map_err(|e| format!("Prometheus 指标初始化失败: {}", e))?;
-    let subscriber = IoSubscriber::new(dispatcher).with_metrics(metrics.clone());
+    let subscriber = IoSubscriber::new(dispatcher)
+        .with_metrics(metrics.clone())
+        .with_skip(Arc::new(evorule_server::api::server::is_llm_audit_request));
 
     // 5. 创建单反应器（GovernanceApi 向后兼容路由用）
     // 单反应器模式也启用 WAL 持久化（与多会话一样，保证重启后可回放审计链）

@@ -44,7 +44,7 @@ use evorule_governance::shared_facts_log::SharedFactsLog;
 
 use evorule_governance::{IoDispatcher, IoSubscriber};
 
-use evorule_reactor::{Fact, FactId, FactSender, FactsLog};
+use evorule_reactor::{Fact, FactId, FactSender, FactsLog, IoType};
 
 use evorule_tcb::JsonValue;
 
@@ -61,6 +61,21 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+
+/// LLM 审计形态判定（K 约束族，2026-08-30）
+///
+/// `call_external` 且带 `messages`（LLM 消息历史）且无 `service_name`/`name`
+/// —— 此类 IoRequest **不由 server 内置 IoSubscriber 自动应答**，
+/// 留给外部执行者（evo-agent AuditedLlm / console-cloud 浏览器审计桥）：
+/// 它们经 sidecar 会话把 prompt 全文入审计链、本地执行 LLM 后回写 io_response。
+/// 若内置订阅者抢先错误应答，外部执行者的 io_response 会被反应器按
+/// Unknown IoResponse 忽略，审计回路永远失败。
+pub fn is_llm_audit_request(io_type: &IoType, params: &JsonValue) -> bool {
+    io_type.as_str() == "call_external"
+        && params.get("messages").is_some()
+        && params.get("service_name").is_none()
+        && params.get("name").is_none()
+}
 
 /// 就绪标志（优雅退出时设为 false，readiness 端点返回 503）
 pub type ReadinessFlag = Arc<AtomicBool>;
@@ -1169,7 +1184,8 @@ impl evorule_workspace::SessionOps for SessionApi {
 
                         let command_tx = session.command_tx.clone();
 
-                        let subscriber = IoSubscriber::new(dispatcher.clone());
+                        let subscriber = IoSubscriber::new(dispatcher.clone())
+                            .with_skip(Arc::new(is_llm_audit_request));
 
                         tokio::spawn(async move {
                             if let Err(e) = subscriber.run(event_rx, command_tx).await {
@@ -3013,8 +3029,9 @@ async fn create_session(
 
                     let command_tx = session.command_tx.clone();
 
-                    let subscriber =
-                        IoSubscriber::new(dispatcher.clone()).with_metrics(metrics.clone());
+                    let subscriber = IoSubscriber::new(dispatcher.clone())
+                        .with_metrics(metrics.clone())
+                        .with_skip(Arc::new(is_llm_audit_request));
 
                     tokio::spawn(async move {
                         if let Err(e) = subscriber.run(event_rx, command_tx).await {
@@ -8194,6 +8211,52 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         assert_eq!(json["message"], "ok");
+    }
+
+    // --- LLM 审计形态判定（K 约束族：IoSubscriber 跳过谓词） ---
+
+    #[test]
+    fn test_is_llm_audit_request_shape() {
+        // 审计形态：call_external + messages + 无 service_name/name
+        let audit = serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "audit_purpose": "draft_rule"
+        });
+        assert!(is_llm_audit_request(
+            &IoType::call_external(),
+            &serde_to_tcb(audit.clone())
+        ));
+
+        // service 调用形态（有 service_name）→ 不跳过，照常分发
+        let service = serde_json::json!({
+            "service_name": "inverse_kinematics_solver",
+            "args": {}
+        });
+        assert!(!is_llm_audit_request(
+            &IoType::call_external(),
+            &serde_to_tcb(service)
+        ));
+
+        // name 别名形态 → 不跳过
+        let named = serde_json::json!({ "name": "svc", "args": {} });
+        assert!(!is_llm_audit_request(
+            &IoType::call_external(),
+            &serde_to_tcb(named)
+        ));
+
+        // 无 messages 的 call_external → 不跳过
+        let bare = serde_json::json!({ "model": "m" });
+        assert!(!is_llm_audit_request(
+            &IoType::call_external(),
+            &serde_to_tcb(bare)
+        ));
+
+        // 其他 io_type → 不跳过
+        assert!(!is_llm_audit_request(
+            &IoType::call_service(),
+            &serde_to_tcb(audit.clone())
+        ));
     }
 
     // --- 公开端点（免认证） ---
