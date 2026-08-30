@@ -8,9 +8,13 @@
 //! （evorule-server `SessionApi::import_bundle`）共用一份实现，
 //! 消除两份 land 实现漂移的通道（与 evorule-bundle 的 SSOT 原则一致）。
 //!
-//! # 落盘布局
-//! `{rules_dir}/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
-//! + `{rules_dir}/bundles/{bundle_id}/bundle_manifest.json`（T3: 版本语义/法规基准/哈希/条目→文件映射）。
+//! # 落盘布局（Q12 数据资产化：物理隔离）
+//! - 规则包：`{rules_dir}/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
+//!   + `{rules_dir}/bundles/{bundle_id}/bundle_manifest.json`
+//!   （T3: 版本语义/法规基准/哈希/条目→文件映射）；
+//! - 数据包：`{knowledge_dir}/bundles/{bundle_id}/{entry_id}.json`（payload 原样）
+//!   + 同构 manifest（条目映射含 schema_ref，D3）——与 rules_dir **物理隔离**，
+//!   TCB loader 扫描路径天然不触碰数据文件（Q12 W1，blocker 消除）。
 //!
 //! # 原子性
 //! - 临时目录写入 → rename 就位，写入失败清理临时目录，无半成品；
@@ -51,6 +55,9 @@ pub struct BundleManifest {
 pub struct EntryFileManifest {
     pub entry_id: String,
     pub file: String,
+    /// Knowledge 条目：领域 JSON Schema 引用（Q12 D3）；Rule 条目省略（None 不序列化）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_ref: Option<String>,
 }
 
 /// 原子落盘：`{rules_dir}/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
@@ -64,6 +71,32 @@ pub fn land_bundle_atomically(
     bundle: &DatasetBundle,
     result: &ImportResult,
 ) -> Result<(), String> {
+    land_bundle_core(&rules_dir.join("bundles"), bundle, result, false)
+}
+
+/// 原子落盘（Q12 W1 数据资产通道）：`{knowledge_dir}/bundles/{bundle_id}/{entry_id}.json`
+/// （`rule_body` 字段承载领域 payload，零转译）+ 同构 `bundle_manifest.json`
+/// （条目映射含 `schema_ref`）。
+///
+/// 与 rules_dir **物理隔离**：TCB loader（load_rules_dir_transforms）只扫 rules_dir，
+/// 数据文件不在其扫描路径上，天然不进 TCB 合并集——**零改动消除 blocker**。
+/// 原子性/单激活替换语义与规则落盘完全同构（同一份核心实现）。
+pub fn land_knowledge_bundle_atomically(
+    knowledge_dir: &Path,
+    bundle: &DatasetBundle,
+    result: &ImportResult,
+) -> Result<(), String> {
+    land_bundle_core(&knowledge_dir.join("bundles"), bundle, result, true)
+}
+
+/// 落盘核心（规则/数据共用，防逻辑漂移）：
+/// `with_schema_ref = true` 时 manifest 条目映射携带领域 schema 引用（knowledge 包）。
+fn land_bundle_core(
+    base: &Path,
+    bundle: &DatasetBundle,
+    result: &ImportResult,
+    with_schema_ref: bool,
+) -> Result<(), String> {
     if bundle.bundle_id.is_empty()
         || bundle.bundle_id.contains(['/', '\\'])
         || bundle.bundle_id.contains("..")
@@ -74,7 +107,6 @@ pub fn land_bundle_atomically(
         ));
     }
 
-    let base = rules_dir.join("bundles");
     let target = base.join(&bundle.bundle_id);
     let tmp = base.join(format!(".{}.tmp", bundle.bundle_id));
     let backup = base.join(format!(".{}.bak", bundle.bundle_id));
@@ -120,6 +152,11 @@ pub fn land_bundle_atomically(
                 .map(|e| EntryFileManifest {
                     entry_id: e.entry_id.clone(),
                     file: format!("{}.json", e.entry_id),
+                    schema_ref: if with_schema_ref {
+                        Some(e.schema_ref.clone().unwrap_or_default())
+                    } else {
+                        None
+                    },
                 })
                 .collect(),
         };

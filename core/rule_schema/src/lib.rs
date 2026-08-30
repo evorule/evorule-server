@@ -37,10 +37,12 @@ use serde_json::Value;
 const RULE_SET_JSON: &str = include_str!("../schemas/rule_set/v1.0.json");
 const META_JSON: &str = include_str!("../schemas/_meta/v1.0.json");
 const SHARED_JSON: &str = include_str!("../schemas/_shared/v1.0.json");
+const KNOWLEDGE_JSON: &str = include_str!("../schemas/knowledge/v1.0.json");
 
 const RULE_SET_ID: &str = "https://evorule.org/schemas/rule_set/v1.0.json";
 const META_ID: &str = "https://evorule.org/schemas/_meta/v1.0.json";
 const SHARED_ID: &str = "https://evorule.org/schemas/_shared/v1.0.json";
+const KNOWLEDGE_ID: &str = "https://evorule.org/schemas/knowledge/v1.0.json";
 
 /// 最大 transform 规则数（与 TCB MAX_TRANSFORM_RULES 一致；schema maxItems 亦约束）
 const MAX_TRANSFORM_RULES: usize = 64;
@@ -94,6 +96,7 @@ impl Retrieve for EmbeddedRetriever {
             RULE_SET_ID => RULE_SET_JSON,
             META_ID => META_JSON,
             SHARED_ID => SHARED_JSON,
+            KNOWLEDGE_ID => KNOWLEDGE_JSON,
             other => {
                 return Err(format!("未知 evorule schema $id: {other}").into());
             }
@@ -111,6 +114,7 @@ struct Validators {
     transform_list: Validator,
     instruction: Validator,
     service_registry: Validator,
+    knowledge: Validator,
 }
 
 // build.rs 已在构建期保证三个 schema 合法且 $id 自洽，故此处的
@@ -119,6 +123,8 @@ struct Validators {
 fn build_validators() -> Validators {
     let rule_set: Value =
         serde_json::from_str(RULE_SET_JSON).expect("内嵌 rule_set schema 非法（build.rs 已保证）");
+    let knowledge_schema: Value = serde_json::from_str(KNOWLEDGE_JSON)
+        .expect("内嵌 knowledge schema 非法（build.rs 已保证）");
     let transform_list: Value = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://evorule.org/schemas/rule_set/_transform_list.json",
@@ -178,11 +184,21 @@ fn build_validators() -> Validators {
         .build(&service_registry_schema)
         .expect("构建 service_registry 校验器失败（内嵌 schema 静态合法）");
 
+    // knowledge 门禁（Q12 W5）：知识数据资产文档完整校验——双形态条目
+    // （文档 content / 数据 payload+schema_ref）oneOf 互斥 + _meta 治理骨架。
+    let mut kn_opts = Validator::options();
+    kn_opts.with_draft(Draft::Draft202012);
+    kn_opts.with_retriever(EmbeddedRetriever);
+    let knowledge_v = kn_opts
+        .build(&knowledge_schema)
+        .expect("构建 knowledge 校验器失败（build.rs 已保证 schema 合法）");
+
     Validators {
         rule_set: rule_set_v,
         transform_list: transform_list_v,
         instruction: instruction_v,
         service_registry: service_registry_v,
+        knowledge: knowledge_v,
     }
 }
 
@@ -257,6 +273,15 @@ pub fn validate_command_instruction(instr: &Value) -> SchemaReport {
 /// 与 io_handlers `parse_service_entry` 的语义校验（scheme 白名单等）形成双层防御。
 pub fn validate_service_registry(doc: &Value) -> SchemaReport {
     collect_report(&VALIDATORS.service_registry, doc, "service_registry")
+}
+
+/// 校验知识数据资产文档（Q12 W5，knowledge/v1.0 完整校验）。
+///
+/// 双形态条目强制互斥：文档条目（content）与数据条目（payload + schema_ref）
+/// 不得混于同一条目；治理骨架（kind=knowledge + _meta）与 rule_set 同源。
+/// 用于：knowledge bundle 导入前的条目文档校验、治理侧知识数据集文档校验。
+pub fn validate_knowledge(doc: &Value) -> SchemaReport {
+    collect_report(&VALIDATORS.knowledge, doc, "knowledge")
 }
 
 fn collect_report(validator: &Validator, instance: &Value, mode: &'static str) -> SchemaReport {
@@ -574,5 +599,57 @@ mod tests {
         });
         let report = validate_service_registry(&doc);
         assert!(report.valid, "未知字段应开放: {:?}", report.errors);
+    }
+
+    // ===== Q12 W5：validate_knowledge（知识数据资产文档门禁）=====
+
+    fn kn_doc(entries: Value) -> Value {
+        serde_json::json!({
+            "$schema": "https://evorule.org/schemas/knowledge/v1.0.json",
+            "kind": "knowledge",
+            "id": "com.evorule.test.kn",
+            "version": "0.1.0",
+            "metadata": { "title": "测试数据资产" },
+            "entries": entries
+        })
+    }
+
+    #[test]
+    fn knowledge_doc_and_data_entries_pass() {
+        // 双形态可混排：文档条目（content）+ 数据条目（payload+schema_ref）
+        let doc = kn_doc(serde_json::json!([
+            { "id": "pitfall-001", "content": "能量漂移需先查碰撞恢复系数", "severity": "warning" },
+            { "id": "scn-001", "payload": { "mass": 1.5 }, "schema_ref": "https://rpsm.example/schemas/body.json" }
+        ]));
+        let report = validate_knowledge(&doc);
+        assert!(report.valid, "双形态条目应通过: {:?}", report.errors);
+    }
+
+    #[test]
+    fn knowledge_entry_mixed_forms_rejected() {
+        // 同条目同时携带 content 与 payload/schema_ref → oneOf 互斥拒绝
+        let doc = kn_doc(serde_json::json!([
+            { "id": "bad-001", "content": "x", "payload": { "a": 1 }, "schema_ref": "u" }
+        ]));
+        let report = validate_knowledge(&doc);
+        assert!(!report.valid, "双形态混于单条目应被拒");
+    }
+
+    #[test]
+    fn knowledge_data_entry_missing_schema_ref_rejected() {
+        let doc = kn_doc(serde_json::json!([
+            { "id": "bad-002", "payload": { "a": 1 } }
+        ]));
+        let report = validate_knowledge(&doc);
+        assert!(!report.valid, "数据条目缺 schema_ref 应被拒");
+    }
+
+    #[test]
+    fn knowledge_doc_missing_kind_rejected() {
+        // _meta 治理骨架：kind 必填且必须为 knowledge
+        let mut doc = kn_doc(serde_json::json!([{ "id": "d", "content": "x" }]));
+        doc.as_object_mut().unwrap().insert("kind".into(), "rule_set".into());
+        let report = validate_knowledge(&doc);
+        assert!(!report.valid, "kind 非 knowledge 应被拒");
     }
 }

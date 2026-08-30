@@ -21,7 +21,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # Schema 门禁（线1 防御层）：加载规则文件前校验引擎原生结构
 evorule-rule-schema = { path = "../rule_schema" }
 # bundle 契约（T3）：扫描 rules_dir 时排除 bundle_manifest.json，与 evorule-server 约定一致（SSOT）
-evorule-bundle = { version = "0.2.0" }
+evorule-bundle = { version = "0.3.0" }
 
 [dev-dependencies]
 # 服务层 HTTP 错误路径测试需要 async runtime + mock HTTP server

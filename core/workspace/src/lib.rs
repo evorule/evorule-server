@@ -56,7 +56,9 @@ pub mod workspace_service;
 // 此处顶层导出 api::WorkspaceState (evorule-server AppState 字段使用);
 // models 的状态机枚举通过 `evorule_workspace::models::WorkspaceState` 访问。
 pub use api::{build_workspace_router, WorkspaceState};
-pub use bundle_land::{land_bundle_atomically, BundleManifest, EntryFileManifest};
+pub use bundle_land::{
+    land_bundle_atomically, land_knowledge_bundle_atomically, BundleManifest, EntryFileManifest,
+};
 pub use db::WorkspaceDb;
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use models::{

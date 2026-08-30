@@ -16,10 +16,12 @@ use std::path::{Path, PathBuf};
 const RULE_SET: &str = "schemas/rule_set/v1.0.json";
 const META: &str = "schemas/_meta/v1.0.json";
 const SHARED: &str = "schemas/_shared/v1.0.json";
+const KNOWLEDGE: &str = "schemas/knowledge/v1.0.json";
 
 const RULE_SET_ID: &str = "https://evorule.org/schemas/rule_set/v1.0.json";
 const META_ID: &str = "https://evorule.org/schemas/_meta/v1.0.json";
 const SHARED_ID: &str = "https://evorule.org/schemas/_shared/v1.0.json";
+const KNOWLEDGE_ID: &str = "https://evorule.org/schemas/knowledge/v1.0.json";
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -50,7 +52,7 @@ fn run() -> Result<(), String> {
     let manifest_dir = PathBuf::from(
         env::var("CARGO_MANIFEST_DIR").map_err(|e| format!("读取 CARGO_MANIFEST_DIR 失败: {e}"))?,
     );
-    for rel in [RULE_SET, META, SHARED] {
+    for rel in [RULE_SET, META, SHARED, KNOWLEDGE] {
         let p = manifest_dir.join(rel);
         load_json(&p)?;
         println!("cargo:rerun-if-changed={}", p.display());
@@ -59,10 +61,12 @@ fn run() -> Result<(), String> {
     let rs = load_json(&manifest_dir.join(RULE_SET))?;
     let meta = load_json(&manifest_dir.join(META))?;
     let shared = load_json(&manifest_dir.join(SHARED))?;
+    let knowledge = load_json(&manifest_dir.join(KNOWLEDGE))?;
 
     let rs_id = id_of(&rs, "rule_set")?;
     let meta_id = id_of(&meta, "_meta")?;
     let shared_id = id_of(&shared, "_shared")?;
+    let knowledge_id = id_of(&knowledge, "knowledge")?;
 
     if rs_id != RULE_SET_ID {
         return Err(format!("rule_set $id 漂移: {rs_id}"));
@@ -72,6 +76,23 @@ fn run() -> Result<(), String> {
     }
     if shared_id != SHARED_ID {
         return Err(format!("_shared $id 漂移: {shared_id}"));
+    }
+    if knowledge_id != KNOWLEDGE_ID {
+        return Err(format!("knowledge $id 漂移: {knowledge_id}"));
+    }
+
+    // knowledge 的 allOf[0] 必须指向 meta（与 rule_set 同一治理骨架）
+    let kn_all_of = knowledge
+        .get("allOf")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "knowledge 缺 allOf".to_string())?;
+    let kn_first_ref = kn_all_of
+        .first()
+        .and_then(|v| v.get("$ref"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "knowledge allOf[0] 缺 $ref".to_string())?;
+    if kn_first_ref != "../_meta/v1.0.json" {
+        return Err(format!("knowledge allOf[0] 未指向 _meta: {kn_first_ref}"));
     }
 
     // rule_set 的 allOf[0] 必须指向 meta，transform.items 必须指向 shared#/$defs/transform_rule

@@ -406,10 +406,13 @@ impl PublishService {
         }
 
         // 3. 构造规范 DatasetBundle + BundleImporter::validate (6 项硬校验)
+        // 发布队列 MVP 仅规则包（rule 条目不消费领域 schema，resolver 恒未命中即可）
+        let no_domain_schema = |_uri: &str| None;
         let bundle = build_publish_bundle(&rules, &item, new_version, published_by);
-        let import_result = evorule_bundle::BundleImporter::validate(&bundle).map_err(|e| {
-            WorkspaceError::internal(format!("发布校验失败（不落盘不生效）: {e}"))
-        })?;
+        let import_result =
+            evorule_bundle::BundleImporter::validate(&bundle, &no_domain_schema).map_err(|e| {
+                WorkspaceError::internal(format!("发布校验失败（不落盘不生效）: {e}"))
+            })?;
 
         // 4. 原子落盘 rules_dir (失败则发布失败, 队列保持 pending 可重试)
         crate::bundle_land::land_bundle_atomically(&self.rules_dir, &bundle, &import_result)
@@ -571,7 +574,9 @@ fn build_publish_bundle(
             let hash_prefix = content_hash.get(..12).unwrap_or(&content_hash);
             BundleEntry {
                 entry_id: format!("rule-{i:02}-{hash_prefix}"),
+                entry_kind: Default::default(),
                 rule_body: rule.clone(),
+                schema_ref: None,
                 provenance: Provenance {
                     source: format!("publish_queue#{}", item.id),
                     clause: None,

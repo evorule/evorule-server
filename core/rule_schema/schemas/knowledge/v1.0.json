@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evorule.org/schemas/knowledge/v1.0.json",
+  "title": "evorule knowledge v1.0（知识数据资产：文档知识 + 领域数据资产双形态）",
+  "description": "知识数据资产 kind——evorule 数据资产一等公民的载体。条目双形态：A) 文档知识条目（content 字符串，人类可读知识/PITFALLS 类条目）；B) 数据资产条目（payload 任意领域结构化 JSON + schema_ref 领域 JSON Schema 引用，如物理仿真场景、法规结构化物、行业参数表）。双形态经 oneOf 强制互斥：一个条目要么是文档要么是数据，杜绝二义。治理链复用：knowledge 数据集在 evorule-rule 走同一 5 态生命周期（Draft→Candidate→Active→Published）、双闸门、独立发布审批与快照包交付——数据资产与规则资产共享治理骨架，载荷类型正式分离（数据条目不进 TCB，供领域服务经 io_request/service_registry 消费）。领域 schema 归领域仓所有（如 rpsm 场景 schema 由 rpsm 仓提供），本 schema 只定义引用契约（schema_ref），不收录领域 schema；入库时校验方经 schema resolver 按 schema_ref 取 schema 强校验 payload，resolver 未命中即拒绝（fail-fast）。固化前置：RPSM 首批真实场景数据入库回归通过（2026-08-30 升格重设计，替代原'未验证草案'文档知识单一形态设计）。",
+  "x_legal_authority_notice": "本 schema 由 EvoRule 团队维护,以 CC0 1.0 公共领域奉献(见 schemas/LICENSE-SCHEMAS.md);通过本 schema 校验或创作的 system JSON 内容 IP 归作者所有,evorule 不主张。数据资产条目的 payload 内容 IP 完全归数据作者所有——数据资产是第一等公民,evorule 只让它们动起来。详见 ../../LEGAL_NOTES.md 与 ../../docs/adr/scope-split-ip-model.md",
+  "allOf": [
+    { "$ref": "../_meta/v1.0.json" },
+    {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "knowledge" },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/entry" },
+          "description": "知识条目数组：文档条目（content）与数据条目（payload+schema_ref）可混排，单条目内双形态互斥"
+        }
+      },
+      "required": ["entries"]
+    }
+  ],
+  "$defs": {
+    "entry": {
+      "oneOf": [
+        { "$ref": "#/$defs/entry_doc" },
+        { "$ref": "#/$defs/entry_data" }
+      ],
+      "description": "双形态互斥由 oneOf + 双向 not 保证：content 与 payload/schema_ref 不得共存于同一条目"
+    },
+    "entry_doc": {
+      "type": "object",
+      "required": ["id", "content"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+        "content": { "type": "string", "minLength": 1, "description": "人类可读知识正文（Markdown/纯文本）" },
+        "title": { "type": "string", "maxLength": 200 },
+        "category": { "type": "string" },
+        "severity": {
+          "enum": ["info", "warning", "error", "critical"],
+          "description": "仅文档条目有语义（知识告警级别）"
+        },
+        "related": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "相关条目 ID"
+        },
+        "embedding_ref": {
+          "type": "string",
+          "description": "embedding 存储引用(可选)"
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["payload"] },
+          { "required": ["schema_ref"] }
+        ]
+      },
+      "additionalProperties": true,
+      "description": "文档知识条目：content 必填字符串；禁止携带 payload/schema_ref（与数据形态互斥）"
+    },
+    "entry_data": {
+      "type": "object",
+      "required": ["id", "payload", "schema_ref"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+        "payload": {
+          "description": "领域结构化数据本体（任意 JSON）——由 schema_ref 指向的领域 JSON Schema 强校验，本 schema 不约束其内部结构"
+        },
+        "schema_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "领域 JSON Schema 引用 URI（领域仓资产，如 rpsm 场景 schema）。入库校验方经 resolver 取 schema 对 payload 强校验；resolver 未命中 = 拒绝（fail-fast，不静默放行）"
+        },
+        "title": { "type": "string", "maxLength": 200 },
+        "category": { "type": "string" },
+        "related": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "相关条目 ID"
+        },
+        "embedding_ref": {
+          "type": "string",
+          "description": "embedding 存储引用(可选)"
+        }
+      },
+      "not": { "required": ["content"] },
+      "additionalProperties": true,
+      "description": "数据资产条目：payload + schema_ref 必填；禁止携带 content（与文档形态互斥）"
+    }
+  }
+}

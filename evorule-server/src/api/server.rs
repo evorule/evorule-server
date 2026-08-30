@@ -221,6 +221,18 @@ pub struct SessionApi {
     /// rules_dir 路径（业务规则目录，reload 时重扫描）
     rules_dir: std::path::PathBuf,
 
+    /// knowledge 数据资产目录（Q12 W1：与 rules_dir 物理隔离，`{knowledge_dir}/bundles/`）
+    knowledge_dir: std::path::PathBuf,
+
+    /// 执行侧数据资产库（Q12 W2：启动/导入时从 knowledge_dir 加载；W3 经
+    /// `knowledge_store()` 直读。数据条目不进 TCB，本库是执行侧唯一消费通道）
+    knowledge_store:
+        Arc<std::sync::RwLock<Arc<crate::knowledge_store::KnowledgeStore>>>,
+
+    /// 启动加载数据资产库失败记录（Q12 W2 fail-fast 口径：不静默掩盖——服务器仍可跑
+    /// 规则，但数据面异常必须可见；经 `knowledge_load_error()` 暴露，导入刷新成功即清除）
+    knowledge_load_error: Arc<std::sync::RwLock<Option<String>>>,
+
     /// I/O 分发器（clone 给每个新 session 的 IoSubscriber，共享底层 handler）
 
     /// None 时 session 的 IoRequest 无人处理（纯计算场景）
@@ -383,6 +395,26 @@ impl SessionApi {
             ),
         ));
 
+        // Q12 W2：knowledge 数据资产目录与 rules_dir 物理隔离（`{rules 父目录}/knowledge`），
+        // 启动即加载数据资产库。目录不存在 → 空库（执行侧可只跑规则不承载数据资产）；
+        // 加载失败不静默：记录错误并经 `knowledge_load_error()` 显式暴露（服务器仍可跑
+        // 规则——数据资产完整性问题不应阻断规则执行，但绝不允许不可见）。
+        let knowledge_dir = rules_dir
+            .parent()
+            .map(|p| p.join("knowledge"))
+            .unwrap_or_else(|| std::path::PathBuf::from("knowledge"));
+        let (knowledge_store, knowledge_load_error) =
+            match crate::knowledge_store::KnowledgeStore::load_from_disk(&knowledge_dir) {
+                Ok(ks) => (ks, None),
+                Err(e) => {
+                    tracing::error!("knowledge 数据资产库加载失败（不静默，数据面不可用）: {e}");
+                    (
+                        crate::knowledge_store::KnowledgeStore::default(),
+                        Some(e),
+                    )
+                }
+            };
+
         Self {
             sessions: sessions.clone(),
 
@@ -395,6 +427,12 @@ impl SessionApi {
             core_eval_path,
 
             rules_dir,
+
+            knowledge_dir,
+
+            knowledge_store: Arc::new(std::sync::RwLock::new(Arc::new(knowledge_store))),
+
+            knowledge_load_error: Arc::new(std::sync::RwLock::new(knowledge_load_error)),
 
             dispatcher: None,
 
@@ -478,6 +516,52 @@ impl SessionApi {
     /// 返回当前已加载 transform 规则数量
     pub fn core_eval_len(&self) -> usize {
         self.core_eval().len()
+    }
+
+    // ========================================================================
+    // Q12 W2/W3：执行侧数据资产通道（物理隔离，不进 TCB）
+    // ========================================================================
+
+    /// Q12 W3：执行侧数据资产库只读快照（原生服务消费接口）
+    ///
+    /// IoHandler 侧原生服务（如 RPSM）按 `dataset_id`/`entry_id` 直读 payload，
+    /// 进程内零开销；MVP 不做网络数据面（HTTP 查询端点属段 2）。
+    pub fn knowledge_store(&self) -> Arc<crate::knowledge_store::KnowledgeStore> {
+        match self.knowledge_store.read() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// knowledge 数据资产目录路径（Q12 W1：与 rules_dir 物理隔离）
+    pub fn knowledge_dir(&self) -> &std::path::Path {
+        &self.knowledge_dir
+    }
+
+    /// 启动加载数据资产库失败记录（None = 正常；Some = 数据面不可用，需运维自愈）
+    pub fn knowledge_load_error(&self) -> Option<String> {
+        match self.knowledge_load_error.read() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// 重新从磁盘加载数据资产库（Q12 W2 导入/运维刷新通道）。
+    ///
+    /// - 加载失败 → Err（fail-fast，不静默：落盘已发生但内存索引未更新，
+    ///   调用方必须知悉数据面与磁盘不一致）；
+    /// - 加载成功 → 替换内存索引并清除历史启动错误记录。
+    fn refresh_knowledge_store(&self) -> Result<(), String> {
+        let ks = crate::knowledge_store::KnowledgeStore::load_from_disk(&self.knowledge_dir)?;
+        match self.knowledge_store.write() {
+            Ok(mut guard) => *guard = Arc::new(ks),
+            Err(poisoned) => *poisoned.into_inner() = Arc::new(ks),
+        }
+        match self.knowledge_load_error.write() {
+            Ok(mut guard) => *guard = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+        Ok(())
     }
 
     /// 生成下一个 FactId
@@ -842,12 +926,39 @@ impl SessionApi {
         bundle: &evorule_bundle::DatasetBundle,
         dry_run: bool,
     ) -> Result<evorule_bundle::ImportResult, String> {
-        // ① 6 项硬校验（schema → 防篡改 → 版本链 → 符号三方一致 → 版本解析 → 闸门一证据）
-        let result = evorule_bundle::BundleImporter::validate(bundle)
-            .map_err(|e| format!("快照包校验失败（不静默）: {e}"))?;
+        // ⓪ Q12 条目类型同质性：Rule 与 Knowledge 不得混装同一 bundle
+        // （载荷语义互斥——transform 指令集与领域 payload 的门禁/消费通道完全不同）
+        let has_rule = bundle
+            .entries
+            .iter()
+            .any(|e| e.entry_kind == evorule_bundle::EntryKind::Rule);
+        let has_knowledge = bundle
+            .entries
+            .iter()
+            .any(|e| e.entry_kind == evorule_bundle::EntryKind::Knowledge);
+        if has_rule && has_knowledge {
+            return Err(
+                "快照包条目类型混装（Rule 与 Knowledge 不得共存于同一 bundle，不静默）".to_string(),
+            );
+        }
+        let is_knowledge = has_knowledge;
 
-        // ② 第 7 项逐条 Schema 门禁（硬失败，防 loader fail-soft 静默跳过非法规则）
+        // ① 6 项硬校验（schema → 防篡改 → 版本链 → 符号三方一致/领域 schema 强校验
+        //    → 版本解析 → 闸门一证据）。Q12 D3：Knowledge 条目经 resolver 做领域
+        //    schema 强校验（执行侧注册表 = `{knowledge_dir}/domain_schemas/*.json`，
+        //    运维注入；未命中即拒绝——与治理侧同口径）。
+        let result = evorule_bundle::BundleImporter::validate(bundle, &|uri: &str| {
+            crate::knowledge_store::lookup_domain_schema_in(&self.knowledge_dir, uri)
+        })
+        .map_err(|e| format!("快照包校验失败（不静默）: {e}"))?;
+
+        // ② 第 7 项逐条 Schema 门禁（硬失败，防 loader fail-soft 静默跳过非法规则）。
+        // Q12：Knowledge 条目不进 TCB，跳过 transform 门禁（D3 领域 schema 强校验
+        // 已在 BundleImporter::validate 内完成——数据条目走自己的门禁，不是没有门禁）。
         for entry in &bundle.entries {
+            if entry.entry_kind == evorule_bundle::EntryKind::Knowledge {
+                continue;
+            }
             let report = evorule_rule_schema::validate_rule_input(&entry.rule_body);
             if !report.valid {
                 return Err(format!(
@@ -909,11 +1020,25 @@ impl SessionApi {
             return Ok(result);
         }
 
-        // ④ 原子落盘（临时目录 → rename，失败清理无半成品；含 bundle_manifest.json）
-        self.land_bundle_atomically(bundle, &result)?;
+        // ④ 原子落盘（临时目录 → rename，失败清理无半成品；含 bundle_manifest.json）。
+        // Q12 W1 分流：知识包落 `{knowledge_dir}/bundles/`（与 rules_dir 物理隔离，
+        // TCB 加载路径天然不触碰数据文件）；规则包落 `rules_dir/bundles/`（原语义）。
+        if is_knowledge {
+            evorule_workspace::bundle_land::land_knowledge_bundle_atomically(
+                &self.knowledge_dir,
+                bundle,
+                &result,
+            )?;
 
-        // ⑤ 触发既有 reload 链（新会话使用新规则；已存在会话不改 TCB 语义）
-        self.reload_from_disk().await?;
+            // ⑤a 数据资产不进 TCB：不触发规则 reload；刷新 KnowledgeStore 即刻可读。
+            // 刷新失败 → Err（落盘已发生但内存索引未更新，数据面与磁盘不一致必须显式）。
+            self.refresh_knowledge_store()?;
+        } else {
+            self.land_bundle_atomically(bundle, &result)?;
+
+            // ⑤b 触发既有 reload 链（新会话使用新规则；已存在会话不改 TCB 语义）
+            self.reload_from_disk().await?;
+        }
 
         // ⑥ T5 审计溯源：bundle 导入历史写入 workspace 元数据库（bundle_imports 表）。
         // 管理元数据（imported_at 墙钟旁路），绝不渗入 fact / 内容哈希 / 审计验证链。
@@ -8958,11 +9083,13 @@ mod tests {
             },
             entries: vec![BundleEntry {
                 entry_id: "e-400".into(),
+                entry_kind: evorule_bundle::EntryKind::Rule,
                 rule_body: serde_json::json!({
                     "transform": [
                         {"type": "set", "params": {"attr": "x", "value": 1}}
                     ]
                 }),
+                schema_ref: None,
                 provenance: Provenance {
                     source: "itest".into(),
                     clause: None,
@@ -9012,6 +9139,279 @@ mod tests {
         assert!(
             json["error"].as_str().unwrap_or("").contains("校验失败"),
             "错误体应显式: {json}"
+        );
+    }
+
+    // ====================================================================
+    // Q12 W6：数据资产通道端到端 —— knowledge bundle 落盘/加载/直读
+    //         + TCB 合并集负向断言（数据文件不进规则执行路径）
+    // ====================================================================
+
+    /// rpsm 形态场景领域 schema（测试替身：领域 schema 归领域仓所有，
+    /// 此处仅模拟"运维把领域 schema 注入 {knowledge_dir}/domain_schemas/"）。
+    /// 注意：用 const 而非 `-> &'static str` 函数——build.rs 门禁的花括号状态机
+    /// 不感知生命周期撇号，`'static` 会令其字符状态误吞后续花括号（详见 GATE_REFERENCE）。
+    const Q12_SCENARIO_SCHEMA_JSON: &str = r#"{
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+            "type": "object",
+            "required": ["scenario_id", "gravity", "bodies"],
+            "properties": {
+                "scenario_id": {"type": "string"},
+                "gravity": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+                "restitution": {"type": "number", "minimum": 0, "maximum": 1},
+                "bodies": {"type": "array", "items": {"type": "object"}}
+            }
+        }"#;
+
+    /// 构造 knowledge bundle（rpsm 场景形态；哈希签名完整，可直接过 import_bundle 校验链）
+    fn q12_knowledge_bundle(
+        bundle_id: &str,
+        dataset_id: &str,
+        entry_id: &str,
+        schema_ref: &str,
+    ) -> evorule_bundle::DatasetBundle {
+        use evorule_bundle::{
+            BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetBundle, LawRef,
+            Provenance, TestVerdict, VersionSelection, VersionSelectionMode, Versioning,
+            BUNDLE_SCHEMA_VERSION,
+        };
+        let mut bundle = DatasetBundle {
+            bundle_schema_version: BUNDLE_SCHEMA_VERSION.to_string(),
+            bundle_id: bundle_id.into(),
+            dataset: BundleDatasetMeta {
+                dataset_id: dataset_id.into(),
+                name: "Q12 数据资产演示集".into(),
+                tenant_id: "org-evorule".into(),
+                instance_id: "org-evorule".into(),
+                versioning: Versioning::default(),
+                version_selection: Some(VersionSelection {
+                    mode: VersionSelectionMode::AutoByEffectiveDate,
+                    pinned_version: None,
+                    pinned_include_patch: None,
+                }),
+                law_ref: Some(LawRef {
+                    document_id: "rpsm-scenarios".into(),
+                    law_version: None,
+                    effective_from: Some("2026-08-30".into()),
+                    effective_to: None,
+                }),
+                view_of: None,
+            },
+            entries: vec![BundleEntry {
+                entry_id: entry_id.into(),
+                entry_kind: evorule_bundle::EntryKind::Knowledge,
+                rule_body: serde_json::json!({
+                    "scenario_id": "spring-single-particle",
+                    "gravity": [0.0, -9.81, 0.0],
+                    "restitution": 1.0,
+                    "bodies": [{"id": "particle-1"}]
+                }),
+                schema_ref: Some(schema_ref.into()),
+                provenance: Provenance {
+                    source: "rpsm 内置场景".into(),
+                    clause: None,
+                    document_id: None,
+                    effective_from: None,
+                    effective_to: None,
+                    last_verified: None,
+                    verified_by: None,
+                },
+                domain: "physics".into(),
+                tags: vec![],
+                dependencies: vec![],
+            }],
+            data_dependencies: None,
+            tests: BundleTests {
+                subset: vec![],
+                fixtures: vec![],
+                verdict: TestVerdict::Pass,
+            },
+            audit: BundleAudit {
+                exported_at: "2026-08-30T00:00:00Z".into(),
+                exported_by: "q12-itest".into(),
+                source_version: "v1".into(),
+                content_hash: String::new(),
+                hash_algo: "blake3".into(),
+            },
+        };
+        bundle.audit.content_hash = bundle.compute_content_hash();
+        bundle
+    }
+
+    /// Q12 W6-1：knowledge bundle 导入端到端——落盘 knowledge_dir（物理隔离）
+    /// → KnowledgeStore 导入后即刻可读（W2 导入刷新 + W3 直读）
+    /// → TCB 合并集负向断言（数据文件不出现在规则合并集）。
+    #[tokio::test]
+    async fn test_knowledge_bundle_import_land_load_direct_read_oneshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let core_eval_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+
+        // 执行侧领域 schema 注册（运维注入通道：{knowledge_dir}/domain_schemas/）
+        let ddir = tmp.path().join("knowledge").join("domain_schemas");
+        std::fs::create_dir_all(&ddir).unwrap();
+        std::fs::write(ddir.join("scenario.json"), Q12_SCENARIO_SCHEMA_JSON).unwrap();
+
+        let core_eval: Vec<JsonValue> = vec![];
+        let sessions = SessionApi::new_with_full_config(
+            core_eval.clone(),
+            100,
+            None,
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            core_eval_path.clone(),
+            rules_dir.clone(),
+        );
+        assert!(
+            sessions.knowledge_load_error().is_none(),
+            "空 knowledge 目录应得空库而非错误"
+        );
+        // TCB 合并集基线（导入前）：resources/core_eval.json 自带若干宪法规则
+        let baseline = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)
+            .expect("TCB 合并加载不应失败");
+
+        let bundle = q12_knowledge_bundle(
+            "bundle-q12-demo-v1",
+            "ds-q12-demo",
+            "scn-001",
+            "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+        );
+        let result = sessions
+            .import_bundle(&bundle, false)
+            .await
+            .expect("knowledge bundle 导入应通过全部校验门");
+        assert_eq!(result.dataset_id, "ds-q12-demo");
+        assert_eq!(result.entry_count, 1);
+
+        // W1 落盘物理隔离：数据在 {knowledge_dir}/bundles，rules_dir 不产生任何文件
+        let landed = tmp
+            .path()
+            .join("knowledge")
+            .join("bundles")
+            .join("bundle-q12-demo-v1");
+        assert!(landed.join("bundle_manifest.json").is_file(), "manifest 应落盘");
+        assert!(landed.join("scn-001.json").is_file(), "数据条目应落盘");
+        assert!(
+            !rules_dir.join("bundles").exists(),
+            "数据包不得落入 rules_dir（物理隔离）"
+        );
+
+        // TCB 合并集负向断言：数据文件不出现在规则合并集（导入前后一致）
+        let merged = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)
+            .expect("TCB 合并加载不应被数据资产影响");
+        assert_eq!(merged.len(), baseline.len(), "数据条目不得进入 TCB 合并集");
+
+        // W2 导入刷新 + W3 直读：导入后 KnowledgeStore 即刻可读（无需重启）
+        let store = sessions.knowledge_store();
+        let rec = store
+            .get("ds-q12-demo", "scn-001")
+            .expect("数据条目应可直读");
+        assert_eq!(rec.payload["scenario_id"], "spring-single-particle");
+        assert_eq!(
+            rec.schema_ref.as_deref(),
+            Some("https://rpsm.evorule.org/schemas/scenario/v1.0.json")
+        );
+        assert_eq!(rec.bundle_id, "bundle-q12-demo-v1");
+        assert_eq!(rec.source_version, "v1");
+    }
+
+    /// Q12 W6-2：Rule 与 Knowledge 混装同一 bundle → 显式拒绝（载荷语义互斥，不静默）
+    #[tokio::test]
+    async fn test_knowledge_mixed_bundle_rejected_oneshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let core_eval_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+        let sessions = SessionApi::new_with_full_config(
+            vec![],
+            100,
+            None,
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            core_eval_path,
+            rules_dir.clone(),
+        );
+
+        let mut bundle = q12_knowledge_bundle(
+            "bundle-q12-mixed",
+            "ds-q12-mixed",
+            "scn-mixed",
+            "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+        );
+        bundle.entries.push(evorule_bundle::BundleEntry {
+            entry_id: "rule-mixed".into(),
+            entry_kind: evorule_bundle::EntryKind::Rule,
+            rule_body: serde_json::json!({
+                "transform": [
+                    {"type": "set", "params": {"attr": "x", "value": 1}}
+                ]
+            }),
+            schema_ref: None,
+            provenance: bundle.entries[0].provenance.clone(),
+            domain: "physics".into(),
+            tags: vec![],
+            dependencies: vec![],
+        });
+        bundle.audit.content_hash = bundle.compute_content_hash();
+
+        let err = sessions
+            .import_bundle(&bundle, false)
+            .await
+            .expect_err("混装 bundle 必须显式拒绝");
+        assert!(err.contains("混装"), "错误应显式指出混装: {err}");
+        assert!(
+            !tmp.path().join("knowledge").join("bundles").exists(),
+            "拒绝的 bundle 不得落盘"
+        );
+    }
+
+    /// Q12 W6-3：schema_ref 领域 schema 未注册（resolver 未命中）→ 拒绝入库
+    /// （D3 fail-fast：无领域 schema 的 payload 不得入库，不静默放行）
+    #[tokio::test]
+    async fn test_knowledge_import_resolver_miss_rejected_oneshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let core_eval_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+        let sessions = SessionApi::new_with_full_config(
+            vec![],
+            100,
+            None,
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            core_eval_path,
+            rules_dir.clone(),
+        );
+
+        // 不注入领域 schema → resolver 未命中
+        let bundle = q12_knowledge_bundle(
+            "bundle-q12-unknown-schema",
+            "ds-q12-unknown",
+            "scn-unknown",
+            "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+        );
+        let err = sessions
+            .import_bundle(&bundle, false)
+            .await
+            .expect_err("resolver 未命中必须拒绝");
+        assert!(
+            err.contains("未在解析器注册"),
+            "错误应指向领域 schema 未注册: {err}"
+        );
+        assert!(
+            !tmp.path().join("knowledge").join("bundles").exists(),
+            "拒绝的 bundle 不得落盘"
         );
     }
 

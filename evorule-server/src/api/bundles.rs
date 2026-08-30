@@ -255,7 +255,7 @@ mod tests {
 
     use evorule_bundle::{
         BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DataDependencies, DatasetBundle,
-        LawRef, Provenance, ServiceDecl, SourceBinding, TestVerdict, VersionSelection,
+        EntryKind, LawRef, Provenance, ServiceDecl, SourceBinding, TestVerdict, VersionSelection,
         VersionSelectionMode, Versioning,
     };
 
@@ -287,7 +287,9 @@ mod tests {
             },
             entries: vec![BundleEntry {
                 entry_id: "entry-tax-001".into(),
+                entry_kind: EntryKind::Rule,
                 rule_body,
+                schema_ref: None,
                 provenance: Provenance {
                     source: "《企业所得税法》".into(),
                     clause: None,
@@ -515,7 +517,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let api = test_api(&tmp);
         // 符号三方一致需通过（合法 io_request 引用 payroll_svc），但第二个元指令
-        // 类型不在 6 元指令枚举内 → 逐条 Schema 门禁硬失败（第 7 项，而非符号校验拦截）
+        // 类型不在 6 元指令枚举内 → 硬失败。Q12/审计⑤ SSOT 收口后拦截点前移：
+        // BundleImporter::validate 内的 validate_rule_structure（与治理侧入库门禁同源）
+        // 在第 ① 步即拒绝，server 侧第 ② 步 Schema 门禁仍保留（双层防御）。
         let mut bundle = valid_bundle(serde_json::json!({
             "transform": [
                 { "type": "io_request", "params": { "io_type": "call_service", "service_name": "payroll_svc" } },
@@ -526,7 +530,10 @@ mod tests {
         bundle.audit.content_hash = hash;
 
         let err = api.import_bundle(&bundle, false).await.unwrap_err();
-        assert!(err.contains("Schema 门禁"), "应为 Schema 门禁硬失败: {err}");
+        assert!(
+            err.contains("不是元指令"),
+            "应为元指令白名单硬失败（SSOT 第①步）: {err}"
+        );
         assert!(!tmp
             .path()
             .join("rules/bundles/bundle-ds-tax-2024-v1")
