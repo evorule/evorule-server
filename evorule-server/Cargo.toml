@@ -52,7 +52,7 @@ tokio = { version = "1", features = [
 # HTTP API(直接使用 axum 类型)
 axum = "0.8"
 tower = { version = "0.5", features = ["limit"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "limit", "fs"] }
 tower_governor = "0.8"
 governor = "0.10"
 # H6: async-stream 和 futures-core 从 evorule-governance 迁移（server.rs 的 SSE stream! 宏需要）

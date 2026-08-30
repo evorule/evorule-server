@@ -6163,6 +6163,10 @@ pub struct GovernanceServer {
     /// 是否启用强制中止端点（POST /api/sessions/{id}/abort，--allow-abort）。
     /// 默认关闭：即使认证通过也不注册该路由（双保险，返回 404）。
     allow_abort: bool,
+
+    /// 静态前端目录（--web-dir）。Some 时由本服务同源托管 Web UI：
+    /// 未命中 /api 路由的 GET 请求走 ServeDir，未知路径回退 index.html（SPA）。
+    web_dir: Option<std::path::PathBuf>,
 }
 
 impl GovernanceServer {
@@ -6189,6 +6193,8 @@ impl GovernanceServer {
     ///
     /// - `allow_abort`：是否启用强制中止端点（默认 false，双保险）
     ///
+    /// - `web_dir`：静态前端目录（--web-dir）；None = 不托管静态文件
+    ///
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         state: AppState,
@@ -6208,6 +6214,8 @@ impl GovernanceServer {
         openapi_ui: bool,
 
         allow_abort: bool,
+
+        web_dir: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             state,
@@ -6227,6 +6235,8 @@ impl GovernanceServer {
             openapi_ui,
 
             allow_abort,
+
+            web_dir,
         }
     }
 
@@ -6248,6 +6258,7 @@ impl GovernanceServer {
             false,
             // 开发服务器默认也不启用 abort（双保险，需显式 --allow-abort）
             false,
+            None,
         )
     }
 
@@ -6266,6 +6277,7 @@ impl GovernanceServer {
             false,
             false,
             false,
+            None,
         )
     }
 
@@ -6611,6 +6623,26 @@ impl GovernanceServer {
             router.merge(
                 utoipa_swagger_ui::SwaggerUi::new("/api/docs")
                     .config(utoipa_swagger_ui::Config::new(["/api/openapi.json"])),
+            )
+        } else {
+            router
+        };
+
+        // 静态前端托管（--web-dir 显式开启，默认关闭）
+        //
+        // 挂为 fallback_service：只接管未命中 /api 与 /metrics 路由的请求，
+        // 未知路径回退 index.html（SvelteKit adapter-static 的 SPA fallback）。
+
+        let router = if let Some(dir) = self.web_dir.clone() {
+            tracing::info!(
+                "静态前端已挂载：--web-dir {}（未命中路由回退 index.html）",
+                dir.display()
+            );
+
+            router.fallback_service(
+                tower_http::services::ServeDir::new(&dir)
+                    .append_index_html_on_directories(true)
+                    .fallback(tower_http::services::ServeFile::new(dir.join("index.html"))),
             )
         } else {
             router
@@ -8061,6 +8093,7 @@ mod tests {
             false,
             false,
             true,
+            None,
         )
         .build_router()
     }
@@ -8103,6 +8136,64 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
 
         (status, json)
+    }
+
+    // --- 静态前端托管（--web-dir） ---
+
+    #[tokio::test]
+
+    async fn test_web_dir_serves_spa_fallback() {
+        let (state, _) = make_test_state();
+
+        let tmp = tempfile::tempdir().unwrap();
+
+        std::fs::write(tmp.path().join("index.html"), "<html>evorule-web</html>").unwrap();
+
+        let assets = tmp.path().join("assets");
+
+        std::fs::create_dir_all(&assets).unwrap();
+
+        std::fs::write(assets.join("app.js"), "console.log(1);").unwrap();
+
+        let router = GovernanceServer::new(
+            state,
+            AuthConfig::disabled(),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            Some(tmp.path().to_path_buf()),
+        )
+        .build_router();
+
+        // GET / → index.html（目录默认页）
+
+        let (status, _) = oneshot_json(router.clone(), "GET", "/", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        // 未命中路径 → SPA fallback 回 index.html
+
+        let (status, _) = oneshot_json(router.clone(), "GET", "/some/spa/route", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        // 静态资源文件按路径命中
+
+        let (status, _) = oneshot_json(router.clone(), "GET", "/assets/app.js", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        // /api 路由不被静态托管遮蔽
+
+        let (status, json) = oneshot_json(router, "GET", "/api/health", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        assert_eq!(json["message"], "ok");
     }
 
     // --- 公开端点（免认证） ---
@@ -8755,6 +8846,7 @@ mod tests {
             false,
             // 测试不启用 abort
             false,
+            None,
         )
         .build_router();
 
@@ -8785,6 +8877,7 @@ mod tests {
             false,
             // 测试不启用 abort
             false,
+            None,
         )
         .build_router();
 
@@ -8820,6 +8913,7 @@ mod tests {
             false,
             // 测试不启用 abort
             false,
+            None,
         )
         .build_router();
 
@@ -8848,6 +8942,7 @@ mod tests {
             false,
             // 测试不启用 abort
             false,
+            None,
         )
         .build_router()
     }

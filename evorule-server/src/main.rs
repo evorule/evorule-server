@@ -334,6 +334,14 @@ struct Cli {
     /// 路由（返回 404），防止误触发/滥用。
     #[arg(long, env = "EVORULE_ALLOW_ABORT")]
     allow_abort: bool,
+
+    /// 静态前端目录（可选，例 ./web）
+    ///
+    /// 设置后由本服务同源托管 Web UI（如 console-cloud 的 adapter-static 产物）：
+    /// 未命中 /api 路由的 GET 请求走静态文件，未知路径回退 index.html（SPA）。
+    /// 目录下必须存在 index.html，否则拒绝启动（fail-fast）。
+    #[arg(long, env = "EVORULE_WEB_DIR")]
+    web_dir: Option<PathBuf>,
 }
 
 /// 合并后的最终配置（CLI > env > file > default）
@@ -380,6 +388,8 @@ struct ResolvedConfig {
     openapi_ui: bool,
     /// 是否启用强制中止端点（--allow-abort，默认 false）
     allow_abort: bool,
+    /// 静态前端目录（--web-dir）；None = 不托管静态文件
+    web_dir: Option<PathBuf>,
     /// Workspace 元数据库路径 (P10, 默认 ./data/workspace.db)
     workspace_db: PathBuf,
 }
@@ -449,6 +459,8 @@ impl ResolvedConfig {
             openapi_ui: cli.openapi_ui,
             // abort 破坏性端点开关（默认 false，双保险）
             allow_abort: cli.allow_abort,
+            // 静态前端目录（默认 None，不托管静态文件）
+            web_dir: cli.web_dir,
             // P10: workspace 元数据库路径 (独立于业务 db_path)
             workspace_db: cli
                 .workspace_db
@@ -1152,7 +1164,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.openapi_ui,
         // abort 强制中止端点开关（--allow-abort 控制，默认关闭，双保险）
         cfg.allow_abort,
+        // 静态前端托管目录（--web-dir 控制，默认 None）
+        cfg.web_dir.clone(),
     );
+
+    // fail-fast：--web-dir 指定的目录必须存在 index.html，否则拒绝启动
+    if let Some(dir) = &cfg.web_dir {
+        if !dir.join("index.html").is_file() {
+            error!(
+                "🛑 拒绝启动：--web-dir {} 下未找到 index.html。\n\
+                 请先构建前端产物（如 console-cloud 仓 `npm run build`，产物在 build/），\n\
+                 再将该目录传入 --web-dir。",
+                dir.display()
+            );
+            std::process::exit(1);
+        }
+        info!("静态前端已启用：{}（同源托管，未命中路由回退 index.html）", dir.display());
+    }
 
     info!(
         "[4/4] HTTP 服务器已就绪，监听 {}（耗时: {}ms）",
