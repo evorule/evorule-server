@@ -42,6 +42,7 @@ desktop.ini
 *.log
 *.bak
 *~
+logs/
 
 # === Windows 构建产物 ===
 *.exe

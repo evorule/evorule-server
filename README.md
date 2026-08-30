@@ -115,12 +115,23 @@ cd evorule-server
 cargo build --release
 ```
 
-### 2. 配置(默认即可启动)
+### 2. 启动
+
+**最小启动（基础 session / 审计 / 时间机器 / 规则热重载）**——默认监听 `0.0.0.0:18080`,数据存 `./data/`:
 
 ```bash
-# 默认监听 0.0.0.0:18080,数据存 ./data/
 ./target/release/evorule-server
 ```
+
+> ⚠️ **启用 `call_external` / `call_service`（角色 1/3 外部服务调用）必须显式挂载服务注册表**,否则 `ServiceRegistry` 为空,任何 `service_name` 调用都会返回 `unknown service_name`:
+>
+> ```bash
+> ./target/release/evorule-server \
+>   --service-registry ./service_registry.json \
+>   --allow-loopback
+> ```
+>
+> 仓库已内置 `service_registry.json`(含 `echo_svc` / `llm_advisor` 示例)与 `echo_server.py` 演示后端。可用 `dev-start.sh` 一键拉起完整本地演示环境,并跑通 `role13_demo` 端到端验证。详见[实战指南](docs/INTEGRATION_GUIDE.md)。
 
 ### 3. 第一个 session
 
@@ -222,7 +233,7 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `EVORULE_LOG_MAX_SIZE_MB` | `--log-max-size-mb` | `1024`                       | 日志目录最大占用空间（MB）        |
 | `EVORULE_AUTO_VERIFY_THRESHOLD` | `--auto-verify-threshold` | `1000`            | 审计条目数超过此值时跳过验证（0 = 不限制） |
 | `EVORULE_AUTO_VERIFY_INTERVAL` | `--auto-verify-interval` | `1`               | 每 N 次 audit_new 验证一次        |
-| `EVORULE_SERVICE_REGISTRY` | `--service-registry` | (空)                        | service_name→URL 映射文件（call_service/call_external 用） |
+| `EVORULE_SERVICE_REGISTRY` | `--service-registry` | (空)                        | service_name→URL 映射文件（call_service/call_external 用）;**不配置则注册表为空,所有外部服务调用报 `unknown service_name`** |
 | `EVORULE_STATEMENT_WHITELIST` | `--statement-whitelist` | (空)                  | SQL 语句模板白名单文件（未设置则 QUERY_DB 全部返回错误） |
 | `EVORULE_ALLOW_LOOPBACK`  | `--allow-loopback`  | `false`                      | 允许 HTTP handler 访问 loopback 地址（仅本地开发, 生产禁用） |
 | `EVORULE_METRICS_AUTH`    | `--metrics-auth`    | `false`                      | 启用 /metrics 端点认证（需 Bearer token） |
@@ -295,6 +306,7 @@ cargo build --release
 | 多反应器协作原语                         | ❌       | 路线图                                |
 | 第三方安全审计                           | ❌       | 1.0 之前不做                          |
 | 集群模式 (cluster/)                      | ❌       | 已弃用,见 commit 历史                 |
+| 外部服务调用 (call_external/call_service) | ✅       | 需挂载 `--service-registry` + (本地) `--allow-loopback`;内置 `service_registry.json` 与 `echo_server.py` 演示后端,`role13_demo` 已端到端验证 |
 
 当前以本节"已知限制 / 路线图"表格为准。
 
