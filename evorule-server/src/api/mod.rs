@@ -10,6 +10,7 @@
 //! 此处仅包含 HTTP 路由处理（应用层策略）。
 
 pub mod bundles;
+pub mod knowledge;
 pub mod openapi;
 pub mod permissions;
 pub mod server;

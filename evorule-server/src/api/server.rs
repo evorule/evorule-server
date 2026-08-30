@@ -6469,6 +6469,19 @@ impl GovernanceServer {
                 "/api/bundles/imports",
                 get(crate::api::bundles::list_bundle_imports_handler),
             )
+            // Q12 段2 P1: 执行侧数据面（SDK/原生服务消费通道, 只读；受保护路由 S5）
+            .route(
+                "/api/knowledge",
+                get(crate::api::knowledge::knowledge_datasets_handler),
+            )
+            .route(
+                "/api/knowledge/{ds}/entries",
+                get(crate::api::knowledge::knowledge_entries_handler),
+            )
+            .route(
+                "/api/knowledge/{ds}/entries/{entry_id}",
+                get(crate::api::knowledge::knowledge_entry_handler),
+            )
             // 权限管理端点族（A-流 权限系统，受认证保护）
             .merge(crate::api::permissions::permissions_router())
             // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)

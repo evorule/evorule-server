@@ -58,6 +58,13 @@ pub struct EntryFileManifest {
     /// Knowledge 条目：领域 JSON Schema 引用（Q12 D3）；Rule 条目省略（None 不序列化）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_ref: Option<String>,
+    /// Knowledge 条目：领域分类（Q12 段2 P1 执行侧数据面过滤；Rule 条目省略）。
+    /// serde default 兼容旧 manifest（缺字段 → None，过滤不命中但不报错）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// Knowledge 条目：标签（Q12 段2 P1 执行侧数据面过滤；空省略）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// 原子落盘：`{rules_dir}/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
@@ -156,6 +163,18 @@ fn land_bundle_core(
                         Some(e.schema_ref.clone().unwrap_or_default())
                     } else {
                         None
+                    },
+                    // Q12 段2 P1：knowledge 条目携带 domain/tags，供执行侧数据面
+                    // （/api/knowledge）与治理侧同语法过滤；rule 条目不携带（loader 不读）。
+                    domain: if with_schema_ref {
+                        Some(e.domain.clone())
+                    } else {
+                        None
+                    },
+                    tags: if with_schema_ref {
+                        e.tags.clone()
+                    } else {
+                        Vec::new()
                     },
                 })
                 .collect(),

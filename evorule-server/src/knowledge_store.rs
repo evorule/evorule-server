@@ -27,9 +27,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
+use utoipa::ToSchema;
 
-/// 单条数据资产记录（进程内索引项，W3 直读单元）
-#[derive(Debug, Clone, Serialize)]
+/// 单条数据资产记录（进程内索引项，W3 直读单元；Q12 段2 P1 兼作数据面响应组件）
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct KnowledgeEntryRecord {
     pub dataset_id: String,
     pub entry_id: String,
@@ -41,6 +42,10 @@ pub struct KnowledgeEntryRecord {
     pub bundle_id: String,
     /// 治理侧源版本（溯源）
     pub source_version: String,
+    /// 领域分类（Q12 段2 P1：manifest 携带，数据面过滤用；旧 manifest → 空）
+    pub domain: String,
+    /// 标签（Q12 段2 P1：manifest 携带，数据面过滤用；旧 manifest → 空）
+    pub tags: Vec<String>,
 }
 
 /// 执行侧数据资产库（进程内，BTreeMap 确定性索引）
@@ -126,6 +131,8 @@ impl KnowledgeStore {
                         schema_ref: ef.schema_ref.clone(),
                         bundle_id: manifest.bundle_id.clone(),
                         source_version: manifest.source_version.clone(),
+                        domain: ef.domain.clone().unwrap_or_default(),
+                        tags: ef.tags.clone(),
                     },
                 );
             }
@@ -167,6 +174,96 @@ impl KnowledgeStore {
     pub fn bundle_count(&self) -> usize {
         self.bundle_count
     }
+
+    /// 数据集级清单（Q12 段2 P1/S1：`GET /api/knowledge` 数据源）
+    ///
+    /// 按 dataset_id 聚合（BTreeMap 序，确定性）：来源 bundle 集合、条目数、
+    /// schema_ref 集合。执行侧单激活语义下同 dataset 通常仅一个 bundle，
+    /// 聚合口径容忍多 bundle 并存（历史/手工落盘布局）。
+    pub fn list_datasets(&self) -> Vec<KnowledgeDatasetSummary> {
+        let mut acc: BTreeMap<String, KnowledgeDatasetSummary> = BTreeMap::new();
+        for rec in self.entries.values() {
+            let s = acc.entry(rec.dataset_id.clone()).or_insert_with(|| {
+                KnowledgeDatasetSummary {
+                    dataset_id: rec.dataset_id.clone(),
+                    bundle_ids: Vec::new(),
+                    entry_count: 0,
+                    schema_refs: Vec::new(),
+                }
+            });
+            if !s.bundle_ids.contains(&rec.bundle_id) {
+                s.bundle_ids.push(rec.bundle_id.clone());
+            }
+            s.entry_count += 1;
+            if let Some(sr) = &rec.schema_ref {
+                if !s.schema_refs.contains(sr) {
+                    s.schema_refs.push(sr.clone());
+                }
+            }
+        }
+        acc.into_values().collect()
+    }
+
+    /// 进程内过滤检索（Q12 段2 P1/S1：`GET /api/knowledge/{ds}/entries` 数据源）
+    ///
+    /// 过滤语义与治理侧 `search_knowledge_entries` 同口径：
+    /// - `dataset_id`：Some 时仅该数据集（None = 全库）；
+    /// - `domain`：精确匹配（忽略 ASCII 大小写）；
+    /// - `tags`：任一命中即保留（OR 语义，空列表不过滤）；
+    /// - `q`：entry_id / schema_ref / bundle_id / payload 文本拼接小写包含匹配。
+    ///
+    /// 数据量级小（执行侧数据面），线性扫描 + BTreeMap 确定性序，不做索引。
+    pub fn search(
+        &self,
+        dataset_id: Option<&str>,
+        q: Option<&str>,
+        domain: Option<&str>,
+        tags: &[String],
+    ) -> Vec<&KnowledgeEntryRecord> {
+        let lower_q = q.map(|s| s.to_lowercase());
+        let mut out = Vec::new();
+        for rec in self.entries.values() {
+            if let Some(ds) = dataset_id {
+                if rec.dataset_id != ds {
+                    continue;
+                }
+            }
+            if let Some(d) = domain {
+                if !rec.domain.eq_ignore_ascii_case(d) {
+                    continue;
+                }
+            }
+            if !tags.is_empty() && !tags.iter().any(|t| rec.tags.contains(t)) {
+                continue;
+            }
+            if let Some(lq) = &lower_q {
+                let hay = format!(
+                    "{} {} {} {}",
+                    rec.entry_id,
+                    rec.schema_ref.as_deref().unwrap_or(""),
+                    rec.bundle_id,
+                    rec.payload
+                )
+                .to_lowercase();
+                if !hay.contains(lq) {
+                    continue;
+                }
+            }
+            out.push(rec);
+        }
+        out
+    }
+}
+
+/// 数据集级清单项（Q12 段2 P1/S1：`GET /api/knowledge` 响应元素）
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct KnowledgeDatasetSummary {
+    pub dataset_id: String,
+    /// 来源 bundle 集合（单激活语义下通常 1 个）
+    pub bundle_ids: Vec<String>,
+    pub entry_count: usize,
+    /// 该数据集条目引用的领域 schema 集合（去重，BTreeMap 序）
+    pub schema_refs: Vec<String>,
 }
 
 /// 领域 schema 解析（Q12 D3 执行侧注入点）：
@@ -312,5 +409,72 @@ mod tests {
         let hit = lookup_domain_schema_in(tmp.path(), "https://rpsm.example/schemas/body.json");
         assert!(hit.is_some());
         assert!(lookup_domain_schema_in(tmp.path(), "https://nope").is_none());
+    }
+
+    /// Q12 段2 P1/S1：list_datasets 聚合 + search 过滤矩阵（domain/tags/q 组合）
+    #[test]
+    fn list_datasets_and_search_filter_matrix() {
+        let tmp = tempfile::tempdir().unwrap();
+        // ds-a: domain=physics, tags=[spring,demo]
+        kn_bundle(
+            tmp.path(),
+            "bundle-ds-a-v1",
+            "ds-a",
+            "scn-001",
+            "https://rpsm.example/schemas/body.json",
+        );
+        // 给 ds-a 的 manifest 手工加 domain/tags（kn_bundle 不带，模拟新落盘格式）
+        let ma = tmp.path().join("bundles").join("bundle-ds-a-v1").join("bundle_manifest.json");
+        let mut v: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&ma).unwrap(),
+        )
+        .unwrap();
+        v["entry_files"][0]["domain"] = serde_json::json!("physics");
+        v["entry_files"][0]["tags"] = serde_json::json!(["spring", "demo"]);
+        std::fs::write(&ma, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+        // ds-b: 旧格式 manifest（无 domain/tags 字段）→ 默认空
+        kn_bundle(tmp.path(), "bundle-ds-b-v1", "ds-b", "mix-002", "https://x/schema.json");
+
+        let store = KnowledgeStore::load_from_disk(tmp.path()).unwrap();
+        assert_eq!(store.len(), 2);
+
+        // list_datasets：BTreeMap 序聚合
+        let dss = store.list_datasets();
+        assert_eq!(dss.len(), 2);
+        assert_eq!(dss[0].dataset_id, "ds-a");
+        assert_eq!(dss[0].bundle_ids, vec!["bundle-ds-a-v1"]);
+        assert_eq!(dss[0].entry_count, 1);
+        assert_eq!(
+            dss[0].schema_refs,
+            vec!["https://rpsm.example/schemas/body.json"]
+        );
+
+        // search：domain 命中 / 忽略大小写 / 不命中
+        assert_eq!(store.search(Some("ds-a"), None, Some("physics"), &[]).len(), 1);
+        assert_eq!(store.search(Some("ds-a"), None, Some("PHYSICS"), &[]).len(), 1);
+        assert_eq!(store.search(Some("ds-a"), None, Some("chem"), &[]).len(), 0);
+
+        // search：tags 任一命中（OR）
+        assert_eq!(
+            store
+                .search(Some("ds-a"), None, None, &["demo".to_string()])
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .search(Some("ds-a"), None, None, &["nope".to_string()])
+                .len(),
+            0
+        );
+
+        // search：q 包含匹配（payload 文本）
+        assert_eq!(store.search(Some("ds-a"), Some("mass"), None, &[]).len(), 1);
+        assert_eq!(store.search(Some("ds-a"), Some("no-hit"), None, &[]).len(), 0);
+
+        // search：跨数据集过滤（ds-b 旧格式 domain 为空 → 不过滤维度下仍可见）
+        assert_eq!(store.search(Some("ds-b"), None, None, &[]).len(), 1);
+        assert_eq!(store.search(None, None, None, &[]).len(), 2);
     }
 }

@@ -86,6 +86,10 @@ use utoipa::OpenApi;
         crate::api::bundles::import_bundle_dry_run_handler,
         crate::api::bundles::active_bundles_handler,
         crate::api::bundles::list_bundle_imports_handler,
+        // knowledge 组（Q12 段2 P1 执行侧数据面）
+        crate::api::knowledge::knowledge_datasets_handler,
+        crate::api::knowledge::knowledge_entries_handler,
+        crate::api::knowledge::knowledge_entry_handler,
         // openapi 元数据
         crate::api::openapi::openapi_json,
     ),
@@ -143,6 +147,11 @@ use utoipa::OpenApi;
         crate::api::bundles::ImportResponse,
         crate::api::bundles::ActiveBundlesResponse,
         crate::api::bundles::ActiveBundleInfo,
+        // knowledge 组（Q12 段2 P1 执行侧数据面）
+        crate::api::knowledge::KnowledgeDatasetsResponse,
+        crate::api::knowledge::KnowledgeEntriesResponse,
+        crate::knowledge_store::KnowledgeDatasetSummary,
+        crate::knowledge_store::KnowledgeEntryRecord,
         // 查询参数
         crate::api::server::CreateSessionFromParentParams,
         crate::api::server::CreateSessionForkParams,
