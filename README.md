@@ -267,13 +267,13 @@ evorule-server --config evorule.json
 
 ### 插件清单
 
-进程内原生插件（如 `plugins/demo-services`）支持**部署期启用/裁剪**：通过清单文件声明启用集，改清单 + 重启即生效（不做运行时热启停——运行时热变更与确定性审计链的兼容性未论证）。
+进程内原生插件（`plugins/` 下各 crate，如 `demo-services`、`physics-services`）支持**部署期启用/裁剪**：通过清单文件声明各插件启用集，改清单 + 重启即生效（不做运行时热启停——运行时热变更与确定性审计链的兼容性未论证）。
 
 ```bash
 evorule-server --plugins ./plugin_manifest.json
 ```
 
-清单文件形态（`services` 省略 = 该插件全部服务启用；显式列出 = 子集启用）：
+清单文件形态（多插件，键 = 插件 id；`services` 省略 = 该插件全部服务启用；显式列出 = 子集启用；未列出的插件全启）：
 
 ```json
 {
@@ -282,6 +282,10 @@ evorule-server --plugins ./plugin_manifest.json
       "enabled": true,
       "services": ["inverse_kinematics_solver", "llm_advisor", "robot_move_joints",
                    "shadow_ik_solver", "sampling_service", "rule_sandbox", "config_persist"]
+    },
+    "physics-services": {
+      "enabled": true,
+      "services": ["physics_simulate", "physics_energy", "physics_grav_band"]
     }
   }
 }
@@ -305,12 +309,13 @@ evorule-server --plugins ./plugin_manifest.json
   "success": true,
   "message": "ok",
   "plugins": {
-    "demo-services": { "enabled": true, "services": ["config_persist"] }
+    "demo-services": { "enabled": true, "services": ["config_persist"] },
+    "physics-services": { "enabled": true, "services": ["physics_energy"] }
   }
 }
 ```
 
-**新增原生服务** = 向 `plugins/demo-services` 的 `NATIVE_SERVICES` 声明表追加一项（路由/校验/健康可见性零改动），部署方按需在清单中启用；详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)。进程外能力不走本清单，一律经 `--service-registry` 声明文件接入。
+**新增原生插件/服务** = 新建（或在既有）插件 crate 的 `NATIVE_SERVICES` 声明表追加服务项 + 在 `src/main.rs` 的 `PLUGIN_DEFS` 登记表登记（全启路由/子集路由构造子，声明序即挂载序）——清单解析/挂载链/健康可见性机制代码零改动；部署方按需在清单中启用；详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)、[plugins/physics-services/README.md](plugins/physics-services/README.md)。进程外能力不走本清单，一律经 `--service-registry` 声明文件接入。
 
 ---
 

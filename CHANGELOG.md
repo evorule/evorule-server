@@ -29,6 +29,9 @@
 
 ### 🆕 新增
 
+- **第二个进程内原生插件 `plugins/physics-services`(UV-035 泛化验证)** — vendored rpsm-core v0.1.0 确定性物理内核(辛积分器,编译期锁定常量,同平台同输入逐位一致)+ 3 个无状态原生服务(`physics_simulate`/`physics_energy`/`physics_grav_band`,浮点字符串化,NaN/Inf 显式拒绝,数量/步数预算上限)+ 插件本地声明 SSOT `official_native_services.json`
+- **插件挂载机制泛化(UV-035)** — `main.rs` 单插件专属装配退役,引入 `PluginDef`/`PLUGIN_DEFS` 进程内插件登记表:新增插件 = 登记表追加一项(id + 服务名清单 + 路由构造子),清单解析(All/Subset/Off)/挂载链(声明序逐插件承接回落链尾)/`/api/health` plugins 节多键呈现,机制代码零改动
+- **E2E 双插件验收(UV-035)** — `tests/plugins_e2e.rs` 新增生产同构双插件链用例(原生命中/穿透回落诚实报错/声明序锁定/链序正确性);`scripts/run-plugins-e2e.ps1` 扩至 5 场景(双全启/双子集/双停用/混合清单互不干扰/physics 未知名 fail-fast)
 - **AGPL + 商业双许可体系** — 新增 `DUAL_LICENSE.md`(双轨许可说明 + Server 特有白标授权边界)、`COMMERCIAL_LICENSE.md`(商业许可协议模板)、`FREE_COMMERCIAL_LICENSE.md`(政府/学术界/非营利免费豁免)、`CLA-individual.md`(个人贡献者许可,赋能双许可可执行);对齐 evorule 核心仓双许可体系
 - **`CONTRIBUTING.md` 补充双许可声明与 CLA 必要性** — `协议` 扩为 `协议与 CLA`
 

@@ -687,22 +687,22 @@ DELETE /api/permissions/entries/{entry_id}
 # 全量启用（缺省，不传 --plugins 即可，存量零迁移）
 evorule-server --addr 0.0.0.0:18080
 
-# 子集启用：只暴露 config_persist 一个原生服务
-echo '{ "plugins": { "demo-services": { "enabled": true, "services": ["config_persist"] } } }' > plugin_manifest.json
+# 子集启用：只暴露 demo 的 config_persist + physics 的 physics_energy
+echo '{ "plugins": { "demo-services": { "enabled": true, "services": ["config_persist"] }, "physics-services": { "enabled": true, "services": ["physics_energy"] } } }' > plugin_manifest.json
 evorule-server --addr 0.0.0.0:18080 --plugins plugin_manifest.json
 
 # 全部停用：call_service/call_external 直连 HTTP 注册表
-echo '{ "plugins": { "demo-services": { "enabled": false } } }' > plugin_manifest.json
+echo '{ "plugins": { "demo-services": { "enabled": false }, "physics-services": { "enabled": false } } }' > plugin_manifest.json
 ```
 
 要点：
 
 1. **校验 fail-fast**：未知名/重复名/空集/未知插件 id 均启动期报错退出（含合法服务名与自诊断指引），不静默忽略。
-2. **回落语义**：未启用的服务名回落 `--service-registry` HTTP 注册表，与进程外服务同路径——已发布规则不受裁剪影响，只是执行路径从原生变为 HTTP（如实报错 `unknown service_name` 当注册表也未配置时）。
-3. **可见性**：`GET /api/health` 的 `plugins` 节呈现实际挂载服务名集，供运维探活/对账。
+2. **回落语义**：未启用的服务名沿插件挂载链（声明序）逐层回落，链尾直连 `--service-registry` HTTP 注册表，与进程外服务同路径——已发布规则不受裁剪影响，只是执行路径从原生变为 HTTP（如实报错 `unknown service_name` 当注册表也未配置时）。
+3. **可见性**：`GET /api/health` 的 `plugins` 节按插件 id 逐一呈现实际挂载服务名集，供运维探活/对账。
 4. **进程外能力不走本清单**：一律经 `service_registry.json` 声明接入（见 §1.3）。
 
-完整语义与新增原生服务指引见 [README「插件清单」](../README.md#插件清单) 与 [plugins/demo-services/README.md](../plugins/demo-services/README.md)。
+完整语义与新增原生插件/服务指引见 [README「插件清单」](../README.md#插件清单)、[plugins/demo-services/README.md](../plugins/demo-services/README.md) 与 [plugins/physics-services/README.md](../plugins/physics-services/README.md)。
 
 ---
 

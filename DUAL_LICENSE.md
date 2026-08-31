@@ -23,6 +23,8 @@
 **生效日期**: 2026-08-26
 **适用范围**: EvoRule Server 及 server 配套库(`core/auth`、`core/io_handlers`、`core/metrics`、`core/hot_reload`、`core/debug_control`、`core/semantic_invariants`、`core/time_machine`、`core/rule_tools`、`core/rule_schema`、`core/workspace`、`plugins/demo-services`、`evorule-server`)
 
+**除外**: `plugins/physics-services` 仅按 AGPL-3.0-or-later 许可、**不参与商业许可**——该 crate 内嵌自第三方实验仓 rpsm-demo 的 AGPL 内核(vendored 快照),EvoRule Project 不持有其全部版权,无权以商业许可再授权。
+
 ---
 
 ## 概述
