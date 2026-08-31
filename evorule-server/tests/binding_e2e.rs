@@ -180,6 +180,7 @@ async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
                 template: None,
             }],
         }),
+        event_schemas: vec![],
         meta: Meta {
             created_at: "2026-08-31T00:00:00Z".into(),
             created_by: "governor".into(),

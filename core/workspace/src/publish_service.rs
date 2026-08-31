@@ -609,6 +609,7 @@ fn build_publish_bundle(
             }),
             law_ref: None,
             view_of: None,
+            event_schemas: vec![],
         },
         entries,
         data_dependencies: None,

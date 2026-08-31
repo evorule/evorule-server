@@ -9648,6 +9648,7 @@ mod tests {
                 version_selection: None,
                 law_ref: None,
                 view_of: None,
+                event_schemas: vec![],
             },
             entries: vec![BundleEntry {
                 entry_id: "e-400".into(),
@@ -9765,6 +9766,7 @@ mod tests {
                     effective_to: None,
                 }),
                 view_of: None,
+                event_schemas: vec![],
             },
             entries: vec![BundleEntry {
                 entry_id: entry_id.into(),

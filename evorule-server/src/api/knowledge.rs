@@ -247,6 +247,7 @@ mod tests {
                     effective_to: None,
                 }),
                 view_of: None,
+                event_schemas: vec![],
             },
             entries: vec![BundleEntry {
                 entry_id: entry_id.into(),

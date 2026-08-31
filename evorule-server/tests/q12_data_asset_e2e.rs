@@ -96,6 +96,7 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
             pinned_include_patch: None,
         }),
         data_dependencies: None,
+        event_schemas: vec![],
         meta: Meta {
             created_at: "2026-08-30T00:00:00Z".into(),
             created_by: "governor".into(),

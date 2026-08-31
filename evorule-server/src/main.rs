@@ -1626,6 +1626,7 @@ mod tests {
             server: FileServerConfig {
                 addr: Some("0.0.0.0:1111".to_string()),
                 max_rounds: Some(999),
+                demo_auth: None,
             },
             ..Default::default()
         };
@@ -1640,6 +1641,7 @@ mod tests {
             server: FileServerConfig {
                 addr: Some("0.0.0.0:7777".to_string()),
                 max_rounds: Some(300),
+                demo_auth: None,
             },
             auth: FileAuthConfig {
                 token: Some("filetoken".to_string()),
