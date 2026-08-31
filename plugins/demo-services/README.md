@@ -28,15 +28,17 @@
 
 ## 7 个原生服务
 
+> 服务名以源码 `NATIVE_SERVICES` 声明表为 SSOT（`lib.rs`），下表与声明表同步维护；清单启用/治理侧目录均以此名为准。
+
 | 服务名 | 源文件 | 功能 |
 |--------|--------|------|
-| `ik_solver` | `ik_solver.rs` (8.8KB) | 逆运动学求解器（LMA 算法） |
-| `llm_advisor` | `llm_advisor.rs` (6.9KB) | LLM 建议生成（规则驱动，非真实 LLM 调用） |
-| `robot_move` | `robot_move.rs` (3.4KB) | 机器人移动指令生成（确定性 ID，无墙钟依赖） |
-| `rule_sandbox` | `rule_sandbox.rs` (12.6KB) | 规则沙盒试运行（隔离执行 + 结果对比） |
-| `sampling` | `sampling.rs` (2.7KB) | 采样决策器（决定哪些规则需要影子验证） |
-| `shadow_validate` | `shadow_validate.rs` (2.7KB) | 影子验证（新旧规则并行执行 + 结果对比） |
-| `config_persist` | `config_persist.rs` (2.6KB) | 配置持久化（服务配置读写） |
+| `inverse_kinematics_solver` | `ik_solver.rs` | 逆运动学求解器（LMA 算法） |
+| `robot_move_joints` | `robot_move.rs` | 机器人移动指令生成（确定性 ID，无墙钟依赖） |
+| `llm_advisor` | `llm_advisor.rs` | LLM 建议生成（规则驱动，非真实 LLM 调用;sensitive:涉及外部 LLM API） |
+| `shadow_ik_solver` | `shadow_validate.rs` | 影子 IK 求解（新旧规则并行执行 + 结果对照） |
+| `sampling_service` | `sampling.rs` | 采样决策器（决定哪些规则需要影子验证） |
+| `rule_sandbox` | `rule_sandbox.rs` | 规则沙盒试运行（隔离执行 + 结果对比） |
+| `config_persist` | `config_persist.rs` | 配置持久化（热加载补丁 mock） |
 
 ---
 
@@ -69,20 +71,46 @@ io_request(call_service, service_name="ik_solver", args={...})
 
 ## 挂载方式
 
-在 `evorule-server` 的 `main.rs` 中：
+在 `evorule-server` 的 `main.rs` 中（按插件清单决定挂载形态，见下节）：
 
 ```rust
 use evorule_demo_services::DemoServiceRouter;
 use evorule_io_handlers::ServiceRegistryHandler;
 
-// 复合路由：原生优先，HTTP 回落
-let router = DemoServiceRouter::new(
-    ServiceRegistryHandler::from_registry_path("service_registry.json")?
-);
+// 全量挂载：复合路由，原生优先，HTTP 回落
+let router = DemoServiceRouter::new(svc_handler.clone());
+
+// 子集挂载（UV-033 插件清单化）：仅启用清单声明的服务
+let router = DemoServiceRouter::with_enabled(svc_handler.clone(), &["config_persist"])?;
 
 // 挂载到 IoDispatcher
-dispatcher.register_handler("call_service", Arc::new(router));
+dispatcher.register(IoType::call_service(), router);
 ```
+
+---
+
+## 插件清单化（部署期启用/裁剪）
+
+本插件支持部署期按清单启用子集（`evorule-server --plugins plugin_manifest.json`）：
+
+- `services` 省略 = 全部 7 服务启用；显式列出 = 子集启用；`enabled: false` = 不挂载本路由。
+- 未知名 / 重复名 / 空启用集 → 启动 fail-fast（错误含合法服务名与自诊断指引，不静默去重）。
+- 未启用的服务名回落 `ServiceRegistryHandler`（HTTP），与进程外服务同路径。
+- 运行可见性：`GET /api/health` 的 `plugins` 节呈现实际挂载的服务名集（声明表序）。
+
+完整清单语义见 evorule-server README「插件清单」章节。
+
+---
+
+## 新增一个原生服务（C5 指引）
+
+新增原生能力 = 向 `lib.rs` 的 `NATIVE_SERVICES` 声明表**追加一项**，宿主代码零改动：
+
+1. 实现 `NativeService` trait（`execute(&self, args: &JsonValue) -> IoResult`；浮点一律字符串返回，确定性优先，禁用墙钟/随机源）。
+2. 在 `NATIVE_SERVICES` 声明表追加 `NativeServiceDef { name, sensitive, description, make }`（`name` 全局唯一，即 `io_request` 的 `service_name`）。
+3. 路由分发 / 清单校验 / `/api/health` plugins 节 / 治理侧同步守卫自动生效，无需改动其他代码。
+4. 部署方按需在 `plugin_manifest.json` 的 `services` 中启用（缺省全启用，无需动作）。
+5. 新增后在 `NATIVE_SERVICES` 同步守卫测试与治理侧 `OFFICIAL_NATIVE_SERVICES` 种子对齐（守卫测试锁定漂移）。
 
 ---
 

@@ -234,6 +234,7 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `EVORULE_AUTO_VERIFY_THRESHOLD` | `--auto-verify-threshold` | `1000`            | 审计条目数超过此值时跳过验证（0 = 不限制） |
 | `EVORULE_AUTO_VERIFY_INTERVAL` | `--auto-verify-interval` | `1`               | 每 N 次 audit_new 验证一次        |
 | `EVORULE_SERVICE_REGISTRY` | `--service-registry` | (空)                        | service_name→URL 映射文件（call_service/call_external 用）;**不配置则注册表为空,所有外部服务调用报 `unknown service_name`** |
+| `EVORULE_PLUGINS`         | `--plugins`         | (空)                         | 插件清单文件（未配置 = 进程内原生插件全部启用;见[插件清单](#插件清单)） |
 | `EVORULE_STATEMENT_WHITELIST` | `--statement-whitelist` | (空)                  | SQL 语句模板白名单文件（未设置则 QUERY_DB 全部返回错误） |
 | `EVORULE_ALLOW_LOOPBACK`  | `--allow-loopback`  | `false`                      | 允许 HTTP handler 访问 loopback 地址（仅本地开发, 生产禁用） |
 | `EVORULE_METRICS_AUTH`    | `--metrics-auth`    | `false`                      | 启用 /metrics 端点认证（需 Bearer token） |
@@ -255,13 +256,61 @@ evorule-server --config evorule.json
     "rules_dir": "./rules",
     "db_path": "./data/evorule.db",
     "memory_dir": "./data/memory",
-    "wal_dir": "./data/wal"
+    "wal_dir": "./data/wal",
+    "plugins": "./plugin_manifest.json"
   },
   "log": { "level": "info", "format": "json", "file": "./logs/evorule.log" }
 }
 ```
 
 文件不存在或解析失败时降级为纯 CLI/环境变量启动（仅 warn 日志，不报错）。
+
+### 插件清单
+
+进程内原生插件（如 `plugins/demo-services`）支持**部署期启用/裁剪**：通过清单文件声明启用集，改清单 + 重启即生效（不做运行时热启停——运行时热变更与确定性审计链的兼容性未论证）。
+
+```bash
+evorule-server --plugins ./plugin_manifest.json
+```
+
+清单文件形态（`services` 省略 = 该插件全部服务启用；显式列出 = 子集启用）：
+
+```json
+{
+  "plugins": {
+    "demo-services": {
+      "enabled": true,
+      "services": ["inverse_kinematics_solver", "llm_advisor", "robot_move_joints",
+                   "shadow_ik_solver", "sampling_service", "rule_sandbox", "config_persist"]
+    }
+  }
+}
+```
+
+语义约定：
+
+| 清单写法 | 行为 |
+|---|---|
+| 未配置 `--plugins`（缺省） | 全部原生插件/服务启用——存量部署零迁移 |
+| `enabled: true` + `services` 省略 | 该插件全部服务启用 |
+| `enabled: true` + `services` 列出子集 | 仅启用列出的服务；未启用服务名回落 HTTP 注册表（`--service-registry`） |
+| `enabled: false` | 不挂载该插件，`call_service`/`call_external` 直连 HTTP 注册表 |
+
+校验为 **fail-fast**（启动期拒绝，不静默忽略）：清单文件不可读、JSON 非法、未知插件 id、`services` 为空、服务名未注册/重复声明，均报错退出并附自诊断指引（合法服务名清单、修复路径）。
+
+**运行可见性**：`GET /api/health` 响应含 `plugins` 节，如实呈现启动期挂载事实——
+
+```json
+{
+  "success": true,
+  "message": "ok",
+  "plugins": {
+    "demo-services": { "enabled": true, "services": ["config_persist"] }
+  }
+}
+```
+
+**新增原生服务** = 向 `plugins/demo-services` 的 `NATIVE_SERVICES` 声明表追加一项（路由/校验/健康可见性零改动），部署方按需在清单中启用；详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)。进程外能力不走本清单，一律经 `--service-registry` 声明文件接入。
 
 ---
 
