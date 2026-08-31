@@ -13,6 +13,7 @@ members = [
     "core/workspace",
     "evorule-server",
     "plugins/demo-services",
+    "plugins/physics-services",
 ]
 
 [workspace.package]
