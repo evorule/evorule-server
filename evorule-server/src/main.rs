@@ -811,6 +811,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "已禁用（纯内存模式）".to_string()
         }
     );
+    // UV-019 持久化防呆：未配 WAL 时共享事实（平台用户/角色/认证事件/治理事实）与会话
+    // 审计链均纯内存，重启即全部丢失。必须显著警示（丢数据风险 + 配置方法），
+    // 不允许静默降级——与共享事实恢复失败拒绝启动（AUDIT-A1）同一防呆口径。
+    if cfg.wal_dir.is_none() {
+        warn!(
+            "未配置 --wal-dir：平台用户/角色/认证事件等共享事实与会话审计链均为纯内存模式，\
+             服务重启即全部丢失（开发模式语义，正式部署不可接受）。\
+             启用持久化：--wal-dir <目录>（或环境变量 EVORULE_WAL_DIR / 配置文件 paths.wal_dir）"
+        );
+    }
     info!(
         "实时审计验证: {}",
         if cfg.auto_verify {
