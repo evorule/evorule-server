@@ -22,16 +22,17 @@
 //! **会话 token**:不透明随机 256-bit hex,库存 blake3 哈希(不存明文)。
 //! 默认有效期 7 天,登出/停用用户即时吊销(追加 revoked 事实)。
 //!
-//! **认证检查边界(W1)**:bootstrap/login 公开;me/logout/change-password
-//! 在 handler 内自校验平台 token。与其他 API 的统一 401/403 语义在 W2 接入
-//! 全局 auth 中间件时完成。
+//! **认证检查边界(W2b)**:bootstrap/login/status 公开;me/logout/change-password
+//! 与平台管理端点在 handler 内自校验平台 token/权限点;业务 API 经
+//! [`unified_auth_middleware`](挂 protected_routes)统一认证(双凭据:
+//! 静态 token 或平台会话),401 统一 JSON 错误体。
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use blake3::Hasher;
-
 use evorule_governance::shared_facts_log::SharedFactsLog;
 use evorule_tcb::JsonValue;
 
@@ -696,6 +697,74 @@ fn require_session(
         .validate_session(&token_hash, now_ms())
         .map_err(err_json)?;
     Ok((snap, username, perms))
+}
+
+// ---------------------------------------------------------------------------
+// W2b:业务 API 统一认证中间件(双凭据 + 统一 401 语义)
+// ---------------------------------------------------------------------------
+
+/// 统一 401 响应体(与平台端点错误形状一致:success/message)
+fn unauthorized_response() -> axum::response::Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({
+            "success": false,
+            "message": "未认证或凭据已失效;请先登录获取平台会话 token",
+        })),
+    )
+        .into_response()
+}
+
+/// 业务 API 统一认证中间件(挂 protected_routes)。
+///
+/// **双凭据语义**(UV-017 W2b,用户裁定:业务 API 覆盖,侧车凭据沿用静态 token):
+///
+/// 1. AuthConfig 未启用(开发模式)→ 放行,语义不变;
+/// 2. Bearer token 命中静态 user/service token → 放行并注入
+///    [`crate::auth::CallerIdentity`](evo-agent 侧车审计桥走此通道,即"白名单");
+/// 3. 否则按平台会话校验(库存 blake3 哈希)→ 命中注入 `CallerIdentity::User`
+///    (平台用户等同普通 user 凭据,不可写受保护域 `shared.*.stable.*`);
+/// 4. 全部未命中 → 401 + 统一 JSON 错误体(此前为空 body 的裸状态码)。
+///
+/// 403 语义由端点层自理:平台管理端点在 handler 内校验权限点。
+pub async fn unified_auth_middleware(
+    State((auth_config, shared)): State<(crate::auth::AuthConfig, SharedFactsLog)>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, axum::response::Response> {
+    if !auth_config.is_enabled() {
+        return Ok(next.run(req).await);
+    }
+    let raw = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .to_string();
+    if !raw.is_empty() && auth_config.validate(&raw) {
+        let identity = auth_config.identity(&raw);
+        req.extensions_mut().insert(identity);
+        return Ok(next.run(req).await);
+    }
+    // 平台会话凭据(非空才尝试;空 token 直接 401,与静态路径 N1 规则一致)
+    if raw.is_empty() {
+        return Err(unauthorized_response());
+    }
+    let token_hash = Hasher::new()
+        .update(raw.as_bytes())
+        .finalize()
+        .to_hex()
+        .to_string();
+    let snap = PlatformSnapshot::replay(&shared).map_err(|_| unauthorized_response())?;
+    match snap.validate_session(&token_hash, now_ms()) {
+        Ok((username, _perms)) => {
+            req.extensions_mut().insert(crate::auth::CallerIdentity::User);
+            tracing::debug!(username = %username, "平台会话认证通过");
+            Ok(next.run(req).await)
+        }
+        Err(_) => Err(unauthorized_response()),
+    }
 }
 
 /// `POST /api/platform/auth/logout` — 吊销当前会话(幂等)。
@@ -1691,6 +1760,65 @@ mod tests {
         );
     }
 
+
+    #[tokio::test]
+    async fn test_unified_auth_middleware_dual_credentials() {
+        use axum::body::Body;
+        use axum::http::Request as HttpRequest;
+        use axum::middleware;
+        use tower::ServiceExt;
+
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+        bootstrap(
+            State(shared.clone()),
+            Json(BootstrapReq {
+                username: "root".into(),
+                password: "admin-pass-123".into(),
+                display_name: String::new(),
+            }),
+        )
+        .await
+        .expect_ok();
+        let platform_token = login_token(&shared, "root", "admin-pass-123").await;
+
+        let auth_config = crate::auth::AuthConfig::new(vec!["static-svc-token".into()], true);
+        let app: Router = Router::new()
+            .route("/api/ping", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                (auth_config, shared.clone()),
+                unified_auth_middleware,
+            ));
+
+        let send = |app: Router, token: Option<String>| {
+            let mut builder = HttpRequest::builder().uri("/api/ping");
+            if let Some(t) = token {
+                builder = builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {t}"));
+            }
+            app.oneshot(builder.body(Body::empty()).unwrap())
+        };
+
+        // 1. 无凭据 → 401 + 统一 JSON 错误体
+        let resp = send(app.clone(), None).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["success"], serde_json::Value::Bool(false));
+
+        // 2. 静态 token(侧车通道)→ 200
+        let resp = send(app.clone(), Some("static-svc-token".into()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 3. 平台会话 token(console 通道)→ 200
+        let resp = send(app.clone(), Some(platform_token)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // 4. 未知 token → 401
+        let resp = send(app, Some("bogus-token".into())).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
 
     #[test]
     fn test_token_generate_and_hash() {

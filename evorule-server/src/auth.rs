@@ -12,11 +12,11 @@
 //! - 使用 `subtle::ConstantTimeEq` 做恒定时间比较，防止时序攻击
 //! - 支持 Token 轮换：`current_tokens` + `previous_tokens` 双 token 并存过渡
 //! - `validate()` 遍历所有 token，不因匹配到就提前返回，避免枚举攻击
+//!
+//! UV-017 W2b：HTTP 中间件职责已移交 `api::platform_auth::unified_auth_middleware`
+//! （双凭据：静态 token 或平台会话），本模块只保留凭据模型（AuthConfig /
+//! CallerIdentity）与受保护域判定（requires_service_identity）。
 
-use axum::extract::{Request, State};
-use axum::http::StatusCode;
-use axum::middleware::Next;
-use axum::response::Response;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tracing::warn;
@@ -88,6 +88,11 @@ impl AuthConfig {
             current_service_tokens: Arc::new(Vec::new()),
             enabled: false,
         }
+    }
+
+    /// 是否启用认证（UV-017 W2b：统一中间件据此决定放行/校验）
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     /// 轮换 token：将 current_tokens 移入 previous_tokens，设置新的 current_tokens
@@ -185,41 +190,6 @@ pub fn requires_service_identity(path: &str) -> bool {
     segs.windows(2).any(|w| {
         w[0] == "stable" && (w[1] == "llm" || w[1] == "system")
     })
-}
-
-/// 从请求头提取 Bearer token
-fn extract_bearer_token(req: &Request) -> Option<String> {
-    req.headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .map(|s| s.to_string())
-}
-
-/// Axum 认证中间件
-///
-/// 从 `Authorization: Bearer <token>` 头提取 token，
-/// 验证是否在合法 token 列表中。验证通过后按凭据归属注入
-/// [`CallerIdentity`] 请求扩展（B5-server）；认证禁用时不注入，
-/// handler 侧按放行处理。
-pub async fn auth_middleware(
-    State(auth_config): State<AuthConfig>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    if !auth_config.enabled {
-        return Ok(next.run(req).await);
-    }
-
-    let token = extract_bearer_token(&req).ok_or(StatusCode::UNAUTHORIZED)?;
-
-    if auth_config.validate(&token) {
-        let identity = auth_config.identity(&token);
-        req.extensions_mut().insert(identity);
-        Ok(next.run(req).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
 }
 
 #[cfg(test)]

@@ -2654,21 +2654,6 @@ async fn metrics_handler(State(metrics): State<SharedMetrics>) -> String {
     metrics.render_as_text()
 }
 
-/// 认证中间件包装器
-///
-///
-/// H6: 应用层始终启用认证（auth.rs 已迁移到应用层，无 cfg 门控）
-///
-async fn auth_middleware_wrapper(
-    State(auth_config): State<crate::auth::AuthConfig>,
-
-    req: axum::extract::Request,
-
-    next: axum::middleware::Next,
-) -> Result<axum::response::Response, axum::http::StatusCode> {
-    crate::auth::auth_middleware(State(auth_config), req, next).await
-}
-
 /// HTTP 请求计数中间件（N3：接入 http_requests_total 指标）
 ///
 ///
@@ -6466,9 +6451,8 @@ impl GovernanceServer {
             // C5：执行侧已绑定服务能力对账（仅只读能力元数据，不改状态）——
             // 供场景包导入前服务需求预检与治理侧服务目录（GET /v1/services）核对。
             .route("/api/services", get(list_services_handler))
-            // UV-017 平台授权:bootstrap/login 免认证(handler 内自校验平台 token
-            // 的端点同挂此组,因静态 AuthConfig 只认服务级 token,平台会话校验
-            // 由 platform_auth 模块自理;W2 统一 401/403 语义时再收编)
+            // UV-017 平台授权:bootstrap/login/status 免认证;其余平台端点
+            // (me/管理端点等)handler 内自校验平台 token/权限点。
             .merge(crate::api::platform_auth::platform_auth_router());
 
         // abort 破坏性端点双保险：即使认证通过也默认拒绝，仅 --allow-abort 显式
@@ -6619,9 +6603,12 @@ impl GovernanceServer {
             // abort 双保险：条件挂载（--allow-abort 关闭时为空 Router）
             .merge(abort_router)
             // rewind/diff 已移至 application/core/time_machine（本地实现）
+            // UV-017 W2b:统一认证中间件(双凭据:静态 user/service token 或
+            // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
+            // 内部调用方沿用静态 service token,无需改造。
             .layer(axum::middleware::from_fn_with_state(
-                auth,
-                auth_middleware_wrapper,
+                (auth, self.state.shared_facts.clone()),
+                crate::api::platform_auth::unified_auth_middleware,
             ));
 
         // CORS 白名单（从 self.allowed_origins 构建）
@@ -6734,8 +6721,8 @@ impl GovernanceServer {
 
         let metrics_router = if self.metrics_requires_auth {
             metrics_router.layer(axum::middleware::from_fn_with_state(
-                self.auth.clone(),
-                auth_middleware_wrapper,
+                (self.auth.clone(), self.state.shared_facts.clone()),
+                crate::api::platform_auth::unified_auth_middleware,
             ))
         } else {
             metrics_router
