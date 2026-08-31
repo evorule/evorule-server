@@ -1605,6 +1605,10 @@ pub struct AppState {
     workspace: WorkspaceState,
     /// Phase 1: 输入净化器（HTTP 入口 Prompt 注入防御，静默改写）
     sanitizer: Arc<InputSanitizer>,
+
+    /// UV-020:演示登录入口开关（--demo-auth，默认开）。
+    /// 经 /api/platform/auth/status 公开下发，登录页据此隐藏演示入口。
+    demo_auth: bool,
 }
 
 impl AppState {
@@ -1636,7 +1640,30 @@ impl AppState {
 
             workspace,
             sanitizer,
+            // UV-020:演示登录入口默认开（体验包语义；生产建议 --demo-auth false）
+            demo_auth: true,
         }
+    }
+
+    /// UV-020:设置演示登录入口开关（builder 风格，默认 true）
+    pub fn with_demo_auth(mut self, enabled: bool) -> Self {
+        self.demo_auth = enabled;
+        self
+    }
+
+    /// UV-020:演示登录入口是否可用
+    pub fn demo_auth(&self) -> bool {
+        self.demo_auth
+    }
+}
+
+/// UV-020:演示登录入口开关的 axum 状态提取器（经 FromRef 从 AppState 派生）。
+#[derive(Clone, Copy, Debug)]
+pub struct DemoAuthFlag(pub bool);
+
+impl FromRef<AppState> for DemoAuthFlag {
+    fn from_ref(state: &AppState) -> Self {
+        DemoAuthFlag(state.demo_auth)
     }
 }
 
@@ -9581,6 +9608,19 @@ mod tests {
             Arc::new(InputSanitizer::with_default_rules()),
         );
         (state, ws_db)
+    }
+
+    /// UV-020:演示登录开关 — 默认开(体验包语义),with_demo_auth(false) 可关闭,
+    /// 且 DemoAuthFlag 经 FromRef 提取与 AppState 字段一致(status 端点下发语义)。
+    #[tokio::test]
+    async fn test_demo_auth_flag_default_on_and_builder_off() {
+        let (state, _ws_db) = make_test_state();
+        assert!(state.demo_auth(), "默认应开启演示登录入口(体验包默认开)");
+        assert!(DemoAuthFlag::from_ref(&state).0);
+
+        let state = state.with_demo_auth(false);
+        assert!(!state.demo_auth());
+        assert!(!DemoAuthFlag::from_ref(&state).0);
     }
 
     /// C14：/api/bundles/import 校验失败必须 HTTP 400（显式错误体，不静默）。

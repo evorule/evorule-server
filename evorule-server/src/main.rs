@@ -108,6 +108,8 @@ struct FileConfig {
 struct FileServerConfig {
     addr: Option<String>,
     max_rounds: Option<usize>,
+    /// UV-020:演示登录入口开关（缺省 true；生产部署建议 false）
+    demo_auth: Option<bool>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -344,6 +346,19 @@ struct Cli {
     /// 目录下必须存在 index.html，否则拒绝启动（fail-fast）。
     #[arg(long, env = "EVORULE_WEB_DIR")]
     web_dir: Option<PathBuf>,
+
+    /// 演示登录入口开关（UV-020）：经 /api/platform/auth/status 公开下发，
+    /// 登录页据此隐藏「演示模式（预置角色一键登录）」入口。
+    /// 体验包默认开；生产部署建议 `--demo-auth false`（或 env EVORULE_DEMO_AUTH=false / 配置文件 server.demo_auth）。
+    /// 支持 `--demo-auth`（=true）与 `--demo-auth false` 两种写法。
+    #[arg(
+        long,
+        env = "EVORULE_DEMO_AUTH",
+        default_missing_value = "true",
+        num_args = 0..=1,
+        value_parser = clap::value_parser!(bool),
+    )]
+    demo_auth: Option<bool>,
 }
 
 /// 合并后的最终配置（CLI > env > file > default）
@@ -392,6 +407,8 @@ struct ResolvedConfig {
     allow_abort: bool,
     /// 静态前端目录（--web-dir）；None = 不托管静态文件
     web_dir: Option<PathBuf>,
+    /// UV-020:演示登录入口开关（默认 true；CLI > env > file > default）
+    demo_auth: bool,
     /// Workspace 元数据库路径 (P10, 默认 ./data/workspace.db)
     workspace_db: PathBuf,
 }
@@ -463,6 +480,8 @@ impl ResolvedConfig {
             allow_abort: cli.allow_abort,
             // 静态前端目录（默认 None，不托管静态文件）
             web_dir: cli.web_dir,
+            // UV-020:演示登录入口开关（CLI > env > file > 默认 true）
+            demo_auth: cli.demo_auth.or(file.server.demo_auth).unwrap_or(true),
             // P10: workspace 元数据库路径 (独立于业务 db_path)
             workspace_db: cli
                 .workspace_db
@@ -832,6 +851,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "已禁用".to_string()
         }
     );
+    // UV-020:演示登录入口状态回显（经 auth/status 下发给登录页）
+    info!(
+        "演示登录: {}",
+        if cfg.demo_auth {
+            "已启用（默认；生产部署建议 --demo-auth false）".to_string()
+        } else {
+            "已禁用（登录页不显示演示模式入口）".to_string()
+        }
+    );
 
     // 2. 加载规则（TCB 宪法 core_eval.json + rules_dir 业务规则合并）
     // cfg.rules_dir 之前被解析但从未消费，现在真正合并。
@@ -1116,7 +1144,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shared_facts,
         workspace_state,
         Arc::new(InputSanitizer::with_default_rules()),
-    );
+    )
+    // UV-020:演示登录入口开关注入（经 auth/status 公开下发）
+    .with_demo_auth(cfg.demo_auth);
 
     info!(
         "[3/4] 审计器 + GovernanceApi + SessionApi 已创建（耗时: {}ms）",

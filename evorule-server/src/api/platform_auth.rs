@@ -982,11 +982,19 @@ fn ensure_other_active_admin(
 }
 
 /// `GET /api/platform/auth/status` — 公开:登录页判断是否需要 bootstrap 引导。
-async fn auth_status(State(shared): State<SharedFactsLog>) -> ApiResult {
+/// UV-020:同时下发演示登录入口开关(demo_auth),登录页据此隐藏演示模式入口。
+async fn auth_status(
+    State(shared): State<SharedFactsLog>,
+    State(demo): State<crate::api::server::DemoAuthFlag>,
+) -> ApiResult {
     let snap = PlatformSnapshot::replay(&shared).map_err(err_json)?;
     Ok(ok_json(
         StatusCode::OK,
-        serde_json::json!({ "success": true, "needs_bootstrap": snap.users.is_empty() }),
+        serde_json::json!({
+            "success": true,
+            "needs_bootstrap": snap.users.is_empty(),
+            "demo_auth": demo.0,
+        }),
     ))
 }
 
