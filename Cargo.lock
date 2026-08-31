@@ -1033,6 +1033,7 @@ dependencies = [
  "evorule-governance",
  "evorule-hash",
  "evorule-io-handlers",
+ "evorule-physics-services",
  "evorule-reactor",
  "evorule-rule",
  "evorule-rule-schema",

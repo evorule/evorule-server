@@ -44,6 +44,9 @@ evorule-bundle = { version = "0.3.0" }
 # Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
 evorule-demo-services = { path = "../plugins/demo-services" }
 
+# UV-035: 确定性物理仿真原生插件（第二个进程内插件,泛化验证载体）
+evorule-physics-services = { path = "../plugins/physics-services" }
+
 # 异步运行时
 tokio = { version = "1", features = [
     "rt-multi-thread",

@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use evorule_reactor::{FactsLog, IoType, Reactor};
+use evorule_reactor::{FactsLog, IoHandler, IoType, Reactor};
 #[cfg(test)]
 use evorule_tcb::JsonValue;
 use std::time::Instant;
@@ -51,6 +51,7 @@ use evorule_io_handlers::{
 };
 // Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
 use evorule_demo_services::DemoServiceRouter;
+use evorule_physics_services::PhysicsServiceRouter;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
@@ -506,14 +507,14 @@ impl ResolvedConfig {
     }
 }
 
-// ===== UV-030 插件清单(plugin manifest)=====
+// ===== UV-030 插件清单(UV-035 泛化:插件注册表,机制代码零插件特判) =====
 
-/// demo-services 插件的挂载决定(部署期事实,启动后不可变)
+/// 单个插件的挂载决定(部署期事实,启动后不可变)
 #[derive(Debug, Clone, PartialEq)]
-enum DemoServicesMount {
+enum PluginMount {
     /// 未提及/未配置清单 → 全部启用(存量零迁移)
     All,
-    /// 启用子集(清单已校验:未知名/重复名在 with_enabled 内 fail-fast)
+    /// 启用子集(清单已校验:未知名/重复名在 make_router_enabled 内 fail-fast)
     Subset(Vec<String>),
     /// 明确停用 → 不挂载本路由,call_service/call_external 直连 HTTP 注册表
     Off,
@@ -537,13 +538,68 @@ fn default_true() -> bool {
     true
 }
 
-/// 加载并解析插件清单;未配置 → 全部启用(缺省)。
+/// 子集构造函数类型(类型别名消 clippy::type_complexity)。
+type MakeRouterEnabled = fn(Arc<dyn IoHandler>, &[&str]) -> Result<Arc<dyn IoHandler>, String>;
+
+/// 进程内插件登记项(UV-035 泛化):新增进程内插件 = 在 [`PLUGIN_DEFS`] 追加一项
+/// (id + 服务名清单 + 路由构造子),清单解析/挂载链/健康节机制代码零改动。
+struct PluginDef {
+    /// 清单与 /api/health 中的插件 id
+    id: &'static str,
+    /// 该插件全部合法服务名(声明序;清单空集报错与健康节呈现用)
+    service_names: fn() -> Vec<&'static str>,
+    /// 全启构造(承接回落链尾)
+    make_router: fn(Arc<dyn IoHandler>) -> Arc<dyn IoHandler>,
+    /// 子集构造(未知名/重复名/空集 fail-fast)
+    make_router_enabled: MakeRouterEnabled,
+}
+
+fn demo_make_router(fallback: Arc<dyn IoHandler>) -> Arc<dyn IoHandler> {
+    Arc::new(DemoServiceRouter::new(fallback))
+}
+
+fn demo_make_router_enabled(
+    fallback: Arc<dyn IoHandler>,
+    enabled: &[&str],
+) -> Result<Arc<dyn IoHandler>, String> {
+    DemoServiceRouter::with_enabled(fallback, enabled).map(|r| Arc::new(r) as Arc<dyn IoHandler>)
+}
+
+fn physics_make_router(fallback: Arc<dyn IoHandler>) -> Arc<dyn IoHandler> {
+    Arc::new(PhysicsServiceRouter::new(fallback))
+}
+
+fn physics_make_router_enabled(
+    fallback: Arc<dyn IoHandler>,
+    enabled: &[&str],
+) -> Result<Arc<dyn IoHandler>, String> {
+    PhysicsServiceRouter::with_enabled(fallback, enabled).map(|r| Arc::new(r) as Arc<dyn IoHandler>)
+}
+
+/// 进程内插件登记表(声明序即挂载序与回落链序)。
+const PLUGIN_DEFS: &[PluginDef] = &[
+    PluginDef {
+        id: "demo-services",
+        service_names: DemoServiceRouter::native_service_names,
+        make_router: demo_make_router,
+        make_router_enabled: demo_make_router_enabled,
+    },
+    PluginDef {
+        id: "physics-services",
+        service_names: PhysicsServiceRouter::native_service_names,
+        make_router: physics_make_router,
+        make_router_enabled: physics_make_router_enabled,
+    },
+];
+
+/// 加载并解析插件清单;未配置 → 全部插件全启(缺省)。
 ///
 /// fail-fast 原则(自愈):文件不可读 / JSON 非法 / 未知插件 id / 空 services
 /// 均显式报错并附自诊断指引,不静默忽略任何清单条目。
-fn load_demo_services_mount(path: Option<&PathBuf>) -> Result<DemoServicesMount, String> {
+/// 清单未提及的插件 = All(缺省全启,存量零迁移)。
+fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, PluginMount)>, String> {
     let Some(p) = path else {
-        return Ok(DemoServicesMount::All);
+        return Ok(PLUGIN_DEFS.iter().map(|d| (d.id, PluginMount::All)).collect());
     };
     let content = std::fs::read_to_string(p).map_err(|e| {
         format!(
@@ -556,39 +612,41 @@ fn load_demo_services_mount(path: Option<&PathBuf>) -> Result<DemoServicesMount,
     let manifest: PluginManifestFile = serde_json::from_str(&content).map_err(|e| {
         format!(
             "插件清单 JSON 非法 {}: {}（自诊断指引: ① 校验 JSON 语法; \
-             ② 合法形态见 README「插件清单」章节: {{\"plugins\":{{\"demo-services\":{{\"enabled\":true,\"services\":[...]}}}}}}）",
+             ② 合法形态见 README「插件清单」章节: {{\"plugins\":{{\"demo-services\":{{\"enabled\":true}},\"physics-services\":{{\"enabled\":true}}}}}}）",
             p.display(),
             e
         )
     })?;
-    let mut mount = DemoServicesMount::All;
+    let mut mounts: Vec<(&'static str, PluginMount)> = Vec::new();
     for (id, entry) in &manifest.plugins {
-        if id != "demo-services" {
-            return Err(format!(
-                "插件清单含未知的进程内插件 id '{id}' — 当前可用: [demo-services]。\
+        let def = PLUGIN_DEFS.iter().find(|d| d.id == *id).ok_or_else(|| {
+            let ids = PLUGIN_DEFS.iter().map(|d| d.id).collect::<Vec<_>>().join(", ");
+            format!(
+                "插件清单含未知的进程内插件 id '{id}' — 当前可用: [{ids}]。\
                  自诊断指引: ① 进程外服务不走 plugin_manifest,请配置 service_registry.json; \
-                 ② 新增进程内插件需在 evorule-server 挂载点登记后才能进清单"
-            ));
-        }
+                 ② 新增进程内插件需在 main.rs PLUGIN_DEFS 登记后才能进清单"
+            )
+        })?;
         if !entry.enabled {
-            mount = DemoServicesMount::Off;
+            mounts.push((def.id, PluginMount::Off));
             continue;
         }
         match &entry.services {
-            None => mount = DemoServicesMount::All,
+            None => mounts.push((def.id, PluginMount::All)),
             Some(names) => {
                 if names.is_empty() {
                     return Err(format!(
-                        "插件清单 demo-services.services 为空 — 若要停用全部原生服务请直接 \
+                        "插件清单 {}.services 为空 — 若要停用全部原生服务请直接 \
                          \"enabled\": false; 若要启用请至少列出一个服务名。合法服务名: [{}]",
-                        evorule_demo_services::DemoServiceRouter::native_service_names().join(", ")
+                        def.id,
+                        (def.service_names)().join(", ")
                     ));
                 }
-                mount = DemoServicesMount::Subset(names.clone());
+                mounts.push((def.id, PluginMount::Subset(names.clone())));
             }
         }
     }
-    Ok(mount)
+    Ok(mounts)
 }
 
 /// 将 `serde_json::Value` 转换为 `evorule_tcb::JsonValue`
@@ -1031,59 +1089,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         HttpHandler::new()
     });
     let svc_handler = Arc::new(ServiceRegistryHandler::new(registry.clone(), http.clone()));
-    // UV-030: 插件清单决定 demo-services 挂载形态（缺省 = 全部启用,存量零迁移）。
+    // UV-030/UV-035: 插件清单决定各插件挂载形态（缺省全启,存量零迁移）。
     // 校验失败 → 启动 fail-fast（错误含自诊断指引）。
-    let plugin_mount = load_demo_services_mount(cfg.plugins.as_ref())?;
-    let demo_router: Option<Arc<DemoServiceRouter>> = match &plugin_mount {
-        DemoServicesMount::Off => {
-            info!(
-                "插件清单: demo-services enabled=false — call_service/call_external \
-                 直连 HTTP 服务注册表（{} entries）",
-                reg_count
-            );
-            None
-        }
-        DemoServicesMount::All => {
-            if cfg.plugins.is_some() {
+    let plugin_mounts = load_plugin_mounts(cfg.plugins.as_ref())?;
+    // 按登记表声明序构建回落链:各插件路由原生优先,未命中回落链尾(HTTP 注册表)。
+    // 逆序包裹——链条头 = 第一个已挂载插件;全停用时链条头 = 直连 svc_handler。
+    let mut chain_tail: Arc<dyn evorule_reactor::IoHandler> = svc_handler.clone();
+    let mut plugin_health = serde_json::Map::new();
+    for (id, mount) in plugin_mounts.iter().rev() {
+        let Some(def) = PLUGIN_DEFS.iter().find(|d| d.id == *id) else {
+            continue; // 清单解析已锁定 id ∈ PLUGIN_DEFS,此分支不可达,防御性跳过
+        };
+        match mount {
+            PluginMount::Off => {
                 info!(
-                    "插件清单: demo-services 全部启用（{} 个原生服务）",
-                    DemoServiceRouter::native_service_names().len()
+                    "插件清单: {id} enabled=false — 该插件服务 call_service/call_external \
+                     直连 HTTP 服务注册表（{} entries）",
+                    reg_count
                 );
+                plugin_health.insert(id.to_string(), serde_json::json!({ "enabled": false }));
             }
-            Some(Arc::new(DemoServiceRouter::new(svc_handler.clone())))
+            PluginMount::All => {
+                if cfg.plugins.is_some() {
+                    info!(
+                        "插件清单: {id} 全部启用（{} 个原生服务）",
+                        (def.service_names)().len()
+                    );
+                }
+                plugin_health.insert(
+                    id.to_string(),
+                    serde_json::json!({ "enabled": true, "services": (def.service_names)() }),
+                );
+                chain_tail = (def.make_router)(chain_tail);
+            }
+            PluginMount::Subset(names) => {
+                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                let router = (def.make_router_enabled)(chain_tail.clone(), &refs)
+                    .map_err(|e| format!("插件清单校验失败: {}", e))?;
+                // 健康呈现按声明序过滤(与路由器 enabled_service_names 同口径)
+                let all_names = (def.service_names)();
+                let enabled_ordered: Vec<&str> =
+                    all_names.iter().copied().filter(|n| refs.contains(n)).collect();
+                info!(
+                    "插件清单: {id} 启用子集 [{}]（声明表全量 {},已裁剪 {}）",
+                    enabled_ordered.join(", "),
+                    all_names.len(),
+                    all_names.len() - enabled_ordered.len()
+                );
+                plugin_health.insert(
+                    id.to_string(),
+                    serde_json::json!({ "enabled": true, "services": enabled_ordered }),
+                );
+                chain_tail = router;
+            }
         }
-        DemoServicesMount::Subset(names) => {
-            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            let router = DemoServiceRouter::with_enabled(svc_handler.clone(), &refs)
-                .map_err(|e| format!("插件清单校验失败: {}", e))?;
-            info!(
-                "插件清单: demo-services 启用子集 [{}]（声明表全量 {} 个,已裁剪 {} 个）",
-                router.enabled_service_names().join(", "),
-                DemoServiceRouter::native_service_names().len(),
-                DemoServiceRouter::native_service_names().len() - router.enabled_service_names().len()
-            );
-            Some(Arc::new(router))
-        }
-    };
+    }
+    let call_handler: Arc<dyn evorule_reactor::IoHandler> = chain_tail;
     let memory = Arc::new(MemoryHandler::new(cfg.memory_dir.clone()));
     let db_wrapped = WhitelistedDbHandler::new(db, statement_whitelist);
-    // UV-030: 注入插件健康快照 → /api/health 的 plugins 节(启动后不可变)。
-    // 按运行时挂载事实呈现:All/Subset 均恒产出 Some(router)(校验失败已启动 fail-fast),
-    // None = demo-services 未挂载(Off),如实报 enabled=false。
-    let plugin_health = match &demo_router {
-        Some(r) => serde_json::json!({
-            "demo-services": { "enabled": true, "services": r.enabled_service_names() }
-        }),
-        None => serde_json::json!({
-            "demo-services": { "enabled": false }
-        }),
-    };
-    evorule_server::api::server::set_plugin_health(plugin_health);
-    // 复合路由:原生优先,HTTP 回落;插件停用时 call_service/call_external 直连 svc_handler
-    let call_handler: Arc<dyn evorule_reactor::IoHandler> = match &demo_router {
-        Some(r) => r.clone(),
-        None => svc_handler.clone(),
-    };
+    // UV-030/UV-035: 注入插件健康快照 → /api/health 的 plugins 节(启动后不可变)。
+    // 按登记表逐插件如实呈现运行时挂载事实,键序 = 插件登记声明序。
+    evorule_server::api::server::set_plugin_health(serde_json::Value::Object(plugin_health));
     let dispatcher = IoDispatcher::builder()
         .register(IoType::call_external(), call_handler.clone())
         .register(IoType::http_get(), http.clone())
@@ -1611,7 +1677,7 @@ mod tests {
     use clap::Parser;
     use tempfile::TempDir;
 
-    // ============ UV-030 插件清单加载测试 ============
+    // ============ UV-030/UV-035 插件清单加载测试 ============
 
     fn write_manifest(dir: &TempDir, content: &str) -> PathBuf {
         let p = dir.path().join("plugin_manifest.json");
@@ -1619,13 +1685,24 @@ mod tests {
         p
     }
 
+    /// 从挂载结果中取指定插件的挂载决定
+    fn mount_of<'a>(
+        mounts: &'a [(&'static str, PluginMount)],
+        id: &str,
+    ) -> &'a PluginMount {
+        &mounts
+            .iter()
+            .find(|(i, _)| *i == id)
+            .unwrap_or_else(|| panic!("插件 {id} 应在挂载结果中"))
+            .1
+    }
+
     #[test]
     fn test_plugin_mount_none_defaults_all() {
-        // 未配置清单 → 全部启用(存量零迁移)
-        assert_eq!(
-            load_demo_services_mount(None).unwrap(),
-            DemoServicesMount::All
-        );
+        // 未配置清单 → 登记表全量插件全部启用(存量零迁移)
+        let mounts = load_plugin_mounts(None).unwrap();
+        assert_eq!(mounts.len(), PLUGIN_DEFS.len());
+        assert!(mounts.iter().all(|(_, m)| m == &PluginMount::All));
     }
 
     #[test]
@@ -1633,18 +1710,21 @@ mod tests {
         let dir = TempDir::new().unwrap();
         // services 省略 = 全部启用
         let p = write_manifest(&dir, r#"{ "plugins": { "demo-services": { "enabled": true } } }"#);
-        assert_eq!(load_demo_services_mount(Some(&p)).unwrap(), DemoServicesMount::All);
+        let mounts = load_plugin_mounts(Some(&p)).unwrap();
+        assert_eq!(mount_of(&mounts, "demo-services"), &PluginMount::All);
         // enabled=false → Off
         let p = write_manifest(&dir, r#"{ "plugins": { "demo-services": { "enabled": false } } }"#);
-        assert_eq!(load_demo_services_mount(Some(&p)).unwrap(), DemoServicesMount::Off);
+        let mounts = load_plugin_mounts(Some(&p)).unwrap();
+        assert_eq!(mount_of(&mounts, "demo-services"), &PluginMount::Off);
         // 子集
         let p = write_manifest(
             &dir,
             r#"{ "plugins": { "demo-services": { "enabled": true, "services": ["config_persist", "llm_advisor"] } } }"#,
         );
+        let mounts = load_plugin_mounts(Some(&p)).unwrap();
         assert_eq!(
-            load_demo_services_mount(Some(&p)).unwrap(),
-            DemoServicesMount::Subset(vec![
+            mount_of(&mounts, "demo-services"),
+            &PluginMount::Subset(vec![
                 "config_persist".to_string(),
                 "llm_advisor".to_string()
             ])
@@ -1652,22 +1732,64 @@ mod tests {
     }
 
     #[test]
+    fn test_plugin_mount_multi_plugin() {
+        // UV-035 双插件:子集与停用并存,互不影响;未提及插件缺省全启(存量零迁移)
+        let dir = TempDir::new().unwrap();
+        let p = write_manifest(
+            &dir,
+            r#"{ "plugins": {
+                "demo-services": { "enabled": true, "services": ["config_persist"] },
+                "physics-services": { "enabled": false }
+            } }"#,
+        );
+        let mounts = load_plugin_mounts(Some(&p)).unwrap();
+        assert_eq!(
+            mount_of(&mounts, "demo-services"),
+            &PluginMount::Subset(vec!["config_persist".to_string()])
+        );
+        assert_eq!(mount_of(&mounts, "physics-services"), &PluginMount::Off);
+        // 只提及 physics-services:demo-services 未提及 = 缺省全启
+        let p = write_manifest(
+            &dir,
+            r#"{ "plugins": { "physics-services": { "enabled": true, "services": ["physics_simulate"] } } }"#,
+        );
+        let mounts = load_plugin_mounts(Some(&p)).unwrap();
+        assert_eq!(
+            mount_of(&mounts, "physics-services"),
+            &PluginMount::Subset(vec!["physics_simulate".to_string()])
+        );
+    }
+
+    #[test]
     fn test_plugin_mount_fail_fast() {
         let dir = TempDir::new().unwrap();
-        // 未知插件 id → Err 含指引
+        // 未知插件 id → Err 含指引与全部可用 id
         let p = write_manifest(&dir, r#"{ "plugins": { "no-such-plugin": { "enabled": true } } }"#);
-        let err = load_demo_services_mount(Some(&p)).unwrap_err();
-        assert!(err.contains("no-such-plugin") && err.contains("demo-services"), "{err}");
-        // 空 services → Err 指引改用 enabled=false
-        let p = write_manifest(&dir, r#"{ "plugins": { "demo-services": { "enabled": true, "services": [] } } }"#);
-        let err = load_demo_services_mount(Some(&p)).unwrap_err();
-        assert!(err.contains("enabled") && err.contains("false"), "{err}");
+        let err = load_plugin_mounts(Some(&p)).unwrap_err();
+        assert!(
+            err.contains("no-such-plugin")
+                && err.contains("demo-services")
+                && err.contains("physics-services"),
+            "{err}"
+        );
+        // 空 services → Err 指引改用 enabled=false,并列出该插件合法服务名
+        let p = write_manifest(
+            &dir,
+            r#"{ "plugins": { "physics-services": { "enabled": true, "services": [] } } }"#,
+        );
+        let err = load_plugin_mounts(Some(&p)).unwrap_err();
+        assert!(
+            err.contains("physics-services.services")
+                && err.contains("physics_simulate")
+                && err.contains("enabled"),
+            "{err}"
+        );
         // JSON 非法 → Err
         let p = write_manifest(&dir, "{ not-json");
-        let err = load_demo_services_mount(Some(&p)).unwrap_err();
+        let err = load_plugin_mounts(Some(&p)).unwrap_err();
         assert!(err.contains("JSON 非法"), "{err}");
         // 文件不存在 → Err(显式报错,不静默降级)
-        let err = load_demo_services_mount(Some(&dir.path().join("missing.json"))).unwrap_err();
+        let err = load_plugin_mounts(Some(&dir.path().join("missing.json"))).unwrap_err();
         assert!(err.contains("读取插件清单失败"), "{err}");
     }
 
