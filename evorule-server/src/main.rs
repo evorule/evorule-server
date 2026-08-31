@@ -116,7 +116,7 @@ struct FileAuthConfig {
     /// B5-server：受信服务管道 token（service 身份，可写受保护域）
     #[serde(default)]
     service_token: Option<String>,
-    /// CORS 允许的 Origin 列表（空列表 = 仅允许同源）
+    /// CORS 允许的 Origin 列表（未配置/空 = 放行本机 loopback Origin 任意端口）
     /// 例：["https://app.example.com", "http://localhost:5173"]
     allowed_origins: Option<Vec<String>>,
 }
@@ -303,8 +303,10 @@ struct Cli {
     #[arg(long, env = "EVORULE_STATEMENT_WHITELIST")]
     statement_whitelist: Option<PathBuf>,
 
-    /// CORS 允许的 Origin 列表（逗号分隔；空 = 仅允许同源；* 代表放行全部）
+    /// CORS 允许的 Origin 列表（逗号分隔；空 = 放行本机 loopback Origin
+    /// (localhost/127.0.0.1/[::1] 任意端口,开发友好);* 代表放行全部）
     ///
+    /// 生产部署(监听 0.0.0.0)必须显式配置精确白名单。
     /// 例：--allowed-origins "https://app.example.com,http://localhost:5173"
     #[arg(long, env = "EVORULE_ALLOWED_ORIGINS", value_delimiter = ',')]
     allowed_origins: Vec<String>,

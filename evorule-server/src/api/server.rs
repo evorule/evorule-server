@@ -2418,7 +2418,7 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use tower_http::limit::RequestBodyLimitLayer;
 
@@ -6246,9 +6246,16 @@ pub struct GovernanceServer {
 
     ///
 
-    /// - 空列表：只允许同源请求（`AllowOrigin::default()` 不允许任何跨域）
+
+
+    /// - 空列表:默认放行本机 loopback Origin(localhost/127.0.0.1/[::1]
+
+    ///   任意端口,开发友好);外部 Origin 仍被拒绝
 
     /// - 非空列表：只允许列表中的 Origin 通过。列表元素示例：`"http://localhost:3000"`
+
+    /// - 生产部署(监听 0.0.0.0)必须显式配置精确白名单
+
     allowed_origins: Arc<Vec<String>>,
 
     /// S2：/metrics 端点是否需要认证（默认 false，Prometheus scraper 通常不带 token）
@@ -6284,7 +6291,9 @@ impl GovernanceServer {
     ///
     /// - `rate_limit_burst`：突发上限（令牌桶容量）
     ///
-    /// - `allowed_origins`：CORS 允许的 Origin 白名单（空=严格同源，非空=白名单）
+    /// - `allowed_origins`：CORS 允许的 Origin 白名单（空=放行本机 loopback 任意端口，
+
+    ///   非空=精确白名单）
     ///
     /// - `metrics_requires_auth`：/metrics 是否需要认证
     ///
@@ -6634,9 +6643,21 @@ impl GovernanceServer {
         }
 
         let cors = if origins_cloned.is_empty() {
-            // 严格同源模式：不暴露任何 CORS 响应头，浏览器自动拒绝跨域。
-
-            // 仍显式声明 methods/headers 以防空 Origin 的边缘场景。
+            // 默认模式(未配置 --allowed-origins):放行本机 loopback Origin
+            // (localhost / 127.0.0.1 / [::1],任意端口,http/https)。
+            //
+            // 为什么放行 loopback:开发/演示场景前端端口不固定(vite 5173/5174/
+            // 4173、preview 随机端口),固定白名单会造成"首次启动连不上"的摩擦。
+            //
+            // 安全边界仍然保留:
+            // - 外部网站(drive-by)的 Origin 是非 loopback 的(如 http://evil.com),
+            //   fetch http://localhost:18080 仍会被本策略拒绝;
+            // - 生产部署(监听 0.0.0.0)必须显式配置 --allowed-origins 白名单,
+            //   精确到协议+域名+端口,不应依赖本默认值。
+            tracing::info!(
+                "CORS: 未配置 --allowed-origins,默认放行本机 Origin \
+                 (localhost/127.0.0.1/[::1] 任意端口);生产部署请显式配置白名单"
+            );
 
             CorsLayer::new()
                 .allow_methods([
@@ -6651,6 +6672,22 @@ impl GovernanceServer {
                     axum::http::header::AUTHORIZATION,
                     axum::http::header::ACCEPT,
                 ])
+                .allow_origin(AllowOrigin::predicate(|origin, _parts| {
+                    // 非 ASCII Origin(不合法)to_str 会 Err,一律拒绝
+                    let s = origin.to_str().unwrap_or("");
+                    let host = s
+                        .strip_prefix("http://")
+                        .or_else(|| s.strip_prefix("https://"));
+                    match host {
+                        Some(h) => {
+                            h.starts_with("localhost")
+                                || h.starts_with("127.0.0.1")
+                                || h.starts_with("[::1]")
+                        }
+                        None => false,
+                    }
+                }))
+                .allow_credentials(true)
         } else {
             let mut header_vals: Vec<axum::http::HeaderValue> = Vec::new();
 
