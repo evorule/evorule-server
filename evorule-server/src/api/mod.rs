@@ -14,6 +14,7 @@ pub mod bundles;
 pub mod knowledge;
 pub mod openapi;
 pub mod permissions;
+pub mod platform_auth;
 pub mod server;
 
 // H6: main.rs 直接从 `api::server::{...}` 导入所需类型,

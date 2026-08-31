@@ -26,6 +26,9 @@ evorule-governance = { version = "0.3.2", features = ["persistence"] }
 # 审计档案链哈希重算（UV-016；与 evorule-reactor 同一 blake3 真相源）
 blake3 = "1"
 
+# 平台用户口令哈希（UV-017 D3: Argon2id）; OsRng 亦用于会话 token 生成
+argon2 = { version = "0.5", features = ["std"] }
+
 # I/O handler(H5: 应用层,从 evorule-governance 迁出; 新位置: core/io_handlers)
 evorule-io-handlers = { path = "../core/io_handlers" }
 

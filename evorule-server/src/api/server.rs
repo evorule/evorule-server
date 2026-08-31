@@ -6465,7 +6465,11 @@ impl GovernanceServer {
             .route("/api/openapi.json", get(crate::api::openapi::openapi_json))
             // C5：执行侧已绑定服务能力对账（仅只读能力元数据，不改状态）——
             // 供场景包导入前服务需求预检与治理侧服务目录（GET /v1/services）核对。
-            .route("/api/services", get(list_services_handler));
+            .route("/api/services", get(list_services_handler))
+            // UV-017 平台授权:bootstrap/login 免认证(handler 内自校验平台 token
+            // 的端点同挂此组,因静态 AuthConfig 只认服务级 token,平台会话校验
+            // 由 platform_auth 模块自理;W2 统一 401/403 语义时再收编)
+            .merge(crate::api::platform_auth::platform_auth_router());
 
         // abort 破坏性端点双保险：即使认证通过也默认拒绝，仅 --allow-abort 显式
         // 开启后才挂载该路由（默认不注册 → 404）。空 Router merge 无副作用。
