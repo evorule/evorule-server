@@ -1733,6 +1733,30 @@ pub struct ApiResponse {
     pub fact_id: Option<u64>,
 }
 
+/// UV-030 插件健康快照（启动时由 main 注入；未注入 = 未配置清单,原生插件缺省全启用）
+static PLUGIN_HEALTH: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+
+/// 启动期注入插件健康快照（main.rs 在插件清单校验通过后调用一次）
+pub fn set_plugin_health(v: serde_json::Value) {
+    let _ = PLUGIN_HEALTH.set(v);
+}
+
+/// `/api/health` 专用响应（UV-030:新增可选 plugins 节,其余端点仍用 ApiResponse）
+
+#[derive(Debug, Serialize, ToSchema)]
+
+pub struct HealthResponse {
+    /// 是否成功
+    pub success: bool,
+
+    /// 消息
+    pub message: String,
+
+    /// 插件健康快照（UV-030:进程内插件挂载事实,启动期注入,始终如实呈现）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<serde_json::Value>,
+}
+
 /// PayloadUpdate 请求体
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -2588,19 +2612,20 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
 
     responses(
 
-        (status = 200, description = "服务健康", body = ApiResponse)
+        (status = 200, description = "服务健康", body = HealthResponse)
 
     )
 
 )]
 
-async fn health() -> Json<ApiResponse> {
-    Json(ApiResponse {
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse {
         success: true,
 
         message: "ok".to_string(),
 
-        fact_id: None,
+        // UV-030:插件健康快照(未配置清单 → 省略该节)
+        plugins: PLUGIN_HEALTH.get().cloned(),
     })
 }
 

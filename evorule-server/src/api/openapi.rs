@@ -96,6 +96,7 @@ use utoipa::OpenApi;
     components(schemas(
         // 通用
         crate::api::server::ApiResponse,
+        crate::api::server::HealthResponse,
         crate::api::server::CommandRequest,
         crate::api::server::PayloadUpdateRequest,
         // 会话基础响应
