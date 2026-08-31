@@ -28,6 +28,7 @@
 
 use crate::auth::{AuthConfig, CallerIdentity, requires_service_identity};
 use axum::Extension;
+use crate::api::audit_archive;
 use crate::input_sanitizer::InputSanitizer;
 use axum::http::Method;
 
@@ -274,6 +275,10 @@ pub struct SessionApi {
     ///   仅原生内嵌不满足敏感服务要求 → import 显式失败（不静默）。
     /// 原生服务（`NATIVE_SERVICE_NAMES`）由 `DemoServiceRouter` 恒在，不在此列表。
     registry_services: Arc<Vec<ServiceMeta>>,
+
+    /// 审计档案（UV-016）：wal_dir 下历史会话 WAL 的只读重建缓存。
+    /// 与活跃会话 API 物理隔离（独立 /api/audit-archive 前缀），全程无 WAL 写路径。
+    archive_cache: Arc<std::sync::Mutex<audit_archive::ArchiveCache>>,
 }
 
 impl SessionApi {
@@ -400,7 +405,7 @@ impl SessionApi {
                 max_rounds,
                 session::DEFAULT_MAX_SESSIONS,
                 session::DEFAULT_SESSION_TTL,
-                wal_dir,
+                wal_dir.clone(),
                 session::DEFAULT_SHARD_COUNT,
                 wal_fsync,
                 max_wal_size_bytes,
@@ -462,6 +467,11 @@ impl SessionApi {
             ),
             // 注册表显式绑定元数据：默认空（C5/C6；由 with_registry_services 注入）
             registry_services: Arc::new(Vec::new()),
+
+            // UV-016：审计档案只读缓存（wal_dir 透传；None=纯内存模式无档案）
+            archive_cache: Arc::new(std::sync::Mutex::new(
+                audit_archive::ArchiveCache::new(wal_dir),
+            )),
         }
     }
 
@@ -3825,6 +3835,78 @@ pub struct AuditReportQuery {
     pub include_content: Option<bool>,
 }
 
+/// 审计档案会话列表 handler（UV-016）
+///
+/// `GET /api/audit-archive/sessions` → wal_dir 下全部历史会话档案（只读）。
+/// 与活跃会话 API 物理隔离：本端点纯只读，无 touch/写路径；
+/// 活跃会话仍在列表中标注（前端活跃列表优先走 /api/sessions 实时端点）。
+#[utoipa::path(
+    get,
+    path = "/api/audit-archive/sessions",
+    tag = "sessions",
+    responses(
+        (status = 200, description = "历史会话档案元数据列表（含 LLM 侧车标记与 audit_purpose）"),
+        (status = 500, description = "档案目录扫描失败")
+    )
+)]
+async fn archive_sessions(
+    State(api): State<SessionApi>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // 先取活跃会话 ID（不持 std 锁跨 await）
+    let active_ids: HashSet<u64> = {
+        let sessions = api.sessions.lock().await;
+        sessions.list_sessions().into_iter().collect()
+    };
+
+    let mut cache = api
+        .archive_cache
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let metas = cache.list();
+
+    Ok(Json(serde_json::json!({
+        "sessions": metas,
+        "active_session_ids": active_ids,
+    })))
+}
+
+/// 审计档案单会话审计 handler（UV-016）
+///
+/// `GET /api/audit-archive/sessions/{id}/audit?include_content=true`
+/// → 从 WAL 重建该历史会话的审计链（活跃会话审计同形响应）。
+/// `include_content=true` 时注入 `content_json`（完整 Fact 内容，
+/// 含 LLM prompt 全文 / io_response 结果全文）。只读：不 touch、不写 WAL。
+#[utoipa::path(
+    get,
+    path = "/api/audit-archive/sessions/{id}/audit",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "重建的审计链（verified=false 表示检测到篡改/损坏，如实上报）"),
+        (status = 404, description = "无该会话档案或 wal_dir 未启用"),
+        (status = 500, description = "WAL 读取失败")
+    )
+)]
+async fn archive_session_audit(
+    State(api): State<SessionApi>,
+    Path(session_id): Path<u64>,
+    axum::extract::Query(query): axum::extract::Query<AuditReportQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let cache = api
+        .archive_cache
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    match cache.read_audit(session_id, query.include_content.unwrap_or(false)) {
+        Ok(v) => Ok(Json(v)),
+        Err(audit_archive::ArchiveError::NotFound(_))
+        | Err(audit_archive::ArchiveError::WalDisabled) => Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            tracing::error!(session_id, "audit archive read failed: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 /// 会话审计链验证 handler
 ///
 /// `GET /api/sessions/:id/audit/verify` → 验证指定会话的审计链完整性
@@ -6394,6 +6476,12 @@ impl GovernanceServer {
             .route("/api/audit", get(get_audit))
             // 多会话模式路由
             .route("/api/sessions", post(create_session).get(list_sessions))
+            // UV-016：审计档案（只读，历史会话 WAL 重建；与活跃会话 API 物理隔离）
+            .route("/api/audit-archive/sessions", get(archive_sessions))
+            .route(
+                "/api/audit-archive/sessions/{id}/audit",
+                get(archive_session_audit),
+            )
             .route(
                 "/api/sessions/from/{parent_id}",
                 post(create_session_from_parent),

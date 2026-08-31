@@ -9,6 +9,7 @@
 //! SessionManager 本身保留在 evorule_governance::session（机制层），
 //! 此处仅包含 HTTP 路由处理（应用层策略）。
 
+pub mod audit_archive;
 pub mod bundles;
 pub mod knowledge;
 pub mod openapi;

@@ -780,3 +780,136 @@ async fn test_session_rule_hot_reload() {
 
     // TempDir 在作用域结束时自动清理
 }
+
+/// UV-016：审计档案端到端 — 会话关闭/重启后经 /api/audit-archive 回看审计链
+#[tokio::test]
+async fn test_audit_archive_replay_after_close_and_restart() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    let tmp_dir = TempDir::new().expect("Failed to create temp dir");
+    let tmp_path = tmp_dir.path();
+    let wal_dir = tmp_path.join("wal");
+    fs::create_dir(&wal_dir).expect("Failed to create wal dir");
+
+    // 复制宪法到临时目录（与 hot_reload 测试同口径）
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let core_eval_source = manifest_dir.join("../resources/core_eval.json");
+    let core_eval_content = fs::read_to_string(&core_eval_source).unwrap();
+    let core_eval_path = tmp_path.join("core_eval.json");
+    fs::write(&core_eval_path, &core_eval_content).unwrap();
+    let rules_dir = tmp_path.join("rules");
+    fs::create_dir(&rules_dir).unwrap();
+
+    let core_eval = load_core_eval();
+
+    // ===== 第一"次启动"：建会话 → 写事实 → 关闭 =====
+
+    let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
+    let (tx, _rx, _event_tx, _handle, facts_log) = reactor.spawn();
+    let auditor = Auditor::new(facts_log.clone());
+    let governance = GovernanceApi::new(tx, facts_log, auditor);
+    let sessions = SessionApi::new_with_full_config(
+        core_eval.clone(),
+        100,
+        Some(wal_dir.clone()),
+        false,
+        100 * 1024 * 1024,
+        false,
+        1000,
+        1,
+        core_eval_path.clone(),
+        rules_dir.clone(),
+    );
+    let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
+    let state = AppState::new(
+        governance,
+        sessions.clone(),
+        metrics,
+        Arc::new(AtomicBool::new(true)),
+        SharedFactsLog::new(),
+        make_workspace_state(&sessions),
+        Arc::new(InputSanitizer::with_default_rules()),
+    );
+
+    let (_, json) = send(&state, "POST", "/api/sessions", None).await;
+    let sid = json["session_id"].as_u64().unwrap();
+    let v0 = get_version(&state, sid).await;
+    let _ = submit_set_and_wait(&state, sid, "archive_counter", 7, v0).await;
+
+    let (status, _) = send(&state, "DELETE", &format!("/api/sessions/{sid}"), None).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "会话应正常关闭");
+
+    // ===== 第二"次启动"：全新 SessionApi（内存空），档案必须可回看 =====
+
+    let reactor2 = Reactor::builder(core_eval.clone()).max_rounds(100).build();
+    let (tx2, _rx2, _etx2, _h2, fl2) = reactor2.spawn();
+    let governance2 = GovernanceApi::new(tx2, fl2.clone(), Auditor::new(fl2.clone()));
+    let sessions2 = SessionApi::new_with_full_config(
+        core_eval,
+        100,
+        Some(wal_dir.clone()),
+        false,
+        100 * 1024 * 1024,
+        false,
+        1000,
+        1,
+        core_eval_path,
+        rules_dir,
+    );
+    let state2 = AppState::new(
+        governance2,
+        sessions2.clone(),
+        shared_prometheus_metrics().unwrap(),
+        Arc::new(AtomicBool::new(true)),
+        SharedFactsLog::new(),
+        make_workspace_state(&sessions2),
+        Arc::new(InputSanitizer::with_default_rules()),
+    );
+
+    // 活跃会话为空（重启后）
+    let (_, list) = send(&state2, "GET", "/api/sessions", None).await;
+    assert!(
+        list["sessions"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        "重启后不应有活跃会话"
+    );
+
+    // 档案列表含已关闭会话
+    let (_, archive) = send(&state2, "GET", "/api/audit-archive/sessions", None).await;
+    let ids: Vec<u64> = archive["sessions"]
+        .as_array()
+        .expect("archive sessions 应为数组")
+        .iter()
+        .filter_map(|s| s["session_id"].as_u64())
+        .collect();
+    assert!(ids.contains(&sid), "档案列表应包含已关闭会话 {sid}，实际: {ids:?}");
+
+    // 档案审计链回看：verified + Command 内容可见
+    let (status, audit) = send(
+        &state2,
+        "GET",
+        &format!("/api/audit-archive/sessions/{sid}/audit?include_content=true"),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(audit["verified"], true, "重建链验证应通过");
+    assert!(audit["fact_count"].as_u64().unwrap() >= 2, "应至少含 Command+Stable");
+    let has_command_content = audit["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["fact_type"] == "Command" && e.get("content_json").is_some());
+    assert!(has_command_content, "include_content=true 时 Command 内容应可见");
+
+    // 只读验证：活跃会话行为零变化（不出现 ghost 会话）
+    let (_, list2) = send(&state2, "GET", "/api/sessions", None).await;
+    assert!(
+        list2["sessions"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        "档案读取不得产生活跃会话副作用"
+    );
+
+    // 404：无档案会话
+    let (status, _) = send(&state2, "GET", "/api/audit-archive/sessions/9999/audit", None).await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+}

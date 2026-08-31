@@ -23,6 +23,8 @@ evorule-tcb = { version = "0.3.2" }
 evorule-reactor = { version = "0.3.2", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
 evorule-governance = { version = "0.3.2", features = ["persistence"] }
+# 审计档案链哈希重算（UV-016；与 evorule-reactor 同一 blake3 真相源）
+blake3 = "1"
 
 # I/O handler(H5: 应用层,从 evorule-governance 迁出; 新位置: core/io_handlers)
 evorule-io-handlers = { path = "../core/io_handlers" }

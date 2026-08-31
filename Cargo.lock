@@ -993,6 +993,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
+ "blake3",
  "clap",
  "evorule-bundle",
  "evorule-demo-services",
