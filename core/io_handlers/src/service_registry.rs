@@ -276,8 +276,12 @@ impl ServiceRegistryHandler {
 
         let entry = self.registry.get(service_name).ok_or_else(|| {
             format!(
-                "unknown service_name '{}' — check service_registry.json",
-                service_name
+                "unknown service_name '{service_name}' — 服务未在执行侧 service_registry 绑定。\
+                 自诊断指引: ① 确认 service_registry.json 已配置该 service_name 的 url/method;\
+                 ② 确认 server 以 --service-registry <path> 启动（缺省不加载注册表，\
+                 call_service/call_external 必然 unknown）;\
+                 ③ 核对治理侧数据集 data_dependencies 声明的服务名与注册表键完全一致\
+                 （三层绑定: 声明 → 无凭据模板 → 执行侧绑定）"
             )
         })?;
 
@@ -533,6 +537,9 @@ mod tests {
         let params = JsonValue::object_from_pairs(&[("service_name", JsonValue::string("nope"))]);
         let err = handler.resolve(&params).unwrap_err();
         assert!(err.contains("unknown service_name 'nope'"));
+        // 自愈原则：绑定缺失错误必须携带可自助排查的指引（B2 测试门口径）
+        assert!(err.contains("自诊断指引"), "应含自诊断指引, got: {err}");
+        assert!(err.contains("--service-registry"), "应指向启动参数, got: {err}");
     }
 
     #[test]
