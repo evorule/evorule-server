@@ -22,7 +22,7 @@
 ## 1. 定义
 
 - **"项目"** 指 **EvoRule**(反应式执行引擎)及其所有相关代码仓库,包括但不限于:
-  - `evorule`(主仓库)
+  - `evorule`(核心仓库)
   - `evorule-server`(EvoRule 官方 HTTP server 实现)
   - `evo-agent`(evorule 生态配套仓库)
   - 未来可能增加的关联仓库
