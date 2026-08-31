@@ -135,6 +135,8 @@ struct FilePathsConfig {
     service_registry: Option<PathBuf>,
     /// SQL 语句模板白名单文件（可选，未设置则禁用 QUERY_DB）
     statement_whitelist: Option<PathBuf>,
+    /// 插件清单文件（UV-030，可选；未设置 = 原生插件全部启用，存量零迁移）
+    plugins: Option<PathBuf>,
     /// Workspace 元数据库路径 (P10, 可选, 默认 ./data/workspace.db)
     workspace_db: Option<PathBuf>,
 }
@@ -305,6 +307,15 @@ struct Cli {
     #[arg(long, env = "EVORULE_STATEMENT_WHITELIST")]
     statement_whitelist: Option<PathBuf>,
 
+    /// 插件清单文件（UV-030；可选，未设置 = 原生插件全部启用）
+    ///
+    /// 例 ./plugin_manifest.json：
+    /// { "plugins": { "demo-services": { "enabled": true, "services": ["config_persist"] } } }
+    /// services 省略 = 该插件全部服务；enabled=false = 不挂载该插件（call_service 走 HTTP 注册表）。
+    /// 清单中未知名/重复名/空启用集 → 启动 fail-fast（错误含指引）。
+    #[arg(long, env = "EVORULE_PLUGINS")]
+    plugins: Option<PathBuf>,
+
     /// CORS 允许的 Origin 列表（逗号分隔；空 = 放行本机 loopback Origin
     /// (localhost/127.0.0.1/[::1] 任意端口,开发友好);* 代表放行全部）
     ///
@@ -395,6 +406,8 @@ struct ResolvedConfig {
     service_registry: Option<PathBuf>,
     /// SQL 模板白名单文件（未设置则 QUERY_DB 全部拒绝）
     statement_whitelist: Option<PathBuf>,
+    /// 插件清单文件（UV-030；None = 原生插件全部启用）
+    plugins: Option<PathBuf>,
     /// CORS 白名单；若 CLI 指定了 "*" 则为全放行模式（仅限开发）
     allowed_origins: Vec<String>,
     /// 是否允许 HTTP handler 访问 loopback（仅本地开发）
@@ -470,6 +483,7 @@ impl ResolvedConfig {
             rate_limit_per_sec: if cli.no_rate_limit { 0 } else { 1 },
             service_registry: cli.service_registry.or(file.paths.service_registry),
             statement_whitelist: cli.statement_whitelist.or(file.paths.statement_whitelist),
+            plugins: cli.plugins.or(file.paths.plugins),
             allowed_origins,
             allow_loopback: cli.allow_loopback,
             // S2：从 CLI/环境变量读取 metrics_auth 配置
@@ -490,6 +504,91 @@ impl ResolvedConfig {
         };
         cfg
     }
+}
+
+// ===== UV-030 插件清单(plugin manifest)=====
+
+/// demo-services 插件的挂载决定(部署期事实,启动后不可变)
+#[derive(Debug, Clone, PartialEq)]
+enum DemoServicesMount {
+    /// 未提及/未配置清单 → 全部启用(存量零迁移)
+    All,
+    /// 启用子集(清单已校验:未知名/重复名在 with_enabled 内 fail-fast)
+    Subset(Vec<String>),
+    /// 明确停用 → 不挂载本路由,call_service/call_external 直连 HTTP 注册表
+    Off,
+}
+
+#[derive(serde::Deserialize)]
+struct PluginManifestEntry {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    services: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize)]
+struct PluginManifestFile {
+    #[serde(default)]
+    plugins: std::collections::BTreeMap<String, PluginManifestEntry>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 加载并解析插件清单;未配置 → 全部启用(缺省)。
+///
+/// fail-fast 原则(自愈):文件不可读 / JSON 非法 / 未知插件 id / 空 services
+/// 均显式报错并附自诊断指引,不静默忽略任何清单条目。
+fn load_demo_services_mount(path: Option<&PathBuf>) -> Result<DemoServicesMount, String> {
+    let Some(p) = path else {
+        return Ok(DemoServicesMount::All);
+    };
+    let content = std::fs::read_to_string(p).map_err(|e| {
+        format!(
+            "读取插件清单失败 {}: {}（自诊断指引: ① 确认 --plugins / paths.plugins 路径正确; \
+             ② 确认进程对该文件有读权限; ③ 修复后重启服务）",
+            p.display(),
+            e
+        )
+    })?;
+    let manifest: PluginManifestFile = serde_json::from_str(&content).map_err(|e| {
+        format!(
+            "插件清单 JSON 非法 {}: {}（自诊断指引: ① 校验 JSON 语法; \
+             ② 合法形态见 README「插件清单」章节: {{\"plugins\":{{\"demo-services\":{{\"enabled\":true,\"services\":[...]}}}}}}）",
+            p.display(),
+            e
+        )
+    })?;
+    let mut mount = DemoServicesMount::All;
+    for (id, entry) in &manifest.plugins {
+        if id != "demo-services" {
+            return Err(format!(
+                "插件清单含未知的进程内插件 id '{id}' — 当前可用: [demo-services]。\
+                 自诊断指引: ① 进程外服务不走 plugin_manifest,请配置 service_registry.json; \
+                 ② 新增进程内插件需在 evorule-server 挂载点登记后才能进清单"
+            ));
+        }
+        if !entry.enabled {
+            mount = DemoServicesMount::Off;
+            continue;
+        }
+        match &entry.services {
+            None => mount = DemoServicesMount::All,
+            Some(names) => {
+                if names.is_empty() {
+                    return Err(format!(
+                        "插件清单 demo-services.services 为空 — 若要停用全部原生服务请直接 \
+                         \"enabled\": false; 若要启用请至少列出一个服务名。合法服务名: [{}]",
+                        evorule_demo_services::DemoServiceRouter::native_service_names().join(", ")
+                    ));
+                }
+                mount = DemoServicesMount::Subset(names.clone());
+            }
+        }
+    }
+    Ok(mount)
 }
 
 /// 将 `serde_json::Value` 转换为 `evorule_tcb::JsonValue`
@@ -932,15 +1031,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         HttpHandler::new()
     });
     let svc_handler = Arc::new(ServiceRegistryHandler::new(registry.clone(), http.clone()));
-    // Phase 1: yuanze-demos 业务服务走原生实现（进程内确定性执行），
-    // 未命中的 service_name 回落 svc_handler（HTTP service_registry）。
-    let demo_router = Arc::new(DemoServiceRouter::new(svc_handler.clone()));
+    // UV-030: 插件清单决定 demo-services 挂载形态（缺省 = 全部启用,存量零迁移）。
+    // 校验失败 → 启动 fail-fast（错误含自诊断指引）。
+    let plugin_mount = load_demo_services_mount(cfg.plugins.as_ref())?;
+    let demo_router: Option<Arc<DemoServiceRouter>> = match &plugin_mount {
+        DemoServicesMount::Off => {
+            info!(
+                "插件清单: demo-services enabled=false — call_service/call_external \
+                 直连 HTTP 服务注册表（{} entries）",
+                reg_count
+            );
+            None
+        }
+        DemoServicesMount::All => {
+            if cfg.plugins.is_some() {
+                info!(
+                    "插件清单: demo-services 全部启用（{} 个原生服务）",
+                    DemoServiceRouter::native_service_names().len()
+                );
+            }
+            Some(Arc::new(DemoServiceRouter::new(svc_handler.clone())))
+        }
+        DemoServicesMount::Subset(names) => {
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            let router = DemoServiceRouter::with_enabled(svc_handler.clone(), &refs)
+                .map_err(|e| format!("插件清单校验失败: {}", e))?;
+            info!(
+                "插件清单: demo-services 启用子集 [{}]（声明表全量 {} 个,已裁剪 {} 个）",
+                router.enabled_service_names().join(", "),
+                DemoServiceRouter::native_service_names().len(),
+                DemoServiceRouter::native_service_names().len() - router.enabled_service_names().len()
+            );
+            Some(Arc::new(router))
+        }
+    };
     let memory = Arc::new(MemoryHandler::new(cfg.memory_dir.clone()));
     let db_wrapped = WhitelistedDbHandler::new(db, statement_whitelist);
+    // 复合路由:原生优先,HTTP 回落;插件停用时 call_service/call_external 直连 svc_handler
+    let call_handler: Arc<dyn evorule_reactor::IoHandler> = match &demo_router {
+        Some(r) => r.clone(),
+        None => svc_handler.clone(),
+    };
     let dispatcher = IoDispatcher::builder()
-        .register(IoType::call_external(), demo_router.clone())
+        .register(IoType::call_external(), call_handler.clone())
         .register(IoType::http_get(), http.clone())
-        .register(IoType::call_service(), demo_router)
+        .register(IoType::call_service(), call_handler)
         .register(IoType::query_db(), Arc::new(db_wrapped))
         .register(IoType::save_memory(), memory)
         .build();
@@ -1463,6 +1598,66 @@ mod tests {
     use super::*;
     use clap::Parser;
     use tempfile::TempDir;
+
+    // ============ UV-030 插件清单加载测试 ============
+
+    fn write_manifest(dir: &TempDir, content: &str) -> PathBuf {
+        let p = dir.path().join("plugin_manifest.json");
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+
+    #[test]
+    fn test_plugin_mount_none_defaults_all() {
+        // 未配置清单 → 全部启用(存量零迁移)
+        assert_eq!(
+            load_demo_services_mount(None).unwrap(),
+            DemoServicesMount::All
+        );
+    }
+
+    #[test]
+    fn test_plugin_mount_parse_variants() {
+        let dir = TempDir::new().unwrap();
+        // services 省略 = 全部启用
+        let p = write_manifest(&dir, r#"{ "plugins": { "demo-services": { "enabled": true } } }"#);
+        assert_eq!(load_demo_services_mount(Some(&p)).unwrap(), DemoServicesMount::All);
+        // enabled=false → Off
+        let p = write_manifest(&dir, r#"{ "plugins": { "demo-services": { "enabled": false } } }"#);
+        assert_eq!(load_demo_services_mount(Some(&p)).unwrap(), DemoServicesMount::Off);
+        // 子集
+        let p = write_manifest(
+            &dir,
+            r#"{ "plugins": { "demo-services": { "enabled": true, "services": ["config_persist", "llm_advisor"] } } }"#,
+        );
+        assert_eq!(
+            load_demo_services_mount(Some(&p)).unwrap(),
+            DemoServicesMount::Subset(vec![
+                "config_persist".to_string(),
+                "llm_advisor".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_plugin_mount_fail_fast() {
+        let dir = TempDir::new().unwrap();
+        // 未知插件 id → Err 含指引
+        let p = write_manifest(&dir, r#"{ "plugins": { "no-such-plugin": { "enabled": true } } }"#);
+        let err = load_demo_services_mount(Some(&p)).unwrap_err();
+        assert!(err.contains("no-such-plugin") && err.contains("demo-services"), "{err}");
+        // 空 services → Err 指引改用 enabled=false
+        let p = write_manifest(&dir, r#"{ "plugins": { "demo-services": { "enabled": true, "services": [] } } }"#);
+        let err = load_demo_services_mount(Some(&p)).unwrap_err();
+        assert!(err.contains("enabled") && err.contains("false"), "{err}");
+        // JSON 非法 → Err
+        let p = write_manifest(&dir, "{ not-json");
+        let err = load_demo_services_mount(Some(&p)).unwrap_err();
+        assert!(err.contains("JSON 非法"), "{err}");
+        // 文件不存在 → Err(显式报错,不静默降级)
+        let err = load_demo_services_mount(Some(&dir.path().join("missing.json"))).unwrap_err();
+        assert!(err.contains("读取插件清单失败"), "{err}");
+    }
 
     // ============ FileConfig 反序列化测试 ============
 
