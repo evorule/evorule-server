@@ -57,50 +57,109 @@ pub trait NativeService: Send + Sync {
 ///
 /// 挂载到 `IoType::call_service()` / `IoType::call_external()`。
 pub struct DemoServiceRouter {
-    ik_solver: IkSolver,
-    robot_move: RobotMove,
-    llm_advisor: LlmAdvisor,
-    shadow_validate: ShadowValidate,
-    sampling: Sampling,
-    rule_sandbox: RuleSandbox,
-    config_persist: ConfigPersist,
+    /// 原生服务实例(与 `NATIVE_SERVICES` 声明表索引对齐,构造期由 `make` 生成)
+    instances: Vec<Arc<dyn NativeService>>,
     /// 原生未命中时的 HTTP 回落（ServiceRegistryHandler，读 service_registry.json）
     fallback: Arc<dyn IoHandler>,
 }
 
-/// 原生服务名白名单（SSOT：与 `execute` 分发的索引一一对应）。
+/// 原生服务声明项(UV-025 声明式注册:新增原生能力 = 向 [`NATIVE_SERVICES`] 追加一项,
+/// 路由器/能力对账/绑定核对零改动)。
 ///
-/// server 侧服务绑定核对（`SessionApi::import_bundle`）以此集合判定执行侧已绑定的
-/// 叶子能力（Phase 1 原生服务）。新增原生服务必须同时更新本常量与下方 match 分支。
-pub const NATIVE_SERVICE_NAMES: [&str; 7] = [
-    "inverse_kinematics_solver",
-    "robot_move_joints",
-    "llm_advisor",
-    "shadow_ik_solver",
-    "sampling_service",
-    "rule_sandbox",
-    "config_persist",
+/// `name` 与治理侧服务目录种子(evorule-rule `OFFICIAL_NATIVE_SERVICES`)对齐,
+/// 由同步守卫测试锁定漂移(见文件底部测试;声明文件化另立项 UV-029)。
+pub struct NativeServiceDef {
+    /// 全局唯一服务名(`io_request` 的 `service_name`)
+    pub name: &'static str,
+    /// 是否涉及凭据/敏感数据(与治理侧目录元数据对齐)
+    pub sensitive: bool,
+    /// 一句话描述(供能力对账/文档派生)
+    pub description: &'static str,
+    /// 实例构造子(带状态服务在此注入默认状态)
+    pub make: fn() -> Arc<dyn NativeService>,
+}
+
+/// 原生服务声明表(SSOT:执行侧原生叶子能力全量清单,顺序即路由查找序)。
+pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
+    NativeServiceDef {
+        name: "inverse_kinematics_solver",
+        sensitive: false,
+        description: "机器人逆运动学求解(Phase 1 原生)",
+        make: mk_ik,
+    },
+    NativeServiceDef {
+        name: "robot_move_joints",
+        sensitive: false,
+        description: "机器人关节移动(确定性,Phase 1 原生)",
+        make: mk_robot,
+    },
+    NativeServiceDef {
+        name: "llm_advisor",
+        sensitive: true,
+        description: "LLM 建议服务(sensitive:涉及外部 LLM API)",
+        make: mk_llm,
+    },
+    NativeServiceDef {
+        name: "shadow_ik_solver",
+        sensitive: false,
+        description: "影子 IK 求解(对照验证)",
+        make: mk_shadow,
+    },
+    NativeServiceDef {
+        name: "sampling_service",
+        sensitive: false,
+        description: "采样服务",
+        make: mk_sampling,
+    },
+    NativeServiceDef {
+        name: "rule_sandbox",
+        sensitive: false,
+        description: "规则沙箱验证服务",
+        make: mk_sandbox,
+    },
+    NativeServiceDef {
+        name: "config_persist",
+        sensitive: false,
+        description: "规则热加载持久化服务",
+        make: mk_config,
+    },
 ];
+
+fn mk_ik() -> Arc<dyn NativeService> {
+    Arc::new(IkSolver)
+}
+fn mk_robot() -> Arc<dyn NativeService> {
+    Arc::new(RobotMove::default())
+}
+fn mk_llm() -> Arc<dyn NativeService> {
+    Arc::new(LlmAdvisor)
+}
+fn mk_shadow() -> Arc<dyn NativeService> {
+    Arc::new(ShadowValidate)
+}
+fn mk_sampling() -> Arc<dyn NativeService> {
+    Arc::new(Sampling::default())
+}
+fn mk_sandbox() -> Arc<dyn NativeService> {
+    Arc::new(RuleSandbox)
+}
+fn mk_config() -> Arc<dyn NativeService> {
+    Arc::new(ConfigPersist)
+}
 
 impl DemoServiceRouter {
     /// 构造复合路由。`fallback` 为未命中原生服务名时的 HTTP 处理器
     /// （通常传 `Arc<ServiceRegistryHandler>`，由调用方按 --allow-loopback 构造）。
     pub fn new(fallback: Arc<dyn IoHandler>) -> Self {
         Self {
-            ik_solver: IkSolver,
-            robot_move: RobotMove::default(),
-            llm_advisor: LlmAdvisor,
-            shadow_validate: ShadowValidate,
-            sampling: Sampling::default(),
-            rule_sandbox: RuleSandbox,
-            config_persist: ConfigPersist,
+            instances: NATIVE_SERVICES.iter().map(|d| (d.make)()).collect(),
             fallback,
         }
     }
 
-    /// 原生服务名列表（SSOT：server 侧服务绑定核对用）
-    pub fn native_service_names() -> &'static [&'static str] {
-        &NATIVE_SERVICE_NAMES
+    /// 原生服务名列表（server 侧服务绑定核对/能力对账用；自声明表派生）
+    pub fn native_service_names() -> Vec<&'static str> {
+        NATIVE_SERVICES.iter().map(|d| d.name).collect()
     }
 
     /// 解析 `service_name`（params 顶层），并取出 `args`（默认空对象）。
@@ -123,15 +182,9 @@ impl IoHandler for DemoServiceRouter {
     async fn execute(&self, params: &JsonValue) -> IoResult {
         let (service_name, args) = Self::split_params(params);
         let name = service_name.as_deref().unwrap_or("");
-        // 索引由 NATIVE_SERVICE_NAMES 顺序决定（SSOT）：新增原生服务须同步 const 与分支
-        match NATIVE_SERVICE_NAMES.iter().position(|&n| n == name) {
-            Some(0) => self.ik_solver.execute(&args),
-            Some(1) => self.robot_move.execute(&args),
-            Some(2) => self.llm_advisor.execute(&args),
-            Some(3) => self.shadow_validate.execute(&args),
-            Some(4) => self.sampling.execute(&args),
-            Some(5) => self.rule_sandbox.execute(&args),
-            Some(6) => self.config_persist.execute(&args),
+        // 声明表查找分发(UV-025):新增原生服务 = 表加一项,此处零改动
+        match NATIVE_SERVICES.iter().position(|d| d.name == name) {
+            Some(i) => self.instances[i].execute(&args),
             _ => self.fallback.execute(params).await,
         }
     }
@@ -224,5 +277,65 @@ mod tests {
         let r = router.execute(&params).await.unwrap();
         assert_eq!(r.get("success").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(r.get("rule_type").and_then(|v| v.as_str()), Some("branch"));
+    }
+
+    #[test]
+    fn test_native_service_table_invariants() {
+        // 声明表不变量:服务名唯一;每项构造子可用
+        let mut names: Vec<&str> = NATIVE_SERVICES.iter().map(|d| d.name).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "声明表服务名必须唯一");
+        for d in NATIVE_SERVICES {
+            let _ = (d.make)();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_all_native_services_route_natively() {
+        // 声明表每一项都必须命中原生执行(而非 HTTP 回落)——
+        // fallback 用哨兵报错,任何一项落到 fallback 即失败
+        struct SentinelHandler;
+        #[async_trait]
+        impl IoHandler for SentinelHandler {
+            async fn execute(&self, _params: &JsonValue) -> IoResult {
+                Err("fallback-called".to_string())
+            }
+        }
+        let router = DemoServiceRouter::new(Arc::new(SentinelHandler));
+        for d in NATIVE_SERVICES {
+            let params = JsonValue::object_from_pairs(&[
+                ("service_name", JsonValue::string(d.name)),
+                ("args", JsonValue::object_from_pairs(&[])),
+            ]);
+            // 空参数下业务结果可成功可失败,但绝不能是 fallback 哨兵
+            if let Err(e) = router.execute(&params).await {
+                assert_ne!(e, "fallback-called", "服务 {} 落到了 HTTP 回落", d.name);
+            }
+        }
+    }
+
+    #[test]
+    fn test_native_service_table_matches_governance_catalog_seed() {
+        // 同步守卫(方案 A):治理侧 evorule-rule src/model/service_catalog.rs
+        // OFFICIAL_NATIVE_SERVICES 是本表的手工对齐副本(名称+sensitive);
+        // 漂移时本测试失败,提示两仓同步。声明文件化(UV-029)后本守卫退役。
+        const GOVERNANCE_SEED: [(&str, bool); 7] = [
+            ("inverse_kinematics_solver", false),
+            ("robot_move_joints", false),
+            ("llm_advisor", true),
+            ("shadow_ik_solver", false),
+            ("sampling_service", false),
+            ("rule_sandbox", false),
+            ("config_persist", false),
+        ];
+        let actual: Vec<(&str, bool)> =
+            NATIVE_SERVICES.iter().map(|d| (d.name, d.sensitive)).collect();
+        assert_eq!(
+            actual.as_slice(),
+            &GOVERNANCE_SEED[..],
+            "执行侧声明表与治理侧目录种子漂移,请两仓同步(治理侧 OFFICIAL_NATIVE_SERVICES + 本表)"
+        );
     }
 }

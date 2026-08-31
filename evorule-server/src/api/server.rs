@@ -262,7 +262,7 @@ pub struct SessionApi {
 
     /// 执行侧已绑定服务名集合（T6 阻断项 ①：import_bundle 服务绑定核对）
     ///
-    /// = 原生叶子能力（evorule-demo-services `NATIVE_SERVICE_NAMES`）+ 注册表
+    /// = 原生叶子能力（evorule-demo-services `NATIVE_SERVICES` 声明表）+ 注册表
     /// （service_registry.json）的并集。`import_bundle` 校验 bundle 声明的服务必须
     /// ⊆ 本集合，缺失则**显式失败**（不静默，防"治理侧声明、执行侧未绑定 →
     /// 运行时 unknown service_name"）。`with_bound_services` 按并集语义追加。
@@ -273,7 +273,7 @@ pub struct SessionApi {
     /// - C5：`GET /api/services` 能力对账的来源 `registry` 条目（带 version/description）；
     /// - C6：声明 `sensitive=true` 的服务必须 ∈ 本集合（注册表显式绑定，含端点/凭据配置位），
     ///   仅原生内嵌不满足敏感服务要求 → import 显式失败（不静默）。
-    /// 原生服务（`NATIVE_SERVICE_NAMES`）由 `DemoServiceRouter` 恒在，不在此列表。
+    /// 原生服务（`NATIVE_SERVICES` 声明表）由 `DemoServiceRouter` 恒在，不在此列表。
     registry_services: Arc<Vec<ServiceMeta>>,
 
     /// 审计档案（UV-016）：wal_dir 下历史会话 WAL 的只读重建缓存。
