@@ -2971,6 +2971,108 @@ async fn get_audit(
     }
 }
 
+// ===== 平台认证事件报表（UV-018,只读）=====
+
+/// 平台认证事件条目（UV-018 只读报表）
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PlatformEventEntry {
+    /// 共享事实 ID（链序 = 写入时间序）
+    pub fact_id: u64,
+    /// 事实路径（完整,取证定位用）
+    pub path: String,
+    /// 事件类型（login_success / user_created / role_updated / ...）
+    pub kind: String,
+    /// 事件时间（Unix 毫秒,自路径内嵌时间戳解析;畸形路径为 null）
+    pub ts_ms: Option<u64>,
+    /// 事件详情（kind 特定:username / role / by / ...）
+    pub detail: serde_json::Value,
+}
+
+/// 平台认证事件查询参数（UV-018）
+#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PlatformEventsQuery {
+    /// 可选:按事件类型过滤（如 login_failed）
+    pub kind: Option<String>,
+    /// 可选:最多返回条数（链序取前 N;缺省全量）
+    pub limit: Option<usize>,
+}
+
+/// `GET /api/audit/platform-events` — 平台认证事件报表（UV-018,只读）
+///
+/// 自 SharedFactsLog 读取 `platform.event.*` 事实（append-only,随共享 WAL
+/// 入 prev_hash 链,`platform_auth::append_auth_event` 写入）,按链序返回。
+/// 路径形态 `platform.event.{kind}.{unix_ms}{随机后缀}`（kind 不含点）。
+#[utoipa::path(
+
+    get,
+
+    path = "/api/audit/platform-events",
+
+    tag = "governance",
+
+    params(PlatformEventsQuery),
+
+    responses(
+
+        (status = 200, description = "平台认证事件列表（fact_id 链序,total 为过滤后总数）"),
+
+        (status = 401, description = "未认证")
+
+    )
+
+)]
+
+async fn platform_events_handler(
+    State(shared): State<SharedFactsLog>,
+    Query(q): Query<PlatformEventsQuery>,
+) -> Json<serde_json::Value> {
+    const EVENT_PREFIX: &str = "platform.event.";
+    let mut facts = shared.facts_by_path_prefix(EVENT_PREFIX);
+    // 链序口径:fact_id 升序 = 写入时间序(底层 facts_by_path_prefix 返回序非链序,显式排序)
+    facts.sort_by_key(|f| f.fact_id.0);
+    let mut events: Vec<PlatformEventEntry> = Vec::with_capacity(facts.len());
+    for f in facts {
+        let path = f.path;
+        // rest = "{kind}.{unix_ms}{随机后缀}";kind 不含点,畸形路径如实降级(ts_ms=null)
+        let rest = match path.strip_prefix(EVENT_PREFIX) {
+            Some(r) => r,
+            None => continue,
+        };
+        let (kind, ms_suffix) = match rest.split_once('.') {
+            Some((k, m)) => (k.to_string(), m),
+            None => (rest.to_string(), ""),
+        };
+        if let Some(want) = q.kind.as_deref() {
+            if kind != want {
+                continue;
+            }
+        }
+        let ts_ms = ms_suffix
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u64>()
+            .ok();
+        let value = tcb_to_serde(&f.value);
+        events.push(PlatformEventEntry {
+            fact_id: f.fact_id.0,
+            path,
+            kind,
+            ts_ms,
+            detail: value
+                .get("detail")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        });
+    }
+    let total = events.len();
+    if let Some(n) = q.limit {
+        events.truncate(n);
+    }
+    Json(serde_json::json!({ "events": events, "total": total }))
+}
+
 // ===== 会话管理路由（多反应器实例模式）=====
 
 /// 创建会话 handler
@@ -6471,6 +6573,8 @@ impl GovernanceServer {
             .route("/api/payload", post(update_payload))
             .route("/api/state", get(get_state))
             .route("/api/audit", get(get_audit))
+            // UV-018:平台认证事件报表(只读,自 SharedFactsLog platform.event.* 派生)
+            .route("/api/audit/platform-events", get(platform_events_handler))
             // 多会话模式路由
             .route("/api/sessions", post(create_session).get(list_sessions))
             // UV-016：审计档案（只读，历史会话 WAL 重建；与活跃会话 API 物理隔离）
@@ -8979,6 +9083,143 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         assert!(json.is_object());
+    }
+
+    // --- UV-018:平台认证事件报表 ---
+
+    #[tokio::test]
+    async fn test_platform_events_empty_oneshot() {
+        let (state, _) = make_test_state();
+
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "GET",
+            "/api/audit/platform-events",
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["total"], 0);
+        assert!(json["events"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_platform_events_chain_order_and_fields() {
+        let (state, _) = make_test_state();
+        let shared = SharedFactsLog::from_ref(&state);
+
+        let detail = |username: &str, by: Option<&str>| {
+            let mut pairs = vec![("username", JsonValue::string(username))];
+            if let Some(by) = by {
+                pairs.push(("by", JsonValue::string(by)));
+            }
+            JsonValue::object_from_pairs(&pairs)
+        };
+        let event = |kind: &str, detail: JsonValue| {
+            JsonValue::object_from_pairs(&[
+                ("kind", JsonValue::string(kind)),
+                ("detail", detail),
+            ])
+        };
+        // 三类事件 + 一条非事件平台事实(不进报表)
+        shared
+            .append(
+                "platform.event.login_success.1725000000001aaaa1111bbbb2222",
+                event("login_success", detail("alice", None)),
+                0,
+            )
+            .unwrap();
+        shared
+            .append(
+                "platform.event.login_failed.1725000000002cccc3333dddd4444",
+                event("login_failed", detail("bob", None)),
+                0,
+            )
+            .unwrap();
+        shared
+            .append(
+                "platform.user.alice",
+                JsonValue::object_from_pairs(&[("roles", JsonValue::string("admin"))]),
+                0,
+            )
+            .unwrap();
+        shared
+            .append(
+                "platform.event.user_created.1725000000003eeee5555ffff6666",
+                event("user_created", detail("carol", Some("admin"))),
+                0,
+            )
+            .unwrap();
+
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "GET",
+            "/api/audit/platform-events",
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["total"], 3);
+        let events = json["events"].as_array().unwrap();
+        // 链序:fact_id 升序 = 写入时间序
+        let kinds: Vec<&str> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["login_success", "login_failed", "user_created"]);
+        assert_eq!(events[0]["detail"]["username"], "alice");
+        assert_eq!(events[1]["detail"]["username"], "bob");
+        assert_eq!(events[2]["detail"]["by"], "admin");
+        assert_eq!(events[0]["ts_ms"], 1725000000001i64);
+        assert!(events[0]["path"].as_str().unwrap().starts_with("platform.event."));
+    }
+
+    #[tokio::test]
+    async fn test_platform_events_kind_filter_and_limit() {
+        let (state, _) = make_test_state();
+        let shared = SharedFactsLog::from_ref(&state);
+
+        for (i, kind) in ["login_success", "login_failed", "login_success"]
+            .iter()
+            .enumerate()
+        {
+            let path = format!("platform.event.{kind}.172500000001{i}aaaa1111bbbb2222");
+            shared
+                .append(
+                    &path,
+                    JsonValue::object_from_pairs(&[
+                        ("kind", JsonValue::string(*kind)),
+                        (
+                            "detail",
+                            JsonValue::object_from_pairs(&[("username", JsonValue::string("u"))]),
+                        ),
+                    ]),
+                    0,
+                )
+                .unwrap();
+        }
+
+        // kind 过滤
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "GET",
+            "/api/audit/platform-events?kind=login_success",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["total"], 2);
+
+        // limit 截断(链序取前 N;total 仍为过滤后总数)
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "GET",
+            "/api/audit/platform-events?limit=2",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["total"], 3);
+        assert_eq!(json["events"].as_array().unwrap().len(), 2);
     }
 
     // --- 规则校验端点（通过路由，含中间件链） ---
