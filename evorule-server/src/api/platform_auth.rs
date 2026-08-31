@@ -28,7 +28,7 @@
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use blake3::Hasher;
 
@@ -194,6 +194,23 @@ impl PlatformSnapshot {
                 continue; // 认证事件不参与状态回放,仅入链审计
             }
             let v = &f.value;
+            // 墓碑语义:最后一条事实带 deleted=true 时该实体从快照移除
+            // (事实日志 append-only,删除 = 追加墓碑;之后可重新创建同名实体)
+            let deleted = v
+                .get("deleted")
+                .map_or(false, |b| matches!(b, JsonValue::Bool(true)));
+            if deleted {
+                match kind {
+                    "user" => {
+                        snap.users.remove(name);
+                    }
+                    "role" => {
+                        snap.roles.remove(name);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             match kind {
                 "user" => {
                     let u = PlatformUser {
@@ -291,7 +308,7 @@ pub enum AuthError {
     SessionExpired,
     UserDisabled,
     BadCredentials,
-    Forbidden(&'static str),
+    Forbidden(String),
     Conflict(String),
     BadRequest(String),
     Storage(String),
@@ -315,7 +332,7 @@ impl AuthError {
             AuthError::SessionExpired => "会话已过期,请重新登录".into(),
             AuthError::UserDisabled => "用户已被停用".into(),
             AuthError::BadCredentials => "用户名或密码错误".into(),
-            AuthError::Forbidden(m) => (*m).into(),
+            AuthError::Forbidden(m) => m.clone(),
             AuthError::Conflict(m) => m.clone(),
             AuthError::BadRequest(m) => m.clone(),
             AuthError::Storage(m) => m.clone(),
@@ -523,15 +540,33 @@ pub struct ChangePasswordReq {
 // Handlers(W1:bootstrap / login / logout / me / change-password)
 // ---------------------------------------------------------------------------
 
-/// 平台授权路由(bootstrap/login 公开;me 等在 handler 内自校验平台 token)。
-/// W2 将把 me 类端点统一纳入全局认证中间件语义。
+/// 平台授权路由(bootstrap/login/status 公开;其余在 handler 内自校验平台 token)。
+/// W2b 将把全部 API 统一纳入全局认证中间件语义(范围待定)。
 pub fn platform_auth_router() -> Router<AppState> {
     Router::new()
         .route("/api/platform/auth/bootstrap", post(bootstrap))
         .route("/api/platform/auth/login", post(login))
         .route("/api/platform/auth/logout", post(logout))
         .route("/api/platform/auth/me", get(me))
-        .route("/api/platform/auth/change-password", post(change_password))
+        .route("/api/platform/auth/status", get(auth_status))
+        .route(
+            "/api/platform/auth/change-password",
+            post(change_password),
+        )
+        .route("/api/platform/permissions", get(list_permissions))
+        .route(
+            "/api/platform/users",
+            get(list_users).post(create_user),
+        )
+        .route(
+            "/api/platform/users/{username}",
+            patch(update_user).delete(delete_user),
+        )
+        .route("/api/platform/roles", get(list_roles).post(create_role))
+        .route(
+            "/api/platform/roles/{name}",
+            patch(update_role).delete(delete_role),
+        )
 }
 
 use crate::api::server::AppState;
@@ -574,21 +609,6 @@ async fn bootstrap(
         StatusCode::CREATED,
         serde_json::json!({ "success": true, "username": req.username }),
     ))
-}
-
-fn validate_username(username: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    let ok = !username.trim().is_empty()
-        && username.len() <= 64
-        && username
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.');
-    if ok {
-        Ok(())
-    } else {
-        Err(err_json(AuthError::BadRequest(
-            "用户名仅允许字母/数字/_-.,长度 1-64".into(),
-        )))
-    }
 }
 
 /// `POST /api/platform/auth/login` — 登录。
@@ -730,7 +750,7 @@ async fn change_password(
     headers: HeaderMap,
     Json(req): Json<ChangePasswordReq>,
 ) -> ApiResult {
-    let (snap, username, perms) = require_session(&shared, &headers)?;
+    let (snap, username, _perms) = require_session(&shared, &headers)?;
     if req.new_password.len() < 8 {
         return Err(err_json(AuthError::BadRequest(
             "新密码长度至少 8 位".into(),
@@ -761,7 +781,507 @@ async fn change_password(
     append_auth_event(&shared, "change_password", serde_json::json!({ "username": username }));
     Ok(ok_json(
         StatusCode::OK,
-        serde_json::json!({ "success": true, "permissions_version": perms.len() }),
+        serde_json::json!({ "success": true, "permissions_version": snap.version }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// 管理端点(W2:用户管理 / 角色管理 / 权限点注册表)
+// ---------------------------------------------------------------------------
+
+/// 认证 + 单权限点校验
+fn require_permission(
+    shared: &SharedFactsLog,
+    headers: &HeaderMap,
+    action: &str,
+) -> Result<(PlatformSnapshot, String), (StatusCode, Json<serde_json::Value>)> {
+    let (snap, username, perms) = require_session(shared, headers)?;
+    if !perms.iter().any(|p| p == action) {
+        return Err(err_json(AuthError::Forbidden(format!(
+            "缺少权限: {action}"
+        ))));
+    }
+    Ok((snap, username))
+}
+
+/// 认证 + 任一权限点校验(查看类端点两种角色都可见)
+fn require_any_permission(
+    shared: &SharedFactsLog,
+    headers: &HeaderMap,
+    actions: &[&str],
+) -> Result<PlatformSnapshot, (StatusCode, Json<serde_json::Value>)> {
+    let (snap, _, perms) = require_session(shared, headers)?;
+    if !actions.iter().any(|a| perms.iter().any(|p| p == a)) {
+        return Err(err_json(AuthError::Forbidden(format!(
+            "缺少权限: {}(其一)",
+            actions.join(" / ")
+        ))));
+    }
+    Ok(snap)
+}
+
+fn user_json(u: &PlatformUser) -> serde_json::Value {
+    serde_json::json!({
+        "username": u.username,
+        "displayName": u.display_name,
+        "email": u.email,
+        "department": u.department,
+        "status": u.status,
+        "role": u.role,
+    })
+}
+
+fn role_json(r: &PlatformRole) -> serde_json::Value {
+    serde_json::json!({
+        "name": r.name,
+        "builtin": r.builtin,
+        "status": r.status,
+        "description": r.description,
+        "permissions": r.permissions,
+    })
+}
+
+fn validate_name(
+    name: &str,
+    label: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let ok = !name.trim().is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.');
+    if ok {
+        Ok(())
+    } else {
+        Err(err_json(AuthError::BadRequest(format!(
+            "{label}仅允许字母/数字/_-.,长度 1-64"
+        ))))
+    }
+}
+
+fn validate_username(username: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    validate_name(username, "用户名")
+}
+
+/// 权限点子集校验(注册表内置,不允许未知权限点)
+fn validate_permissions(perms: &[String]) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    for p in perms {
+        if !PLATFORM_ACTIONS.contains(&p.as_str()) {
+            return Err(err_json(AuthError::BadRequest(format!(
+                "未知权限点: {p}(权限点注册表内置,不可自创)"
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// 目标角色必须存在且 ACTIVE
+fn validate_role_assignment(
+    snap: &PlatformSnapshot,
+    role: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    match snap.roles.get(role) {
+        None => Err(err_json(AuthError::BadRequest(format!(
+            "角色不存在: {role}"
+        )))),
+        Some(r) if r.status != "ACTIVE" => Err(err_json(AuthError::BadRequest(format!(
+            "角色已停用,不可分配: {role}"
+        )))),
+        Some(_) => Ok(()),
+    }
+}
+
+/// 平台必须始终保留至少一名 ACTIVE 管理员(排除 target 后计数)。
+/// 用于:停用/降级最后一名管理员、删除管理员账号的拦截。
+fn ensure_other_active_admin(
+    snap: &PlatformSnapshot,
+    target: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let other_admins = snap
+        .users
+        .values()
+        .filter(|u| {
+            u.role == "administrator" && u.status == "ACTIVE" && u.username != target
+        })
+        .count();
+    if other_admins == 0 {
+        return Err(err_json(AuthError::Conflict(
+            "平台必须保留至少一名 ACTIVE 管理员;请先提升其他用户为管理员".into(),
+        )));
+    }
+    Ok(())
+}
+
+/// `GET /api/platform/auth/status` — 公开:登录页判断是否需要 bootstrap 引导。
+async fn auth_status(State(shared): State<SharedFactsLog>) -> ApiResult {
+    let snap = PlatformSnapshot::replay(&shared).map_err(err_json)?;
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true, "needs_bootstrap": snap.users.is_empty() }),
+    ))
+}
+
+/// `GET /api/platform/permissions` — 权限点注册表(登录用户可读,角色编辑器渲染用)。
+async fn list_permissions(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+) -> ApiResult {
+    require_session(&shared, &headers)?;
+    let builtin_roles: Vec<serde_json::Value> = BUILTIN_ROLES
+        .iter()
+        .map(|(name, perms)| {
+            serde_json::json!({ "name": name, "builtin": true, "permissions": perms })
+        })
+        .collect();
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "actions": PLATFORM_ACTIONS,
+            "builtin_roles": builtin_roles,
+        }),
+    ))
+}
+
+/// `GET /api/platform/users` — 用户列表(view_users 或 manage_users)。
+async fn list_users(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+) -> ApiResult {
+    let snap = require_any_permission(&shared, &headers, &["view_users", "manage_users"])?;
+    let users: Vec<serde_json::Value> = snap.users.values().map(user_json).collect();
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true, "users": users, "version": snap.version }),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateUserReq {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub department: String,
+    pub role: String,
+}
+
+/// `POST /api/platform/users` — 创建用户(manage_users)。
+async fn create_user(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    Json(req): Json<CreateUserReq>,
+) -> ApiResult {
+    let (snap, _caller) = require_permission(&shared, &headers, "manage_users")?;
+    validate_username(&req.username)?;
+    if req.password.len() < 8 {
+        return Err(err_json(AuthError::BadRequest("密码长度至少 8 位".into())));
+    }
+    if snap.users.contains_key(&req.username) {
+        return Err(err_json(AuthError::Conflict(format!(
+            "用户已存在: {}",
+            req.username
+        ))));
+    }
+    validate_role_assignment(&snap, &req.role)?;
+    let hash = hash_password(&req.password)?;
+    let display_name = if req.display_name.is_empty() {
+        req.username.clone()
+    } else {
+        req.display_name
+    };
+    append_fact(
+        &shared,
+        &user_fact_path(&req.username),
+        serde_json::json!({
+            "display_name": display_name,
+            "email": req.email,
+            "department": req.department,
+            "password_hash": hash,
+            "status": "ACTIVE",
+            "role": req.role,
+        }),
+    )?;
+    append_auth_event(
+        &shared,
+        "user_created",
+        serde_json::json!({ "username": req.username, "role": req.role, "by": _caller }),
+    );
+    Ok(ok_json(
+        StatusCode::CREATED,
+        serde_json::json!({ "success": true, "username": req.username }),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdateUserReq {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub department: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// `PATCH /api/platform/users/{username}` — 部分更新用户档案/角色/状态(manage_users)。
+///
+/// 保护规则:不能停用自己的账号;不能停用/降级最后一名 ACTIVE 管理员。
+async fn update_user(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    axum::extract::Path(username): axum::extract::Path<String>,
+    Json(req): Json<UpdateUserReq>,
+) -> ApiResult {
+    let (snap, _caller) = require_permission(&shared, &headers, "manage_users")?;
+    let Some(user) = snap.users.get(&username) else {
+        return Err(err_json(AuthError::Conflict(format!(
+            "用户不存在: {username}"
+        ))));
+    };
+    let display_name = req.display_name.unwrap_or_else(|| user.display_name.clone());
+    let email = req.email.unwrap_or_else(|| user.email.clone());
+    let department = req.department.unwrap_or_else(|| user.department.clone());
+    let role = req.role.unwrap_or_else(|| user.role.clone());
+    let status = req.status.unwrap_or_else(|| user.status.clone());
+    if status != "ACTIVE" && status != "DISABLED" {
+        return Err(err_json(AuthError::BadRequest(
+            "status 仅允许 ACTIVE | DISABLED".into(),
+        )));
+    }
+    validate_role_assignment(&snap, &role)?;
+    // 自我保护:不能停用自己的账号(防误操作锁死自己)
+    if username == _caller && status == "DISABLED" {
+        return Err(err_json(AuthError::Forbidden("不能停用自己的账号".into())));
+    }
+    // 最后管理员保护:目标为 ACTIVE 管理员且操作会使其失去管理员/停用
+    if user.role == "administrator"
+        && user.status == "ACTIVE"
+        && (role != "administrator" || status == "DISABLED")
+    {
+        ensure_other_active_admin(&snap, &username)?;
+    }
+    append_fact(
+        &shared,
+        &user_fact_path(&username),
+        serde_json::json!({
+            "display_name": display_name,
+            "email": email,
+            "department": department,
+            "password_hash": user.password_hash,
+            "status": status,
+            "role": role,
+        }),
+    )?;
+    append_auth_event(
+        &shared,
+        "user_updated",
+        serde_json::json!({ "username": username, "by": _caller }),
+    );
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true }),
+    ))
+}
+
+/// `DELETE /api/platform/users/{username}` — 删除用户(墓碑事实,manage_users)。
+///
+/// 保护规则:不能删除自己;不能删除最后一名 ACTIVE 管理员。
+/// 用户被删后其全部会话立即失效(回放后无此用户,validate_session 报 InvalidToken)。
+async fn delete_user(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    axum::extract::Path(username): axum::extract::Path<String>,
+) -> ApiResult {
+    let (snap, _caller) = require_permission(&shared, &headers, "manage_users")?;
+    let Some(user) = snap.users.get(&username) else {
+        return Err(err_json(AuthError::Conflict(format!(
+            "用户不存在: {username}"
+        ))));
+    };
+    if username == _caller {
+        return Err(err_json(AuthError::Forbidden("不能删除自己的账号".into())));
+    }
+    if user.role == "administrator" && user.status == "ACTIVE" {
+        ensure_other_active_admin(&snap, &username)?;
+    }
+    append_fact(&shared, &user_fact_path(&username), serde_json::json!({ "deleted": true }))?;
+    append_auth_event(
+        &shared,
+        "user_deleted",
+        serde_json::json!({ "username": username, "by": _caller }),
+    );
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true }),
+    ))
+}
+
+/// `GET /api/platform/roles` — 角色列表(登录用户可读,工作流中的角色引用需要)。
+async fn list_roles(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+) -> ApiResult {
+    require_session(&shared, &headers)?;
+    let snap = PlatformSnapshot::replay(&shared).map_err(err_json)?;
+    let roles: Vec<serde_json::Value> = snap.roles.values().map(role_json).collect();
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true, "roles": roles, "version": snap.version }),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateRoleReq {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub permissions: Vec<String>,
+}
+
+/// `POST /api/platform/roles` — 创建自定义角色(manage_roles)。
+async fn create_role(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    Json(req): Json<CreateRoleReq>,
+) -> ApiResult {
+    let (snap, _caller) = require_permission(&shared, &headers, "manage_roles")?;
+    validate_name(&req.name, "角色名")?;
+    if snap.roles.contains_key(&req.name) {
+        return Err(err_json(AuthError::Conflict(format!(
+            "角色已存在: {}",
+            req.name
+        ))));
+    }
+    validate_permissions(&req.permissions)?;
+    append_fact(
+        &shared,
+        &role_fact_path(&req.name),
+        serde_json::json!({
+            "builtin": false,
+            "status": "ACTIVE",
+            "description": req.description,
+            "permissions": req.permissions,
+        }),
+    )?;
+    append_auth_event(
+        &shared,
+        "role_created",
+        serde_json::json!({ "name": req.name, "by": _caller }),
+    );
+    Ok(ok_json(
+        StatusCode::CREATED,
+        serde_json::json!({ "success": true, "name": req.name }),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdateRoleReq {
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub permissions: Option<Vec<String>>,
+}
+
+/// `PATCH /api/platform/roles/{name}` — 更新角色(manage_roles)。
+///
+/// 保护规则:内置角色不可停用;administrator 权限集不可修改(计划 D4);
+/// 其余内置角色权限集可调整(计划 §5 D4:内置不可删,administrator 单独锁权限集)。
+async fn update_role(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(req): Json<UpdateRoleReq>,
+) -> ApiResult {
+    let (snap, _caller) = require_permission(&shared, &headers, "manage_roles")?;
+    let Some(role) = snap.roles.get(&name) else {
+        return Err(err_json(AuthError::Conflict(format!("角色不存在: {name}"))));
+    };
+    let description = req.description.unwrap_or_else(|| role.description.clone());
+    let status = req.status.unwrap_or_else(|| role.status.clone());
+    if status != "ACTIVE" && status != "DISABLED" {
+        return Err(err_json(AuthError::BadRequest(
+            "status 仅允许 ACTIVE | DISABLED".into(),
+        )));
+    }
+    if role.builtin && status != "ACTIVE" {
+        return Err(err_json(AuthError::Forbidden("内置角色不可停用".into())));
+    }
+    let permissions = match req.permissions {
+        None => role.permissions.clone(),
+        Some(p) => {
+            if role.builtin && name == "administrator" {
+                return Err(err_json(AuthError::Forbidden(
+                    "内置管理员权限集不可修改".into(),
+                )));
+            }
+            validate_permissions(&p)?;
+            p
+        }
+    };
+    append_fact(
+        &shared,
+        &role_fact_path(&name),
+        serde_json::json!({
+            "builtin": role.builtin,
+            "status": status,
+            "description": description,
+            "permissions": permissions,
+        }),
+    )?;
+    append_auth_event(
+        &shared,
+        "role_updated",
+        serde_json::json!({ "name": name, "by": _caller }),
+    );
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true }),
+    ))
+}
+
+/// `DELETE /api/platform/roles/{name}` — 删除自定义角色(墓碑事实,manage_roles)。
+///
+/// 保护规则:内置角色不可删除;仍有用户挂靠时拒绝(计划 D4:删除前检查引用)。
+async fn delete_role(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> ApiResult {
+    let (snap, _caller) = require_permission(&shared, &headers, "manage_roles")?;
+    let Some(role) = snap.roles.get(&name) else {
+        return Err(err_json(AuthError::Conflict(format!("角色不存在: {name}"))));
+    };
+    if role.builtin {
+        return Err(err_json(AuthError::Forbidden("内置角色不可删除".into())));
+    }
+    let referenced = snap
+        .users
+        .values()
+        .filter(|u| u.role == name)
+        .count();
+    if referenced > 0 {
+        return Err(err_json(AuthError::Conflict(format!(
+            "角色 {name} 仍有 {referenced} 个用户挂靠,请先迁移用户后再删除"
+        ))));
+    }
+    append_fact(&shared, &role_fact_path(&name), serde_json::json!({ "deleted": true }))?;
+    append_auth_event(
+        &shared,
+        "role_deleted",
+        serde_json::json!({ "name": name, "by": _caller }),
+    );
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true }),
     ))
 }
 
@@ -786,6 +1306,391 @@ mod tests {
         assert!(verify_password("s3cret-pass!", &h));
         assert!(!verify_password("wrong-pass", &h));
     }
+
+    // ------------------------- W2:管理端点 -------------------------
+
+    /// 断言式取错误状态码(避免 unwrap_err 触发 Json must_use 警告)
+    trait ApiResultExt {
+        fn err_status(self) -> StatusCode;
+        fn expect_ok(self);
+    }
+
+    impl ApiResultExt
+        for Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)>
+    {
+        fn err_status(self) -> StatusCode {
+            match self {
+                Ok(_) => panic!("预期失败,实际成功"),
+                Err((s, _)) => s,
+            }
+        }
+        fn expect_ok(self) {
+            match self {
+                Ok(_) => {}
+                Err(e) => panic!("预期成功,实际失败: {e:?}"),
+            }
+        }
+    }
+
+    fn auth_headers(token: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        h
+    }
+
+    async fn login_token(shared: &SharedFactsLog, username: &str, password: &str) -> String {
+        let (_, Json(v)) = login(
+            State(shared.clone()),
+            Json(CredentialsReq {
+                username: username.into(),
+                password: password.into(),
+            }),
+        )
+        .await
+        .unwrap();
+        v["token"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_user_management_flow() {
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+        let resp = bootstrap(
+            State(shared.clone()),
+            Json(BootstrapReq {
+                username: "root".into(),
+                password: "admin-pass-123".into(),
+                display_name: String::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.0, StatusCode::CREATED);
+        let admin_token = login_token(&shared, "root", "admin-pass-123").await;
+        let admin_h = auth_headers(&admin_token);
+
+        // 建用户(角色未知 → 400)
+        let bad_role = create_user(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(CreateUserReq {
+                username: "carol".into(),
+                password: "carol-pass-123".into(),
+                display_name: String::new(),
+                email: String::new(),
+                department: String::new(),
+                role: "nonexistent".into(),
+            }),
+        )
+        .await;
+        assert_eq!(bad_role.err_status(), StatusCode::BAD_REQUEST);
+
+        // 建用户成功
+        let resp = create_user(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(CreateUserReq {
+                username: "carol".into(),
+                password: "carol-pass-123".into(),
+                display_name: String::new(),
+                email: String::new(),
+                department: String::new(),
+                role: "viewer".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.0, StatusCode::CREATED);
+        // 重复用户名 → 409
+        assert_eq!(
+            create_user(
+                State(shared.clone()),
+                admin_h.clone(),
+                Json(CreateUserReq {
+                    username: "carol".into(),
+                    password: "carol-pass-123".into(),
+                    display_name: String::new(),
+                    email: String::new(),
+                    department: String::new(),
+                    role: "viewer".into(),
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::CONFLICT
+        );
+
+        // viewer 无 manage_users → 403
+        let viewer_token = login_token(&shared, "carol", "carol-pass-123").await;
+        assert_eq!(
+            create_user(
+                State(shared.clone()),
+                auth_headers(&viewer_token),
+                Json(CreateUserReq {
+                    username: "dave".into(),
+                    password: "dave-pass-123".into(),
+                    display_name: String::new(),
+                    email: String::new(),
+                    department: String::new(),
+                    role: "viewer".into(),
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 保护:root 停用自己 → 403;降级唯一管理员 → 409
+        assert_eq!(
+            update_user(
+                State(shared.clone()),
+                admin_h.clone(),
+                axum::extract::Path("root".into()),
+                Json(UpdateUserReq {
+                    display_name: None,
+                    email: None,
+                    department: None,
+                    role: None,
+                    status: Some("DISABLED".into()),
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            update_user(
+                State(shared.clone()),
+                admin_h.clone(),
+                axum::extract::Path("root".into()),
+                Json(UpdateUserReq {
+                    display_name: None,
+                    email: None,
+                    department: None,
+                    role: Some("viewer".into()),
+                    status: None,
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::CONFLICT
+        );
+
+        // 停用 carol → 其会话立即失效
+        update_user(
+            State(shared.clone()),
+            admin_h.clone(),
+            axum::extract::Path("carol".into()),
+            Json(UpdateUserReq {
+                display_name: None,
+                email: None,
+                department: None,
+                role: None,
+                status: Some("DISABLED".into()),
+            }),
+        )
+        .await
+        .expect_ok();
+        // 停用后 carol 的会话校验报 UserDisabled
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        assert!(snap.users.get("carol").unwrap().status == "DISABLED");
+        assert!(matches!(
+            require_session(&shared, &auth_headers(&viewer_token))
+                .unwrap_err()
+                .0,
+            StatusCode::UNAUTHORIZED
+        ));
+
+        // 删除 carol(有 ACTIVE 管理员 root 在,允许)→ 回放后无此用户
+        delete_user(
+            State(shared.clone()),
+            admin_h.clone(),
+            axum::extract::Path("carol".into()),
+        )
+        .await
+        .expect_ok();
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        assert!(snap.users.get("carol").is_none(), "墓碑后用户应消失");
+        // 被删用户会话 token 失效
+        assert!(require_session(&shared, &auth_headers(&viewer_token)).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_role_management_flow() {
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+        bootstrap(
+            State(shared.clone()),
+            Json(BootstrapReq {
+                username: "root".into(),
+                password: "admin-pass-123".into(),
+                display_name: String::new(),
+            }),
+        )
+        .await
+        .expect_ok();
+        let admin_token = login_token(&shared, "root", "admin-pass-123").await;
+        let admin_h = auth_headers(&admin_token);
+
+        // 未知权限点 → 400
+        assert_eq!(
+            create_role(
+                State(shared.clone()),
+                admin_h.clone(),
+                Json(CreateRoleReq {
+                    name: "analyst".into(),
+                    description: String::new(),
+                    permissions: vec!["view_monitor".into(), "made_up_perm".into()],
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        // 建自定义角色
+        let resp = create_role(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(CreateRoleReq {
+                name: "analyst".into(),
+                description: "数据分析".into(),
+                permissions: vec!["view_monitor".into(), "view_test_report".into()],
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.0, StatusCode::CREATED);
+
+        // 挂靠用户后删除 → 409;迁移后删除 → ok 且回放消失
+        create_user(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(CreateUserReq {
+                username: "erin".into(),
+                password: "erin-pass-123".into(),
+                display_name: String::new(),
+                email: String::new(),
+                department: String::new(),
+                role: "analyst".into(),
+            }),
+        )
+        .await
+        .expect_ok();
+        assert_eq!(
+            delete_role(
+                State(shared.clone()),
+                admin_h.clone(),
+                axum::extract::Path("analyst".into()),
+            )
+            .await
+            .err_status(),
+            StatusCode::CONFLICT
+        );
+        // 迁移用户到 viewer
+        update_user(
+            State(shared.clone()),
+            admin_h.clone(),
+            axum::extract::Path("erin".into()),
+            Json(UpdateUserReq {
+                display_name: None,
+                email: None,
+                department: None,
+                role: Some("viewer".into()),
+                status: None,
+            }),
+        )
+        .await
+        .expect_ok();
+        delete_role(
+            State(shared.clone()),
+            admin_h.clone(),
+            axum::extract::Path("analyst".into()),
+        )
+        .await
+        .expect_ok();
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        assert!(snap.roles.get("analyst").is_none(), "墓碑后角色应消失");
+
+        // 内置角色:不可删;administrator 权限集不可改;内置不可停用
+        assert_eq!(
+            delete_role(
+                State(shared.clone()),
+                admin_h.clone(),
+                axum::extract::Path("viewer".into()),
+            )
+            .await
+            .err_status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            update_role(
+                State(shared.clone()),
+                admin_h.clone(),
+                axum::extract::Path("administrator".into()),
+                Json(UpdateRoleReq {
+                    description: None,
+                    status: None,
+                    permissions: Some(vec!["view_monitor".into()]),
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            update_role(
+                State(shared.clone()),
+                admin_h.clone(),
+                axum::extract::Path("viewer".into()),
+                Json(UpdateRoleReq {
+                    description: None,
+                    status: Some("DISABLED".into()),
+                    permissions: None,
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 自定义角色权限集可改
+        create_role(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(CreateRoleReq {
+                name: "ops".into(),
+                description: String::new(),
+                permissions: vec!["view_monitor".into()],
+            }),
+        )
+        .await
+        .expect_ok();
+        update_role(
+            State(shared.clone()),
+            admin_h.clone(),
+            axum::extract::Path("ops".into()),
+            Json(UpdateRoleReq {
+                description: None,
+                status: None,
+                permissions: Some(vec!["view_monitor".into(), "view_audit_chain".into()]),
+            }),
+        )
+        .await
+        .expect_ok();
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        assert_eq!(
+            snap.roles.get("ops").unwrap().permissions,
+            vec![
+                "view_monitor".to_string(),
+                "view_audit_chain".to_string()
+            ]
+        );
+    }
+
 
     #[test]
     fn test_token_generate_and_hash() {
