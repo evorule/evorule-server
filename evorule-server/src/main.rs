@@ -1067,6 +1067,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let memory = Arc::new(MemoryHandler::new(cfg.memory_dir.clone()));
     let db_wrapped = WhitelistedDbHandler::new(db, statement_whitelist);
+    // UV-030: 注入插件健康快照 → /api/health 的 plugins 节(启动后不可变)。
+    // 按运行时挂载事实呈现:All/Subset 均恒产出 Some(router)(校验失败已启动 fail-fast),
+    // None = demo-services 未挂载(Off),如实报 enabled=false。
+    let plugin_health = match &demo_router {
+        Some(r) => serde_json::json!({
+            "demo-services": { "enabled": true, "services": r.enabled_service_names() }
+        }),
+        None => serde_json::json!({
+            "demo-services": { "enabled": false }
+        }),
+    };
+    evorule_server::api::server::set_plugin_health(plugin_health);
     // 复合路由:原生优先,HTTP 回落;插件停用时 call_service/call_external 直连 svc_handler
     let call_handler: Arc<dyn evorule_reactor::IoHandler> = match &demo_router {
         Some(r) => r.clone(),
