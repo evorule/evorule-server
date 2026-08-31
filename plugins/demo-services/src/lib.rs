@@ -57,8 +57,8 @@ pub trait NativeService: Send + Sync {
 ///
 /// 挂载到 `IoType::call_service()` / `IoType::call_external()`。
 pub struct DemoServiceRouter {
-    /// 原生服务实例(与 `NATIVE_SERVICES` 声明表索引对齐,构造期由 `make` 生成)
-    instances: Vec<Arc<dyn NativeService>>,
+    /// 原生服务实例(UV-030:name+实例成对存放,支持部署期启用子集)
+    instances: Vec<(&'static str, Arc<dyn NativeService>)>,
     /// 原生未命中时的 HTTP 回落（ServiceRegistryHandler，读 service_registry.json）
     fallback: Arc<dyn IoHandler>,
 }
@@ -152,9 +152,59 @@ impl DemoServiceRouter {
     /// （通常传 `Arc<ServiceRegistryHandler>`，由调用方按 --allow-loopback 构造）。
     pub fn new(fallback: Arc<dyn IoHandler>) -> Self {
         Self {
-            instances: NATIVE_SERVICES.iter().map(|d| (d.make)()).collect(),
+            instances: NATIVE_SERVICES.iter().map(|d| (d.name, (d.make)())).collect(),
             fallback,
         }
+    }
+
+    /// 部署期启用子集构造（UV-030 插件清单化）。
+    ///
+    /// - `enabled` 为启用服务名集合（顺序无关,路由查找仍按 `NATIVE_SERVICES` 声明序）;
+    /// - 未知名 / 重复名 / 空启用集 → fail-fast Err(含指引,不静默忽略);
+    /// - 宿主零具体名特判:新增原生能力 = `NATIVE_SERVICES` 追加一项 + 清单启用。
+    pub fn with_enabled(fallback: Arc<dyn IoHandler>, enabled: &[&str]) -> Result<Self, String> {
+        if enabled.is_empty() {
+            return Err(
+                "插件启用集为空 — 若要停用全部原生服务请直接 enabled=false(不挂载本路由),\
+                 若要启用请在 plugin_manifest.services 中至少列出一个服务"
+                    .to_string(),
+            );
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for name in enabled {
+            let known = NATIVE_SERVICES.iter().any(|d| d.name == *name);
+            if !known {
+                return Err(format!(
+                    "plugin_manifest 引用了未注册的原生服务 '{name}' — 合法服务名: [{}]。\
+                     自诊断指引: ① 核对 service_name 拼写(以本清单为准,非治理侧目录); \
+                     ② 新增原生服务请向 NATIVE_SERVICES 声明表追加一项后在清单中启用",
+                    NATIVE_SERVICES
+                        .iter()
+                        .map(|d| d.name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if seen.contains(name) {
+                return Err(format!(
+                    "plugin_manifest 服务 '{name}' 重复声明 — 请去重后重试(不静默去重)"
+                ));
+            }
+            seen.push(name);
+        }
+        Ok(Self {
+            instances: NATIVE_SERVICES
+                .iter()
+                .filter(|d| seen.contains(&d.name))
+                .map(|d| (d.name, (d.make)()))
+                .collect(),
+            fallback,
+        })
+    }
+
+    /// 当前实例已启用的原生服务名列表(健康可见性/能力对账用)
+    pub fn enabled_service_names(&self) -> Vec<&'static str> {
+        self.instances.iter().map(|(n, _)| *n).collect()
     }
 
     /// 原生服务名列表（server 侧服务绑定核对/能力对账用；自声明表派生）
@@ -182,9 +232,10 @@ impl IoHandler for DemoServiceRouter {
     async fn execute(&self, params: &JsonValue) -> IoResult {
         let (service_name, args) = Self::split_params(params);
         let name = service_name.as_deref().unwrap_or("");
-        // 声明表查找分发(UV-025):新增原生服务 = 表加一项,此处零改动
-        match NATIVE_SERVICES.iter().position(|d| d.name == name) {
-            Some(i) => self.instances[i].execute(&args),
+        // 声明表查找分发(UV-025):新增原生服务 = 表加一项,此处零改动;
+        // UV-030:仅在本路由实例已启用的子集内查找(未启用 → 回落/如实报错)
+        match self.instances.iter().find(|(n, _)| *n == name) {
+            Some((_, svc)) => svc.execute(&args),
             _ => self.fallback.execute(params).await,
         }
     }
@@ -337,5 +388,73 @@ mod tests {
             &GOVERNANCE_SEED[..],
             "执行侧声明表与治理侧目录种子漂移,请两仓同步(治理侧 OFFICIAL_NATIVE_SERVICES + 本表)"
         );
+    }
+
+    // ===== UV-030 插件清单化:部署期启用子集 =====
+
+    struct ErrHandler;
+    #[async_trait]
+    impl IoHandler for ErrHandler {
+        async fn execute(&self, _params: &JsonValue) -> IoResult {
+            Err("fallback-called".to_string())
+        }
+    }
+
+    #[test]
+    fn test_with_enabled_subset_filter_deterministic() {
+        // 子集过滤:仅启用的服务命中原生执行,未启用的回落;
+        // 路由查找仍按声明序(与 enabled 传入顺序无关)
+        let router = DemoServiceRouter::with_enabled(
+            Arc::new(ErrHandler),
+            &["config_persist", "llm_advisor"], // 乱序传入
+        )
+        .unwrap();
+        let mut names = router.enabled_service_names();
+        names.sort_unstable();
+        assert_eq!(names, vec!["config_persist", "llm_advisor"]);
+        // 启用的服务 → 原生(不走 fallback 哨兵)
+        let params = JsonValue::object_from_pairs(&[
+            ("service_name", JsonValue::string("config_persist")),
+            ("args", JsonValue::object_from_pairs(&[])),
+        ]);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        if let Err(e) = rt.block_on(router.execute(&params)) {
+            assert_ne!(e, "fallback-called", "已启用服务不应落到回落");
+        }
+        // 未启用的服务 → 回落
+        let params = JsonValue::object_from_pairs(&[
+            ("service_name", JsonValue::string("inverse_kinematics_solver")),
+            ("args", JsonValue::object_from_pairs(&[])),
+        ]);
+        assert_eq!(
+            rt.block_on(router.execute(&params)).unwrap_err(),
+            "fallback-called"
+        );
+    }
+
+    #[test]
+    fn test_with_enabled_rejects_unknown_duplicate_and_empty() {
+        fn expect_err(r: Result<DemoServiceRouter, String>) -> String {
+            match r {
+                Ok(_) => panic!("应当构造失败"),
+                Err(e) => e,
+            }
+        }
+        // 未知名 → Err 含合法名清单与指引
+        let err = expect_err(DemoServiceRouter::with_enabled(
+            Arc::new(ErrHandler),
+            &["config_persist", "no_such_svc"],
+        ));
+        assert!(err.contains("no_such_svc"), "{err}");
+        assert!(err.contains("config_persist") && err.contains("NATIVE_SERVICES"), "{err}");
+        // 重复名 → Err(不静默去重)
+        let err = expect_err(DemoServiceRouter::with_enabled(
+            Arc::new(ErrHandler),
+            &["config_persist", "config_persist"],
+        ));
+        assert!(err.contains("重复"), "{err}");
+        // 空启用集 → Err(指引改用 enabled=false)
+        let err = expect_err(DemoServiceRouter::with_enabled(Arc::new(ErrHandler), &[]));
+        assert!(err.contains("enabled=false"), "{err}");
     }
 }
