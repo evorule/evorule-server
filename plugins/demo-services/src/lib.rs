@@ -66,8 +66,8 @@ pub struct DemoServiceRouter {
 /// 原生服务声明项(UV-025 声明式注册:新增原生能力 = 向 [`NATIVE_SERVICES`] 追加一项,
 /// 路由器/能力对账/绑定核对零改动)。
 ///
-/// `name` 与治理侧服务目录种子(evorule-rule `OFFICIAL_NATIVE_SERVICES`)对齐,
-/// 由同步守卫测试锁定漂移(见文件底部测试;声明文件化另立项 UV-029)。
+/// `name` 与治理侧服务目录种子对齐——共同事实源为本仓声明文件
+/// `official_native_services.json`(UV-029,SSOT),双侧守卫锁定漂移(见文件底部测试)。
 pub struct NativeServiceDef {
     /// 全局唯一服务名(`io_request` 的 `service_name`)
     pub name: &'static str,
@@ -368,26 +368,47 @@ mod tests {
     }
 
     #[test]
-    fn test_native_service_table_matches_governance_catalog_seed() {
-        // 同步守卫(方案 A):治理侧 evorule-rule src/model/service_catalog.rs
-        // OFFICIAL_NATIVE_SERVICES 是本表的手工对齐副本(名称+sensitive);
-        // 漂移时本测试失败,提示两仓同步。声明文件化(UV-029)后本守卫退役。
-        const GOVERNANCE_SEED: [(&str, bool); 7] = [
-            ("inverse_kinematics_solver", false),
-            ("robot_move_joints", false),
-            ("llm_advisor", true),
-            ("shadow_ik_solver", false),
-            ("sampling_service", false),
-            ("rule_sandbox", false),
-            ("config_persist", false),
-        ];
-        let actual: Vec<(&str, bool)> =
-            NATIVE_SERVICES.iter().map(|d| (d.name, d.sensitive)).collect();
-        assert_eq!(
-            actual.as_slice(),
-            &GOVERNANCE_SEED[..],
-            "执行侧声明表与治理侧目录种子漂移,请两仓同步(治理侧 OFFICIAL_NATIVE_SERVICES + 本表)"
-        );
+    fn test_native_service_table_matches_declaration_file() -> Result<(), String> {
+        // 同步守卫(UV-029 声明文件化):声明文件 official_native_services.json 为 SSOT。
+        // 本表(name/sensitive/description)与文件三字段+顺序全量比对——
+        // 新增服务 = 改文件 + 本表追加 make 项,漂移即失败(不静默)。
+        // 治理侧经同步脚本消费同一文件(嵌入副本),不再硬编码种子。
+        let raw = include_str!("../official_native_services.json");
+        let file: serde_json::Value =
+            serde_json::from_str(raw).map_err(|e| format!("声明文件非法 JSON: {e}"))?;
+        let services = file
+            .get("services")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| "声明文件缺 services 数组".to_string())?;
+        if services.len() != NATIVE_SERVICES.len() {
+            return Err(format!(
+                "声明文件服务数({})与 NATIVE_SERVICES({})不一致 — 两处必须同步(文件为 SSOT,表持有 make 构造子)",
+                services.len(),
+                NATIVE_SERVICES.len()
+            ));
+        }
+        for (i, def) in NATIVE_SERVICES.iter().enumerate() {
+            let s = &services[i];
+            let name = s
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("services[{i}] 缺 name"))?;
+            let sensitive = s
+                .get("sensitive")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| format!("services[{i}]({name}) 缺 sensitive"))?;
+            let description = s
+                .get("description")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("services[{i}]({name}) 缺 description"))?;
+            if name != def.name || sensitive != def.sensitive || description != def.description {
+                return Err(format!(
+                    "声明文件与 NATIVE_SERVICES 在第 {i} 项漂移:\n  文件: {name} sensitive={sensitive} {description}\n  表:   {} sensitive={} {}\n声明文件为 SSOT — 请以文件为准修正本表(或有意变更时先改文件)",
+                    def.name, def.sensitive, def.description
+                ));
+            }
+        }
+        Ok(())
     }
 
     // ===== UV-030 插件清单化:部署期启用子集 =====

@@ -1,0 +1,13 @@
+{
+  "$comment": "原生服务声明 SSOT(UV-029):执行侧 NATIVE_SERVICES(plugins/demo-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule OFFICIAL_NATIVE_SERVICES,经嵌入副本)共同的唯一事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。",
+  "version": 1,
+  "services": [
+    { "name": "inverse_kinematics_solver", "sensitive": false, "description": "机器人逆运动学求解(Phase 1 原生)" },
+    { "name": "robot_move_joints", "sensitive": false, "description": "机器人关节移动(确定性,Phase 1 原生)" },
+    { "name": "llm_advisor", "sensitive": true, "description": "LLM 建议服务(sensitive:涉及外部 LLM API)" },
+    { "name": "shadow_ik_solver", "sensitive": false, "description": "影子 IK 求解(对照验证)" },
+    { "name": "sampling_service", "sensitive": false, "description": "采样服务" },
+    { "name": "rule_sandbox", "sensitive": false, "description": "规则沙箱验证服务" },
+    { "name": "config_persist", "sensitive": false, "description": "规则热加载持久化服务" }
+  ]
+}

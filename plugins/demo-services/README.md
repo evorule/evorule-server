@@ -28,7 +28,7 @@
 
 ## 7 个原生服务
 
-> 服务名以源码 `NATIVE_SERVICES` 声明表为 SSOT（`lib.rs`），下表与声明表同步维护；清单启用/治理侧目录均以此名为准。
+> 服务名以声明文件 `official_native_services.json`（本目录，SSOT）为准，下表与声明文件同步维护；清单启用/治理侧目录种子均以此派生（治理侧经嵌入副本同步）。
 
 | 服务名 | 源文件 | 功能 |
 |--------|--------|------|
@@ -104,13 +104,13 @@ dispatcher.register(IoType::call_service(), router);
 
 ## 新增一个原生服务（C5 指引）
 
-新增原生能力 = 向 `lib.rs` 的 `NATIVE_SERVICES` 声明表**追加一项**，宿主代码零改动：
+新增原生能力 = 声明文件追加一项 + `NATIVE_SERVICES` 声明表追加构造子，宿主代码零改动：
 
 1. 实现 `NativeService` trait（`execute(&self, args: &JsonValue) -> IoResult`；浮点一律字符串返回，确定性优先，禁用墙钟/随机源）。
-2. 在 `NATIVE_SERVICES` 声明表追加 `NativeServiceDef { name, sensitive, description, make }`（`name` 全局唯一，即 `io_request` 的 `service_name`）。
-3. 路由分发 / 清单校验 / `/api/health` plugins 节 / 治理侧同步守卫自动生效，无需改动其他代码。
-4. 部署方按需在 `plugin_manifest.json` 的 `services` 中启用（缺省全启用，无需动作）。
-5. 新增后在 `NATIVE_SERVICES` 同步守卫测试与治理侧 `OFFICIAL_NATIVE_SERVICES` 种子对齐（守卫测试锁定漂移）。
+2. 在 `official_native_services.json`（SSOT）追加一项（name/sensitive/description）。
+3. 在 `lib.rs` 的 `NATIVE_SERVICES` 声明表追加 `NativeServiceDef { name, sensitive, description, make }`（`make` 构造子必须留在代码；其余元数据以声明文件为准）。
+4. 运行 `evorule-server/scripts/sync-native-services.ps1`：同步治理侧嵌入副本 + 双侧守卫自动验证（脚本即节奏，双绿才算完成）。
+5. 路由分发 / 清单校验 / `/api/health` plugins 节 / 治理侧目录种子自动生效，无需改动其他代码；部署方按需在 `plugin_manifest.json` 的 `services` 中启用（缺省全启用，无需动作）。
 
 ---
 
