@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-auth"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "chrono",
@@ -798,6 +798,8 @@ dependencies = [
 [[package]]
 name = "evorule-bundle"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "578b82584488febdded3a93130072706cc48aa985d48cf0fb92e4b984655a6dc"
 dependencies = [
  "evorule-hash",
  "jsonschema",
@@ -808,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-debug-control"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "clap",
@@ -827,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-demo-services"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "evorule-io-handlers",
@@ -843,6 +845,8 @@ dependencies = [
 [[package]]
 name = "evorule-governance"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4111e00eeba2002fe356f6e81329b839b58623b76f7241d3f5d00e2d25fd63"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -860,6 +864,8 @@ dependencies = [
 [[package]]
 name = "evorule-hash"
 version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2dd5cf9d35eeee84184ba1bf967ec5c48c0c79588806e06582acbfed7dac0be"
 dependencies = [
  "blake3",
  "serde",
@@ -868,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-hot-reload"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "clap",
@@ -890,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-indicator-services"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
@@ -902,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-io-handlers"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "evorule-reactor",
@@ -920,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-metrics"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "clap",
@@ -939,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-physics-services"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -952,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-plugin-kit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "evorule-reactor",
@@ -963,6 +969,8 @@ dependencies = [
 [[package]]
 name = "evorule-reactor"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b184a05337365bbb0b4c0d12fe51b0d3d1e7db816cbe302e397e506708991cd"
 dependencies = [
  "async-trait",
  "blake3",
@@ -999,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule-schema"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "jsonschema",
  "once_cell",
@@ -1009,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule-tools"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "clap",
@@ -1026,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-semantic-invariants"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "clap",
@@ -1045,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "async-stream",
@@ -1090,10 +1098,12 @@ dependencies = [
 [[package]]
 name = "evorule-tcb"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b84b81b49300da457b02d90ec38bf07ab4aac0b26f18bc4552daa35d4848e65f"
 
 [[package]]
 name = "evorule-time-machine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "clap",
@@ -1111,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-workspace"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",

@@ -25,30 +25,63 @@
 
 ---
 
-## [Unreleased]
+## [0.4.0] - 2026-09-02
+
+### ⚠️ Breaking Changes
+
+- **核心引擎依赖 evorule-tcb / evorule-reactor / evorule-governance 0.3.2 → 0.4.0（单会话长跑 O(n²) 性能缺陷修复）** — 缺陷（Stable 事实内嵌全量快照 + 审计全量 clone，长驻会话每命令耗时线性恶化）发现于本版发布前的实战负载检验，未影响任何已发布版本。修复后 10000 命令会话 51s 全程平坦（修复前同规模推算数十小时）。随带 **WAL 事实格式变更**：新代码可读取 ≤0.3.x 旧格式 WAL（final_snapshot 容错 + version_before 兜底），**旧代码不可读取新格式（升级单向；如需回滚二进制须丢弃新格式 WAL）**；审计链哈希输入随 Stable 事实序列化形态变化
+- **SSE Stable 事件形态** — `final_snapshot`（全量快照）字段移除，改为 `version`（稳定版本号）；状态本体经会话 snapshot API / 最近一条 StateTransition 获取，信息零丢失
 
 ### 🆕 新增
 
-- **第三个进程内原生插件 `plugins/indicator-services`(UV-037 泛化验证)** — 确定性金融技术指标 4 个无状态原生服务(`indicator_sma`/`indicator_ema`/`indicator_macd`/`indicator_rsi`):Python 参考实现(pandas)语义逐位对齐的 Rust 重写——SMA 逐行移植 pandas `roll_mean` Kahan 补偿滚动和与产物修正,EMA/MACD 按 `ewm(span, adjust=False)` 递推对齐,RSI 按 Wilder `alpha=1/N` 对齐(含 diff 首位 NaN 占位种子与 min_periods 屏蔽期);黄金值由 pandas 3.0.5 实算生成逐位断言;浮点字符串化,NaN/Inf 显式拒绝,warmup null 契约 + 插件本地声明 SSOT
-- **E2E 三插件验收(UV-037)** — `tests/plugins_e2e.rs` 新增生产同构三插件链用例(`indicator_sma` 穿透两层原生命中含 warmup null 语义/未启用穿透链尾诚实报错/声明序锁定/demo 链首命中互不干扰);`scripts/run-plugins-e2e.ps1` 场景断言扩至 indicator 节(三插件全启/子集/停用/混合清单互不干扰/非法清单 fail-fast)
+- **平台用户体系与统一认证（UV-017）** — bootstrap 首启/登录/登出/个人信息/改密 + 用户管理/角色管理/权限点注册表 API + 业务 API 统一认证中间件（双凭据 + 401 语义统一）
+- **审计档案只读 API `GET /api/audit-archive`（UV-016）** — 从 WAL 重建历史会话审计链；**平台认证事件报表 `GET /api/audit/platform-events`（UV-018）** — 只读派生 platform.event.* 事实链
+- **运维开关** — `--demo-auth` 演示登录入口开关（UV-020，auth/status 公开下发，体验包默认开/生产可关）、`--web-dir` 静态前端托管（SPA 回退 index.html）、未配置 `--wal-dir` 启动数据风险警示（UV-019）
+- **插件清单三级配置 `--plugins`（UV-030）** — 命令行/env/file 三级 + fail-fast 校验 + 启动日志挂载快照 + `/api/health` plugins 节运行时挂载事实
 - **第二个进程内原生插件 `plugins/physics-services`(UV-035 泛化验证)** — vendored rpsm-core v0.1.0 确定性物理内核(辛积分器,编译期锁定常量,同平台同输入逐位一致)+ 3 个无状态原生服务(`physics_simulate`/`physics_energy`/`physics_grav_band`,浮点字符串化,NaN/Inf 显式拒绝,数量/步数预算上限)+ 插件本地声明 SSOT `official_native_services.json`
+- **rpsm 内核测试套移植（UV-036）** — 14 个集成测试 65 用例（守恒/旋转/碰撞/常量锁定/BLAKE3 双跑哈希确定性），测试逻辑相对原内核逐行保真，移植边界逐条注记
+- **第三个进程内原生插件 `plugins/indicator-services`(UV-037 泛化验证)** — 确定性金融技术指标 4 个无状态原生服务(`indicator_sma`/`indicator_ema`/`indicator_macd`/`indicator_rsi`):Python 参考实现(pandas)语义逐位对齐的 Rust 重写——SMA 逐行移植 pandas `roll_mean` Kahan 补偿滚动和与产物修正,EMA/MACD 按 `ewm(span, adjust=False)` 递推对齐,RSI 按 Wilder `alpha=1/N` 对齐(含 diff 首位 NaN 占位种子与 min_periods 屏蔽期);黄金值由 pandas 3.0.5 实算生成逐位断言;浮点字符串化,NaN/Inf 显式拒绝,warmup null 契约 + 插件本地声明 SSOT
 - **插件挂载机制泛化(UV-035)** — `main.rs` 单插件专属装配退役,引入 `PluginDef`/`PLUGIN_DEFS` 进程内插件登记表:新增插件 = 登记表追加一项(id + 服务名清单 + 路由构造子),清单解析(All/Subset/Off)/挂载链(声明序逐插件承接回落链尾)/`/api/health` plugins 节多键呈现,机制代码零改动
-- **E2E 双插件验收(UV-035)** — `tests/plugins_e2e.rs` 新增生产同构双插件链用例(原生命中/穿透回落诚实报错/声明序锁定/链序正确性);`scripts/run-plugins-e2e.ps1` 扩至 5 场景(双全启/双子集/双停用/混合清单互不干扰/physics 未知名 fail-fast)
+- **E2E 双/三插件验收(UV-035/037)** — `tests/plugins_e2e.rs` 生产同构插件链用例(原生命中/穿透回落诚实报错/声明序锁定/链首命中互不干扰);`scripts/run-plugins-e2e.ps1` 真实二进制场景(全启/子集/停用/混合清单互不干扰/非法清单 fail-fast)
+- **原生服务声明文件化（UV-029）** — `official_native_services.json` 为 SSOT（三字段+序）+ `sync-native-services.ps1` 同步脚本（复制→字节核验→双侧守卫）
+- **发布链闭环** — 发布审批通过即校验落盘 rules_dir + `bundles/import` 防篡改 400 闸门 + 发布队列 HTTP 层端到端测试
+- **三层绑定端到端（B2）** — `binding_e2e` 集成测试（治理声明→条目绑定→service_registry→io_request 真实命中）+ 绑定缺失错误自诊断指引；**B5** 数据集级 push 事件 schema 声明执行侧适配
+- **执行侧数据资产通道（Q12）** — `/api/knowledge` 三端点 + 落盘 manifest 携带 domain/tags
+- **service_registry 加载期 schema 门禁（C9）** — rule_schema SSOT 接入
+- **审计增强** — stable 域写入凭据分层（service token 身份准入）、审计报告按需注入完整 Fact 内容（include_content）、审计指标与审计条目 API
+- **SharedFactsLog 恢复失败拒绝启动（fail-fast，AUDIT-A1b）**
+- **宪法 `resources/core_eval.json` v0.3.1 → v0.4.2** — T8 同步核心仓最小评估集（ReAct 应用剧本迁出至消费方自持）+ 补回 call_external/call_service 会话桥接指令规则（v0.4.1，HTTP 会话为平台消费面无法自持剧本）+ call_service 触发域 service_name 门禁（v0.4.2，兼容 bundle 落地规则硬编码路由）+ server 启动期校验宪法含 call_external 规则否则拒绝启动并给自诊断指引
+- **运维件（UV-031）** — 备份/恢复演练脚本（四场景 19 断言：备份→清空→恢复→审计档案回放 / WAL 损坏三级处置）+ VERSION_STRATEGY 精简落地版（WAL/SQLite/宪法三层兼容契约）
+- **实战检验件（UV-032）** — 负载演练脚本 `load-drill.ps1`（会话生命周期闭环 + 错误分类统计 + 用户节奏 + 端口监听者 pid 防呆）+ bench 三件（determinism/throughput/long_session）性能现实适配
 - **AGPL + 商业双许可体系** — 新增 `DUAL_LICENSE.md`(双轨许可说明 + Server 特有白标授权边界)、`COMMERCIAL_LICENSE.md`(商业许可协议模板)、`FREE_COMMERCIAL_LICENSE.md`(政府/学术界/非营利免费豁免)、`CLA-individual.md`(个人贡献者许可,赋能双许可可执行);对齐 evorule 核心仓双许可体系
 - **`CONTRIBUTING.md` 补充双许可声明与 CLA 必要性** — `协议` 扩为 `协议与 CLA`
 
 ### 🔄 变更
 
+- **核心依赖走 crates.io 0.4.0** — evorule-tcb / reactor / governance 0.4.0、evorule-bundle 0.3.0、evorule-hash 0.1.3；发布时移除本地 `[patch.crates-io]` path 覆盖
 - **插件 NativeService 抽象上提 `core/plugin-kit`(等价重构)** — 三插件 lib.rs 中逐行同构的机制段(`NativeService` trait/`NativeServiceDef` 声明项/过滤路由器:new + with_enabled 三拒绝 + 声明序查找 + HTTP 回落,≈90 行×3)归一为公共 crate 单份维护;三插件改薄壳具名委托(对外 API 逐名不变,既有测试零改动语义通过),`main.rs` `PluginDef` 直引声明表指针 + `mount_router` 单点挂载(6 个逐插件包装构造子退役),新增插件登记成本 = 声明表指针一项;三拒绝语义与错误文案逐字节不变,真实二进制五场景健康节/子集/fail-fast 输出逐项一致
-- **T8 宪法同步:`resources/core_eval.json` v0.3.1 → v0.4.0** — 同步核心仓最小引擎自评估集(原子计算+控制流+兜底),ReAct 应用剧本整体迁出至消费方自持(范式见 app.evoagent.agent v0.4.0)
 - **T8 测试夹具属地化** — `integration_test.rs` / `fault_recovery_test.rs` / `session_integration_test.rs` 不再跨仓读取 `evorule/evorule-tcb/core_eval.json`,统一改读本仓 `resources/core_eval.json`;机制层验证所需的 call_service 等指令规则以内联应用剧本形态附加(属地原则:运行宪法由消费方自持)
+- **自写 blake3 全部收口 evorule-hash crate** — 因果链 API 暴露锚口径统一
+- **CORS 默认行为** — 未配置 `--allowed-origins` 时默认放行本机 loopback Origin（localhost/127.0.0.1/[::1] 任意端口），生产部署请显式配置白名单
+- **build.rs 门禁状态机生命周期撇号判别修复（CR-20260830-001）** — char_lit_starts/skip_lifetime 判别分流消除 tests 模块剥离失效导致的门禁全量误报（与核心四仓同步）
 - **`core/workspace` 补 `publish = false`** — 与其余 11 个 workspace 成员一致(依赖 path crate,保持闭包,不进 crates.io)
 - **README / NOTICE 许可证段落改双轨声明** — 指向新增双许可文件,明确代码(AGPL/双许可)、文档(CC-BY-4.0)、宪法(CC0-1.0)分层
+
+### 🐛 修复
+
+- **限流令牌桶语义修正** — per_sec 参数此前按 burst/per_sec 公式误报（日志显示"1 req/s"误导排障），实际持续速率 = per_sec req/s（实测 135+ req/s 持续零 429，行为本就正确）；启动日志改直接打印 per_sec
+- **guard_shell_risky v0.2.0 补 has_fields 守卫条件** — 消除无条件 io_request 对业务的阻断
+- **IoSubscriber 挂载 LLM 审计形态跳过谓词** — 保障审计桥外部应答权（LLM 审计桥 call_external 回路不被订阅者吞答）
 
 ### 🔒 安全
 
 - **升级依赖修复 RUSTSEC 漏洞** — prometheus 0.13→0.14(移除 protobuf 2.28.0, RUSTSEC-2024-0437)、sqlx 0.8→0.8.1(RUSTSEC-2024-0363)、rusqlite 0.31→0.32(解除与 sqlx 的 libsqlite3-sys 冲突)、h2 0.4.15→0.4.19(RUSTSEC-2026-0258)
 - **暂存待评估** — `rsa`(RUSTSEC-2023-0071, 无可修复版本)与 `paste`(未维护告警),当前无升级路径
+
+### 🧪 测试
+
+- **总验收 E2E** — 治理发布→LLM 草稿→gate two→执行侧直跑→审计回放全链（含凭据扫描兜底负向）
+- **workspace 全量回归** — 60 测试二进制全绿；clippy 1.97 门禁清零
 
 ---
 

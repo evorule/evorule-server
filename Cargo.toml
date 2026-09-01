@@ -19,24 +19,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 authors = ["EvoRule Project"]
 repository = "https://gitee.com/evorule/evorule-server"
 homepage = "https://gitee.com/evorule/evorule-server"
 rust-version = "1.74"
-
-# AUDIT-A1 修复验证用：临时将 governance/reactor 指向本地工作副本
-# （WalUnavailable 变体尚未随新版本发布，发布审批后移除此段）
-[patch.crates-io]
-evorule-governance = { path = "../evorule/evorule-governance" }
-evorule-reactor = { path = "../evorule/evorule-reactor" }
-evorule-tcb = { path = "../evorule/evorule-tcb" }
-# SSOT 对称化(审计⑤ S2)：bundle 校验逻辑与治理侧(evorule-rule)同吃本地源,
-# 消除"治理侧本地改动未发版 → 两侧校验口径分裂"的通道
-evorule-bundle = { path = "../evorule-bundle" }
-evorule-hash = { path = "../evorule-hash" }
 
 
 [workspace.lints.rust]
