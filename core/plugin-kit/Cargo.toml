@@ -1,0 +1,20 @@
+[package]
+name = "evorule-plugin-kit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "进程内原生插件机制公共件 —— NativeService trait / 声明项 / 泛型过滤路由器(自 demo/physics/indicator 三插件逐行同构机制归一,行为逐字节等价)"
+publish = false
+
+[dependencies]
+evorule-tcb = { version = "0.3.1" }
+evorule-reactor = { version = "0.3.1" }
+async-trait = "0.1"
+
+[dev-dependencies]
+# 测试用 async runtime（#[tokio::test] 需要 macros + rt），与各插件同构
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

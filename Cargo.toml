@@ -6,6 +6,7 @@ members = [
     "core/hot_reload",
     "core/io_handlers",
     "core/metrics",
+    "core/plugin-kit",
     "core/rule_schema",
     "core/rule_tools",
     "core/semantic_invariants",
