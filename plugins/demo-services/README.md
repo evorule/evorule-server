@@ -56,6 +56,11 @@ io_request(call_service, service_name="ik_solver", args={...})
 
 原生实现接收的入参 = `params.args`（与 HTTP 版发送的 body 语义一致）。
 
+> 机制件说明：路由器机制（trait / 声明项结构 / 过滤路由器 / 三拒绝校验）已上提至
+> `core/plugin-kit`（`evorule-plugin-kit`）公共 crate，三插件归一单份维护；
+> 本 crate 为薄壳具名委托（`DemoServiceRouter` → `NativeServiceRouter`），
+> 对外 API 与行为逐字节等价，插件自持声明表 `NATIVE_SERVICES`。
+
 ---
 
 ## 与 Python 基线的一致性

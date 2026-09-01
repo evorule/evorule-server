@@ -9,6 +9,8 @@ evorule-server 原生 `IoHandler` 服务，使
 > 声明文件 SSOT（`official_native_services.json`，UV-029 泛化）+ 插件清单启停（UV-030）。
 > 本 crate 验证**第二种集成模式**——非 vendored 快照复制，而是「Python 参考实现
 > 语义逐位对齐的 Rust 重写」，且新插件全链仅需追加式登记、机制代码零改动。
+> 路由器机制件（trait / 声明项 / 过滤路由器）已上提 `core/plugin-kit` 公共 crate
+> 三插件归一，本 crate 为薄壳具名委托，行为逐字节等价。
 
 ## 服务面（4 个，全部无状态、sensitive=false）
 

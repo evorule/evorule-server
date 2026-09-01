@@ -39,6 +39,7 @@
 
 ### 🔄 变更
 
+- **插件 NativeService 抽象上提 `core/plugin-kit`(等价重构)** — 三插件 lib.rs 中逐行同构的机制段(`NativeService` trait/`NativeServiceDef` 声明项/过滤路由器:new + with_enabled 三拒绝 + 声明序查找 + HTTP 回落,≈90 行×3)归一为公共 crate 单份维护;三插件改薄壳具名委托(对外 API 逐名不变,既有测试零改动语义通过),`main.rs` `PluginDef` 直引声明表指针 + `mount_router` 单点挂载(6 个逐插件包装构造子退役),新增插件登记成本 = 声明表指针一项;三拒绝语义与错误文案逐字节不变,真实二进制五场景健康节/子集/fail-fast 输出逐项一致
 - **T8 宪法同步:`resources/core_eval.json` v0.3.1 → v0.4.0** — 同步核心仓最小引擎自评估集(原子计算+控制流+兜底),ReAct 应用剧本整体迁出至消费方自持(范式见 app.evoagent.agent v0.4.0)
 - **T8 测试夹具属地化** — `integration_test.rs` / `fault_recovery_test.rs` / `session_integration_test.rs` 不再跨仓读取 `evorule/evorule-tcb/core_eval.json`,统一改读本仓 `resources/core_eval.json`;机制层验证所需的 call_service 等指令规则以内联应用剧本形态附加(属地原则:运行宪法由消费方自持)
 - **`core/workspace` 补 `publish = false`** — 与其余 11 个 workspace 成员一致(依赖 path crate,保持闭包,不进 crates.io)

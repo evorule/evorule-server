@@ -320,7 +320,7 @@ evorule-server --plugins ./plugin_manifest.json
 }
 ```
 
-**新增原生插件/服务** = 新建（或在既有）插件 crate 的 `NATIVE_SERVICES` 声明表追加服务项 + 在 `src/main.rs` 的 `PLUGIN_DEFS` 登记表登记（全启路由/子集路由构造子，声明序即挂载序）——清单解析/挂载链/健康可见性机制代码零改动；部署方按需在清单中启用；详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)、[plugins/physics-services/README.md](plugins/physics-services/README.md)、[plugins/indicator-services/README.md](plugins/indicator-services/README.md)。进程外能力不走本清单，一律经 `--service-registry` 声明文件接入。
+**新增原生插件/服务** = 新建（或在既有）插件 crate 的 `NATIVE_SERVICES` 声明表追加服务项 + 在 `src/main.rs` 的 `PLUGIN_DEFS` 登记表登记声明表指针（清单解析/挂载链/健康可见性机制代码零改动；路由器机制件由 [`core/plugin-kit`](core/plugin-kit) 公共 crate 提供，插件为薄壳具名委托）——部署方按需在清单中启用；详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)、[plugins/physics-services/README.md](plugins/physics-services/README.md)、[plugins/indicator-services/README.md](plugins/indicator-services/README.md)。进程外能力不走本清单，一律经 `--service-registry` 声明文件接入。
 
 ---
 

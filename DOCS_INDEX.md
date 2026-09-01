@@ -79,6 +79,7 @@ evorule-server/
 │   ├── hot_reload/        # 规则热重载(S1: 删除事件语义 / N4: auth_token)
 │   ├── io_handlers/       # I/O handler 实现(N2: scheme校验 / N6: key长度 / B1: SSRF redirect)
 │   ├── metrics/           # Prometheus 指标实现
+│   ├── plugin-kit/        # 插件机制公共件(NativeService trait/声明项/泛型过滤路由器,三插件归一)
 │   ├── rule_schema/       # 规则 Schema 门禁 (v0.3.0 新增, /api/rules/validate 权威基准)
 │   ├── rule_tools/        # 规则脚手架工具
 │   ├── semantic_invariants/ # 语义不变量验证

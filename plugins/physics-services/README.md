@@ -7,6 +7,8 @@
 > 与 `demo-services` 结构同构：声明式注册（`NATIVE_SERVICES`）+ 声明文件 SSOT
 > （`official_native_services.json`，UV-029 泛化）+ 插件清单启停（UV-030）。
 > 新增插件不再需要修改机制代码中的专属特判——这是本 crate 的验证目标。
+> 路由器机制件（trait / 声明项 / 过滤路由器）已上提 `core/plugin-kit` 公共 crate
+> 三插件归一，本 crate 为薄壳具名委托，行为逐字节等价。
 
 ## 服务面（3 个，全部无状态、sensitive=false）
 
