@@ -29,6 +29,8 @@
 
 ### 🆕 新增
 
+- **第三个进程内原生插件 `plugins/indicator-services`(UV-037 泛化验证)** — 确定性金融技术指标 4 个无状态原生服务(`indicator_sma`/`indicator_ema`/`indicator_macd`/`indicator_rsi`):Python 参考实现(pandas)语义逐位对齐的 Rust 重写——SMA 逐行移植 pandas `roll_mean` Kahan 补偿滚动和与产物修正,EMA/MACD 按 `ewm(span, adjust=False)` 递推对齐,RSI 按 Wilder `alpha=1/N` 对齐(含 diff 首位 NaN 占位种子与 min_periods 屏蔽期);黄金值由 pandas 3.0.5 实算生成逐位断言;浮点字符串化,NaN/Inf 显式拒绝,warmup null 契约 + 插件本地声明 SSOT
+- **E2E 三插件验收(UV-037)** — `tests/plugins_e2e.rs` 新增生产同构三插件链用例(`indicator_sma` 穿透两层原生命中含 warmup null 语义/未启用穿透链尾诚实报错/声明序锁定/demo 链首命中互不干扰);`scripts/run-plugins-e2e.ps1` 场景断言扩至 indicator 节(三插件全启/子集/停用/混合清单互不干扰/非法清单 fail-fast)
 - **第二个进程内原生插件 `plugins/physics-services`(UV-035 泛化验证)** — vendored rpsm-core v0.1.0 确定性物理内核(辛积分器,编译期锁定常量,同平台同输入逐位一致)+ 3 个无状态原生服务(`physics_simulate`/`physics_energy`/`physics_grav_band`,浮点字符串化,NaN/Inf 显式拒绝,数量/步数预算上限)+ 插件本地声明 SSOT `official_native_services.json`
 - **插件挂载机制泛化(UV-035)** — `main.rs` 单插件专属装配退役,引入 `PluginDef`/`PLUGIN_DEFS` 进程内插件登记表:新增插件 = 登记表追加一项(id + 服务名清单 + 路由构造子),清单解析(All/Subset/Off)/挂载链(声明序逐插件承接回落链尾)/`/api/health` plugins 节多键呈现,机制代码零改动
 - **E2E 双插件验收(UV-035)** — `tests/plugins_e2e.rs` 新增生产同构双插件链用例(原生命中/穿透回落诚实报错/声明序锁定/链序正确性);`scripts/run-plugins-e2e.ps1` 扩至 5 场景(双全启/双子集/双停用/混合清单互不干扰/physics 未知名 fail-fast)

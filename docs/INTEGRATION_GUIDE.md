@@ -687,12 +687,12 @@ DELETE /api/permissions/entries/{entry_id}
 # 全量启用（缺省，不传 --plugins 即可，存量零迁移）
 evorule-server --addr 0.0.0.0:18080
 
-# 子集启用：只暴露 demo 的 config_persist + physics 的 physics_energy
-echo '{ "plugins": { "demo-services": { "enabled": true, "services": ["config_persist"] }, "physics-services": { "enabled": true, "services": ["physics_energy"] } } }' > plugin_manifest.json
+# 子集启用：只暴露 demo 的 config_persist + physics 的 physics_energy + indicator 的 indicator_sma
+echo '{ "plugins": { "demo-services": { "enabled": true, "services": ["config_persist"] }, "physics-services": { "enabled": true, "services": ["physics_energy"] }, "indicator-services": { "enabled": true, "services": ["indicator_sma"] } } }' > plugin_manifest.json
 evorule-server --addr 0.0.0.0:18080 --plugins plugin_manifest.json
 
 # 全部停用：call_service/call_external 直连 HTTP 注册表
-echo '{ "plugins": { "demo-services": { "enabled": false }, "physics-services": { "enabled": false } } }' > plugin_manifest.json
+echo '{ "plugins": { "demo-services": { "enabled": false }, "physics-services": { "enabled": false }, "indicator-services": { "enabled": false } } }' > plugin_manifest.json
 ```
 
 要点：
@@ -702,7 +702,7 @@ echo '{ "plugins": { "demo-services": { "enabled": false }, "physics-services": 
 3. **可见性**：`GET /api/health` 的 `plugins` 节按插件 id 逐一呈现实际挂载服务名集，供运维探活/对账。
 4. **进程外能力不走本清单**：一律经 `service_registry.json` 声明接入（见 §1.3）。
 
-完整语义与新增原生插件/服务指引见 [README「插件清单」](../README.md#插件清单)、[plugins/demo-services/README.md](../plugins/demo-services/README.md) 与 [plugins/physics-services/README.md](../plugins/physics-services/README.md)。
+完整语义与新增原生插件/服务指引见 [README「插件清单」](../README.md#插件清单)、[plugins/demo-services/README.md](../plugins/demo-services/README.md)、[plugins/physics-services/README.md](../plugins/physics-services/README.md) 与 [plugins/indicator-services/README.md](../plugins/indicator-services/README.md)。
 
 ---
 

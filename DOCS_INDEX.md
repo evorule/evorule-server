@@ -8,7 +8,7 @@
 
 # EvoRule Server 文档总索引
 
-> **最后更新**:2026-08-02
+> **最后更新**:2026-09-01
 > **版本对齐**:与 `Cargo.toml` 中 `version = "0.1.0"` 同步
 
 ---
@@ -95,7 +95,8 @@ evorule-server/
 │       └── metrics_impl.rs # Prometheus 指标收集(N3: 指标基数防护)
 ├── plugins/               # 进程内原生插件 (v0.3.0 新增;UV-035 起多插件登记)
 │   ├── demo-services/     # Rust 原生业务服务示例(复合路由: 原生优先, HTTP回落)
-│   └── physics-services/  # 确定性物理仿真插件(UV-035, vendored rpsm-core 内核)
+│   ├── physics-services/  # 确定性物理仿真插件(UV-035, vendored rpsm-core 内核)
+│   └── indicator-services/ # 确定性金融技术指标插件(UV-037, pandas 语义逐位对齐 Rust 重写)
 ├── rules/                 # 规则包目录
 │   └── bundles/           # 规则包示例 (bundle-ds-yuanze-01-v3 等)
 ├── resources/
