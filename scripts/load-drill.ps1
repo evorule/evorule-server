@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+﻿# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
 <#
 .SYNOPSIS
@@ -40,7 +40,22 @@ for ($i = 0; $i -lt 60; $i++) {
     } catch { Start-Sleep -Milliseconds 500 }
 }
 if (-not $ready) { Write-Host "[FAIL] server 未就绪,见 $tmp\out.log"; exit 1 }
-Write-Host "[OK] server 就绪(:$Port,wal=$tmp\wal);演练 $Users 用户 x $Minutes 分钟"
+# 防呆(2026-09-01 第四轮教训):本脚本拉起的进程若绑定失败(AddrInUse,见 err.log),
+# 健康检查会误连**遗留的旧 server**——30 分钟演练数据全部作废(打错对象:
+# 旧 server 自带历史泄漏会话,快速撞满 1000 上限引发 429 风暴,纯属假阳性)。
+# 故就绪后必须校验端口监听者就是本脚本拉起的 pid,否则硬失败退出。
+if ($p.HasExited) {
+    Write-Host "[FAIL] 拉起的 server 进程已退出(疑似端口被占,见 $tmp\err.log),健康检查命中的是遗留实例——中止,不产生无效数据"
+    exit 1
+}
+$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    Where-Object { $_.OwningProcess -eq $p.Id }
+if (-not $listener) {
+    Write-Host "[FAIL] 端口 $Port 的监听者不是本脚本拉起的进程(pid=$($p.Id)),疑似遗留 server——请先清理后重跑"
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+Write-Host "[OK] server 就绪(:$Port,pid=$($p.Id),wal=$tmp\wal);演练 $Users 用户 x $Minutes 分钟"
 
 $api = "http://127.0.0.1:$Port"
 $deadline = (Get-Date).AddMinutes($Minutes)

@@ -6985,9 +6985,13 @@ impl GovernanceServer {
             }
 
             Some(cfg) => {
+                // 修正(2026-09-01,UV-032 W3 演练排障发现):原公式 burst/per_sec
+                // 会把默认配置误报为"1 req/s(burst=200)",误导排障(实际持续速率
+                // = per_sec req/s:令牌桶每 1000/per_sec 毫秒回补 1 个令牌,
+                // burst 只是桶容量/突发上限,实测 135+ req/s 持续零 429)。
                 tracing::info!(
                     "速率限制已启用：{} req/s（burst={}）",
-                    self.rate_limit_burst as u64 / self.rate_limit_per_sec,
+                    self.rate_limit_per_sec,
                     self.rate_limit_burst
                 );
 
