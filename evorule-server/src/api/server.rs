@@ -808,6 +808,33 @@ impl SessionApi {
             ));
         }
 
+        // UV-030 修复(2026-09-01): call_external 指令规则是 LLM 审计桥的平台契约。
+        // 会话反应器的 IoRequest 完全由宪法规则驱动;若宪法缺该规则,LLM 审计桥命令会被
+        // all([]) 兜底规则静默 no-op(无 IoRequest、无 Error 事实),违反"拒绝静默通过"原则。
+        // 因此启动期 fail-fast 校验,并给出可自诊断的修复指引。
+        let has_call_external = tcb.iter().any(|r| {
+            r.get("params")
+                .and_then(|p| p.get("domain"))
+                .and_then(|d| {
+                    d.get("type").and_then(|t| t.as_str()).map(|t| {
+                        t == "instruction"
+                            && d.get("instruction_type")
+                                .and_then(|it| it.as_str())
+                                .is_some_and(|it| it == "call_external")
+                    })
+                })
+                .unwrap_or(false)
+        });
+        if !has_call_external {
+            return Err(format!(
+                "core_eval.json {} 缺少 call_external 指令规则 — LLM 审计桥将静默失效,拒绝启动。\
+                 自诊断指引: ①检查该文件 transform 数组中是否存在 params.domain.instruction_type == \"call_external\" 的规则;\
+                 ②v0.4.0 最小评估集不含该规则(ReAct 剧本迁出决策),需升级至 v0.4.1+ 或从源仓权威宪法同步;\
+                 ③若为自定义宪法,请补入该规则或改用 --core-eval 指向完整宪法",
+                core_eval_path.display()
+            ));
+        }
+
         Ok(tcb)
     }
 
