@@ -5,7 +5,7 @@
 #        （include_str! 构建期嵌入，治理侧按登记表声明序聚合）
 #
 # 插件登记（UV-035 泛化：新增插件 = 在此表追加一项，流程代码零改动）：
-#   ① demo-services      ② physics-services
+#   ① demo-services      ② physics-services      ③ indicator-services(UV-037)
 #
 # 流程 = 节奏强制（逐插件）：复制 → 字节核验 → 双侧守卫测试
 #   执行侧守卫：各插件声明文件 vs 其 NATIVE_SERVICES（三字段+序）
@@ -31,8 +31,9 @@ Set-Location $repoRoot
 
 # 插件登记表：id → 执行侧 crate 名（声明 SSOT 均位于 plugins/<id>/official_native_services.json）
 $plugins = @(
-    @{ Id = "demo-services";    Crate = "evorule-demo-services" },
-    @{ Id = "physics-services"; Crate = "evorule-physics-services" }
+    @{ Id = "demo-services";      Crate = "evorule-demo-services" },
+    @{ Id = "physics-services";   Crate = "evorule-physics-services" },
+    @{ Id = "indicator-services"; Crate = "evorule-indicator-services" }
 )
 
 if (-not (Test-Path (Join-Path $RepoRule "Cargo.toml"))) { Write-Host "[FAIL] 治理仓不存在: $RepoRule" -ForegroundColor Red; exit 1 }
