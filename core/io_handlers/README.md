@@ -11,7 +11,7 @@
 **I/O Handler 实现 —— DB / HTTP / Memory / ServiceRegistry**
 
 > **crate 类型**: 内部 lib（`publish = false`，不进 crates.io）
-> **引入版本**: v0.3.0（从 evorule-governance 迁出，H5 迁移）
+> **引入版本**: 0.3.0（从 evorule-governance 迁出，H5 迁移）
 > **依赖 trait**: `evorule-reactor::IoHandler`
 
 ---

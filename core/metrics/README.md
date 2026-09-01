@@ -8,7 +8,7 @@
 **Prometheus 指标 —— 7 个核心 metric + 会话级指标**
 
 > **crate 类型**: 内部 lib（`publish = false`）
-> **引入版本**: v0.3.0
+> **引入版本**: 0.3.0
 
 ---
 

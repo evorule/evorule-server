@@ -201,7 +201,7 @@
 
 | 版本 | 日期 | 主要变化 |
 |---|---|---|
-| 1.0 | 2026-07-19 | 初版,基于 evorule-core-backup v0.2.0-beta 的 CLA-individual 适配;项目定义补充 `evorule-server` |
+| 1.0 | 2026-07-19 | 初版,基于 evorule-core-backup 0.2.0-beta 的 CLA-individual 适配;项目定义补充 `evorule-server` |
 
 ---
 

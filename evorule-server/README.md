@@ -37,10 +37,10 @@ evorule-server 是 EvoRule 规则引擎的**应用层服务**，提供：
 |------|------|------|
 | `api/server.rs` | 232KB | HTTP 路由 + 中间件 + GovernanceApi（约 60 条路由） |
 | `main.rs` | 70KB | 启动入口、CLI 参数、配置加载、优雅退出 |
-| `api/bundles.rs` | 31KB | 规则包 API（导入/列出/回滚，v0.3.0 新增） |
+| `api/bundles.rs` | 31KB | 规则包 API（导入/列出/回滚，0.3.0 新增） |
 | `input_sanitizer.rs` | 27KB | 输入清洗（防止恶意输入注入） |
 | `metrics_impl.rs` | 14KB | Prometheus 指标实现（7 个核心 metric） |
-| `api/permissions.rs` | 10KB | 权限 API（v0.3.0 新增） |
+| `api/permissions.rs` | 10KB | 权限 API（0.3.0 新增） |
 | `auth.rs` | 8KB | 认证逻辑（Bearer token + 恒定时间比较） |
 | `api/openapi.rs` | 8KB | OpenAPI 单一真相源（`utoipa::OpenApi` derive） |
 | `lib.rs` | 885B | crate 入口 + 模块声明 |
@@ -112,8 +112,8 @@ evorule-server --config evorule.json --log-format json
 | 时间机器 | `/api/sessions/{id}/rewind`, `/diff` | 回溯/对比/分支 |
 | 调试 | `/api/sessions/{id}/debug/*` | phase/queue/pending_io |
 | 规则校验 | `/api/rules/validate` | JSON Schema 校验（core/rule_schema） |
-| 规则包 | `/api/bundles/*` | 导入/列出/回滚（v0.3.0） |
-| 权限 | `/api/permissions/*` | 权限管理（v0.3.0） |
+| 规则包 | `/api/bundles/*` | 导入/列出/回滚（0.3.0） |
+| 权限 | `/api/permissions/*` | 权限管理（0.3.0） |
 | Workspace | `/api/workspaces/*` | 多租户工作空间（需启用） |
 | 指标 | `/metrics` | Prometheus 格式 |
 | OpenAPI | `/api/openapi.json`, `/api/docs` | OpenAPI 3.1 规范 + Swagger UI |

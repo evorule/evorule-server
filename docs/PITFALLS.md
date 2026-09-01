@@ -897,22 +897,22 @@ causal_chain 长度=1 → 追溯的是根因 Command，换 IoResponse 追溯看�
 
 ---
 
-## 五、升级与发布（4 个坑，v0.3.0 新增）
+## 五、升级与发布（4 个坑，0.3.0 新增）
 
 ### 坑 20：audit_report() 返回值从 String 改为 Result → 编译错误
 
-**触发场景**：从 v0.2.x 升级到 v0.3.0，代码中调用 `api.audit_report().await` 或 `session.audit_report()`。
+**触发场景**：从 v0.2.x 升级到 0.3.0，代码中调用 `api.audit_report().await` 或 `session.audit_report()`。
 
 **现象**：编译错误，`mismatched types: expected struct String, found enum Result<String, serde_json::Error>`。
 
-**根因**：v0.3.0 同步 evorule 核心 v0.3.2 的 Breaking Change，`auditor.report()`/`auditor.export()` 从 `String` 改为 `Result<String, serde_json::Error>`，不再静默退化为 `"{}"`。`GovernanceApi::audit_report()` 和 `session.audit_report()` 同步变更。
+**根因**：0.3.0 同步 evorule 核心 0.3.2 的 Breaking Change，`auditor.report()`/`auditor.export()` 从 `String` 改为 `Result<String, serde_json::Error>`，不再静默退化为 `"{}"`。`GovernanceApi::audit_report()` 和 `session.audit_report()` 同步变更。
 
 **修复方案**：
 ```rust
 // v0.2.x（旧）
 let report: String = api.audit_report().await;
 
-// v0.3.0（新）
+// 0.3.0（新）
 let report: String = api.audit_report().await?;  // 传播错误
 // 或
 let report: String = api.audit_report().await.unwrap_or_else(|e| {
@@ -927,11 +927,11 @@ let report: String = api.audit_report().await.unwrap_or_else(|e| {
 
 ### 坑 21：元指令白名单修正 → noop/increment transform 被拒绝
 
-**触发场景**：v0.3.0 之前写的规则文件中，transform 规则的 `type` 字段使用了 `noop`、`increment`、`decrement`。
+**触发场景**：0.3.0 之前写的规则文件中，transform 规则的 `type` 字段使用了 `noop`、`increment`、`decrement`。
 
 **现象**：`POST /api/rules/validate` 返回校验失败，错误信息类似 `"transform[0].type: noop is not one of [set, push, branch, io_request, collect, merge]"`。
 
-**根因**：v0.3.0 同步 evorule 核心 v0.3.2 的元指令白名单修正。`noop`/`increment`/`decrement` 是**业务指令层**类型（队列中的指令），不是 meta 指令。之前的文档和校验器误将它们列为 meta 指令，导致假阳性/假阴性。
+**根因**：0.3.0 同步 evorule 核心 0.3.2 的元指令白名单修正。`noop`/`increment`/`decrement` 是**业务指令层**类型（队列中的指令），不是 meta 指令。之前的文档和校验器误将它们列为 meta 指令，导致假阳性/假阴性。
 
 **修复方案**：
 - transform 规则的 `type` 只能是 6 种：`set` / `push` / `branch` / `io_request` / `collect` / `merge`
@@ -944,7 +944,7 @@ let report: String = api.audit_report().await.unwrap_or_else(|e| {
 
 ### 坑 22：[patch.crates-io] 段导致发布构建失败
 
-**触发场景**：v0.3.0 开发阶段，根 `Cargo.toml` 新增了 `[patch.crates-io]` 段，用本地 path 覆盖 evorule-tcb/reactor/governance/bundle。
+**触发场景**：0.3.0 开发阶段，根 `Cargo.toml` 新增了 `[patch.crates-io]` 段，用本地 path 覆盖 evorule-tcb/reactor/governance/bundle。
 
 **现象**：在其他机器上 clone 仓库后 `cargo build` 失败，报错 `path ../evorule/evorule-tcb does not exist`。或发布 Docker 镜像时构建失败。
 

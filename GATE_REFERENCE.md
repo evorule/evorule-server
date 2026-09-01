@@ -81,7 +81,7 @@ evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但�
 
 如未来某个 lib 安全敏感度提升 (如 auth 加密相关), 可按需追加 build.rs。
 
-### 3.4 core/rule_schema (lib) — Schema 完整性门禁 (v0.3.0 新增)
+### 3.4 core/rule_schema (lib) — Schema 完整性门禁 (0.3.0 新增)
 
 实施文件: `core/rule_schema/build.rs` (4KB, 非字节子串扫描, 是 JSON Schema 完整性校验)
 
@@ -93,7 +93,7 @@ evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但�
 
 **C5 纪律**: build.rs 本身禁止 unwrap/expect/panic（deny 级 lint），所有失败路径统一以 `Err(String)` 返回，由 `main` 转非零退出码令构建失败。
 
-### 3.5 plugins/demo-services (lib) — 靠 L1' + L2 + L3 (v0.3.0 新增)
+### 3.5 plugins/demo-services (lib) — 靠 L1' + L2 + L3 (0.3.0 新增)
 
 `plugins/demo-services` 不加 build.rs，原因同 §3.3：panic-prone 由 clippy deny 守，unsafe 由 `#![forbid(unsafe_code)]` 守。作为插件示例 crate，安全敏感度低于核心 bin 和 io_handlers。
 

@@ -80,21 +80,21 @@ evorule-server/
 │   ├── io_handlers/       # I/O handler 实现(N2: scheme校验 / N6: key长度 / B1: SSRF redirect)
 │   ├── metrics/           # Prometheus 指标实现
 │   ├── plugin-kit/        # 插件机制公共件(NativeService trait/声明项/泛型过滤路由器,三插件归一)
-│   ├── rule_schema/       # 规则 Schema 门禁 (v0.3.0 新增, /api/rules/validate 权威基准)
+│   ├── rule_schema/       # 规则 Schema 门禁 (0.3.0 新增, /api/rules/validate 权威基准)
 │   ├── rule_tools/        # 规则脚手架工具
 │   ├── semantic_invariants/ # 语义不变量验证
 │   ├── time_machine/      # 时间机器(S4: 版本间隙测试)
-│   └── workspace/         # 多租户工作空间 + 规则元数据管理 (v0.3.0 新增)
+│   └── workspace/         # 多租户工作空间 + 规则元数据管理 (0.3.0 新增)
 ├── evorule-server/        # 主 bin(axum HTTP + SSE + Session 管理)
 │   └── src/
 │       ├── api/server.rs  # HTTP 路由 + 中间件(B2: reload认证 / S2: metrics可选认证 / S3: CORS通配符检测)
-│       ├── api/bundles.rs # 规则包 API (v0.3.0 新增: 导入/列出/回滚)
-│       ├── api/permissions.rs # 权限 API (v0.3.0 新增)
-│       ├── api/openapi.rs # OpenAPI 单一真相源 (v0.3.0 新增)
+│       ├── api/bundles.rs # 规则包 API (0.3.0 新增: 导入/列出/回滚)
+│       ├── api/permissions.rs # 权限 API (0.3.0 新增)
+│       ├── api/openapi.rs # OpenAPI 单一真相源 (0.3.0 新增)
 │       ├── auth.rs        # 认证逻辑(N1)
 │       ├── main.rs        # 启动入口(B3: fail-closed启动)
 │       └── metrics_impl.rs # Prometheus 指标收集(N3: 指标基数防护)
-├── plugins/               # 进程内原生插件 (v0.3.0 新增;UV-035 起多插件登记)
+├── plugins/               # 进程内原生插件 (0.3.0 新增;UV-035 起多插件登记)
 │   ├── demo-services/     # Rust 原生业务服务示例(复合路由: 原生优先, HTTP回落)
 │   ├── physics-services/  # 确定性物理仿真插件(UV-035, vendored rpsm-core 内核)
 │   └── indicator-services/ # 确定性金融技术指标插件(UV-037, pandas 语义逐位对齐 Rust 重写)

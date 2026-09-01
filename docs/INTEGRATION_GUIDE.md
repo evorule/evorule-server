@@ -318,7 +318,7 @@ Content-Type: application/gzip
 
 ### 4.1 meta 指令
 
-evorule TCB 有 **6 种合法 meta 指令**（v0.3.2 起，之前为 4 种）：
+evorule TCB 有 **6 种合法 meta 指令**（0.3.2 起，之前为 4 种）：
 
 | 指令 | 用途 | 示例 |
 |------|------|------|
@@ -331,7 +331,7 @@ evorule TCB 有 **6 种合法 meta 指令**（v0.3.2 起，之前为 4 种）：
 
 **任何其他 `type` 都不是 meta 指令**，会被当作业务指令 push 到队列。
 
-> **v0.3.2 重要变更**: `noop` / `increment` / `decrement` 是**业务指令层**类型（队列中的指令），不是 meta 指令。之前的文档误将它们列为 meta 指令，导致 `core/rule_schema` 校验出现假阳性/假阴性。`/api/rules/validate` 现在会明确拒绝 transform 规则中出现这些类型。
+> **0.3.2 重要变更**: `noop` / `increment` / `decrement` 是**业务指令层**类型（队列中的指令），不是 meta 指令。之前的文档误将它们列为 meta 指令，导致 `core/rule_schema` 校验出现假阳性/假阴性。`/api/rules/validate` 现在会明确拒绝 transform 规则中出现这些类型。
 
 > **规则 Schema 校验**: 提交规则前建议先通过 `POST /api/rules/validate` 校验，该端点使用 `core/rule_schema` crate 的 JSON Schema（`rule_set/v1.0.json` + `_meta/v1.0.json` + `_shared/v1.0.json`）做权威校验，比 evorule TCB 内部校验更早发现问题。
 
@@ -571,7 +571,7 @@ curl http://127.0.0.1:18080/api/sessions/1/audit
 
 ---
 
-## 六、规则包（Bundles）API (v0.3.0 新增)
+## 六、规则包（Bundles）API (0.3.0 新增)
 
 规则包是一组相关规则的集合，支持原子导入、版本管理和回滚。规则包以目录形式存在，包含 `bundle_manifest.json`（元数据）和多条规则 JSON 文件。
 
@@ -639,7 +639,7 @@ bundle-ds-yuanze-01-v3/
 
 ---
 
-## 七、权限（Permissions）API (v0.3.0 新增)
+## 七、权限（Permissions）API (0.3.0 新增)
 
 权限 API 基于 `evorule-governance` 的 `permission` 模块，提供机制层权限原语。具体权限策略由应用层注入。
 

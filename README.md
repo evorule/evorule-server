@@ -16,9 +16,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.3.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.4.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.3.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.4.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -34,16 +34,18 @@
 
 ---
 
-> ## ✅ v0.3.0 — 稳定发布 (2026-08-26)
+> ## ✅ v0.4.0 — 稳定发布 (2026-09-02)
 >
-> 这是 EvoRule Server 仓的**第三个版本**。
+> 这是 EvoRule Server 仓的**第四个版本**。
 > **本仓库独立 release**,不绑核心仓的发布节奏。
 >
-> v0.3.0 主要变化:核心库依赖 crates.io 0.3.2(tcb / reactor / governance);
-> 新增 `core/rule_schema` 规则 Schema 门禁;/api/bundles 规则包 API(导入/列出/回滚);
-> /api/permissions 权限 API;plugins/demo-services 插件示例;
-> evorule-bundle 快照包共享校验(6 项校验链 + 原子落盘)。
-> ⚠️ Breaking:`audit_report()` 与 `GET /api/audit` 返回值改为显式 Result(不再静默退化)。
+> v0.4.0 主要变化:核心引擎升级 0.4.0(单会话长跑 O(n²) 性能缺陷修复,
+> 实测 10000 命令会话 51s 全程平坦;⚠️ WAL 事实格式升级单向——新代码可读旧格式,
+> 旧代码不可读新格式);平台用户体系与统一认证;审计档案只读 API;
+> 插件清单三级配置(`--plugins`);physics-services / indicator-services 两个确定性原生插件;
+> 负载演练与性能基准三件套;AGPL + 商业双许可体系。
+> 上一版 0.3.0(2026-08-26):核心库依赖 crates.io 0.3.2;`core/rule_schema` Schema 门禁;
+> /api/bundles 规则包 API;/api/permissions 权限 API;evorule-bundle 快照包共享校验。
 >
 > 本仓库**不是** EvoRule 的核心引擎 —— 核心引擎以 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 形式发布到 crates.io。本仓的定位是**框架的官方 HTTP server 实现** + server 配套的 lib(auth / io_handlers / metrics / hot_reload / debug_control / semantic_invariants / time_machine / rule_tools / workspace)。
 >
@@ -86,9 +88,9 @@
 │  ├── core/semantic_invariants  规则一致性自检                  │
 │  ├── core/time_machine    rewind / diff / fork                │
 │  ├── core/rule_tools      规则脚手架 + 校验                   │
-│  ├── core/rule_schema     规则 Schema 门禁 (v0.3.0 新增)     │
+│  ├── core/rule_schema     规则 Schema 门禁 (0.3.0 新增)     │
 │  ├── core/workspace       多租户工作空间 + 规则元数据管理     │
-│  └── plugins/              业务服务插件 (v0.3.0 新增)         │
+│  └── plugins/              业务服务插件 (0.3.0 新增)         │
 ├─────────────────────────────────────────────────────────────┤
 │  evorule 核心 (crates.io 依赖)                               │
 │  ├── evorule-tcb      纯函数执行 + 类型安全                   │
@@ -181,12 +183,12 @@ curl http://localhost:18080/api/sessions/<session_id>/state
 | `/api/sessions/{id}/interrupt`              | POST      | 中断反应器               |
 | `/api/sessions/{id}/snapshot`               | GET       | 完整快照                 |
 | `/api/rules/validate`                       | POST      | 规则校验                 |
-| `/api/bundles/import`                       | POST      | 导入规则包（6 项校验+原子落盘） (v0.3.0) |
-| `/api/bundles/import/dry-run`               | POST      | 规则包导入预检（只校验不落盘） (v0.3.0)  |
-| `/api/bundles/active`                       | GET       | 当前激活规则包列表 (v0.3.0) |
-| `/api/bundles/imports`                      | GET       | 规则包导入历史 (v0.3.0)  |
-| `/api/permissions`                          | GET/POST  | 权限管理 (v0.3.0)        |
-| `/api/services`                             | GET       | 已绑定服务列表 (v0.3.0)  |
+| `/api/bundles/import`                       | POST      | 导入规则包（6 项校验+原子落盘） (0.3.0) |
+| `/api/bundles/import/dry-run`               | POST      | 规则包导入预检（只校验不落盘） (0.3.0)  |
+| `/api/bundles/active`                       | GET       | 当前激活规则包列表 (0.3.0) |
+| `/api/bundles/imports`                      | GET       | 规则包导入历史 (0.3.0)  |
+| `/api/permissions`                          | GET/POST  | 权限管理 (0.3.0)        |
+| `/api/services`                             | GET       | 已绑定服务列表 (0.3.0)  |
 | `/api/workspaces`                           | POST/GET  | 创建/列出工作空间         |
 | `/api/workspaces/{id}/rules`                | GET/POST  | 工作空间规则 CRUD         |
 | `/api/workspaces/{id}/rules/{rule_id}/versions` | GET  | 规则版本管理              |
