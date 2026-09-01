@@ -457,12 +457,8 @@ mod tests {
         shared.inc_auto_verify_failures();
         shared.inc_auto_verify_skips();
         let output = shared.render_as_text();
-        assert!(output.contains(
-            "evorule_sanitize_hits_total{rule=\"regex_injection\"} 2"
-        ));
-        assert!(output.contains(
-            "evorule_sanitize_hits_total{rule=\"tool_prompt_block\"} 1"
-        ));
+        assert!(output.contains("evorule_sanitize_hits_total{rule=\"regex_injection\"} 2"));
+        assert!(output.contains("evorule_sanitize_hits_total{rule=\"tool_prompt_block\"} 1"));
         assert!(output.contains("evorule_auto_verify_failures_total 1"));
         assert!(output.contains("evorule_auto_verify_skips_total 1"));
     }

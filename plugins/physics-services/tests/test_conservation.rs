@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_conservation.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_conservation.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 能量守恒验证用例。
 //!
 //! 修复点：旧用例用 `G = 6.67430e-11` 直接当重力（m/s²），系统几乎不动，
@@ -69,7 +69,7 @@ fn test_conservation_two_body_orbit() {
 
     let m = 1e10_f64; // 质量 kg
     let r = 1.0_f64; // 间距 m
-    // 相对轨道速度 v = sqrt(G (m1+m2) / r)，各天体以 v/2 绕质心。
+                     // 相对轨道速度 v = sqrt(G (m1+m2) / r)，各天体以 v/2 绕质心。
     let v_rel = (G * (2.0 * m) / r).sqrt();
     let v_body = 0.5 * v_rel;
 

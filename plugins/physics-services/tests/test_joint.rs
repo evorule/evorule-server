@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_joint.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_joint.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 双体软铰（球铰中央力约束）的确定性验证。
 //!
 //! 模型：两刚体质心以弹簧-阻尼连接（作用于质心连线的**中央力**，等值反作用）——
@@ -25,8 +25,13 @@ const NO_GRAV: Vec3 = Vec3::zero();
 /// `c` 为软铰阻尼；纯弹簧用 c=0。返回内核。
 fn two_body(c: f64, d0: f64, vb: f64) -> PhysicalKernel {
     let mut k = PhysicalKernel::with_integrator(NO_GRAV, 2).expect("order 2");
-    k.bodies.push(RigidBody::new(MASS, Vec3::zero(), Vec3::zero()).with_joint(1, K, c, REST));
-    k.bodies.push(RigidBody::new(MASS, Vec3::new(d0, 0.0, 0.0), Vec3::new(vb, 0.0, 0.0)));
+    k.bodies
+        .push(RigidBody::new(MASS, Vec3::zero(), Vec3::zero()).with_joint(1, K, c, REST));
+    k.bodies.push(RigidBody::new(
+        MASS,
+        Vec3::new(d0, 0.0, 0.0),
+        Vec3::new(vb, 0.0, 0.0),
+    ));
     k
 }
 
@@ -108,7 +113,12 @@ fn joint_is_deterministic_bitwise() {
         let mut trace = Vec::new();
         for _ in 0..10_000 {
             k.tick(DT);
-            trace.push((k.bodies[0].pos, k.bodies[0].vel, k.bodies[1].pos, k.bodies[1].vel));
+            trace.push((
+                k.bodies[0].pos,
+                k.bodies[0].vel,
+                k.bodies[1].pos,
+                k.bodies[1].vel,
+            ));
         }
         trace
     };
@@ -126,10 +136,13 @@ fn joint_conserves_total_momentum() {
     let p0 = 2.0 * MASS;
     for _ in 0..20_000 {
         k.tick(DT);
-        let p = k.bodies.iter().map(|b| b.vel * b.mass).fold(
-            Vec3::zero(),
-            |acc, v| Vec3::new(acc.x + v.x, acc.y + v.y, acc.z + v.z),
-        );
+        let p = k
+            .bodies
+            .iter()
+            .map(|b| b.vel * b.mass)
+            .fold(Vec3::zero(), |acc, v| {
+                Vec3::new(acc.x + v.x, acc.y + v.y, acc.z + v.z)
+            });
         assert!(
             (p.x - p0).abs() < 1e-12,
             "中央力应保总动量：p.x={} 期望 {p0}",
@@ -158,7 +171,10 @@ fn relative_oscillation_about_rest_length() {
         prev_d = d;
     }
     assert!(min_d < REST - 1e-3, "应越过自由长度：min_d={min_d}");
-    assert!((max_d - 1.5).abs() < 1e-2, "振幅应回到初始拉伸附近：max_d={max_d}");
+    assert!(
+        (max_d - 1.5).abs() < 1e-2,
+        "振幅应回到初始拉伸附近：max_d={max_d}"
+    );
     assert!(n >= 2, "应发生多次简谐往返穿越：n={n}");
 }
 
@@ -174,6 +190,9 @@ fn out_of_bounds_index_safely_ignored() {
         k.tick(DT);
     }
     let e = k.total_mechanical_energy();
-    assert!((e - e0).abs() < 1e-12, "越界关节应等同自由体：e={e} e0={e0}");
+    assert!(
+        (e - e0).abs() < 1e-12,
+        "越界关节应等同自由体：e={e} e0={e0}"
+    );
     assert_eq!(k.bodies[0].vel, Vec3::new(3.0, 0.0, 0.0), "速度应恒定");
 }

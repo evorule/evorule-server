@@ -187,8 +187,11 @@ async fn main() {
             .expect("audit");
         let audit: serde_json::Value = resp.json().await.expect("parse");
         let last_hash = audit["last_hash"].as_str().unwrap().to_string();
-    // audit API 返回 entries 数组(旧 entry_count 字段已移除,2026-09-01 对齐)
-    let entry_count = audit["entries"].as_array().map(|a| a.len() as u64).unwrap_or(0);
+        // audit API 返回 entries 数组(旧 entry_count 字段已移除,2026-09-01 对齐)
+        let entry_count = audit["entries"]
+            .as_array()
+            .map(|a| a.len() as u64)
+            .unwrap_or(0);
 
         if iter == 0 {
             first_chain_hash = last_hash.clone();

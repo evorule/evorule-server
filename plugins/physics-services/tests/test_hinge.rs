@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_hinge.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_hinge.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 双体刚性铰链（revolute joint，机械臂肘关节/运动链的刚性转角约束 + 力矩耦合）确定性验证。
 //!
 //! 模型：把**铰接锚点**世界坐标锁在一起（位置约束 k_p）、把**铰轴方向**对齐（角度约束
@@ -102,8 +102,14 @@ fn hinge_holds_anchor_and_axis() {
             rotated = true;
         }
     }
-    assert!(max_anchor < 2e-2, "锚点分离应有界（惩罚约束误差）：max_anchor={max_anchor}");
-    assert!(max_axis < 1e-6, "铰轴应恒对齐（只允许绕轴相对转动）：max_axis={max_axis}");
+    assert!(
+        max_anchor < 2e-2,
+        "锚点分离应有界（惩罚约束误差）：max_anchor={max_anchor}"
+    );
+    assert!(
+        max_axis < 1e-6,
+        "铰轴应恒对齐（只允许绕轴相对转动）：max_axis={max_axis}"
+    );
     assert!(rotated, "应发生绕铰轴的相对转动（关节自由 DOF）");
 }
 
@@ -190,8 +196,14 @@ fn double_pendulum_energy_bounded() {
         min_e = min_e.min(e);
         max_x1 = max_x1.max(k.bodies[1].pos.x.abs());
     }
-    assert!(max_e - e0 < e0 * 1e-3, "能量上偏应有界：e0={e0} max_e={max_e}");
-    assert!((min_e - e0).abs() < e0 * 1e-3, "能量下偏应有界：e0={e0} min_e={min_e}");
+    assert!(
+        max_e - e0 < e0 * 1e-3,
+        "能量上偏应有界：e0={e0} max_e={max_e}"
+    );
+    assert!(
+        (min_e - e0).abs() < e0 * 1e-3,
+        "能量下偏应有界：e0={e0} min_e={min_e}"
+    );
     assert!(max_x1 < 2.0, "摆幅不应发散：max_x1={max_x1}");
 }
 
@@ -216,8 +228,7 @@ fn hinge_axis_alignment_restores() {
             ),
     );
     k.bodies.push(
-        RigidBody::new(MASS, Vec3::new(1.0, 0.0, 0.0), Vec3::zero())
-            .with_rotation(Vec3::zero(), I),
+        RigidBody::new(MASS, Vec3::new(1.0, 0.0, 0.0), Vec3::zero()).with_rotation(Vec3::zero(), I),
     );
     k.bodies[1].orientation = rot_x(0.5);
     let mut max_axis = 0.0_f64;
@@ -272,11 +283,18 @@ fn hinge_damping_dissipates_monotonic() {
 #[test]
 fn rigid_and_soft_constraints_stay_bounded() {
     let mut soft = PhysicalKernel::with_integrator(Vec3::new(0.0, -9.81, 0.0), 2).expect("order 2");
-    soft.bodies
-        .push(RigidBody::new(MASS, Vec3::new(0.0, 1.0, 0.0), Vec3::zero()).with_joint(1, 8000.0, 0.0, 1.0));
-    soft.bodies.push(RigidBody::new(MASS, Vec3::new(1.0, 1.0, 0.0), Vec3::new(1.5, 0.0, 0.0)));
+    soft.bodies.push(
+        RigidBody::new(MASS, Vec3::new(0.0, 1.0, 0.0), Vec3::zero())
+            .with_joint(1, 8000.0, 0.0, 1.0),
+    );
+    soft.bodies.push(RigidBody::new(
+        MASS,
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(1.5, 0.0, 0.0),
+    ));
 
-    let mut rigid = PhysicalKernel::with_integrator(Vec3::new(0.0, -9.81, 0.0), 2).expect("order 2");
+    let mut rigid =
+        PhysicalKernel::with_integrator(Vec3::new(0.0, -9.81, 0.0), 2).expect("order 2");
     rigid.bodies.push(
         RigidBody::new(MASS, Vec3::new(0.0, 1.0, 0.0), Vec3::zero()).with_hinge(
             1,
@@ -289,7 +307,11 @@ fn rigid_and_soft_constraints_stay_bounded() {
             0.0,
         ),
     );
-    rigid.bodies.push(RigidBody::new(MASS, Vec3::new(1.0, 1.0, 0.0), Vec3::new(1.5, 0.0, 0.0)));
+    rigid.bodies.push(RigidBody::new(
+        MASS,
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(1.5, 0.0, 0.0),
+    ));
 
     let mut soft_err = 0.0_f64;
     let mut rigid_err = 0.0_f64;
@@ -308,6 +330,9 @@ fn rigid_and_soft_constraints_stay_bounded() {
         axis_err = axis_err.max(n_i.cross(n_j).length());
     }
     assert!(soft_err < 3e-2, "软铰约束误差应有界：soft_err={soft_err}");
-    assert!(rigid_err < 3e-2, "刚铰约束误差应有界：rigid_err={rigid_err}");
+    assert!(
+        rigid_err < 3e-2,
+        "刚铰约束误差应有界：rigid_err={rigid_err}"
+    );
     assert!(axis_err < 1e-6, "刚铰铰轴应恒对齐：axis_err={axis_err}");
 }

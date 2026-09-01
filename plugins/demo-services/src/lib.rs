@@ -366,7 +366,10 @@ mod tests {
         }
         // 未启用的服务 → 回落
         let params = JsonValue::object_from_pairs(&[
-            ("service_name", JsonValue::string("inverse_kinematics_solver")),
+            (
+                "service_name",
+                JsonValue::string("inverse_kinematics_solver"),
+            ),
             ("args", JsonValue::object_from_pairs(&[])),
         ]);
         assert_eq!(
@@ -389,7 +392,10 @@ mod tests {
             &["config_persist", "no_such_svc"],
         ));
         assert!(err.contains("no_such_svc"), "{err}");
-        assert!(err.contains("config_persist") && err.contains("NATIVE_SERVICES"), "{err}");
+        assert!(
+            err.contains("config_persist") && err.contains("NATIVE_SERVICES"),
+            "{err}"
+        );
         // 重复名 → Err(不静默去重)
         let err = expect_err(DemoServiceRouter::with_enabled(
             Arc::new(ErrHandler),

@@ -39,7 +39,9 @@ fn parse_series(args: &JsonValue) -> Result<Vec<f64>, String> {
                 .to_string()
         })?;
     if arr.is_empty() {
-        return Err("series 为空数组 — 指标计算至少需要 1 个数据点(如实拒绝,不返回空结果)".to_string());
+        return Err(
+            "series 为空数组 — 指标计算至少需要 1 个数据点(如实拒绝,不返回空结果)".to_string(),
+        );
     }
     if arr.len() > MAX_SERIES_LEN {
         return Err(format!(
@@ -76,7 +78,9 @@ fn parse_f64(v: &JsonValue) -> Option<f64> {
 fn parse_usize(args: &JsonValue, key: &str, default: usize, min: usize) -> Result<usize, String> {
     match args.get(key) {
         None | Some(JsonValue::Null) => Ok(default),
-        Some(JsonValue::Integer(i)) if *i >= min as i64 && *i <= MAX_SERIES_LEN as i64 => Ok(*i as usize),
+        Some(JsonValue::Integer(i)) if *i >= min as i64 && *i <= MAX_SERIES_LEN as i64 => {
+            Ok(*i as usize)
+        }
         Some(v) => Err(format!(
             "参数 {key}={v} 非法 — 需为 [{min}, {MAX_SERIES_LEN}] 内的整数"
         )),
@@ -317,11 +321,7 @@ impl NativeService for IndicatorMacd {
         let ema_fast = ewm_span(&series, fast);
         let ema_slow = ewm_span(&series, slow);
         // MACD 序列(fast−slow,首位起有值) → Signal = EMA(signal_period)(对 MACD 序列)
-        let macd_series: Vec<f64> = ema_fast
-            .iter()
-            .zip(&ema_slow)
-            .map(|(f, s)| f - s)
-            .collect();
+        let macd_series: Vec<f64> = ema_fast.iter().zip(&ema_slow).map(|(f, s)| f - s).collect();
         let signal_series = ewm_span(&macd_series, signal_period);
         let macd_out: Vec<Option<f64>> = macd_series.iter().map(|v| Some(*v)).collect();
         let signal_out: Vec<Option<f64>> = signal_series.iter().map(|v| Some(*v)).collect();
@@ -354,7 +354,10 @@ impl NativeService for IndicatorRsi {
         Ok(obj(vec![
             ("status", JsonValue::string("ok")),
             ("period", JsonValue::Integer(period as i64)),
-            ("min_periods", JsonValue::Integer((period / 2).max(1) as i64)),
+            (
+                "min_periods",
+                JsonValue::Integer((period / 2).max(1) as i64),
+            ),
             ("count", JsonValue::Integer(series.len() as i64)),
             ("values", values_out(&values)),
         ]))
@@ -376,8 +379,8 @@ mod tests {
 
     /// 黄金值输入序列(gen_golden.py SERIES,与 pandas 黄金值同一序列)
     const SERIES: [f64; 20] = [
-        10.0, 11.2, 10.8, 12.5, 13.1, 12.9, 14.2, 13.7, 15.0, 15.6, 15.2, 16.1, 15.8, 17.0,
-        16.5, 17.8, 18.2, 17.9, 19.1, 18.6,
+        10.0, 11.2, 10.8, 12.5, 13.1, 12.9, 14.2, 13.7, 15.0, 15.6, 15.2, 16.1, 15.8, 17.0, 16.5,
+        17.8, 18.2, 17.9, 19.1, 18.6,
     ];
 
     fn arr(series: &[f64]) -> JsonValue {
@@ -408,10 +411,22 @@ mod tests {
     fn test_sma_golden_pandas_bitwise() {
         let values = sma_core(&SERIES, 5);
         let expect_strs = [
-            "11.52", "12.1", "12.7", "13.280000000000001", "13.780000000000001",
-            "14.279999999999998", "14.74", "15.12", "15.540000000000001",
-            "15.940000000000001", "16.12", "16.64", "17.06", "17.479999999999997",
-            "17.9", "18.32",
+            "11.52",
+            "12.1",
+            "12.7",
+            "13.280000000000001",
+            "13.780000000000001",
+            "14.279999999999998",
+            "14.74",
+            "15.12",
+            "15.540000000000001",
+            "15.940000000000001",
+            "16.12",
+            "16.64",
+            "17.06",
+            "17.479999999999997",
+            "17.9",
+            "18.32",
         ];
         let mut expect: Vec<JsonValue> = vec![JsonValue::Null; 4];
         expect.extend(str_vals(&expect_strs));
@@ -468,12 +483,25 @@ mod tests {
     fn test_ema_golden_pandas_bitwise() {
         let values: Vec<Option<f64>> = ewm_span(&SERIES, 5).into_iter().map(Some).collect();
         let expect_strs = [
-            "10.0", "10.4", "10.533333333333335", "11.18888888888889",
-            "11.825925925925926", "12.183950617283951", "12.855967078189302",
-            "13.137311385459535", "13.758207590306357", "14.372138393537572",
-            "14.648092262358382", "15.132061508238923", "15.354707672159282",
-            "15.903138448106189", "16.10209229873746", "16.66806153249164",
-            "17.178707688327762", "17.419138458885175", "17.979425639256785",
+            "10.0",
+            "10.4",
+            "10.533333333333335",
+            "11.18888888888889",
+            "11.825925925925926",
+            "12.183950617283951",
+            "12.855967078189302",
+            "13.137311385459535",
+            "13.758207590306357",
+            "14.372138393537572",
+            "14.648092262358382",
+            "15.132061508238923",
+            "15.354707672159282",
+            "15.903138448106189",
+            "16.10209229873746",
+            "16.66806153249164",
+            "17.178707688327762",
+            "17.419138458885175",
+            "17.979425639256785",
             "18.186283759504526",
         ];
         let expect = str_vals(&expect_strs);
@@ -491,11 +519,7 @@ mod tests {
     fn test_macd_golden_pandas_bitwise() {
         let ema_fast = ewm_span(&SERIES, 12);
         let ema_slow = ewm_span(&SERIES, 26);
-        let macd_series: Vec<f64> = ema_fast
-            .iter()
-            .zip(&ema_slow)
-            .map(|(f, s)| f - s)
-            .collect();
+        let macd_series: Vec<f64> = ema_fast.iter().zip(&ema_slow).map(|(f, s)| f - s).collect();
         let signal_series = ewm_span(&macd_series, 9);
         // 抽样逐位锁定(首/中/尾),全量锁定由服务层快照测试覆盖
         assert_eq!(format!("{:?}", macd_series[0]), "0.0");
@@ -516,11 +540,20 @@ mod tests {
     fn test_rsi_golden_pandas_bitwise() {
         let values = rsi_core(&SERIES, 14);
         let expect_strs = [
-            "89.24050905488923", "79.68438285144704", "84.37058145649533",
-            "85.97821332764869", "80.06555315541493", "82.91284207272867",
-            "78.86897409089525", "82.53774202430205", "76.57227243038552",
-            "80.51540566972196", "81.54468684123006", "78.20782065639835",
-            "81.47354882710174", "76.34014100951936",
+            "89.24050905488923",
+            "79.68438285144704",
+            "84.37058145649533",
+            "85.97821332764869",
+            "80.06555315541493",
+            "82.91284207272867",
+            "78.86897409089525",
+            "82.53774202430205",
+            "76.57227243038552",
+            "80.51540566972196",
+            "81.54468684123006",
+            "78.20782065639835",
+            "81.47354882710174",
+            "76.34014100951936",
         ];
         let mut expect: Vec<JsonValue> = vec![JsonValue::Null; 6];
         expect.extend(str_vals(&expect_strs));
@@ -590,7 +623,10 @@ mod tests {
         let args = JsonValue::object_from_pairs(&[("window", JsonValue::Integer(5))]);
         assert_eq!(parse_usize(&args, "window", 5, 1).unwrap(), 5);
         // 缺省
-        assert_eq!(parse_usize(&JsonValue::empty_object(), "window", 5, 1).unwrap(), 5);
+        assert_eq!(
+            parse_usize(&JsonValue::empty_object(), "window", 5, 1).unwrap(),
+            5
+        );
     }
 
     #[tokio::test]

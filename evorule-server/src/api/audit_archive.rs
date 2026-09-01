@@ -199,9 +199,7 @@ fn build_meta(session_id: u64, records: &[WalRecord], wal_bytes: u64) -> Archive
 /// 返回 (entries, last_chain_hash, verified, unhashed_records)。
 /// 验证：每条重算 `blake3(prev_hash + content_hash)` 与 WAL 存储 chain_hash 比对；
 /// 任一不匹配 → verified=false（疑似篡改/损坏，如实上报）。
-fn rebuild_chain(
-    records: &[WalRecord],
-) -> (Vec<ArchiveAuditEntry>, String, bool, usize) {
+fn rebuild_chain(records: &[WalRecord]) -> (Vec<ArchiveAuditEntry>, String, bool, usize) {
     let mut entries = Vec::with_capacity(records.len());
     let mut prev_hash = String::from("genesis");
     let mut verified = true;
@@ -354,7 +352,8 @@ impl ArchiveCache {
         };
 
         // 清理已消失的会话
-        self.entries.retain(|id, _| inventory.sessions.contains_key(id));
+        self.entries
+            .retain(|id, _| inventory.sessions.contains_key(id));
 
         let mut out = Vec::with_capacity(inventory.sessions.len());
         for (id, (fingerprint, wal_bytes)) in &inventory.sessions {
@@ -473,7 +472,10 @@ mod tests {
     fn test_llm_sidecar_detection() {
         let dir = tmp_wal_dir("sidecar");
         let params = JsonValue::object_from_pairs(&[
-            ("messages", JsonValue::string("[{\"role\":\"user\",\"content\":\"hi\"}]")),
+            (
+                "messages",
+                JsonValue::string("[{\"role\":\"user\",\"content\":\"hi\"}]"),
+            ),
             ("audit_purpose", JsonValue::string("draft_rule")),
         ]);
         let facts = vec![cmd(1, "call_external", params)];

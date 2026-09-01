@@ -15,7 +15,7 @@
 // 集成测试保留 unwrap/expect 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use evorule_physics_services::kernel::{G, PhysicalKernel, RigidBody, Vec3};
+use evorule_physics_services::kernel::{PhysicalKernel, RigidBody, Vec3, G};
 
 /// 内核终态的确定性序列化哈希（Debug 格式对同一构建是确定的）。
 fn hash_kernel_state(kernel: &PhysicalKernel) -> String {
@@ -27,7 +27,9 @@ fn hash_kernel_state(kernel: &PhysicalKernel) -> String {
 /// 同一初始条件下跑 1000 步自由落体（新重力 2G）。
 fn run_fall_kernel() -> PhysicalKernel {
     let mut kernel = PhysicalKernel::new(Vec3::new(0.0, -G * 2.0, 0.0));
-    kernel.bodies.push(RigidBody::new(1.0, Vec3::zero(), Vec3::zero()));
+    kernel
+        .bodies
+        .push(RigidBody::new(1.0, Vec3::zero(), Vec3::zero()));
     for _ in 0..1000 {
         kernel.tick(0.001);
     }

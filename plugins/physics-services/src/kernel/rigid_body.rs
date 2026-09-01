@@ -282,7 +282,11 @@ impl RigidBody {
             local_axis: local_axis.normalize(),
             other_local_pivot: Vec3::zero(),
             // 固定世界方向：默认取构造时局部轴（保持初始取向，ka>0 才生效）。
-            other_local_axis: if ka > 0.0 { local_axis.normalize() } else { Vec3::zero() },
+            other_local_axis: if ka > 0.0 {
+                local_axis.normalize()
+            } else {
+                Vec3::zero()
+            },
             position_stiffness: kp.max(0.0),
             angular_stiffness: ka.max(0.0),
             damping: damping.max(0.0),
@@ -294,7 +298,10 @@ impl RigidBody {
     /// 保守力、随位置实时重算（velocity Verlet 新旧各求一次），辛积分下能量近守恒。
     /// 构造后追加，向后兼容。
     pub fn with_double_well(mut self, a: f64, m: f64) -> Self {
-        self.double_well = Some(DoubleWell { a: a.max(0.0), m: m.max(0.0) });
+        self.double_well = Some(DoubleWell {
+            a: a.max(0.0),
+            m: m.max(0.0),
+        });
         self
     }
 

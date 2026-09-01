@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_environment.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_environment.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! [evorule 移植等效] rpsm_hci 的 `HciConfig`/`EnvironmentConfig` 环境模板层
 //! (earth/moon/custom 模板与 `get_current_gravity` 换算)未随内核 vendored,
 //! 模板查值以同名常量字面量注入(9.80665/1.62/100.0)等效替代——模板层自身的
@@ -33,9 +33,11 @@ const G_CUSTOM_TEMPLATE: f64 = 100.0;
 /// 从而隔离「均匀场」与「多体引力」两种效应的测试环境。
 fn single_body_kernel(height: f64) -> PhysicalKernel {
     let mut kernel = PhysicalKernel::new(Vec3::zero());
-    kernel
-        .bodies
-        .push(RigidBody::new(1.0, Vec3::new(0.0, height, 0.0), Vec3::zero()));
+    kernel.bodies.push(RigidBody::new(
+        1.0,
+        Vec3::new(0.0, height, 0.0),
+        Vec3::zero(),
+    ));
     kernel
 }
 
@@ -78,10 +80,7 @@ fn test_moon_gravity_slower_fall() {
         kernel.tick(0.001);
     }
     let pos = kernel.bodies[0].pos.y;
-    assert!(
-        pos > -0.5 && pos < 0.5,
-        "Moon: 3.5 秒后应接近地面，y={pos}"
-    );
+    assert!(pos > -0.5 && pos < 0.5, "Moon: 3.5 秒后应接近地面，y={pos}");
 }
 
 /// 自定义环境下的重力缩放：
@@ -119,10 +118,16 @@ fn test_multibody_gravity_still_active_without_field() {
     let mut kernel = PhysicalKernel::new(Vec3::zero()); // 均匀场 = 零
     let mass = 1.0e12; // 大质量，让多体引力在量级上可被检测
     let d0 = 100.0; // 初始间距
-    kernel.bodies.push(RigidBody::new(mass, Vec3::new(0.0, 0.0, d0 / 2.0), Vec3::zero()));
-    kernel
-        .bodies
-        .push(RigidBody::new(mass, Vec3::new(0.0, 0.0, -d0 / 2.0), Vec3::zero()));
+    kernel.bodies.push(RigidBody::new(
+        mass,
+        Vec3::new(0.0, 0.0, d0 / 2.0),
+        Vec3::zero(),
+    ));
+    kernel.bodies.push(RigidBody::new(
+        mass,
+        Vec3::new(0.0, 0.0, -d0 / 2.0),
+        Vec3::zero(),
+    ));
 
     // 20 s = 20_000 步 × 0.001 s；在两体永不接触的前提下，间距应收敛。
     for _ in 0..20_000u32 {
@@ -131,8 +136,5 @@ fn test_multibody_gravity_still_active_without_field() {
 
     // 末态间距取两刚体 z 坐标差；只要小于初距即证明被引力拉近。
     let d1 = kernel.bodies[0].pos.z - kernel.bodies[1].pos.z;
-    assert!(
-        d1 < d0,
-        "多体引力应使两体靠近：初始 {d0}，现 {d1}"
-    );
+    assert!(d1 < d0, "多体引力应使两体靠近：初始 {d0}，现 {d1}");
 }

@@ -210,13 +210,10 @@ impl PhysicalKernel {
             // 按 leapfrog 结构交错半步，保持时间可逆。旋转若用单遍显式 ω 踢（旧取向处的力矩
             // 一次踢完）会与平动的半步交错失配，在平移-旋转耦合（如铰链力臂力矩）下泵能
             // （探针实测能量爆炸 1e5 量级）；两遍半踢 + 重算后取平均即恢复有界。
-            let a_old: Vec<Vec3> = self
-                .bodies
-                .iter()
-                .map(|b| b.force_accum / b.mass)
-                .collect();
+            let a_old: Vec<Vec3> = self.bodies.iter().map(|b| b.force_accum / b.mass).collect();
             if self.external_torques.len() != self.bodies.len() {
-                self.external_torques.resize(self.bodies.len(), Vec3::zero());
+                self.external_torques
+                    .resize(self.bodies.len(), Vec3::zero());
             }
             let alpha_old: Vec<Vec3> = self
                 .bodies
@@ -232,8 +229,7 @@ impl PhysicalKernel {
             for (b, alpha) in self.bodies.iter_mut().zip(&alpha_old) {
                 if b.inertia > 0.0 {
                     b.angular_velocity += *alpha * 0.5 * dt;
-                    b.orientation =
-                        integrate_orientation(b.orientation, b.angular_velocity, dt);
+                    b.orientation = integrate_orientation(b.orientation, b.angular_velocity, dt);
                 }
             }
             // 重算新位置、新取向处的力/力矩。
@@ -259,14 +255,14 @@ impl PhysicalKernel {
             }
             // 旋转同半隐式：先 ω 全踢，再推进取向（与平动一致的半步交错，能量有界）。
             if self.external_torques.len() != self.bodies.len() {
-                self.external_torques.resize(self.bodies.len(), Vec3::zero());
+                self.external_torques
+                    .resize(self.bodies.len(), Vec3::zero());
             }
             for (b, te) in self.bodies.iter_mut().zip(&self.external_torques) {
                 if b.inertia > 0.0 {
                     let alpha = effective_alpha(b, *te);
                     b.angular_velocity += alpha * dt;
-                    b.orientation =
-                        integrate_orientation(b.orientation, b.angular_velocity, dt);
+                    b.orientation = integrate_orientation(b.orientation, b.angular_velocity, dt);
                 }
             }
         }
@@ -425,8 +421,12 @@ impl PhysicalKernel {
                             Some(j),
                             Some(self.bodies[j]),
                             self.bodies[j].pos
-                                + self.bodies[j].orientation.rotate_vec(hinge.other_local_pivot),
-                            self.bodies[j].orientation.rotate_vec(hinge.other_local_axis),
+                                + self.bodies[j]
+                                    .orientation
+                                    .rotate_vec(hinge.other_local_pivot),
+                            self.bodies[j]
+                                .orientation
+                                .rotate_vec(hinge.other_local_axis),
                         ),
                         // 越界对端索引：安全忽略本约束（等同无铰链自由体），与软铰同约定。
                         Some(_) => continue,

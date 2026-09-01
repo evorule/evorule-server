@@ -181,8 +181,11 @@ fn land_bundle_core(
         };
         let manifest_json = serde_json::to_string_pretty(&manifest)
             .map_err(|e| format!("序列化 bundle_manifest.json 失败: {e}"))?;
-        std::fs::write(tmp.join(evorule_bundle::BUNDLE_MANIFEST_FILE), manifest_json)
-            .map_err(|e| format!("写入 bundle_manifest.json 失败: {e}"))?;
+        std::fs::write(
+            tmp.join(evorule_bundle::BUNDLE_MANIFEST_FILE),
+            manifest_json,
+        )
+        .map_err(|e| format!("写入 bundle_manifest.json 失败: {e}"))?;
         Ok(())
     })();
     if let Err(e) = write_result {
@@ -195,7 +198,7 @@ fn land_bundle_core(
 
     // 原子替换：旧版先移走为备份，新版本 rename 就位后清理备份；任一失败回滚
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new(); // (原路径, 备份路径)
-                                                        // 1) 同 bundle_id 旧目录
+                                                         // 1) 同 bundle_id 旧目录
     if target.exists() {
         std::fs::rename(&target, &backup).map_err(|e| {
             let _ = std::fs::remove_dir_all(&tmp);
@@ -241,11 +244,7 @@ fn land_bundle_core(
 /// 找出 base 下与指定 dataset 相同（且 bundle_id 不同）的旧 bundle 目录（T4 单激活）。
 ///
 /// 跳过隐藏目录（临时/备份目录）与不含 manifest 的目录；manifest 读取失败静默跳过。
-fn find_same_dataset_stale_dirs(
-    base: &Path,
-    dataset_id: &str,
-    bundle_id: &str,
-) -> Vec<PathBuf> {
+fn find_same_dataset_stale_dirs(base: &Path, dataset_id: &str, bundle_id: &str) -> Vec<PathBuf> {
     let Ok(read_dir) = std::fs::read_dir(base) else {
         return Vec::new();
     };

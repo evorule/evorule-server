@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_spring.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_spring.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! [evorule 移植等效] rpsm_dkel 的规则解析/注册表(RuleAST/RuleRegistry,DKEL 规则
 //! 语言 `-100.0 * x` 的解析求值)未随内核 vendored,以同语义本地函数
 //! `eval_spring_rule(x) = -100.0·x` 等效替代——规则语言自身的解析求值仍留
@@ -57,10 +57,7 @@ fn test_spring_dkel_oscil_lates_and_conserves_energy() {
     }
 
     // 越界越过平衡点：x 应变为负值，证明弹簧拉回后继续往复。
-    assert!(
-        min_x < -0.05,
-        "弹簧应在越过平衡点后回到负侧，min_x={min_x}"
-    );
+    assert!(min_x < -0.05, "弹簧应在越过平衡点后回到负侧，min_x={min_x}");
     // 保守性：系统能量（含 ½kx²）相对漂移应很小（辛欧拉误差在多周期内通常 <1%）。
     assert!(
         max_rel_drift < 0.01,

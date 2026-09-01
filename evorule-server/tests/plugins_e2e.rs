@@ -66,12 +66,10 @@ fn triple_plugin_router(
         ServiceRegistry::empty(),
         Arc::new(HttpHandler::new()),
     ));
-    let indicator =
-        Arc::new(IndicatorServiceRouter::with_enabled(http, indicator_enabled).unwrap())
-            as Arc<dyn evorule_reactor::IoHandler>;
-    let physics =
-        Arc::new(PhysicsServiceRouter::with_enabled(indicator, physics_enabled).unwrap())
-            as Arc<dyn evorule_reactor::IoHandler>;
+    let indicator = Arc::new(IndicatorServiceRouter::with_enabled(http, indicator_enabled).unwrap())
+        as Arc<dyn evorule_reactor::IoHandler>;
+    let physics = Arc::new(PhysicsServiceRouter::with_enabled(indicator, physics_enabled).unwrap())
+        as Arc<dyn evorule_reactor::IoHandler>;
     DemoServiceRouter::with_enabled(physics, demo_enabled).unwrap()
 }
 
@@ -98,8 +96,14 @@ async fn subset_manifest_enabled_service_native_hit() {
         Some(true),
         "原生服务应命中并返回 success: {r}"
     );
-    let msg = r.get("message").and_then(|v| v.as_str()).unwrap_or_default();
-    assert!(msg.contains("plugins-e2e-probe"), "args 应原样到达原生服务: {msg}");
+    let msg = r
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("plugins-e2e-probe"),
+        "args 应原样到达原生服务: {msg}"
+    );
 }
 
 /// 负向：未启用服务回落空注册表 → unknown service_name + 自诊断指引，如实报错。
@@ -206,11 +210,8 @@ fn dual_plugin_physics_enabled_names_follow_declaration_order() {
         ServiceRegistry::empty(),
         Arc::new(HttpHandler::new()),
     ));
-    let router = PhysicsServiceRouter::with_enabled(
-        http,
-        &["physics_energy", "physics_simulate"],
-    )
-    .unwrap();
+    let router =
+        PhysicsServiceRouter::with_enabled(http, &["physics_energy", "physics_simulate"]).unwrap();
     assert_eq!(
         router.enabled_service_names(),
         vec!["physics_simulate", "physics_energy"],
@@ -245,11 +246,7 @@ async fn dual_plugin_demo_service_still_hit_through_physics_layer() {
 /// （进程内确定性，无网络），前 4 位 warmup null 语义如实呈现。
 #[tokio::test]
 async fn triple_plugin_indicator_native_hit_with_warmup_nulls() {
-    let router = triple_plugin_router(
-        &["config_persist"],
-        &["physics_energy"],
-        &["indicator_sma"],
-    );
+    let router = triple_plugin_router(&["config_persist"], &["physics_energy"], &["indicator_sma"]);
     let r = router
         .execute(&svc_params(
             "indicator_sma",
@@ -289,11 +286,7 @@ async fn triple_plugin_indicator_native_hit_with_warmup_nulls() {
 /// + 自诊断指引（诚实报错，不伪造）。
 #[tokio::test]
 async fn triple_plugin_disabled_indicator_service_falls_through_honest_error() {
-    let router = triple_plugin_router(
-        &["config_persist"],
-        &["physics_energy"],
-        &["indicator_sma"],
-    );
+    let router = triple_plugin_router(&["config_persist"], &["physics_energy"], &["indicator_sma"]);
     let err = router
         .execute(&svc_params("indicator_macd", JsonValue::empty_object()))
         .await
@@ -331,11 +324,7 @@ fn triple_plugin_indicator_enabled_names_follow_declaration_order() {
 /// 既有插件行为；与 UV-035 双插件回归语义一致）。
 #[tokio::test]
 async fn triple_plugin_demo_service_still_hit_through_indicator_layer() {
-    let router = triple_plugin_router(
-        &["config_persist"],
-        &["physics_energy"],
-        &["indicator_sma"],
-    );
+    let router = triple_plugin_router(&["config_persist"], &["physics_energy"], &["indicator_sma"]);
     let r = router
         .execute(&svc_params(
             "config_persist",

@@ -77,9 +77,14 @@ fn arg_i64(args: &JsonValue, key: &str) -> Result<i64, String> {
 
 /// 从 JsonValue(期望 Array[3])解析三维向量。
 fn vec3_value(v: &JsonValue, ctx: &str) -> Result<Vec3, String> {
-    let a = v.as_array().ok_or_else(|| format!("参数 {ctx}: 必须为 [x,y,z] 数组"))?;
+    let a = v
+        .as_array()
+        .ok_or_else(|| format!("参数 {ctx}: 必须为 [x,y,z] 数组"))?;
     if a.len() != 3 {
-        return Err(format!("参数 {ctx}: 必须为恰好 3 个元素的 [x,y,z] 数组,收到 {} 个", a.len()));
+        return Err(format!(
+            "参数 {ctx}: 必须为恰好 3 个元素的 [x,y,z] 数组,收到 {} 个",
+            a.len()
+        ));
     }
     Ok(Vec3::new(
         parse_f64(&a[0], &format!("{ctx}[0]"))?,
@@ -131,11 +136,13 @@ fn parse_bodies(args: &JsonValue) -> Result<Vec<RigidBody>, String> {
             return Err(format!("参数 {}: mass 必须大于 0,收到 {mass}", ctx("mass")));
         }
         let pos = vec3_value(
-            b.get("pos").ok_or_else(|| format!("缺少必填参数 {}", ctx("pos")))?,
+            b.get("pos")
+                .ok_or_else(|| format!("缺少必填参数 {}", ctx("pos")))?,
             &ctx("pos"),
         )?;
         let vel = vec3_value(
-            b.get("vel").ok_or_else(|| format!("缺少必填参数 {}", ctx("vel")))?,
+            b.get("vel")
+                .ok_or_else(|| format!("缺少必填参数 {}", ctx("vel")))?,
             &ctx("vel"),
         )?;
         let mut body = RigidBody::new(mass, pos, vel);
@@ -167,8 +174,11 @@ fn parse_bodies(args: &JsonValue) -> Result<Vec<RigidBody>, String> {
 
 /// 解析仿真公共参数并构建内核:gravity(可选)/integrator_order(可选,1|2)/restitution(可选,0..=1)。
 fn build_kernel(args: &JsonValue) -> Result<PhysicalKernel, String> {
-    let gravity = arg_vec3_or(args, "gravity")?
-        .unwrap_or(Vec3::new(DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1], DEFAULT_GRAVITY[2]));
+    let gravity = arg_vec3_or(args, "gravity")?.unwrap_or(Vec3::new(
+        DEFAULT_GRAVITY[0],
+        DEFAULT_GRAVITY[1],
+        DEFAULT_GRAVITY[2],
+    ));
     let order = match args.get("integrator_order") {
         None => 1u8,
         Some(_) => {
@@ -378,8 +388,14 @@ mod tests {
     fn body_json(mass: &str, pos: [f64; 3], vel: [f64; 3], radius: Option<f64>) -> JsonValue {
         let mut pairs = vec![
             ("mass", float_str(mass.parse::<f64>().unwrap())),
-            ("pos", JsonValue::Array(pos.iter().map(|v| float_str(*v)).collect())),
-            ("vel", JsonValue::Array(vel.iter().map(|v| float_str(*v)).collect())),
+            (
+                "pos",
+                JsonValue::Array(pos.iter().map(|v| float_str(*v)).collect()),
+            ),
+            (
+                "vel",
+                JsonValue::Array(vel.iter().map(|v| float_str(*v)).collect()),
+            ),
         ];
         if let Some(r) = radius {
             pairs.push(("radius", float_str(r)));
@@ -400,7 +416,11 @@ mod tests {
     #[test]
     fn test_simulate_free_fall_deterministic_physics() {
         // 自由落体:静止于 y=10,重力 -9.81,dt=0.1,10 步 → y 明显下降、速度为负
-        let args = simulate_args(vec![body_json("1.0", [0.0, 10.0, 0.0], [0.0, 0.0, 0.0], None)], "0.1", 10);
+        let args = simulate_args(
+            vec![body_json("1.0", [0.0, 10.0, 0.0], [0.0, 0.0, 0.0], None)],
+            "0.1",
+            10,
+        );
         let r = PhysicsSimulate.execute(&args).unwrap();
         assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("ok"));
         let bodies = r.get("bodies").and_then(|v| v.as_array()).unwrap();
@@ -416,7 +436,12 @@ mod tests {
     fn test_simulate_bounce_with_restitution() {
         // 弹跳:带半径的球落地反弹,恢复系数 0.8 → 触地后竖直速度反向衰减
         let args = simulate_args(
-            vec![body_json("1.0", [0.0, 0.5, 0.0], [0.0, -5.0, 0.0], Some(0.5))],
+            vec![body_json(
+                "1.0",
+                [0.0, 0.5, 0.0],
+                [0.0, -5.0, 0.0],
+                Some(0.5),
+            )],
             "0.01",
             50,
         );
@@ -433,7 +458,12 @@ mod tests {
         // 单刚体静止:能量 = m·g·h(均匀场势能,零点 y=0)
         let args = JsonValue::object_from_pairs(&[(
             "bodies",
-            JsonValue::Array(vec![body_json("2.0", [0.0, 10.0, 0.0], [0.0, 0.0, 0.0], None)]),
+            JsonValue::Array(vec![body_json(
+                "2.0",
+                [0.0, 10.0, 0.0],
+                [0.0, 0.0, 0.0],
+                None,
+            )]),
         )]);
         let r = PhysicsEnergy.execute(&args).unwrap();
         let e: f64 = r
@@ -443,7 +473,10 @@ mod tests {
             .parse()
             .unwrap();
         let expect = 2.0 * 9.81 * 10.0;
-        assert!((e - expect).abs() < 1e-9, "能量 {e} 应等于 m·g·h = {expect}");
+        assert!(
+            (e - expect).abs() < 1e-9,
+            "能量 {e} 应等于 m·g·h = {expect}"
+        );
     }
 
     #[test]
@@ -461,7 +494,10 @@ mod tests {
             ),
             ("dt", float_str(0.1)),
             ("steps", JsonValue::Integer(50)),
-            ("grav_band", JsonValue::object_from_pairs(&[("lo", float_str(0.0)), ("hi", float_str(5.0))])),
+            (
+                "grav_band",
+                JsonValue::object_from_pairs(&[("lo", float_str(0.0)), ("hi", float_str(5.0))]),
+            ),
         ]);
         let r = PhysicsGravBand.execute(&args).unwrap();
         let bodies = r.get("bodies").and_then(|v| v.as_array()).unwrap();
@@ -490,11 +526,17 @@ mod tests {
             ),
             ("dt", float_str(0.1)),
             ("steps", JsonValue::Integer(30)),
-            ("grav_band", JsonValue::object_from_pairs(&[("lo", float_str(0.0)), ("hi", float_str(5.0))])),
+            (
+                "grav_band",
+                JsonValue::object_from_pairs(&[("lo", float_str(0.0)), ("hi", float_str(5.0))]),
+            ),
         ]);
         let r = PhysicsGravBand.execute(&args).unwrap();
         let bodies = r.get("bodies").and_then(|v| v.as_array()).unwrap();
-        assert_eq!(bodies[0].get("escaped").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            bodies[0].get("escaped").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         let pos = bodies[0].get("pos").and_then(|v| v.as_array()).unwrap();
         let y: f64 = pos[1].as_str().unwrap().parse().unwrap();
         assert!(y < 3.0, "带内刚体应被重力拉回,y={y}");
@@ -530,15 +572,23 @@ mod tests {
         assert!(err.contains("steps"), "{err}");
         // mass <= 0 拒绝
         let args = JsonValue::object_from_pairs(&[
-            ("bodies", JsonValue::Array(vec![body_json("0", [0.0; 3], [0.0; 3], None)])),
+            (
+                "bodies",
+                JsonValue::Array(vec![body_json("0", [0.0; 3], [0.0; 3], None)]),
+            ),
             ("dt", float_str(0.1)),
             ("steps", JsonValue::Integer(10)),
         ]);
         let err = PhysicsSimulate.execute(&args).unwrap_err();
         assert!(err.contains("mass"), "{err}");
         // bodies 缺失 → 明确指引
-        let err = PhysicsSimulate.execute(&JsonValue::empty_object()).unwrap_err();
-        assert!(err.contains("bodies") && err.contains("自诊断指引"), "{err}");
+        let err = PhysicsSimulate
+            .execute(&JsonValue::empty_object())
+            .unwrap_err();
+        assert!(
+            err.contains("bodies") && err.contains("自诊断指引"),
+            "{err}"
+        );
         // grav_band 缺失(grav_band 服务) → 明确指引
         let args = JsonValue::object_from_pairs(&[
             ("bodies", JsonValue::Array(vec![body()])),
@@ -546,6 +596,9 @@ mod tests {
             ("steps", JsonValue::Integer(10)),
         ]);
         let err = PhysicsGravBand.execute(&args).unwrap_err();
-        assert!(err.contains("grav_band") && err.contains("自诊断指引"), "{err}");
+        assert!(
+            err.contains("grav_band") && err.contains("自诊断指引"),
+            "{err}"
+        );
     }
 }

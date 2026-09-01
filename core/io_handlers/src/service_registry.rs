@@ -473,7 +473,10 @@ mod tests {
             "bad": {"url": "http://x/y", "headers": {"X-Auth": 12345}, "timeout_ms": -1}
         }"#;
         let err = ServiceRegistry::load_from_str(json).unwrap_err();
-        assert!(err.contains("schema 门禁"), "结构非法应被门禁拦截, got: {err}");
+        assert!(
+            err.contains("schema 门禁"),
+            "结构非法应被门禁拦截, got: {err}"
+        );
     }
 
     /// C9: 未知字段向前兼容（schema additionalProperties 开放），不得拒绝
@@ -539,7 +542,10 @@ mod tests {
         assert!(err.contains("unknown service_name 'nope'"));
         // 自愈原则：绑定缺失错误必须携带可自助排查的指引（B2 测试门口径）
         assert!(err.contains("自诊断指引"), "应含自诊断指引, got: {err}");
-        assert!(err.contains("--service-registry"), "应指向启动参数, got: {err}");
+        assert!(
+            err.contains("--service-registry"),
+            "应指向启动参数, got: {err}"
+        );
     }
 
     #[test]

@@ -580,7 +580,10 @@ const PLUGIN_DEFS: &[PluginDef] = &[
 /// 清单未提及的插件 = All(缺省全启,存量零迁移)。
 fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, PluginMount)>, String> {
     let Some(p) = path else {
-        return Ok(PLUGIN_DEFS.iter().map(|d| (d.id, PluginMount::All)).collect());
+        return Ok(PLUGIN_DEFS
+            .iter()
+            .map(|d| (d.id, PluginMount::All))
+            .collect());
     };
     let content = std::fs::read_to_string(p).map_err(|e| {
         format!(
@@ -601,7 +604,11 @@ fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, Plugi
     let mut mounts: Vec<(&'static str, PluginMount)> = Vec::new();
     for (id, entry) in &manifest.plugins {
         let def = PLUGIN_DEFS.iter().find(|d| d.id == *id).ok_or_else(|| {
-            let ids = PLUGIN_DEFS.iter().map(|d| d.id).collect::<Vec<_>>().join(", ");
+            let ids = PLUGIN_DEFS
+                .iter()
+                .map(|d| d.id)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!(
                 "插件清单含未知的进程内插件 id '{id}' — 当前可用: [{ids}]。\
                  自诊断指引: ① 进程外服务不走 plugin_manifest,请配置 service_registry.json; \
@@ -1106,12 +1113,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             PluginMount::Subset(names) => {
                 let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                let router = evorule_plugin_kit::mount_router(def.defs, chain_tail.clone(), Some(&refs))
-                    .map_err(|e| format!("插件清单校验失败: {}", e))?;
+                let router =
+                    evorule_plugin_kit::mount_router(def.defs, chain_tail.clone(), Some(&refs))
+                        .map_err(|e| format!("插件清单校验失败: {}", e))?;
                 // 健康呈现按声明序过滤(与路由器 enabled_service_names 同口径)
                 let all_names = plugin_service_names(def);
-                let enabled_ordered: Vec<&str> =
-                    all_names.iter().copied().filter(|n| refs.contains(n)).collect();
+                let enabled_ordered: Vec<&str> = all_names
+                    .iter()
+                    .copied()
+                    .filter(|n| refs.contains(n))
+                    .collect();
                 info!(
                     "插件清单: {id} 启用子集 [{}]（声明表全量 {},已裁剪 {}）",
                     enabled_ordered.join(", "),
@@ -1418,7 +1429,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             std::process::exit(1);
         }
-        info!("静态前端已启用：{}（同源托管，未命中路由回退 index.html）", dir.display());
+        info!(
+            "静态前端已启用：{}（同源托管，未命中路由回退 index.html）",
+            dir.display()
+        );
     }
 
     info!(
@@ -1668,10 +1682,7 @@ mod tests {
     }
 
     /// 从挂载结果中取指定插件的挂载决定
-    fn mount_of<'a>(
-        mounts: &'a [(&'static str, PluginMount)],
-        id: &str,
-    ) -> &'a PluginMount {
+    fn mount_of<'a>(mounts: &'a [(&'static str, PluginMount)], id: &str) -> &'a PluginMount {
         &mounts
             .iter()
             .find(|(i, _)| *i == id)
@@ -1691,11 +1702,17 @@ mod tests {
     fn test_plugin_mount_parse_variants() {
         let dir = TempDir::new().unwrap();
         // services 省略 = 全部启用
-        let p = write_manifest(&dir, r#"{ "plugins": { "demo-services": { "enabled": true } } }"#);
+        let p = write_manifest(
+            &dir,
+            r#"{ "plugins": { "demo-services": { "enabled": true } } }"#,
+        );
         let mounts = load_plugin_mounts(Some(&p)).unwrap();
         assert_eq!(mount_of(&mounts, "demo-services"), &PluginMount::All);
         // enabled=false → Off
-        let p = write_manifest(&dir, r#"{ "plugins": { "demo-services": { "enabled": false } } }"#);
+        let p = write_manifest(
+            &dir,
+            r#"{ "plugins": { "demo-services": { "enabled": false } } }"#,
+        );
         let mounts = load_plugin_mounts(Some(&p)).unwrap();
         assert_eq!(mount_of(&mounts, "demo-services"), &PluginMount::Off);
         // 子集
@@ -1746,7 +1763,10 @@ mod tests {
     fn test_plugin_mount_fail_fast() {
         let dir = TempDir::new().unwrap();
         // 未知插件 id → Err 含指引与全部可用 id
-        let p = write_manifest(&dir, r#"{ "plugins": { "no-such-plugin": { "enabled": true } } }"#);
+        let p = write_manifest(
+            &dir,
+            r#"{ "plugins": { "no-such-plugin": { "enabled": true } } }"#,
+        );
         let err = load_plugin_mounts(Some(&p)).unwrap_err();
         assert!(
             err.contains("no-such-plugin")
@@ -1921,7 +1941,10 @@ mod tests {
         assert!(!cfg.auto_verify);
         assert_eq!(cfg.auto_verify_threshold, 1000);
         assert_eq!(cfg.auto_verify_interval, 1);
-        assert_eq!(cfg.rate_limit_per_sec, 200, "默认限速应为 200 req/s(UV-032 修正)");
+        assert_eq!(
+            cfg.rate_limit_per_sec, 200,
+            "默认限速应为 200 req/s(UV-032 修正)"
+        );
     }
 
     #[test]

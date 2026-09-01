@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_double_well.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_double_well.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 双势阱保守势垒的确定性验证（守护验证器压力素材）。
 //!
 //! 内核级保守势（沿 X 轴）`V(x) = a·(x² − m)²`：双势阱（井底 x=±√m、V=0），
@@ -25,8 +25,12 @@ const NO_GRAV: Vec3 = Vec3::zero();
 fn run(x0: f64, v0: f64, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut k = PhysicalKernel::with_integrator(NO_GRAV, 2).expect("order 2");
     k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(MASS, Vec3::new(x0, 0.0, 0.0), Vec3::new(v0, 0.0, 0.0))
-            .with_double_well(A, MBAR),
+        evorule_physics_services::kernel::RigidBody::new(
+            MASS,
+            Vec3::new(x0, 0.0, 0.0),
+            Vec3::new(v0, 0.0, 0.0),
+        )
+        .with_double_well(A, MBAR),
     );
     let mut xs = Vec::with_capacity(n);
     let mut vs = Vec::with_capacity(n);
@@ -81,13 +85,21 @@ fn double_well_is_deterministic() {
     let run = || {
         let mut k = PhysicalKernel::with_integrator(NO_GRAV, 2).expect("order 2");
         k.bodies.push(
-            evorule_physics_services::kernel::RigidBody::new(MASS, Vec3::new(1.7, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0))
-                .with_double_well(A, MBAR),
+            evorule_physics_services::kernel::RigidBody::new(
+                MASS,
+                Vec3::new(1.7, 0.0, 0.0),
+                Vec3::new(0.0, 2.0, 0.0),
+            )
+            .with_double_well(A, MBAR),
         );
         let mut trace = Vec::new();
         for _ in 0..10_000 {
             k.tick(DT);
-            trace.push((k.bodies[0].pos, k.bodies[0].vel, k.total_mechanical_energy()));
+            trace.push((
+                k.bodies[0].pos,
+                k.bodies[0].vel,
+                k.total_mechanical_energy(),
+            ));
         }
         trace
     };

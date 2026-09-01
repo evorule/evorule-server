@@ -117,7 +117,8 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
     NativeServiceDef {
         name: "indicator_rsi",
         sensitive: false,
-        description: "RSI(默认 14,Wilder 平滑 ewm(alpha=1/N, adjust=False),分类语义与参考实现逐分支对齐)",
+        description:
+            "RSI(默认 14,Wilder 平滑 ewm(alpha=1/N, adjust=False),分类语义与参考实现逐分支对齐)",
         make: mk_rsi,
     },
 ];
@@ -327,7 +328,10 @@ mod tests {
             &["indicator_sma", "no_such_svc"],
         ));
         assert!(err.contains("no_such_svc"), "{err}");
-        assert!(err.contains("indicator_sma") && err.contains("NATIVE_SERVICES"), "{err}");
+        assert!(
+            err.contains("indicator_sma") && err.contains("NATIVE_SERVICES"),
+            "{err}"
+        );
         // 重复名 → Err(不静默去重)
         let err = expect_err(IndicatorServiceRouter::with_enabled(
             Arc::new(ErrHandler),
@@ -335,7 +339,10 @@ mod tests {
         ));
         assert!(err.contains("重复"), "{err}");
         // 空启用集 → Err(指引改用 enabled=false)
-        let err = expect_err(IndicatorServiceRouter::with_enabled(Arc::new(ErrHandler), &[]));
+        let err = expect_err(IndicatorServiceRouter::with_enabled(
+            Arc::new(ErrHandler),
+            &[],
+        ));
         assert!(err.contains("enabled=false"), "{err}");
     }
 }

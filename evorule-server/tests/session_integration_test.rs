@@ -870,7 +870,10 @@ async fn test_audit_archive_replay_after_close_and_restart() {
     // 活跃会话为空（重启后）
     let (_, list) = send(&state2, "GET", "/api/sessions", None).await;
     assert!(
-        list["sessions"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        list["sessions"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
         "重启后不应有活跃会话"
     );
 
@@ -882,7 +885,10 @@ async fn test_audit_archive_replay_after_close_and_restart() {
         .iter()
         .filter_map(|s| s["session_id"].as_u64())
         .collect();
-    assert!(ids.contains(&sid), "档案列表应包含已关闭会话 {sid}，实际: {ids:?}");
+    assert!(
+        ids.contains(&sid),
+        "档案列表应包含已关闭会话 {sid}，实际: {ids:?}"
+    );
 
     // 档案审计链回看：verified + Command 内容可见
     let (status, audit) = send(
@@ -894,22 +900,37 @@ async fn test_audit_archive_replay_after_close_and_restart() {
     .await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(audit["verified"], true, "重建链验证应通过");
-    assert!(audit["fact_count"].as_u64().unwrap() >= 2, "应至少含 Command+Stable");
+    assert!(
+        audit["fact_count"].as_u64().unwrap() >= 2,
+        "应至少含 Command+Stable"
+    );
     let has_command_content = audit["entries"]
         .as_array()
         .unwrap()
         .iter()
         .any(|e| e["fact_type"] == "Command" && e.get("content_json").is_some());
-    assert!(has_command_content, "include_content=true 时 Command 内容应可见");
+    assert!(
+        has_command_content,
+        "include_content=true 时 Command 内容应可见"
+    );
 
     // 只读验证：活跃会话行为零变化（不出现 ghost 会话）
     let (_, list2) = send(&state2, "GET", "/api/sessions", None).await;
     assert!(
-        list2["sessions"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+        list2["sessions"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
         "档案读取不得产生活跃会话副作用"
     );
 
     // 404：无档案会话
-    let (status, _) = send(&state2, "GET", "/api/audit-archive/sessions/9999/audit", None).await;
+    let (status, _) = send(
+        &state2,
+        "GET",
+        "/api/audit-archive/sessions/9999/audit",
+        None,
+    )
+    .await;
     assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 }

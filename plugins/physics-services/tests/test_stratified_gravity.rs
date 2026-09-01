@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_stratified_gravity.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_stratified_gravity.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 有界重力/分层势场的确定性验证（箱阱势）。
 //!
 //! 重力带 `[lo, hi]` 内刚体受力（均匀场 g），带外重力归零、形成平台。
@@ -23,9 +23,12 @@ fn outside_band_moves_at_constant_velocity() {
     let mut k = PhysicalKernel::with_integrator(GRAV, 2).expect("order 2");
     k.set_gravity_band(LO, HI);
     // 起始即在上带之上，且原本是「逃逸余速」。
-    k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(M, Vec3::new(0.0, HI + 100.0, 0.0), Vec3::new(3.0, 25.0, 0.0)),
-    );
+    k.bodies
+        .push(evorule_physics_services::kernel::RigidBody::new(
+            M,
+            Vec3::new(0.0, HI + 100.0, 0.0),
+            Vec3::new(3.0, 25.0, 0.0),
+        ));
     let mut prev = k.bodies[0].vel;
     for _ in 0..1000 {
         k.tick(0.001);
@@ -43,13 +46,19 @@ fn outside_band_moves_at_constant_velocity() {
 fn inside_band_falls_with_gravity() {
     let mut k = PhysicalKernel::with_integrator(GRAV, 2).expect("order 2");
     k.set_gravity_band(LO, HI);
-    k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(M, Vec3::new(0.0, 50.0, 0.0), Vec3::zero()),
-    );
+    k.bodies
+        .push(evorule_physics_services::kernel::RigidBody::new(
+            M,
+            Vec3::new(0.0, 50.0, 0.0),
+            Vec3::zero(),
+        ));
     for _ in 0..100 {
         k.tick(0.001);
         // 始终保持在带内（0.1s 仅下落 ~0.05m）。
-        assert!(LO <= k.bodies[0].pos.y && k.bodies[0].pos.y <= HI, "必须仍在带内");
+        assert!(
+            LO <= k.bodies[0].pos.y && k.bodies[0].pos.y <= HI,
+            "必须仍在带内"
+        );
     }
     let v = k.bodies[0].vel.y.abs();
     let expect = G * 0.1; // 自由落体 0.1s
@@ -65,9 +74,12 @@ fn twin_kernel_reproduces_with_band() {
     let mut k = PhysicalKernel::with_integrator(GRAV, 2).expect("order 2");
     k.set_gravity_band(LO, HI);
     // 从带内以略超逃逸的速度上升：将穿越上界进入平台区，是带+平台切换路径。
-    k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(M, Vec3::new(0.0, 50.0, 0.0), Vec3::new(0.0, 45.0, 0.0)),
-    );
+    k.bodies
+        .push(evorule_physics_services::kernel::RigidBody::new(
+            M,
+            Vec3::new(0.0, 50.0, 0.0),
+            Vec3::new(0.0, 45.0, 0.0),
+        ));
     let mut twin = k.clone();
     let mut a = Vec::new();
     let mut b = Vec::new();
@@ -88,9 +100,12 @@ fn escapes_band_and_velocity_freezes() {
     let mut k = PhysicalKernel::with_integrator(GRAV, 2).expect("order 2");
     k.set_gravity_band(LO, HI);
     // 足够快的初速，保证在测试窗内越过 100 并继续远离。
-    k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(M, Vec3::new(0.0, 50.0, 0.0), Vec3::new(0.0, 90.0, 0.0)),
-    );
+    k.bodies
+        .push(evorule_physics_services::kernel::RigidBody::new(
+            M,
+            Vec3::new(0.0, 50.0, 0.0),
+            Vec3::new(0.0, 90.0, 0.0),
+        ));
     let mut crossed_at_v = None;
     let mut freeze_v = None;
     for _ in 0..3000 {
@@ -120,9 +135,12 @@ fn banded_gravity_conserves_energy_inside() {
     k.set_gravity_band(LO, HI);
     // 从带内中段以不越界的初速上升（v=25 → 最高点 y≈50+v²/2g≈81.9 < 100）。
     // 匀速减速至转折点需 t=v/g≈2.55s，故 2.5s 内全程待于带内，纯保守场可断言守恒。
-    k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(M, Vec3::new(0.0, 50.0, 0.0), Vec3::new(0.0, 25.0, 0.0)),
-    );
+    k.bodies
+        .push(evorule_physics_services::kernel::RigidBody::new(
+            M,
+            Vec3::new(0.0, 50.0, 0.0),
+            Vec3::new(0.0, 25.0, 0.0),
+        ));
     let e0 = k.total_mechanical_energy();
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;

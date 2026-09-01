@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_rolling_collision.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_rolling_collision.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 旋转-碰撞耦合（滚动摩擦）的确定性验证。
 //!
 //! 接触响应内，同一切向滑摩擦把阻力同时灌入水平角速度（滚动分量 ωx/ωz，不含竖轴自旋 ωy），
@@ -54,10 +54,7 @@ fn spin_dissipates_via_rolling_friction() {
         "滚动自旋应被摩擦大幅阻尼：{}",
         k.bodies[0].angular_velocity.x
     );
-    assert!(
-        e1 < e0 - 0.5,
-        "转动动能应进切向摩擦而耗散：e0={e0} → {e1}"
-    );
+    assert!(e1 < e0 - 0.5, "转动动能应进切向摩擦而耗散：e0={e0} → {e1}");
 }
 
 /// ②发散测试（反自旋-up）：纯滚动接触长期运行下，|ωh| 与总能量单调不增、不发散。
@@ -117,8 +114,16 @@ fn twin_kernel_reproduces() {
     for _ in 0..800 {
         k.tick(0.001);
         twin.tick(0.001);
-        a.push((k.bodies[0].pos, k.bodies[0].angular_velocity, k.bodies[0].orientation));
-        b.push((twin.bodies[0].pos, twin.bodies[0].angular_velocity, twin.bodies[0].orientation));
+        a.push((
+            k.bodies[0].pos,
+            k.bodies[0].angular_velocity,
+            k.bodies[0].orientation,
+        ));
+        b.push((
+            twin.bodies[0].pos,
+            twin.bodies[0].angular_velocity,
+            twin.bodies[0].orientation,
+        ));
     }
     for (x, y) in a.iter().zip(b.iter()) {
         assert!(*x == *y, "滚动耦合孪生内核必须逐位一致");
@@ -131,9 +136,13 @@ fn inertialess_and_point_bodies_unchanged() {
     // inertia=0 但 friction>0、radius>0：只吃线性摩擦，不动角速度（本就为 0）。
     let mut k = PhysicalKernel::with_integrator(GRAV, 2).expect("order 2");
     k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(M, Vec3::new(0.0, R, 0.0), Vec3::new(3.0, 0.0, 0.0))
-            .with_radius(R)
-            .with_friction(MU),
+        evorule_physics_services::kernel::RigidBody::new(
+            M,
+            Vec3::new(0.0, R, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        )
+        .with_radius(R)
+        .with_friction(MU),
     );
     for _ in 0..300 {
         k.tick(0.001);

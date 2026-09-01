@@ -27,13 +27,13 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::Request;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use evorule_io_handlers::{HttpHandler, ServiceMeta, ServiceRegistry, ServiceRegistryHandler};
 use evorule_reactor::IoType;
-use evorule_rule::model::dependency::{DataDependencies, SourceBinding, ServiceDecl};
-use evorule_rule::{AppState, Role, RuleStore, router};
+use evorule_rule::model::dependency::{DataDependencies, ServiceDecl, SourceBinding};
+use evorule_rule::{router, AppState, Role, RuleStore};
 use evorule_server::api::server::SessionApi;
 use evorule_workspace::SessionOps;
 
@@ -136,7 +136,9 @@ async fn send(
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let text = String::from_utf8(bytes.to_vec()).unwrap_or_default();
     let value = if text.trim().is_empty() {
         Value::Null
@@ -183,9 +185,10 @@ async fn spawn_echo_service() -> String {
 fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi {
     let core_eval_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
-    let registry =
-        ServiceRegistry::load_from_str(&format!(r#"{{ "{SVC}": {{ "url": "{echo_url}", "method": "POST" }} }}"#))
-            .unwrap();
+    let registry = ServiceRegistry::load_from_str(&format!(
+        r#"{{ "{SVC}": {{ "url": "{echo_url}", "method": "POST" }} }}"#
+    ))
+    .unwrap();
     let http = Arc::new(HttpHandler::new_dev_allow_loopback());
     let svc_handler = Arc::new(ServiceRegistryHandler::new(registry.clone(), http));
     let dispatcher = evorule_governance::IoDispatcher::builder()
@@ -242,13 +245,17 @@ fn build_gov(tmp: &std::path::Path, llm_base_url: &str) -> (axum::Router, Arc<Ru
         .ensure_default_org("org-a", "甲方组织", "2026-08-31T00:00:00Z")
         .unwrap();
     // 平台管理员引导（API 公共注册固定 rule_engineer，平台管理员只能落库创建）
-    store
-        .get_tenant("org-a")
-        .unwrap()
-        .expect("tenant 应已就绪");
+    store.get_tenant("org-a").unwrap().expect("tenant 应已就绪");
     let auth = evorule_rule::AuthService::new("test-secret");
-    auth.register(&store, "org-a", "root", "password123", Role::PlatformAdmin, 0)
-        .unwrap();
+    auth.register(
+        &store,
+        "org-a",
+        "root",
+        "password123",
+        Role::PlatformAdmin,
+        0,
+    )
+    .unwrap();
     let state = AppState::new(store, "test-secret", "inst-acc", llm_base_url);
     (router(state.clone()), state.store.clone())
 }
@@ -345,7 +352,9 @@ async fn acceptance_governance_to_execution_full_chain() {
             "POST",
             "/v1/auth/register",
             None,
-            Some(json!({ "tenant_id": "org-a", "username": "viewer-a", "password": "password123" })),
+            Some(
+                json!({ "tenant_id": "org-a", "username": "viewer-a", "password": "password123" }),
+            ),
         )
         .await;
         assert_eq!(st, axum::http::StatusCode::CREATED, "{body}");
@@ -441,7 +450,10 @@ async fn acceptance_governance_to_execution_full_chain() {
     )
     .await;
     assert_eq!(st, axum::http::StatusCode::OK, "LLM 草稿: {body}");
-    assert_eq!(body["status"], "completed", "mock evo-agent 应 completed: {body}");
+    assert_eq!(
+        body["status"], "completed",
+        "mock evo-agent 应 completed: {body}"
+    );
 
     // 草稿经人工确认入库（provenance 声明 LLM 溯源 + 人工确认），初始状态 Draft
     let (st, body) = send(
@@ -493,7 +505,14 @@ async fn acceptance_governance_to_execution_full_chain() {
     )
     .await;
     assert_eq!(st, axum::http::StatusCode::OK, "闸门一送审: {body}");
-    let (st, body) = send(&app, "POST", "/v1/entries/acc-rule-1/approve", Some(&approver), None).await;
+    let (st, body) = send(
+        &app,
+        "POST",
+        "/v1/entries/acc-rule-1/approve",
+        Some(&approver),
+        None,
+    )
+    .await;
     assert_eq!(st, axum::http::StatusCode::OK, "闸门二审批: {body}");
 
     let (st, body) = send(
@@ -630,7 +649,10 @@ async fn acceptance_governance_to_execution_full_chain() {
     let (st, life) = send(&app, "GET", "/v1/audits/lifecycle", Some(&admin_b), None).await;
     assert_eq!(st, axum::http::StatusCode::OK);
     let text = life.to_string();
-    assert!(text.contains("ds-acc"), "数据集迁移应入生命周期审计: {text}");
+    assert!(
+        text.contains("ds-acc"),
+        "数据集迁移应入生命周期审计: {text}"
+    );
     assert!(text.contains("Published"), "发布应入生命周期审计: {text}");
 
     // LLM 操作审计（37 号 §8）：draft_rule completed 可溯源
@@ -653,7 +675,10 @@ async fn acceptance_governance_to_execution_full_chain() {
     .await;
     assert_eq!(st, axum::http::StatusCode::OK, "{hist}");
     let text = hist.to_string();
-    assert!(text.contains("Candidate") && text.contains("Active"), "{text}");
+    assert!(
+        text.contains("Candidate") && text.contains("Active"),
+        "{text}"
+    );
 }
 
 // ================= 负向：凭据永不入库（扫描兜底） =================
@@ -700,7 +725,11 @@ async fn acceptance_credential_scan_blocks_publish() {
         })),
     )
     .await;
-    assert_eq!(st, axum::http::StatusCode::CREATED, "入库不限（扫描在发布前）: {body}");
+    assert_eq!(
+        st,
+        axum::http::StatusCode::CREATED,
+        "入库不限（扫描在发布前）: {body}"
+    );
 
     // 迁移到 Active（root 全能），发布时凭据扫描兜底拒绝
     for to in ["candidate", "active"] {

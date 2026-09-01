@@ -1,4 +1,4 @@
-﻿//! [evorule 移植等效] 本文件自 rpsm-demo `rpsm/tests/test_constants_lock.rs`(2026-09-01 快照)
+//! [evorule 移植等效] 本文件自 rpsm-demo `rpsm/tests/test_constants_lock.rs`(2026-09-01 快照)
 //! 移植为 evorule-physics-services 集成测试。
 //!
 //! 移植边界（诚实声明）：原用例的主体是 rpsm_hci 的
@@ -12,7 +12,7 @@
 // 集成测试保留 unwrap/expect 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use evorule_physics_services::kernel::{C, G, PhysicalKernel};
+use evorule_physics_services::kernel::{PhysicalKernel, C, G};
 
 /// 内核锁定的物理常量值不受任何配置影响。
 #[test]
@@ -29,12 +29,20 @@ fn test_constants_lock_no_runtime_override_path() {
     let m = 1.0e12_f64;
     let d0 = 100.0_f64;
     let mut kernel = PhysicalKernel::new(chrono_free_zone());
-    kernel.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(m, vec3_at(-d0 / 2.0), zero_vel()),
-    );
-    kernel.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(m, vec3_at(d0 / 2.0), zero_vel()),
-    );
+    kernel
+        .bodies
+        .push(evorule_physics_services::kernel::RigidBody::new(
+            m,
+            vec3_at(-d0 / 2.0),
+            zero_vel(),
+        ));
+    kernel
+        .bodies
+        .push(evorule_physics_services::kernel::RigidBody::new(
+            m,
+            vec3_at(d0 / 2.0),
+            zero_vel(),
+        ));
 
     // 单步积分后实测相对加速度量级 ≈ 2·G·m/r²（两体等质量相向加速，相对加速度
     // = 两者加速度之和；t=dt 内 Δv_rel = a_rel·dt；取绝对值比较量级）。

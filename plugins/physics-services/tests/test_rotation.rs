@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_rotation.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_rotation.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 刚体旋转自由度的确定性验证：四元数取向积分 + 转动动能守恒。
 //!
 //! 主线 B 重量级里程碑。当前无外力矩源，ω 自由旋转守恒；取向由
@@ -26,7 +26,11 @@ fn free_rotation_is_deterministic() {
         for _ in 0..2000 {
             k.tick(0.001);
             let b = &k.bodies[0];
-            trace.push((b.orientation, b.angular_velocity.z, k.total_mechanical_energy()));
+            trace.push((
+                b.orientation,
+                b.angular_velocity.z,
+                k.total_mechanical_energy(),
+            ));
         }
         trace
     };
@@ -130,7 +134,11 @@ fn constant_torque_accelerates_rotation() {
     );
     // 取向保持单位长且离开恒等（确实在转）。
     let q = k.bodies[0].orientation;
-    assert!((q.length() - 1.0).abs() < 1e-9, "取向须单位长 |q|={}", q.length());
+    assert!(
+        (q.length() - 1.0).abs() < 1e-9,
+        "取向须单位长 |q|={}",
+        q.length()
+    );
     assert!(q != Quaternion::identity(), "施加外力矩后取向应离开恒等");
 }
 
@@ -297,5 +305,8 @@ fn bounded_constraint_is_stable() {
     assert!(max_w < 5.0, "有界约束下角速度不得超过上限：max|ω|={max_w}");
     assert!(max_e < 3.0, "有界约束下能量不得发散：max Er={max_e}");
     // 向目标拉拢：最终误差显著小于初值 2.0，且未停在背离 π（3.14）处。
-    assert!(err < 2.5, "有界约束控制应拉起向目标收敛且不炮散：最终误差 {err} rad");
+    assert!(
+        err < 2.5,
+        "有界约束控制应拉起向目标收敛且不炮散：最终误差 {err} rad"
+    );
 }

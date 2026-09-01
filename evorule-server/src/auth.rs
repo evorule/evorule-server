@@ -187,9 +187,8 @@ pub fn requires_service_identity(path: &str) -> bool {
         return false;
     }
     let segs: Vec<&str> = path.split('.').collect();
-    segs.windows(2).any(|w| {
-        w[0] == "stable" && (w[1] == "llm" || w[1] == "system")
-    })
+    segs.windows(2)
+        .any(|w| w[0] == "stable" && (w[1] == "llm" || w[1] == "system"))
 }
 
 #[cfg(test)]
@@ -287,9 +286,8 @@ mod tests {
 
     #[test]
     fn test_service_token_passes_validate() {
-        let config =
-            AuthConfig::new(vec!["user_token".to_string()], true)
-                .with_service_tokens(vec!["service_token".to_string()]);
+        let config = AuthConfig::new(vec!["user_token".to_string()], true)
+            .with_service_tokens(vec!["service_token".to_string()]);
         assert!(config.validate("user_token"));
         assert!(config.validate("service_token"));
         assert!(!config.validate("wrong"));
@@ -297,9 +295,8 @@ mod tests {
 
     #[test]
     fn test_identity_user_for_regular_token() {
-        let config =
-            AuthConfig::new(vec!["user_token".to_string()], true)
-                .with_service_tokens(vec!["service_token".to_string()]);
+        let config = AuthConfig::new(vec!["user_token".to_string()], true)
+            .with_service_tokens(vec!["service_token".to_string()]);
         assert_eq!(config.identity("user_token"), CallerIdentity::User);
         assert_eq!(config.identity("service_token"), CallerIdentity::Service);
         // service 列表优先：token 同时出现在两个列表时按 Service（权限并集语义）
@@ -310,8 +307,7 @@ mod tests {
 
     #[test]
     fn test_identity_disabled_returns_user() {
-        let config = AuthConfig::disabled()
-            .with_service_tokens(vec!["service_token".to_string()]);
+        let config = AuthConfig::disabled().with_service_tokens(vec!["service_token".to_string()]);
         assert_eq!(config.identity("service_token"), CallerIdentity::User);
     }
 
@@ -336,11 +332,17 @@ mod tests {
     #[test]
     fn test_requires_service_identity_protected_paths() {
         // 任意 namespace 下的 stable.llm / stable.system 段序列均受保护
-        assert!(requires_service_identity("shared.default.stable.llm.gpt-4o.summary"));
-        assert!(requires_service_identity("shared.default.stable.system.pipeline"));
+        assert!(requires_service_identity(
+            "shared.default.stable.llm.gpt-4o.summary"
+        ));
+        assert!(requires_service_identity(
+            "shared.default.stable.system.pipeline"
+        ));
         assert!(requires_service_identity("shared.ns1.stable.llm.x"));
         // 深层嵌套也命中
-        assert!(requires_service_identity("shared.default.a.stable.system.b.c"));
+        assert!(requires_service_identity(
+            "shared.default.a.stable.system.b.c"
+        ));
     }
 
     #[test]
@@ -350,7 +352,9 @@ mod tests {
         assert!(!requires_service_identity("session.stable.llm.x"));
         // shared 空间的用户自定义路径不受保护
         assert!(!requires_service_identity("shared.default.user.notes"));
-        assert!(!requires_service_identity("shared.default.stable.user.notes"));
+        assert!(!requires_service_identity(
+            "shared.default.stable.user.notes"
+        ));
         // stable 后面不是 llm/system
         assert!(!requires_service_identity("shared.default.stable.public.x"));
         // 非段边界（stable.llmx 是单个段，不拆分匹配）

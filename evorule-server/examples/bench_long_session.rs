@@ -121,7 +121,10 @@ async fn main() {
         .expect("audit");
     let audit: serde_json::Value = resp.json().await.expect("parse audit");
     // audit API 返回 entries 数组(旧 entry_count 字段已移除,2026-09-01 对齐)
-    let entry_count = audit["entries"].as_array().map(|a| a.len() as u64).unwrap_or(0);
+    let entry_count = audit["entries"]
+        .as_array()
+        .map(|a| a.len() as u64)
+        .unwrap_or(0);
     let last_hash = audit["last_hash"].as_str().unwrap_or("unknown");
     println!(
         "[OK] Audit chain: {} entries, last_hash={}",
@@ -172,7 +175,10 @@ async fn main() {
         .expect("verify");
     let verify: serde_json::Value = verify_resp.json().await.expect("parse verify");
     // verify API 字段为 verified(旧 valid 字段已移除,2026-09-01 对齐)
-    let valid = verify["verified"].as_bool().or_else(|| verify["valid"].as_bool()).unwrap_or(false);
+    let valid = verify["verified"]
+        .as_bool()
+        .or_else(|| verify["valid"].as_bool())
+        .unwrap_or(false);
     println!(
         "[{}] Audit chain integrity: valid={}",
         if valid { "OK" } else { "FAIL" },

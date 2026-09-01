@@ -317,7 +317,10 @@ mod tests {
             &["physics_energy", "no_such_svc"],
         ));
         assert!(err.contains("no_such_svc"), "{err}");
-        assert!(err.contains("physics_energy") && err.contains("NATIVE_SERVICES"), "{err}");
+        assert!(
+            err.contains("physics_energy") && err.contains("NATIVE_SERVICES"),
+            "{err}"
+        );
         // 重复名 → Err(不静默去重)
         let err = expect_err(PhysicsServiceRouter::with_enabled(
             Arc::new(ErrHandler),
@@ -325,7 +328,10 @@ mod tests {
         ));
         assert!(err.contains("重复"), "{err}");
         // 空启用集 → Err(指引改用 enabled=false)
-        let err = expect_err(PhysicsServiceRouter::with_enabled(Arc::new(ErrHandler), &[]));
+        let err = expect_err(PhysicsServiceRouter::with_enabled(
+            Arc::new(ErrHandler),
+            &[],
+        ));
         assert!(err.contains("enabled=false"), "{err}");
     }
 

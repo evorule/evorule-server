@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_air_drag.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_air_drag.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 空气阻力（线性拖拽 F = -b·v）内核模型的确定性验证。
 //!
 //! 这是「主线 B 物域深化」的第一个物理模型增量：在 rpsm-core 内核加入一个
@@ -18,7 +18,8 @@ fn drag_step_is_deterministic() {
     let run = |b: f64| -> Vec<(f64, f64, f64)> {
         let mut k = PhysicalKernel::new(Vec3::new(0.0, -G, 0.0));
         k.bodies.push(
-            evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::zero(), Vec3::zero()).with_drag(b),
+            evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::zero(), Vec3::zero())
+                .with_drag(b),
         );
         let mut trace = Vec::new();
         for _ in 0..1000 {
@@ -41,8 +42,12 @@ fn drag_step_is_deterministic() {
 fn drag_dissipates_energy() {
     let mut k = PhysicalKernel::new(Vec3::new(0.0, -G, 0.0));
     k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(0.0, 5.0, 0.0), Vec3::new(3.0, 0.0, 0.0))
-            .with_drag(0.8),
+        evorule_physics_services::kernel::RigidBody::new(
+            1.0,
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        )
+        .with_drag(0.8),
     );
     let mut last_e = k.total_mechanical_energy();
     for _ in 0..4000 {
@@ -57,9 +62,12 @@ fn drag_dissipates_energy() {
     // 有阻力时能量损耗显著；对照无阻力应基本守恒。
     let with_drag_e = last_e;
     let mut k2 = PhysicalKernel::new(Vec3::new(0.0, -G, 0.0));
-    k2.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(0.0, 5.0, 0.0), Vec3::new(3.0, 0.0, 0.0)),
-    );
+    k2.bodies
+        .push(evorule_physics_services::kernel::RigidBody::new(
+            1.0,
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::new(3.0, 0.0, 0.0),
+        ));
     for _ in 0..4000 {
         k2.tick(0.001);
     }
@@ -77,7 +85,10 @@ fn drag_reaches_terminal_velocity() {
     let b: f64 = 5.0;
     let v_t = m * G / b; // = 2.0
     let mut k = PhysicalKernel::new(Vec3::new(0.0, -G, 0.0));
-    k.bodies.push(evorule_physics_services::kernel::RigidBody::new(m, Vec3::zero(), Vec3::zero()).with_drag(b));
+    k.bodies.push(
+        evorule_physics_services::kernel::RigidBody::new(m, Vec3::zero(), Vec3::zero())
+            .with_drag(b),
+    );
     // 足够长时间（τ = m/b = 0.2s，跑 10s ≈ 50τ）确保收敛。
     for _ in 0..10_000 {
         k.tick(0.001);
@@ -94,7 +105,11 @@ fn drag_reaches_terminal_velocity() {
 fn drag_zero_is_noop() {
     let run = |with_field: bool| -> f64 {
         let mut k = PhysicalKernel::new(Vec3::new(0.0, -G, 0.0));
-        let body = evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(0.0, 5.0, 0.0), Vec3::zero());
+        let body = evorule_physics_services::kernel::RigidBody::new(
+            1.0,
+            Vec3::new(0.0, 5.0, 0.0),
+            Vec3::zero(),
+        );
         k.bodies.push(if with_field {
             body.with_drag(0.0)
         } else {

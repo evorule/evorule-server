@@ -176,8 +176,7 @@ impl PlatformSnapshot {
     /// 同一 path 多次 append 时按事实顺序取最后一条(last-write-wins),
     /// 与治理审计链的追加语义一致。
     pub fn replay(shared: &SharedFactsLog) -> Result<Self, AuthError> {
-        let facts = shared
-            .facts_by_path_prefix(FACT_PREFIX);
+        let facts = shared.facts_by_path_prefix(FACT_PREFIX);
         let mut snap = PlatformSnapshot {
             version: shared.version(),
             ..Default::default()
@@ -237,9 +236,9 @@ impl PlatformSnapshot {
                         .unwrap_or_default();
                     let r = PlatformRole {
                         name: name.to_string(),
-                        builtin: v.get("builtin").is_some_and(|b| {
-                            matches!(b, JsonValue::Bool(true))
-                        }),
+                        builtin: v
+                            .get("builtin")
+                            .is_some_and(|b| matches!(b, JsonValue::Bool(true))),
                         status: jstr(v, "status"),
                         description: jstr(v, "description"),
                         permissions,
@@ -296,7 +295,10 @@ impl PlatformSnapshot {
 
 /// 事实 JSON 取字符串字段(缺省空串)
 fn jstr(v: &JsonValue, key: &str) -> String {
-    v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +343,8 @@ impl AuthError {
     }
 }
 
-type ApiResult = Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)>;
+type ApiResult =
+    Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)>;
 
 impl From<AuthError> for (StatusCode, Json<serde_json::Value>) {
     fn from(e: AuthError) -> Self {
@@ -418,14 +421,22 @@ fn bearer_token_hash(headers: &HeaderMap) -> Result<String, AuthError> {
     if raw.is_empty() {
         return Err(AuthError::InvalidToken);
     }
-    Ok(Hasher::new().update(raw.as_bytes()).finalize().to_hex().to_string())
+    Ok(Hasher::new()
+        .update(raw.as_bytes())
+        .finalize()
+        .to_hex()
+        .to_string())
 }
 
 // ---------------------------------------------------------------------------
 // 事实写入(全部经 SharedFactsLog.append,自动入治理审计链)
 // ---------------------------------------------------------------------------
 
-fn append_fact(shared: &SharedFactsLog, path: &str, value: serde_json::Value) -> Result<(), AuthError> {
+fn append_fact(
+    shared: &SharedFactsLog,
+    path: &str,
+    value: serde_json::Value,
+) -> Result<(), AuthError> {
     shared
         .append(path, serde_to_tcb(value), GLOBAL_SESSION)
         .map(|_| ())
@@ -472,8 +483,10 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
             JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
         }
         serde_json::Value::Object(obj) => {
-            let pairs: Vec<(String, JsonValue)> =
-                obj.into_iter().map(|(k, val)| (k, serde_to_tcb(val))).collect();
+            let pairs: Vec<(String, JsonValue)> = obj
+                .into_iter()
+                .map(|(k, val)| (k, serde_to_tcb(val)))
+                .collect();
             JsonValue::object_from_pairs_owned(pairs)
         }
     }
@@ -550,15 +563,9 @@ pub fn platform_auth_router() -> Router<AppState> {
         .route("/api/platform/auth/logout", post(logout))
         .route("/api/platform/auth/me", get(me))
         .route("/api/platform/auth/status", get(auth_status))
-        .route(
-            "/api/platform/auth/change-password",
-            post(change_password),
-        )
+        .route("/api/platform/auth/change-password", post(change_password))
         .route("/api/platform/permissions", get(list_permissions))
-        .route(
-            "/api/platform/users",
-            get(list_users).post(create_user),
-        )
+        .route("/api/platform/users", get(list_users).post(create_user))
         .route(
             "/api/platform/users/{username}",
             patch(update_user).delete(delete_user),
@@ -581,9 +588,7 @@ async fn bootstrap(
     ensure_seed(&shared)?;
     validate_username(&req.username)?;
     if req.password.len() < 8 {
-        return Err(err_json(AuthError::BadRequest(
-            "密码长度至少 8 位".into(),
-        )));
+        return Err(err_json(AuthError::BadRequest("密码长度至少 8 位".into())));
     }
     let snap = PlatformSnapshot::replay(&shared)?;
     if !snap.users.is_empty() {
@@ -604,7 +609,11 @@ async fn bootstrap(
             "role": "administrator",
         }),
     )?;
-    append_auth_event(&shared, "bootstrap_admin", serde_json::json!({ "username": req.username }));
+    append_auth_event(
+        &shared,
+        "bootstrap_admin",
+        serde_json::json!({ "username": req.username }),
+    );
     tracing::info!("平台授权:管理员 {}/ 已创建(bootstrap)", req.username);
     Ok(ok_json(
         StatusCode::CREATED,
@@ -615,10 +624,7 @@ async fn bootstrap(
 /// `POST /api/platform/auth/login` — 登录。
 /// 返回 { token, user(不含哈希), permissions, permissions_version }。
 /// 失败如实区分:凭据错误 / 用户停用(均 401,审计链记录 login_failed)。
-async fn login(
-    State(shared): State<SharedFactsLog>,
-    Json(req): Json<CredentialsReq>,
-) -> ApiResult {
+async fn login(State(shared): State<SharedFactsLog>, Json(req): Json<CredentialsReq>) -> ApiResult {
     ensure_seed(&shared)?;
     let snap = PlatformSnapshot::replay(&shared)?;
     let user = snap.users.get(&req.username);
@@ -662,7 +668,11 @@ async fn login(
         .get(&user.role)
         .map(|r| r.permissions.clone())
         .unwrap_or_default();
-    append_auth_event(&shared, "login_success", serde_json::json!({ "username": req.username }));
+    append_auth_event(
+        &shared,
+        "login_success",
+        serde_json::json!({ "username": req.username }),
+    );
     Ok(ok_json(
         StatusCode::OK,
         serde_json::json!({
@@ -765,7 +775,8 @@ pub async fn unified_auth_middleware(
     let snap = PlatformSnapshot::replay(&shared).map_err(|_| unauthorized_response())?;
     match snap.validate_session(&token_hash, now_ms()) {
         Ok((username, _perms)) => {
-            req.extensions_mut().insert(crate::auth::CallerIdentity::User);
+            req.extensions_mut()
+                .insert(crate::auth::CallerIdentity::User);
             tracing::debug!(username = %username, "平台会话认证通过");
             Ok(next.run(req).await)
         }
@@ -774,13 +785,13 @@ pub async fn unified_auth_middleware(
 }
 
 /// `POST /api/platform/auth/logout` — 吊销当前会话(幂等)。
-async fn logout(
-    State(shared): State<SharedFactsLog>,
-    headers: HeaderMap,
-) -> ApiResult {
+async fn logout(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     let token_hash = bearer_token_hash(&headers).map_err(err_json)?;
     let snap = PlatformSnapshot::replay(&shared).map_err(err_json)?;
-    let s = snap.sessions.get(&token_hash).ok_or_else(|| err_json(AuthError::InvalidToken))?;
+    let s = snap
+        .sessions
+        .get(&token_hash)
+        .ok_or_else(|| err_json(AuthError::InvalidToken))?;
     if !s.revoked {
         append_fact(
             &shared,
@@ -796,12 +807,12 @@ async fn logout(
 
 /// `GET /api/platform/auth/me` — 当前用户 + 最新权限矩阵。
 /// 前端以此刷新 can() 缓存(permissions_version 变化即授权有变更)。
-async fn me(
-    State(shared): State<SharedFactsLog>,
-    headers: HeaderMap,
-) -> ApiResult {
+async fn me(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     let (snap, username, perms) = require_session(&shared, &headers)?;
-    let user = snap.users.get(&username).ok_or_else(|| err_json(AuthError::InvalidToken))?;
+    let user = snap
+        .users
+        .get(&username)
+        .ok_or_else(|| err_json(AuthError::InvalidToken))?;
     Ok(ok_json(
         StatusCode::OK,
         serde_json::json!({
@@ -831,7 +842,10 @@ async fn change_password(
             "新密码长度至少 8 位".into(),
         )));
     }
-    let user = snap.users.get(&username).ok_or_else(|| err_json(AuthError::InvalidToken))?;
+    let user = snap
+        .users
+        .get(&username)
+        .ok_or_else(|| err_json(AuthError::InvalidToken))?;
     if !verify_password(&req.old_password, &user.password_hash) {
         append_auth_event(
             &shared,
@@ -853,7 +867,11 @@ async fn change_password(
             "role": user.role,
         }),
     )?;
-    append_auth_event(&shared, "change_password", serde_json::json!({ "username": username }));
+    append_auth_event(
+        &shared,
+        "change_password",
+        serde_json::json!({ "username": username }),
+    );
     Ok(ok_json(
         StatusCode::OK,
         serde_json::json!({ "success": true, "permissions_version": snap.version }),
@@ -916,10 +934,7 @@ fn role_json(r: &PlatformRole) -> serde_json::Value {
     })
 }
 
-fn validate_name(
-    name: &str,
-    label: &str,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn validate_name(name: &str, label: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     let ok = !name.trim().is_empty()
         && name.len() <= 64
         && name
@@ -975,9 +990,7 @@ fn ensure_other_active_admin(
     let other_admins = snap
         .users
         .values()
-        .filter(|u| {
-            u.role == "administrator" && u.status == "ACTIVE" && u.username != target
-        })
+        .filter(|u| u.role == "administrator" && u.status == "ACTIVE" && u.username != target)
         .count();
     if other_admins == 0 {
         return Err(err_json(AuthError::Conflict(
@@ -1005,10 +1018,7 @@ async fn auth_status(
 }
 
 /// `GET /api/platform/permissions` — 权限点注册表(登录用户可读,角色编辑器渲染用)。
-async fn list_permissions(
-    State(shared): State<SharedFactsLog>,
-    headers: HeaderMap,
-) -> ApiResult {
+async fn list_permissions(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     require_session(&shared, &headers)?;
     let builtin_roles: Vec<serde_json::Value> = BUILTIN_ROLES
         .iter()
@@ -1027,10 +1037,7 @@ async fn list_permissions(
 }
 
 /// `GET /api/platform/users` — 用户列表(view_users 或 manage_users)。
-async fn list_users(
-    State(shared): State<SharedFactsLog>,
-    headers: HeaderMap,
-) -> ApiResult {
+async fn list_users(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     let snap = require_any_permission(&shared, &headers, &["view_users", "manage_users"])?;
     let users: Vec<serde_json::Value> = snap.users.values().map(user_json).collect();
     Ok(ok_json(
@@ -1128,7 +1135,9 @@ async fn update_user(
             "用户不存在: {username}"
         ))));
     };
-    let display_name = req.display_name.unwrap_or_else(|| user.display_name.clone());
+    let display_name = req
+        .display_name
+        .unwrap_or_else(|| user.display_name.clone());
     let email = req.email.unwrap_or_else(|| user.email.clone());
     let department = req.department.unwrap_or_else(|| user.department.clone());
     let role = req.role.unwrap_or_else(|| user.role.clone());
@@ -1194,7 +1203,11 @@ async fn delete_user(
     if user.role == "administrator" && user.status == "ACTIVE" {
         ensure_other_active_admin(&snap, &username)?;
     }
-    append_fact(&shared, &user_fact_path(&username), serde_json::json!({ "deleted": true }))?;
+    append_fact(
+        &shared,
+        &user_fact_path(&username),
+        serde_json::json!({ "deleted": true }),
+    )?;
     append_auth_event(
         &shared,
         "user_deleted",
@@ -1207,10 +1220,7 @@ async fn delete_user(
 }
 
 /// `GET /api/platform/roles` — 角色列表(登录用户可读,工作流中的角色引用需要)。
-async fn list_roles(
-    State(shared): State<SharedFactsLog>,
-    headers: HeaderMap,
-) -> ApiResult {
+async fn list_roles(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     require_session(&shared, &headers)?;
     let snap = PlatformSnapshot::replay(&shared).map_err(err_json)?;
     let roles: Vec<serde_json::Value> = snap.roles.values().map(role_json).collect();
@@ -1346,17 +1356,17 @@ async fn delete_role(
     if role.builtin {
         return Err(err_json(AuthError::Forbidden("内置角色不可删除".into())));
     }
-    let referenced = snap
-        .users
-        .values()
-        .filter(|u| u.role == name)
-        .count();
+    let referenced = snap.users.values().filter(|u| u.role == name).count();
     if referenced > 0 {
         return Err(err_json(AuthError::Conflict(format!(
             "角色 {name} 仍有 {referenced} 个用户挂靠,请先迁移用户后再删除"
         ))));
     }
-    append_fact(&shared, &role_fact_path(&name), serde_json::json!({ "deleted": true }))?;
+    append_fact(
+        &shared,
+        &role_fact_path(&name),
+        serde_json::json!({ "deleted": true }),
+    )?;
     append_auth_event(
         &shared,
         "role_deleted",
@@ -1769,13 +1779,9 @@ mod tests {
         let snap = PlatformSnapshot::replay(&shared).unwrap();
         assert_eq!(
             snap.roles.get("ops").unwrap().permissions,
-            vec![
-                "view_monitor".to_string(),
-                "view_audit_chain".to_string()
-            ]
+            vec!["view_monitor".to_string(), "view_audit_chain".to_string()]
         );
     }
-
 
     #[tokio::test]
     async fn test_unified_auth_middleware_dual_credentials() {
@@ -1891,7 +1897,10 @@ mod tests {
         let snap = PlatformSnapshot::replay(&shared).unwrap();
         let (username, perms) = snap.validate_session(&token_hash, now_ms()).unwrap();
         assert_eq!(username, "alice");
-        assert_eq!(perms, vec!["view_monitor".to_string(), "view_test_report".to_string()]);
+        assert_eq!(
+            perms,
+            vec!["view_monitor".to_string(), "view_test_report".to_string()]
+        );
 
         // 过期 → SessionExpired
         let snap2 = PlatformSnapshot::replay(&shared).unwrap();

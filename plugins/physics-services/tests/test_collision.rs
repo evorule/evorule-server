@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_collision.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_collision.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! [evorule 移植等效] 原用例 `test_hci_default_restitution_is_0_8` 依赖 rpsm_hci
 //! 的 `HciConfig::default()`(面板缺省恢复系数 0.8,该 crate 未随内核 vendored),
 //! 以内核缺省恢复系数 0.8 断言等效替代——二者共同构成「缺省 0.8」行为契约的
@@ -16,10 +16,9 @@ const G_EARTH: f64 = 9.80665;
 /// 构造一个从高度 `height` 静止下落、带半径的刚体。
 fn falling_ball(height: f64, radius: f64) -> PhysicalKernel {
     let mut kernel = PhysicalKernel::new(Vec3::new(0.0, -G_EARTH, 0.0));
-    kernel.bodies.push(
-        RigidBody::new(1.0, Vec3::new(0.0, height, 0.0), Vec3::zero())
-            .with_radius(radius),
-    );
+    kernel
+        .bodies
+        .push(RigidBody::new(1.0, Vec3::new(0.0, height, 0.0), Vec3::zero()).with_radius(radius));
     kernel
 }
 
@@ -66,10 +65,7 @@ fn test_restitution_1_never_stops() {
     let rel = (e - e0).abs() / e0.max(1e-12);
     assert!(rel < 0.05, "弹性碰撞能量应基本守恒，相对偏差 {rel:.3e}");
     // 速度没有明显衰减，证明小球仍在持续弹跳。
-    assert!(
-        max_vy > 1.0,
-        "弹性碰撞应保持大速度弹跳，max|vy|={max_vy}",
-    );
+    assert!(max_vy > 1.0, "弹性碰撞应保持大速度弹跳，max|vy|={max_vy}",);
 }
 
 /// 恢复系数 0.0（完全非弹性碰撞）：落地后立即静止。

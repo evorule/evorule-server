@@ -23,12 +23,22 @@ impl Default for Quaternion {
 
 impl Quaternion {
     pub const fn identity() -> Self {
-        Self { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+        Self {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
     }
 
     /// 纯四元数 `(0, v)`（由向量构造）。
     pub fn pure(v: Vec3) -> Self {
-        Self { w: 0.0, x: v.x, y: v.y, z: v.z }
+        Self {
+            w: 0.0,
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
     }
 
     pub fn length_squared(self) -> f64 {
@@ -51,7 +61,12 @@ impl Quaternion {
 
     /// 共轭（对单位四元数即其逆）：`(w,-x,-y,-z)`。用于求相对误差 `desired ⊗ q⁻¹`。
     pub fn conjugate(self) -> Self {
-        Self { w: self.w, x: -self.x, y: -self.y, z: -self.z }
+        Self {
+            w: self.w,
+            x: -self.x,
+            y: -self.y,
+            z: -self.z,
+        }
     }
 
     /// 旋转向量 `θ·axis`（轴角缩放为向量）。恒等或向量部分近零时返回零向量。
@@ -79,14 +94,24 @@ impl Quaternion {
 impl std::ops::Mul<f64> for Quaternion {
     type Output = Self;
     fn mul(self, s: f64) -> Self {
-        Self { w: self.w * s, x: self.x * s, y: self.y * s, z: self.z * s }
+        Self {
+            w: self.w * s,
+            x: self.x * s,
+            y: self.y * s,
+            z: self.z * s,
+        }
     }
 }
 
 impl std::ops::Add for Quaternion {
     type Output = Self;
     fn add(self, o: Self) -> Self {
-        Self { w: self.w + o.w, x: self.x + o.x, y: self.y + o.y, z: self.z + o.z }
+        Self {
+            w: self.w + o.w,
+            x: self.x + o.x,
+            y: self.y + o.y,
+            z: self.z + o.z,
+        }
     }
 }
 

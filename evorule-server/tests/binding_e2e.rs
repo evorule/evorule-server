@@ -26,17 +26,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use evorule_io_handlers::{
-    HttpHandler, ServiceMeta, ServiceRegistry, ServiceRegistryHandler,
-};
+use evorule_io_handlers::{HttpHandler, ServiceMeta, ServiceRegistry, ServiceRegistryHandler};
 use evorule_reactor::IoType;
 use evorule_server::api::server::SessionApi;
 use evorule_workspace::SessionOps;
 
 use evorule_rule::model::dependency::{DataDependencies, ServiceDecl, SourceBinding};
-use evorule_rule::model::{LawRef, Lifecycle, Meta, VersionSelection, VersionSelectionMode, Visibility};
+use evorule_rule::model::{
+    LawRef, Lifecycle, Meta, VersionSelection, VersionSelectionMode, Visibility,
+};
 use evorule_rule::{
-    BundleTests, DatasetKind, DatasetBundle, LifecycleStatus, Provenance, RuleDataset, RuleEntry,
+    BundleTests, DatasetBundle, DatasetKind, LifecycleStatus, Provenance, RuleDataset, RuleEntry,
     RuleStore, TestVerdict,
 };
 
@@ -129,7 +129,9 @@ const RULE_BODY: &str = r#"{
 /// 本地 echo 服务（真实 HTTP 后端；POST body 原样回显）。
 /// 返回监听地址，服务随 tokio task 存活到测试结束。
 async fn spawn_echo_service() -> String {
-    async fn echo(axum::Json(body): axum::Json<serde_json::Value>) -> axum::Json<serde_json::Value> {
+    async fn echo(
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> axum::Json<serde_json::Value> {
         axum::Json(serde_json::json!({ "ok": true, "echo": body }))
     }
     let app = axum::Router::new().route("/echo", axum::routing::post(echo));
@@ -220,30 +222,68 @@ async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
 
     // 条目状态迁移（Draft→Candidate→Active，双闸门口径）
     store
-        .transition_entry_status("ds-binding-e2e", "binding-rule", LifecycleStatus::Candidate, "engineer", "t1", "评审通过")
+        .transition_entry_status(
+            "ds-binding-e2e",
+            "binding-rule",
+            LifecycleStatus::Candidate,
+            "engineer",
+            "t1",
+            "评审通过",
+        )
         .unwrap();
     store
-        .transition_entry_status("ds-binding-e2e", "binding-rule", LifecycleStatus::Active, "engineer", "t2", "生效")
+        .transition_entry_status(
+            "ds-binding-e2e",
+            "binding-rule",
+            LifecycleStatus::Active,
+            "engineer",
+            "t2",
+            "生效",
+        )
         .unwrap();
 
     // 数据集状态迁移 + 独立发布审批（Active→Published，二次确认语义）
     store
-        .transition_dataset_status("ds-binding-e2e", LifecycleStatus::Candidate, "approver", "送审", "t3")
+        .transition_dataset_status(
+            "ds-binding-e2e",
+            LifecycleStatus::Candidate,
+            "approver",
+            "送审",
+            "t3",
+        )
         .unwrap();
     store
-        .transition_dataset_status("ds-binding-e2e", LifecycleStatus::Active, "approver", "生效", "t4")
+        .transition_dataset_status(
+            "ds-binding-e2e",
+            LifecycleStatus::Active,
+            "approver",
+            "生效",
+            "t4",
+        )
         .unwrap();
     store
-        .publish_dataset_with_cause("ds-binding-e2e", "publisher", "t5", "B2 三层绑定端到端发布审批")
+        .publish_dataset_with_cause(
+            "ds-binding-e2e",
+            "publisher",
+            "t5",
+            "B2 三层绑定端到端发布审批",
+        )
         .unwrap();
 
     // 导出（含 data_dependencies 随包流转）+ 交付边界序列化往返
-    let ds_now = store.get_dataset("ds-binding-e2e").unwrap().expect("数据集应存在");
+    let ds_now = store
+        .get_dataset("ds-binding-e2e")
+        .unwrap()
+        .expect("数据集应存在");
     assert_eq!(ds_now.lifecycle.status, LifecycleStatus::Published);
     let entries = store.list_entries("ds-binding-e2e", None).unwrap();
     assert_eq!(entries.len(), 1);
 
-    let tests = BundleTests { subset: vec![], fixtures: vec![], verdict: TestVerdict::Pass };
+    let tests = BundleTests {
+        subset: vec![],
+        fixtures: vec![],
+        verdict: TestVerdict::Pass,
+    };
     let bundle = evorule_rule::bundle::BundleExporter::export(
         &ds_now,
         &entries,
@@ -254,7 +294,10 @@ async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
         &std::collections::BTreeMap::new(),
     );
     assert_eq!(bundle.bundle_id, "bundle-ds-binding-e2e-v1");
-    let dd = bundle.data_dependencies.as_ref().expect("导出包应携带数据依赖声明");
+    let dd = bundle
+        .data_dependencies
+        .as_ref()
+        .expect("导出包应携带数据依赖声明");
     assert_eq!(dd.services[0].service_name, SVC, "层 1 声明应随包流转");
 
     // 交付边界：快照包经序列化（文件/网络传输）后反序列化，内容与哈希签名不变
@@ -349,7 +392,10 @@ async fn binding_e2e_declared_template_registry_hit() {
 
     // 落盘断言：规则包落 rules_dir/bundles/（TCB 加载路径）
     let landed = rules_dir.join("bundles").join("bundle-ds-binding-e2e-v1");
-    assert!(landed.join("bundle_manifest.json").is_file(), "manifest 应落盘");
+    assert!(
+        landed.join("bundle_manifest.json").is_file(),
+        "manifest 应落盘"
+    );
     assert!(landed.join("binding-rule.json").is_file(), "规则条目应落盘");
 
     // 3. 新会话使用落地规则（reload 后），提交 call_service 指令
@@ -404,7 +450,8 @@ async fn binding_e2e_missing_registry_binding_reports_self_healing_guidance() {
     }
 
     // 绑定缺失的错误信息必须含自诊断指引（经公开 IoHandler::execute，与运行时同口径）
-    let handler = ServiceRegistryHandler::new(ServiceRegistry::empty(), Arc::new(HttpHandler::new()));
+    let handler =
+        ServiceRegistryHandler::new(ServiceRegistry::empty(), Arc::new(HttpHandler::new()));
     let params = evorule_tcb::JsonValue::object_from_pairs(&[(
         "service_name",
         evorule_tcb::JsonValue::string(SVC),
@@ -412,7 +459,10 @@ async fn binding_e2e_missing_registry_binding_reports_self_healing_guidance() {
     use evorule_reactor::IoHandler as _;
     let err = handler.execute(&params).await.unwrap_err().to_string();
     assert!(err.contains("unknown service_name"), "got: {err}");
-    assert!(err.contains("自诊断指引"), "错误信息应含自诊断指引，got: {err}");
+    assert!(
+        err.contains("自诊断指引"),
+        "错误信息应含自诊断指引，got: {err}"
+    );
     assert!(
         err.contains("--service-registry") && err.contains(SVC),
         "指引应指向 service_registry 绑定路径与服务名，got: {err}"

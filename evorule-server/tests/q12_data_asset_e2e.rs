@@ -27,7 +27,7 @@ use evorule_rule::model::{
     LawRef, Lifecycle, Meta, VersionSelection, VersionSelectionMode, Visibility,
 };
 use evorule_rule::{
-    BundleTests, DatasetKind, DatasetBundle, KnowledgeEntry, LifecycleStatus, Provenance,
+    BundleTests, DatasetBundle, DatasetKind, KnowledgeEntry, LifecycleStatus, Provenance,
     RuleDataset, RuleStore, TestVerdict,
 };
 use evorule_server::api::server::SessionApi;
@@ -161,10 +161,22 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
 
     // 步骤 1d：数据集状态迁移 + 独立发布审批（Active→Published，二次确认语义）
     store
-        .transition_dataset_status("ds-rpsm-assets", LifecycleStatus::Candidate, "approver", "送审", "t3")
+        .transition_dataset_status(
+            "ds-rpsm-assets",
+            LifecycleStatus::Candidate,
+            "approver",
+            "送审",
+            "t3",
+        )
         .unwrap();
     store
-        .transition_dataset_status("ds-rpsm-assets", LifecycleStatus::Active, "approver", "生效", "t4")
+        .transition_dataset_status(
+            "ds-rpsm-assets",
+            LifecycleStatus::Active,
+            "approver",
+            "生效",
+            "t4",
+        )
         .unwrap();
     store
         .publish_dataset_with_cause("ds-rpsm-assets", "publisher", "t5", "Q12 端到端发布审批")
@@ -176,7 +188,9 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         .unwrap()
         .expect("数据集应存在");
     assert_eq!(ds_now.lifecycle.status, LifecycleStatus::Published);
-    let entries = store.list_knowledge_entries("ds-rpsm-assets", None).unwrap();
+    let entries = store
+        .list_knowledge_entries("ds-rpsm-assets", None)
+        .unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].status, Some(LifecycleStatus::Active));
 
@@ -234,7 +248,10 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         .join("knowledge")
         .join("bundles")
         .join("bundle-ds-rpsm-assets-v1");
-    assert!(landed.join("bundle_manifest.json").is_file(), "manifest 应落盘");
+    assert!(
+        landed.join("bundle_manifest.json").is_file(),
+        "manifest 应落盘"
+    );
     assert!(landed.join("scn-001.json").is_file(), "数据条目应落盘");
     assert!(
         !rules_dir.join("bundles").exists(),

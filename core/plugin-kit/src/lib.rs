@@ -187,10 +187,7 @@ mod tests {
         fn execute(&self, args: &JsonValue) -> IoResult {
             Ok(JsonValue::object_from_pairs(&[
                 ("svc", JsonValue::string("echo")),
-                (
-                    "got",
-                    args.get("k").cloned().unwrap_or(JsonValue::Null),
-                ),
+                ("got", args.get("k").cloned().unwrap_or(JsonValue::Null)),
             ]))
         }
     }
@@ -298,10 +295,7 @@ mod tests {
         assert_eq!(r.get("svc").and_then(|v| v.as_str()), Some("echo"));
         // 未启用的服务 → 回落
         let p = params_of("kit_other", JsonValue::object_from_pairs(&[]));
-        assert_eq!(
-            router.execute(&p).await.unwrap_err(),
-            "fallback-called"
-        );
+        assert_eq!(router.execute(&p).await.unwrap_err(), "fallback-called");
     }
 
     #[test]
@@ -320,7 +314,10 @@ mod tests {
             &["kit_echo", "no_such_svc"],
         ));
         assert!(err.contains("no_such_svc"), "{err}");
-        assert!(err.contains("kit_echo") && err.contains("NATIVE_SERVICES"), "{err}");
+        assert!(
+            err.contains("kit_echo") && err.contains("NATIVE_SERVICES"),
+            "{err}"
+        );
         // 重复名 → Err(不静默去重)
         let err = expect_err(NativeServiceRouter::with_enabled(
             DEFS,
@@ -329,7 +326,11 @@ mod tests {
         ));
         assert!(err.contains("重复"), "{err}");
         // 空启用集 → Err(指引改用 enabled=false)
-        let err = expect_err(NativeServiceRouter::with_enabled(DEFS, Arc::new(ErrHandler), &[]));
+        let err = expect_err(NativeServiceRouter::with_enabled(
+            DEFS,
+            Arc::new(ErrHandler),
+            &[],
+        ));
         assert!(err.contains("enabled=false"), "{err}");
     }
 
@@ -339,7 +340,11 @@ mod tests {
         let all = mount_router(DEFS, Arc::new(ErrHandler), None).unwrap();
         let p = params_of("kit_other", JsonValue::object_from_pairs(&[]));
         assert_eq!(
-            all.execute(&p).await.unwrap().get("svc").and_then(|v| v.as_str()),
+            all.execute(&p)
+                .await
+                .unwrap()
+                .get("svc")
+                .and_then(|v| v.as_str()),
             Some("other")
         );
         let subset = mount_router(DEFS, Arc::new(ErrHandler), Some(&["kit_echo"])).unwrap();

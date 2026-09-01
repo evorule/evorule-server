@@ -166,16 +166,12 @@ pub async fn knowledge_entry_handler(
     Path((ds, entry_id)): Path<(String, String)>,
 ) -> Result<Json<KnowledgeEntryRecord>, (StatusCode, Json<Value>)> {
     let store = ensure_knowledge_available(&sessions)?;
-    store
-        .get(&ds, &entry_id)
-        .cloned()
-        .map(Json)
-        .ok_or_else(|| {
-            err_json(
-                StatusCode::NOT_FOUND,
-                format!("数据条目 `{ds}/{entry_id}` 不存在"),
-            )
-        })
+    store.get(&ds, &entry_id).cloned().map(Json).ok_or_else(|| {
+        err_json(
+            StatusCode::NOT_FOUND,
+            format!("数据条目 `{ds}/{entry_id}` 不存在"),
+        )
+    })
 }
 
 // 测试豁免 C5（unwrap/expect/panic）与 L2 clippy
@@ -294,7 +290,10 @@ mod tests {
     fn knowledge_router(sessions: SessionApi) -> Router {
         Router::new()
             .route("/api/knowledge", get(knowledge_datasets_handler))
-            .route("/api/knowledge/{ds}/entries", get(knowledge_entries_handler))
+            .route(
+                "/api/knowledge/{ds}/entries",
+                get(knowledge_entries_handler),
+            )
             .route(
                 "/api/knowledge/{ds}/entries/{entry_id}",
                 get(knowledge_entry_handler),
@@ -314,7 +313,9 @@ mod tests {
             .unwrap();
         let response = router.oneshot(request).await.unwrap();
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body = if bytes.is_empty() {
             serde_json::Value::Null
         } else {
@@ -399,28 +400,36 @@ mod tests {
         assert_eq!(body["entries"][0]["tags"][0], "spring", "{body}");
 
         // S3 过滤矩阵：domain 精确（忽略大小写）
-        let (status, body) =
-            oneshot_json(app.clone(), "GET", "/api/knowledge/ds-a/entries?domain=PHYSICS").await;
+        let (status, body) = oneshot_json(
+            app.clone(),
+            "GET",
+            "/api/knowledge/ds-a/entries?domain=PHYSICS",
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["count"], 1, "{body}");
-        let (status, body) =
-            oneshot_json(app.clone(), "GET", "/api/knowledge/ds-a/entries?domain=chem").await;
+        let (status, body) = oneshot_json(
+            app.clone(),
+            "GET",
+            "/api/knowledge/ds-a/entries?domain=chem",
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["count"], 0, "{body}");
 
         // S3 过滤矩阵：tags 任一命中
-        let (status, body) =
-            oneshot_json(app.clone(), "GET", "/api/knowledge/ds-a/entries?tags=spring").await;
+        let (status, body) = oneshot_json(
+            app.clone(),
+            "GET",
+            "/api/knowledge/ds-a/entries?tags=spring",
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["count"], 1, "{body}");
 
         // S3 过滤矩阵：q 包含匹配（payload 文本）
-        let (status, body) = oneshot_json(
-            app.clone(),
-            "GET",
-            "/api/knowledge/ds-a/entries?q=chem-mix",
-        )
-        .await;
+        let (status, body) =
+            oneshot_json(app.clone(), "GET", "/api/knowledge/ds-a/entries?q=chem-mix").await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["count"], 0, "{body}");
         let (status, body) = oneshot_json(
@@ -438,21 +447,16 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 
         // S4：单条直取 200 + 404
-        let (status, body) = oneshot_json(
-            app.clone(),
-            "GET",
-            "/api/knowledge/ds-a/entries/scn-001",
-        )
-        .await;
+        let (status, body) =
+            oneshot_json(app.clone(), "GET", "/api/knowledge/ds-a/entries/scn-001").await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["payload"]["scenario_id"], "spring-single-particle", "{body}");
+        assert_eq!(
+            body["payload"]["scenario_id"], "spring-single-particle",
+            "{body}"
+        );
         assert_eq!(body["bundle_id"], "bundle-ds-a-v1", "{body}");
-        let (status, body) = oneshot_json(
-            app.clone(),
-            "GET",
-            "/api/knowledge/ds-a/entries/nope",
-        )
-        .await;
+        let (status, body) =
+            oneshot_json(app.clone(), "GET", "/api/knowledge/ds-a/entries/nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert!(body["error"].as_str().is_some(), "{body}");
     }
@@ -462,7 +466,11 @@ mod tests {
     async fn knowledge_data_plane_load_error_is_explicit() {
         let tmp = tempfile::tempdir().unwrap();
         // 伪造损坏 bundle → 启动加载失败（数据面不可用）；须在 SessionApi 构造前就位
-        let bdir = tmp.path().join("knowledge").join("bundles").join("bundle-bad");
+        let bdir = tmp
+            .path()
+            .join("knowledge")
+            .join("bundles")
+            .join("bundle-bad");
         std::fs::create_dir_all(&bdir).unwrap();
         std::fs::write(bdir.join("bundle_manifest.json"), "{ not json").unwrap();
 

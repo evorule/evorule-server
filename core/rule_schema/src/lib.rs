@@ -581,7 +581,11 @@ mod tests {
             }
         });
         let report = validate_service_registry(&doc);
-        assert!(!report.valid, "headers 非字符串值 / timeout_ms 负数应被拒: {:?}", report.errors);
+        assert!(
+            !report.valid,
+            "headers 非字符串值 / timeout_ms 负数应被拒: {:?}",
+            report.errors
+        );
         assert!(report.errors.len() >= 2);
     }
 
@@ -648,7 +652,9 @@ mod tests {
     fn knowledge_doc_missing_kind_rejected() {
         // _meta 治理骨架：kind 必填且必须为 knowledge
         let mut doc = kn_doc(serde_json::json!([{ "id": "d", "content": "x" }]));
-        doc.as_object_mut().unwrap().insert("kind".into(), "rule_set".into());
+        doc.as_object_mut()
+            .unwrap()
+            .insert("kind".into(), "rule_set".into());
         let report = validate_knowledge(&doc);
         assert!(!report.valid, "kind 非 knowledge 应被拒");
     }

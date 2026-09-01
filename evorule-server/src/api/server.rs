@@ -26,11 +26,11 @@
 
 //! - `GET /api/health` — 健康检查
 
-use crate::auth::{AuthConfig, CallerIdentity, requires_service_identity};
-use axum::Extension;
 use crate::api::audit_archive;
+use crate::auth::{requires_service_identity, AuthConfig, CallerIdentity};
 use crate::input_sanitizer::InputSanitizer;
 use axum::http::Method;
+use axum::Extension;
 
 use evorule_demo_services::DemoServiceRouter;
 use evorule_io_handlers::ServiceMeta;
@@ -242,8 +242,7 @@ pub struct SessionApi {
 
     /// 执行侧数据资产库（Q12 W2：启动/导入时从 knowledge_dir 加载；W3 经
     /// `knowledge_store()` 直读。数据条目不进 TCB，本库是执行侧唯一消费通道）
-    knowledge_store:
-        Arc<std::sync::RwLock<Arc<crate::knowledge_store::KnowledgeStore>>>,
+    knowledge_store: Arc<std::sync::RwLock<Arc<crate::knowledge_store::KnowledgeStore>>>,
 
     /// 启动加载数据资产库失败记录（Q12 W2 fail-fast 口径：不静默掩盖——服务器仍可跑
     /// 规则，但数据面异常必须可见；经 `knowledge_load_error()` 暴露，导入刷新成功即清除）
@@ -429,10 +428,7 @@ impl SessionApi {
                 Ok(ks) => (ks, None),
                 Err(e) => {
                     tracing::error!("knowledge 数据资产库加载失败（不静默，数据面不可用）: {e}");
-                    (
-                        crate::knowledge_store::KnowledgeStore::default(),
-                        Some(e),
-                    )
+                    (crate::knowledge_store::KnowledgeStore::default(), Some(e))
                 }
             };
 
@@ -470,9 +466,9 @@ impl SessionApi {
             registry_services: Arc::new(Vec::new()),
 
             // UV-016：审计档案只读缓存（wal_dir 透传；None=纯内存模式无档案）
-            archive_cache: Arc::new(std::sync::Mutex::new(
-                audit_archive::ArchiveCache::new(wal_dir),
-            )),
+            archive_cache: Arc::new(std::sync::Mutex::new(audit_archive::ArchiveCache::new(
+                wal_dir,
+            ))),
         }
     }
 
@@ -2919,7 +2915,9 @@ async fn update_payload(
     // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
     // 身份由认证中间件注入：认证启用时必注入（User/Service）；identity 为 None
     // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
-    if requires_service_identity(&req.path) && matches!(identity, Some(Extension(CallerIdentity::User))) {
+    if requires_service_identity(&req.path)
+        && matches!(identity, Some(Extension(CallerIdentity::User)))
+    {
         tracing::warn!(path = %req.path, "update_payload 受保护域写入被拒绝（需 service 身份）");
         return Ok((
             StatusCode::FORBIDDEN,
@@ -3184,7 +3182,6 @@ async fn platform_events_handler(
     )
 
 )]
-
 // 会话创建主路径:参数校验/配额/规则装载/WAL 初始化串联,拆函数需传递 6+ 状态,
 // 详见 GATE_REFERENCE.md §六(豁免索引)
 #[allow(clippy::cognitive_complexity)]
@@ -3252,10 +3249,7 @@ async fn create_session(
             Err(StatusCode::TOO_MANY_REQUESTS)
         }
 
-        Err(evorule_governance::session::SessionError::WalUnavailable {
-            session_id,
-            source,
-        }) => {
+        Err(evorule_governance::session::SessionError::WalUnavailable { session_id, source }) => {
             tracing::error!(
                 session_id,
                 error = %source,
@@ -3493,7 +3487,6 @@ pub struct CreateSessionFromParentParams {
     )
 
 )]
-
 // 派生会话创建:继承校验+版本语义,同 create_session 拆分受限
 #[allow(clippy::cognitive_complexity)]
 async fn create_session_from_parent(
@@ -3546,10 +3539,7 @@ async fn create_session_from_parent(
             Err(StatusCode::BAD_REQUEST)
         }
 
-        Err(evorule_governance::session::SessionError::WalUnavailable {
-            session_id,
-            source,
-        }) => {
+        Err(evorule_governance::session::SessionError::WalUnavailable { session_id, source }) => {
             tracing::error!(
                 session_id,
                 error = %source,
@@ -3597,7 +3587,6 @@ pub struct CreateSessionForkParams {
     )
 
 )]
-
 // fork 会话创建:继承校验+版本语义,同 create_session 拆分受限
 #[allow(clippy::cognitive_complexity)]
 async fn create_session_fork(
@@ -3652,10 +3641,7 @@ async fn create_session_fork(
             Err(StatusCode::BAD_REQUEST)
         }
 
-        Err(evorule_governance::session::SessionError::WalUnavailable {
-            session_id,
-            source,
-        }) => {
+        Err(evorule_governance::session::SessionError::WalUnavailable { session_id, source }) => {
             tracing::error!(
                 session_id,
                 error = %source,
@@ -4011,7 +3997,6 @@ async fn session_audit(
 pub struct AuditReportQuery {
     /// 为 true 时每条审计条目附加 content_json（完整 Fact 内容）
     #[serde(default)]
-
     pub include_content: Option<bool>,
 }
 
@@ -4555,7 +4540,6 @@ async fn session_audit_import_compressed(
     )
 
 )]
-
 // payload 读写路径:权限/保护域/版本分支多,详见 GATE_REFERENCE.md §六(豁免索引)
 #[allow(clippy::cognitive_complexity)]
 async fn session_payload(
@@ -4578,7 +4562,9 @@ async fn session_payload(
     // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
     // 身份由认证中间件注入：认证启用时必注入（User/Service）；identity 为 None
     // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
-    if requires_service_identity(&req.path) && matches!(identity, Some(Extension(CallerIdentity::User))) {
+    if requires_service_identity(&req.path)
+        && matches!(identity, Some(Extension(CallerIdentity::User)))
+    {
         tracing::warn!(session_id, path = %req.path, "session_payload 受保护域写入被拒绝（需 service 身份）");
         return Ok((
             StatusCode::FORBIDDEN,
@@ -5067,10 +5053,7 @@ fn fact_to_envelope(fact: &Fact, version: u64) -> FactEnvelope {
             error: error.clone(),
         },
         // CR-20260901-001：不再内嵌 final_snapshot 全量快照（O(n²) 根因）
-        Fact::Stable { id, .. } => FactEnvelope::Stable {
-            id: id.0,
-            version,
-        },
+        Fact::Stable { id, .. } => FactEnvelope::Stable { id: id.0, version },
         Fact::Error { id, message } => FactEnvelope::Error {
             id: id.0,
             version,
@@ -6426,8 +6409,6 @@ pub struct GovernanceServer {
 
     ///
 
-
-
     /// - 空列表:默认放行本机 loopback Origin(localhost/127.0.0.1/[::1]
 
     ///   任意端口,开发友好);外部 Origin 仍被拒绝
@@ -6435,7 +6416,6 @@ pub struct GovernanceServer {
     /// - 非空列表：只允许列表中的 Origin 通过。列表元素示例：`"http://localhost:3000"`
 
     /// - 生产部署(监听 0.0.0.0)必须显式配置精确白名单
-
     allowed_origins: Arc<Vec<String>>,
 
     /// S2：/metrics 端点是否需要认证（默认 false，Prometheus scraper 通常不带 token）
@@ -9215,10 +9195,7 @@ mod tests {
             JsonValue::object_from_pairs(&pairs)
         };
         let event = |kind: &str, detail: JsonValue| {
-            JsonValue::object_from_pairs(&[
-                ("kind", JsonValue::string(kind)),
-                ("detail", detail),
-            ])
+            JsonValue::object_from_pairs(&[("kind", JsonValue::string(kind)), ("detail", detail)])
         };
         // 三类事件 + 一条非事件平台事实(不进报表)
         shared
@@ -9268,7 +9245,10 @@ mod tests {
         assert_eq!(events[1]["detail"]["username"], "bob");
         assert_eq!(events[2]["detail"]["by"], "admin");
         assert_eq!(events[0]["ts_ms"], 1725000000001i64);
-        assert!(events[0]["path"].as_str().unwrap().starts_with("platform.event."));
+        assert!(events[0]["path"]
+            .as_str()
+            .unwrap()
+            .starts_with("platform.event."));
     }
 
     #[tokio::test]
@@ -9512,8 +9492,7 @@ mod tests {
         let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}"#;
 
         let (status, json) =
-            oneshot_json_with_token(router, "POST", "/api/payload", "user_token", Some(body))
-                .await;
+            oneshot_json_with_token(router, "POST", "/api/payload", "user_token", Some(body)).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(json["success"], false);
@@ -9551,8 +9530,7 @@ mod tests {
         let body = r#"{"path":"shared.default.user.notes","value":"ok"}"#;
 
         let (status, json) =
-            oneshot_json_with_token(router, "POST", "/api/payload", "user_token", Some(body))
-                .await;
+            oneshot_json_with_token(router, "POST", "/api/payload", "user_token", Some(body)).await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["success"], true);
@@ -9632,7 +9610,8 @@ mod tests {
             1,
             // TCB 宪法路径：相对仓库根定位（测试 CWD 为 crate 目录，
             // "./resources/core_eval.json" 解析不到，滚动热重载 reload_from_disk 必读该文件）
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json"),
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../resources/core_eval.json"),
             rules_dir.clone(),
         );
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
@@ -9764,7 +9743,10 @@ mod tests {
                 {"type": "io_request", "params": {"io_type": "call_service", "service_name": "hacked"}}
             ]
         });
-        let body = format!(r#"{{"bundle":{}}}"#, serde_json::to_string(&bundle).unwrap());
+        let body = format!(
+            r#"{{"bundle":{}}}"#,
+            serde_json::to_string(&bundle).unwrap()
+        );
 
         let (status, json) = oneshot_json(
             make_test_router(&state),
@@ -9887,8 +9869,8 @@ mod tests {
     async fn test_knowledge_bundle_import_land_load_direct_read_oneshot() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
-        let core_eval_path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+        let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/core_eval.json");
 
         // 执行侧领域 schema 注册（运维注入通道：{knowledge_dir}/domain_schemas/）
         let ddir = tmp.path().join("knowledge").join("domain_schemas");
@@ -9935,7 +9917,10 @@ mod tests {
             .join("knowledge")
             .join("bundles")
             .join("bundle-q12-demo-v1");
-        assert!(landed.join("bundle_manifest.json").is_file(), "manifest 应落盘");
+        assert!(
+            landed.join("bundle_manifest.json").is_file(),
+            "manifest 应落盘"
+        );
         assert!(landed.join("scn-001.json").is_file(), "数据条目应落盘");
         assert!(
             !rules_dir.join("bundles").exists(),
@@ -9966,8 +9951,8 @@ mod tests {
     async fn test_knowledge_mixed_bundle_rejected_oneshot() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
-        let core_eval_path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+        let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/core_eval.json");
         let sessions = SessionApi::new_with_full_config(
             vec![],
             100,
@@ -10020,8 +10005,8 @@ mod tests {
     async fn test_knowledge_import_resolver_miss_rejected_oneshot() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
-        let core_eval_path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+        let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/core_eval.json");
         let sessions = SessionApi::new_with_full_config(
             vec![],
             100,
@@ -10189,20 +10174,20 @@ mod tests {
             make_test_router(&state),
             "POST",
             &format!("/api/publish/queue/{queue_id}/review"),
-            Some(r#"{"decision":"approved","comment":"e2e","reviewed_by":"admin-1","role":"admin"}"#),
+            Some(
+                r#"{"decision":"approved","comment":"e2e","reviewed_by":"admin-1","role":"admin"}"#,
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "审批失败: {json}");
-        assert_eq!(json["status"], "published", "审批通过应进入 published: {json}");
+        assert_eq!(
+            json["status"], "published",
+            "审批通过应进入 published: {json}"
+        );
 
         // 9. 发布链闭环可观测：bundle 已落盘 rules_dir 并被 active 列表扫描到
-        let (status, json) = oneshot_json(
-            make_test_router(&state),
-            "GET",
-            "/api/bundles/active",
-            None,
-        )
-        .await;
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "GET", "/api/bundles/active", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             json["count"].as_u64(),
@@ -10211,7 +10196,10 @@ mod tests {
         );
         let ds = json["bundles"][0].clone();
         assert!(
-            ds["dataset_id"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+            ds["dataset_id"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
             "active bundle 的 dataset_id 应非空: {json}"
         );
         assert!(

@@ -1,4 +1,4 @@
-﻿//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_contact_forces.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
+//! [evorule 移植注记] 本文件自 rpsm-demo `rpsm/tests/test_contact_forces.rs`(2026-09-01 快照)移植为 evorule-physics-services 集成测试:import 改路(rpsm_core → evorule_physics_services::kernel),测试逻辑逐行保真。
 //! 弹簧-阻尼器 + 地面切向摩擦两个内核力模型的确定性验证。
 //!
 //! 主线 B 物域深化增量：弹簧-阻尼（F = -k·(p−a) − c·v）与接触摩擦（μ·g 封顶不反向）。
@@ -17,8 +17,12 @@ fn spring_damper_is_deterministic() {
     let run = |c: f64| -> Vec<(f64, f64)> {
         let mut k = PhysicalKernel::new(Vec3::zero());
         k.bodies.push(
-            evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(1.0, 0.0, 0.0), Vec3::zero())
-                .with_spring(Vec3::zero(), 100.0, c),
+            evorule_physics_services::kernel::RigidBody::new(
+                1.0,
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::zero(),
+            )
+            .with_spring(Vec3::zero(), 100.0, c),
         );
         let mut trace = Vec::new();
         for _ in 0..2000 {
@@ -41,8 +45,12 @@ fn spring_damper_is_deterministic() {
 fn undamped_spring_conserves_energy() {
     let mut k = PhysicalKernel::with_integrator(Vec3::zero(), 2).expect("order 2");
     k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(1.0, 0.0, 0.0), Vec3::zero())
-            .with_spring(Vec3::zero(), 100.0, 0.0),
+        evorule_physics_services::kernel::RigidBody::new(
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::zero(),
+        )
+        .with_spring(Vec3::zero(), 100.0, 0.0),
     );
     let e0 = k.total_mechanical_energy(); // ½k·1² = 50
     assert!((e0 - 50.0).abs() < 1e-9, "初态能量应为 ½k·x²=50，实际 {e0}");
@@ -66,8 +74,12 @@ fn undamped_spring_conserves_energy() {
 fn damped_spring_dissipates_and_settles_at_anchor() {
     let mut k = PhysicalKernel::with_integrator(Vec3::zero(), 2).expect("order 2");
     k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(1.0, 0.0, 0.0), Vec3::zero())
-            .with_spring(Vec3::zero(), 100.0, 20.0),
+        evorule_physics_services::kernel::RigidBody::new(
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::zero(),
+        )
+        .with_spring(Vec3::zero(), 100.0, 20.0),
     ); // c=20 ≈ 临界阻尼 ζ=1，快速停机、能量净耗散到近 0。
     let mut last_e = k.total_mechanical_energy();
     for _ in 0..4000 {
@@ -75,7 +87,10 @@ fn damped_spring_dissipates_and_settles_at_anchor() {
         let e = k.total_mechanical_energy();
         // Verlet 对近稳态有机器精度级的能量微振（~1e-6），允许小幅回升；
         // 阻尼整体必须是净耗散（经过数百步后能量显著下降而非守恒）。
-        assert!(e <= last_e + 1e-5, "阻尼整体应净耗散，允许数值微振：{e} > {last_e}");
+        assert!(
+            e <= last_e + 1e-5,
+            "阻尼整体应净耗散，允许数值微振：{e} > {last_e}"
+        );
         last_e = e;
     }
     assert!(
@@ -95,9 +110,13 @@ fn friction_is_deterministic() {
         let mut k = PhysicalKernel::new(Vec3::new(0.0, -G, 0.0));
         k.set_restitution(0.0); // 贴合地面，摩擦持续生效
         k.bodies.push(
-            evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(0.0, 0.05, 0.0), Vec3::new(3.0, 0.0, 0.0))
-                .with_radius(0.05)
-                .with_friction(0.5),
+            evorule_physics_services::kernel::RigidBody::new(
+                1.0,
+                Vec3::new(0.0, 0.05, 0.0),
+                Vec3::new(3.0, 0.0, 0.0),
+            )
+            .with_radius(0.05)
+            .with_friction(0.5),
         );
         let mut trace = Vec::new();
         for _ in 0..2000 {
@@ -120,21 +139,31 @@ fn friction_stops_sliding_without_reversing() {
     let mut k = PhysicalKernel::new(Vec3::new(0.0, -G, 0.0));
     k.set_restitution(0.0);
     k.bodies.push(
-        evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(0.0, 0.05, 0.0), Vec3::new(v0, 0.0, 0.0))
-            .with_radius(0.05)
-            .with_friction(0.5),
+        evorule_physics_services::kernel::RigidBody::new(
+            1.0,
+            Vec3::new(0.0, 0.05, 0.0),
+            Vec3::new(v0, 0.0, 0.0),
+        )
+        .with_radius(0.05)
+        .with_friction(0.5),
     );
     let mut last_vx = v0;
     for _ in 0..5000 {
         k.tick(0.001);
         let vx = k.bodies[0].vel.x;
-        assert!(vx <= last_vx + 1e-9, "摩擦只减速，不得反向加速：{vx} > {last_vx}");
+        assert!(
+            vx <= last_vx + 1e-9,
+            "摩擦只减速，不得反向加速：{vx} > {last_vx}"
+        );
         assert!(vx >= -1e-12, "摩擦不得把速度拖到负数：{vx}");
         last_vx = vx;
     }
     // a = μ·g = 5，停机距离 ≈ v0²/(2a) = 9/10 = 0.9m；近似验证（含离散误差）。
     let x = k.bodies[0].pos.x;
-    assert!(x.abs() >= 0.8 && x.abs() <= 1.0, "停机距离应近 0.9m，实际 {x}");
+    assert!(
+        x.abs() >= 0.8 && x.abs() <= 1.0,
+        "停机距离应近 0.9m，实际 {x}"
+    );
     assert!(last_vx.abs() < 1e-3, "应已停止，实际速度 {last_vx}");
 }
 
@@ -146,9 +175,13 @@ fn friction_disabled_without_collision_response() {
         let mut k = PhysicalKernel::new(Vec3::new(0.0, -G, 0.0));
         k.set_restitution(0.0);
         k.bodies.push(
-            evorule_physics_services::kernel::RigidBody::new(1.0, Vec3::new(0.0, 0.05, 0.0), Vec3::new(v0, 0.0, 0.0))
-                .with_radius(0.05)
-                .with_friction(0.5),
+            evorule_physics_services::kernel::RigidBody::new(
+                1.0,
+                Vec3::new(0.0, 0.05, 0.0),
+                Vec3::new(v0, 0.0, 0.0),
+            )
+            .with_radius(0.05)
+            .with_friction(0.5),
         );
         for _ in 0..1000 {
             k.tick_collision_optional(0.001, on);

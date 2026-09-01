@@ -53,7 +53,11 @@ impl PublishService {
     /// `rules_dir` 为业务规则目录（与 server 启动加载的 rules_dir 同源），
     /// 发布时规范 DatasetBundle 原子落盘至 `{rules_dir}/bundles/{bundle_id}/`，
     /// 后续热重载/重启加载自然生效。
-    pub fn new(db: Arc<WorkspaceDb>, rolling_session: RollingSessionService, rules_dir: PathBuf) -> Self {
+    pub fn new(
+        db: Arc<WorkspaceDb>,
+        rolling_session: RollingSessionService,
+        rules_dir: PathBuf,
+    ) -> Self {
         Self {
             db,
             rolling_session,
@@ -409,10 +413,8 @@ impl PublishService {
         // 发布队列 MVP 仅规则包（rule 条目不消费领域 schema，resolver 恒未命中即可）
         let no_domain_schema = |_uri: &str| None;
         let bundle = build_publish_bundle(&rules, &item, new_version, published_by);
-        let import_result =
-            evorule_bundle::BundleImporter::validate(&bundle, &no_domain_schema).map_err(|e| {
-                WorkspaceError::internal(format!("发布校验失败（不落盘不生效）: {e}"))
-            })?;
+        let import_result = evorule_bundle::BundleImporter::validate(&bundle, &no_domain_schema)
+            .map_err(|e| WorkspaceError::internal(format!("发布校验失败（不落盘不生效）: {e}")))?;
 
         // 4. 原子落盘 rules_dir (失败则发布失败, 队列保持 pending 可重试)
         crate::bundle_land::land_bundle_atomically(&self.rules_dir, &bundle, &import_result)
@@ -922,8 +924,7 @@ mod tests {
         );
         // manifest 落盘且 dataset_id = workspace_id
         let manifest_raw =
-            std::fs::read_to_string(bundle_dir.join(evorule_bundle::BUNDLE_MANIFEST_FILE))
-                .unwrap();
+            std::fs::read_to_string(bundle_dir.join(evorule_bundle::BUNDLE_MANIFEST_FILE)).unwrap();
         let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
         assert_eq!(manifest["dataset_id"], ws_id);
         assert_eq!(manifest["source_version"], "v1");

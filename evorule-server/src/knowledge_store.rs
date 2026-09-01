@@ -92,8 +92,8 @@ impl KnowledgeStore {
             }
             let raw = std::fs::read_to_string(&manifest_path)
                 .map_err(|e| format!("读取 manifest `{}` 失败: {e}", manifest_path.display()))?;
-            let manifest: evorule_workspace::BundleManifest = serde_json::from_str(&raw)
-                .map_err(|e| {
+            let manifest: evorule_workspace::BundleManifest =
+                serde_json::from_str(&raw).map_err(|e| {
                     format!(
                         "解析 manifest `{}` 失败（磁盘篡改或版本不兼容）: {e}",
                         manifest_path.display()
@@ -147,7 +147,8 @@ impl KnowledgeStore {
 
     /// 直读单条数据资产（W3：原生服务按 dataset_id/entry_id 取 payload）
     pub fn get(&self, dataset_id: &str, entry_id: &str) -> Option<&KnowledgeEntryRecord> {
-        self.entries.get(&(dataset_id.to_string(), entry_id.to_string()))
+        self.entries
+            .get(&(dataset_id.to_string(), entry_id.to_string()))
     }
 
     /// 列出某数据集的全部数据条目（BTreeMap 序，确定性）
@@ -183,14 +184,14 @@ impl KnowledgeStore {
     pub fn list_datasets(&self) -> Vec<KnowledgeDatasetSummary> {
         let mut acc: BTreeMap<String, KnowledgeDatasetSummary> = BTreeMap::new();
         for rec in self.entries.values() {
-            let s = acc.entry(rec.dataset_id.clone()).or_insert_with(|| {
-                KnowledgeDatasetSummary {
+            let s = acc
+                .entry(rec.dataset_id.clone())
+                .or_insert_with(|| KnowledgeDatasetSummary {
                     dataset_id: rec.dataset_id.clone(),
                     bundle_ids: Vec::new(),
                     entry_count: 0,
                     schema_refs: Vec::new(),
-                }
-            });
+                });
             if !s.bundle_ids.contains(&rec.bundle_id) {
                 s.bundle_ids.push(rec.bundle_id.clone());
             }
@@ -310,11 +311,7 @@ mod tests {
     fn kn_bundle(dir: &Path, bundle_id: &str, dataset_id: &str, entry_id: &str, schema_ref: &str) {
         let bdir = dir.join("bundles").join(bundle_id);
         std::fs::create_dir_all(&bdir).unwrap();
-        std::fs::write(
-            bdir.join(format!("{entry_id}.json")),
-            r#"{"mass":1.5}"#,
-        )
-        .unwrap();
+        std::fs::write(bdir.join(format!("{entry_id}.json")), r#"{"mass":1.5}"#).unwrap();
         let manifest = serde_json::json!({
             "bundle_id": bundle_id,
             "dataset_id": dataset_id,
@@ -371,7 +368,10 @@ mod tests {
         std::fs::create_dir_all(&bdir).unwrap();
         std::fs::write(bdir.join("bundle_manifest.json"), "{ not json").unwrap();
         let err = KnowledgeStore::load_from_disk(tmp.path()).unwrap_err();
-        assert!(err.contains("bundle_manifest.json"), "报错应含文件路径: {err}");
+        assert!(
+            err.contains("bundle_manifest.json"),
+            "报错应含文件路径: {err}"
+        );
     }
 
     #[test]
@@ -424,17 +424,25 @@ mod tests {
             "https://rpsm.example/schemas/body.json",
         );
         // 给 ds-a 的 manifest 手工加 domain/tags（kn_bundle 不带，模拟新落盘格式）
-        let ma = tmp.path().join("bundles").join("bundle-ds-a-v1").join("bundle_manifest.json");
-        let mut v: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&ma).unwrap(),
-        )
-        .unwrap();
+        let ma = tmp
+            .path()
+            .join("bundles")
+            .join("bundle-ds-a-v1")
+            .join("bundle_manifest.json");
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&ma).unwrap()).unwrap();
         v["entry_files"][0]["domain"] = serde_json::json!("physics");
         v["entry_files"][0]["tags"] = serde_json::json!(["spring", "demo"]);
         std::fs::write(&ma, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
         // ds-b: 旧格式 manifest（无 domain/tags 字段）→ 默认空
-        kn_bundle(tmp.path(), "bundle-ds-b-v1", "ds-b", "mix-002", "https://x/schema.json");
+        kn_bundle(
+            tmp.path(),
+            "bundle-ds-b-v1",
+            "ds-b",
+            "mix-002",
+            "https://x/schema.json",
+        );
 
         let store = KnowledgeStore::load_from_disk(tmp.path()).unwrap();
         assert_eq!(store.len(), 2);
@@ -451,8 +459,14 @@ mod tests {
         );
 
         // search：domain 命中 / 忽略大小写 / 不命中
-        assert_eq!(store.search(Some("ds-a"), None, Some("physics"), &[]).len(), 1);
-        assert_eq!(store.search(Some("ds-a"), None, Some("PHYSICS"), &[]).len(), 1);
+        assert_eq!(
+            store.search(Some("ds-a"), None, Some("physics"), &[]).len(),
+            1
+        );
+        assert_eq!(
+            store.search(Some("ds-a"), None, Some("PHYSICS"), &[]).len(),
+            1
+        );
         assert_eq!(store.search(Some("ds-a"), None, Some("chem"), &[]).len(), 0);
 
         // search：tags 任一命中（OR）
@@ -471,7 +485,10 @@ mod tests {
 
         // search：q 包含匹配（payload 文本）
         assert_eq!(store.search(Some("ds-a"), Some("mass"), None, &[]).len(), 1);
-        assert_eq!(store.search(Some("ds-a"), Some("no-hit"), None, &[]).len(), 0);
+        assert_eq!(
+            store.search(Some("ds-a"), Some("no-hit"), None, &[]).len(),
+            0
+        );
 
         // search：跨数据集过滤（ds-b 旧格式 domain 为空 → 不过滤维度下仍可见）
         assert_eq!(store.search(Some("ds-b"), None, None, &[]).len(), 1);
