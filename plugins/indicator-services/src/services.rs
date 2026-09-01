@@ -402,18 +402,6 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
-    fn assert_values(r: &JsonValue, expect: &[JsonValue]) {
-        let got = r.get("values").and_then(|v| v.as_array()).expect("values 数组");
-        assert_eq!(got.len(), expect.len(), "长度不一致: {r}");
-        for (i, (g, e)) in got.iter().zip(expect.iter()).enumerate() {
-            if let JsonValue::Null = e {
-                assert!(matches!(g, JsonValue::Null), "values[{i}] 应为 null: {g}");
-            } else {
-                assert_eq!(g, e, "values[{i}] 黄金值漂移(整行: {r:?})");
-            }
-        }
-    }
-
     // ===== SMA 黄金值(pandas rolling(5).mean(),前 4 位 null) =====
 
     #[test]

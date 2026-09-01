@@ -44,39 +44,54 @@ use crate::services::{IndicatorEma, IndicatorMacd, IndicatorRsi, IndicatorSma};
 
 /// 原生服务的统一入参入口：接收 `args`（已由引擎解析 __ 路径为实际值），返回业务结果。
 ///
-/// 注:与 demo-services/physics-services 的同名 trait 结构相同、各自持有——
-/// trait 上提公共 crate 属跨插件抽象,待第三个插件验证完追加式登记闭环后另立项评估。
-pub trait NativeService: Send + Sync {
-    fn execute(&self, args: &JsonValue) -> IoResult;
-}
+/// 注:机制件(trait/声明项/过滤路由器)已上提 `evorule-plugin-kit`(插件 NativeService
+/// 抽象上提,自三插件逐行同构机制归一,行为逐字节等价;即本文件原有"待第三个插件验证完
+/// 追加式登记闭环后另立项评估"注记的兑现),此处 re-export 保持原 API 路径。
+pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 
 // ============================================================================
-// 复合路由：原生优先，HTTP 回落
+// 复合路由：原生优先，HTTP 回落（机制件上提 plugin-kit，本 crate 薄壳委托）
 // ============================================================================
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
 ///
+/// 薄壳具名路由器:机制(new / with_enabled 三拒绝 / 声明序查找 / 回落 / split_params)
+/// 已上提 `evorule-plugin-kit`(行为逐字节等价),本插件仅自持声明表并保持具名 API。
 /// 挂载到 `IoType::call_service()` / `IoType::call_external()`。
-pub struct IndicatorServiceRouter {
-    /// 原生服务实例(name+实例成对存放,支持部署期启用子集)
-    instances: Vec<(&'static str, Arc<dyn NativeService>)>,
-    /// 原生未命中时的 HTTP 回落（ServiceRegistryHandler，读 service_registry.json）
-    fallback: Arc<dyn IoHandler>,
+pub struct IndicatorServiceRouter(evorule_plugin_kit::NativeServiceRouter);
+
+impl IndicatorServiceRouter {
+    /// 构造复合路由。`fallback` 为未命中原生服务名时的 HTTP 处理器
+    /// （通常传 `Arc<ServiceRegistryHandler>`，由调用方按 --allow-loopback 构造）。
+    pub fn new(fallback: Arc<dyn IoHandler>) -> Self {
+        Self(evorule_plugin_kit::NativeServiceRouter::new(
+            NATIVE_SERVICES,
+            fallback,
+        ))
+    }
+
+    /// 部署期启用子集构造(UV-030 插件清单化;三拒绝语义与错误文案见 plugin-kit,逐字节不变)。
+    pub fn with_enabled(fallback: Arc<dyn IoHandler>, enabled: &[&str]) -> Result<Self, String> {
+        evorule_plugin_kit::NativeServiceRouter::with_enabled(NATIVE_SERVICES, fallback, enabled)
+            .map(Self)
+    }
+
+    /// 当前实例已启用的原生服务名列表(健康可见性/能力对账用)
+    pub fn enabled_service_names(&self) -> Vec<&'static str> {
+        self.0.enabled_service_names()
+    }
+
+    /// 原生服务名列表（server 侧服务绑定核对/能力对账用；自声明表派生）
+    pub fn native_service_names() -> Vec<&'static str> {
+        evorule_plugin_kit::NativeServiceRouter::native_service_names(NATIVE_SERVICES)
+    }
 }
 
-/// 原生服务声明项(与前两个插件同构:新增原生能力 = 向 [`NATIVE_SERVICES`] 追加一项)。
-///
-/// `name` 与治理侧服务目录种子对齐——共同事实源为本插件声明文件
-/// `official_native_services.json`(UV-029 泛化,SSOT),双侧守卫锁定漂移(见文件底部测试)。
-pub struct NativeServiceDef {
-    /// 全局唯一服务名(`io_request` 的 `service_name`;跨插件唯一,治理侧聚合时锁定)
-    pub name: &'static str,
-    /// 是否涉及凭据/敏感数据(与治理侧目录元数据对齐)
-    pub sensitive: bool,
-    /// 一句话描述(供能力对账/文档派生)
-    pub description: &'static str,
-    /// 实例构造子(带状态服务在此注入默认状态)
-    pub make: fn() -> Arc<dyn NativeService>,
+#[async_trait]
+impl IoHandler for IndicatorServiceRouter {
+    async fn execute(&self, params: &JsonValue) -> IoResult {
+        self.0.execute(params).await
+    }
 }
 
 /// 原生服务声明表(SSOT:本插件原生叶子能力全量清单,顺序即路由查找序)。
@@ -118,100 +133,6 @@ fn mk_macd() -> Arc<dyn NativeService> {
 }
 fn mk_rsi() -> Arc<dyn NativeService> {
     Arc::new(IndicatorRsi)
-}
-
-impl IndicatorServiceRouter {
-    /// 构造复合路由。`fallback` 为未命中原生服务名时的 HTTP 处理器
-    /// （通常传 `Arc<ServiceRegistryHandler>`，由调用方按 --allow-loopback 构造）。
-    pub fn new(fallback: Arc<dyn IoHandler>) -> Self {
-        Self {
-            instances: NATIVE_SERVICES.iter().map(|d| (d.name, (d.make)())).collect(),
-            fallback,
-        }
-    }
-
-    /// 部署期启用子集构造(UV-030 插件清单化,与前两个插件同语义)。
-    ///
-    /// - `enabled` 为启用服务名集合（顺序无关,路由查找仍按 `NATIVE_SERVICES` 声明序）;
-    /// - 未知名 / 重复名 / 空启用集 → fail-fast Err(含指引,不静默忽略);
-    /// - 宿主零具体名特判:新增原生能力 = `NATIVE_SERVICES` 追加一项 + 清单启用。
-    pub fn with_enabled(fallback: Arc<dyn IoHandler>, enabled: &[&str]) -> Result<Self, String> {
-        if enabled.is_empty() {
-            return Err(
-                "插件启用集为空 — 若要停用全部原生服务请直接 enabled=false(不挂载本路由),\
-                 若要启用请在 plugin_manifest.services 中至少列出一个服务"
-                    .to_string(),
-            );
-        }
-        let mut seen: Vec<&str> = Vec::new();
-        for name in enabled {
-            let known = NATIVE_SERVICES.iter().any(|d| d.name == *name);
-            if !known {
-                return Err(format!(
-                    "plugin_manifest 引用了未注册的原生服务 '{name}' — 合法服务名: [{}]。\
-                     自诊断指引: ① 核对 service_name 拼写(以本清单为准,非治理侧目录); \
-                     ② 新增原生服务请向 NATIVE_SERVICES 声明表追加一项后在清单中启用",
-                    NATIVE_SERVICES
-                        .iter()
-                        .map(|d| d.name)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-            if seen.contains(name) {
-                return Err(format!(
-                    "plugin_manifest 服务 '{name}' 重复声明 — 请去重后重试(不静默去重)"
-                ));
-            }
-            seen.push(name);
-        }
-        Ok(Self {
-            instances: NATIVE_SERVICES
-                .iter()
-                .filter(|d| seen.contains(&d.name))
-                .map(|d| (d.name, (d.make)()))
-                .collect(),
-            fallback,
-        })
-    }
-
-    /// 当前实例已启用的原生服务名列表(健康可见性/能力对账用)
-    pub fn enabled_service_names(&self) -> Vec<&'static str> {
-        self.instances.iter().map(|(n, _)| *n).collect()
-    }
-
-    /// 原生服务名列表（server 侧服务绑定核对/能力对账用；自声明表派生）
-    pub fn native_service_names() -> Vec<&'static str> {
-        NATIVE_SERVICES.iter().map(|d| d.name).collect()
-    }
-
-    /// 解析 `service_name`（params 顶层），并取出 `args`（默认空对象）。
-    fn split_params(params: &JsonValue) -> (Option<String>, JsonValue) {
-        let service_name = params
-            .get("service_name")
-            .and_then(|v| v.as_str())
-            .or_else(|| params.get("name").and_then(|v| v.as_str()))
-            .map(|s| s.to_string());
-        let args = params
-            .get("args")
-            .cloned()
-            .unwrap_or_else(JsonValue::empty_object);
-        (service_name, args)
-    }
-}
-
-#[async_trait]
-impl IoHandler for IndicatorServiceRouter {
-    async fn execute(&self, params: &JsonValue) -> IoResult {
-        let (service_name, args) = Self::split_params(params);
-        let name = service_name.as_deref().unwrap_or("");
-        // 声明表查找分发:新增原生服务 = 表加一项,此处零改动;
-        // 仅在本路由实例已启用的子集内查找(未启用 → 回落/如实报错)
-        match self.instances.iter().find(|(n, _)| *n == name) {
-            Some((_, svc)) => svc.execute(&args),
-            _ => self.fallback.execute(params).await,
-        }
-    }
 }
 
 // ============================================================================

@@ -20,8 +20,8 @@
 //! 真实二进制场景（缺省全启 / 子集 / 停用 / 清单 fail-fast + /api/health
 //! plugins 节）由 `scripts/run-plugins-e2e.ps1` 承接，与本测试互补。
 
-// 集成测试保留 unwrap 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// 集成测试保留 unwrap/expect/panic 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
 

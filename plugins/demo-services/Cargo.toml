@@ -19,6 +19,8 @@ evorule-tcb = { version = "0.3.1" }
 evorule-reactor = { version = "0.3.1" }
 evorule-io-handlers = { path = "../../core/io_handlers" }
 evorule-rule-schema = { path = "../../core/rule_schema" }
+# 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)
+evorule-plugin-kit = { path = "../../core/plugin-kit" }
 
 serde_json = "1"
 tracing = "0.1"

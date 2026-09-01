@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use evorule_reactor::{FactsLog, IoHandler, IoType, Reactor};
+use evorule_reactor::{FactsLog, IoType, Reactor};
 #[cfg(test)]
 use evorule_tcb::JsonValue;
 use std::time::Instant;
@@ -50,9 +50,9 @@ use evorule_io_handlers::{
     StatementWhitelist, WhitelistedDbHandler,
 };
 // Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
-use evorule_demo_services::DemoServiceRouter;
-use evorule_indicator_services::IndicatorServiceRouter;
-use evorule_physics_services::PhysicsServiceRouter;
+use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
+use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
+use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
@@ -539,75 +539,34 @@ fn default_true() -> bool {
     true
 }
 
-/// 子集构造函数类型(类型别名消 clippy::type_complexity)。
-type MakeRouterEnabled = fn(Arc<dyn IoHandler>, &[&str]) -> Result<Arc<dyn IoHandler>, String>;
-
-/// 进程内插件登记项(UV-035 泛化):新增进程内插件 = 在 [`PLUGIN_DEFS`] 追加一项
-/// (id + 服务名清单 + 路由构造子),清单解析/挂载链/健康节机制代码零改动。
+/// 进程内插件登记项(UV-035 泛化;插件抽象上提后路由机制件归一至 plugin-kit,
+/// 登记表直引各插件声明表):新增进程内插件 = 在 [`PLUGIN_DEFS`] 追加一项
+/// (id + 声明表指针),清单解析/挂载链/健康节机制代码零改动。
 struct PluginDef {
     /// 清单与 /api/health 中的插件 id
     id: &'static str,
-    /// 该插件全部合法服务名(声明序;清单空集报错与健康节呈现用)
-    service_names: fn() -> Vec<&'static str>,
-    /// 全启构造(承接回落链尾)
-    make_router: fn(Arc<dyn IoHandler>) -> Arc<dyn IoHandler>,
-    /// 子集构造(未知名/重复名/空集 fail-fast)
-    make_router_enabled: MakeRouterEnabled,
+    /// 该插件声明表(声明序;服务名清单/全启构造/子集三拒绝构造均自表派生)
+    defs: &'static [evorule_plugin_kit::NativeServiceDef],
 }
 
-fn demo_make_router(fallback: Arc<dyn IoHandler>) -> Arc<dyn IoHandler> {
-    Arc::new(DemoServiceRouter::new(fallback))
-}
-
-fn demo_make_router_enabled(
-    fallback: Arc<dyn IoHandler>,
-    enabled: &[&str],
-) -> Result<Arc<dyn IoHandler>, String> {
-    DemoServiceRouter::with_enabled(fallback, enabled).map(|r| Arc::new(r) as Arc<dyn IoHandler>)
-}
-
-fn physics_make_router(fallback: Arc<dyn IoHandler>) -> Arc<dyn IoHandler> {
-    Arc::new(PhysicsServiceRouter::new(fallback))
-}
-
-fn physics_make_router_enabled(
-    fallback: Arc<dyn IoHandler>,
-    enabled: &[&str],
-) -> Result<Arc<dyn IoHandler>, String> {
-    PhysicsServiceRouter::with_enabled(fallback, enabled).map(|r| Arc::new(r) as Arc<dyn IoHandler>)
-}
-
-fn indicator_make_router(fallback: Arc<dyn IoHandler>) -> Arc<dyn IoHandler> {
-    Arc::new(IndicatorServiceRouter::new(fallback))
-}
-
-fn indicator_make_router_enabled(
-    fallback: Arc<dyn IoHandler>,
-    enabled: &[&str],
-) -> Result<Arc<dyn IoHandler>, String> {
-    IndicatorServiceRouter::with_enabled(fallback, enabled)
-        .map(|r| Arc::new(r) as Arc<dyn IoHandler>)
+/// 该插件全部合法服务名(声明序;清单空集报错与健康节呈现用)。
+fn plugin_service_names(def: &PluginDef) -> Vec<&'static str> {
+    evorule_plugin_kit::NativeServiceRouter::native_service_names(def.defs)
 }
 
 /// 进程内插件登记表(声明序即挂载序与回落链序)。
 const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "demo-services",
-        service_names: DemoServiceRouter::native_service_names,
-        make_router: demo_make_router,
-        make_router_enabled: demo_make_router_enabled,
+        defs: DEMO_NATIVE_SERVICES,
     },
     PluginDef {
         id: "physics-services",
-        service_names: PhysicsServiceRouter::native_service_names,
-        make_router: physics_make_router,
-        make_router_enabled: physics_make_router_enabled,
+        defs: PHYSICS_NATIVE_SERVICES,
     },
     PluginDef {
         id: "indicator-services",
-        service_names: IndicatorServiceRouter::native_service_names,
-        make_router: indicator_make_router,
-        make_router_enabled: indicator_make_router_enabled,
+        defs: INDICATOR_NATIVE_SERVICES,
     },
 ];
 
@@ -658,7 +617,7 @@ fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, Plugi
                         "插件清单 {}.services 为空 — 若要停用全部原生服务请直接 \
                          \"enabled\": false; 若要启用请至少列出一个服务名。合法服务名: [{}]",
                         def.id,
-                        (def.service_names)().join(", ")
+                        plugin_service_names(def).join(", ")
                     ));
                 }
                 mounts.push((def.id, PluginMount::Subset(names.clone())));
@@ -1132,21 +1091,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if cfg.plugins.is_some() {
                     info!(
                         "插件清单: {id} 全部启用（{} 个原生服务）",
-                        (def.service_names)().len()
+                        plugin_service_names(def).len()
                     );
                 }
                 plugin_health.insert(
                     id.to_string(),
-                    serde_json::json!({ "enabled": true, "services": (def.service_names)() }),
+                    serde_json::json!({ "enabled": true, "services": plugin_service_names(def) }),
                 );
-                chain_tail = (def.make_router)(chain_tail);
+                chain_tail = evorule_plugin_kit::mount_router(def.defs, chain_tail, None)
+                    .map_err(|e| format!("插件清单校验失败: {}", e))?;
             }
             PluginMount::Subset(names) => {
                 let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                let router = (def.make_router_enabled)(chain_tail.clone(), &refs)
+                let router = evorule_plugin_kit::mount_router(def.defs, chain_tail.clone(), Some(&refs))
                     .map_err(|e| format!("插件清单校验失败: {}", e))?;
                 // 健康呈现按声明序过滤(与路由器 enabled_service_names 同口径)
-                let all_names = (def.service_names)();
+                let all_names = plugin_service_names(def);
                 let enabled_ordered: Vec<&str> =
                     all_names.iter().copied().filter(|n| refs.contains(n)).collect();
                 info!(
