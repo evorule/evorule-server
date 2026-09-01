@@ -53,6 +53,9 @@ COPY core/workspace/Cargo.toml ./core/workspace/
 
 # plugins/* lib
 COPY plugins/demo-services/Cargo.toml ./plugins/demo-services/
+COPY plugins/physics-services/Cargo.toml ./plugins/physics-services/
+COPY plugins/indicator-services/Cargo.toml ./plugins/indicator-services/
+COPY core/plugin-kit/Cargo.toml ./core/plugin-kit/
 
 # ===== 第 2 层: 创建 dummy 源文件预编译依赖 =====
 # evorule-server (bin)
@@ -71,11 +74,16 @@ RUN mkdir -p \
         core/semantic_invariants/src \
         core/time_machine/src \
         core/workspace/src \
-        plugins/demo-services/src && \
-    for c in auth debug_control hot_reload io_handlers metrics rule_schema rule_tools semantic_invariants time_machine workspace; do \
+        core/plugin-kit/src \
+        plugins/demo-services/src \
+        plugins/physics-services/src \
+        plugins/indicator-services/src && \
+    for c in auth debug_control hot_reload io_handlers metrics rule_schema rule_tools semantic_invariants time_machine workspace plugin-kit; do \
         echo "pub fn _dummy() {}" > core/$c/src/lib.rs; \
     done && \
-    echo "pub fn _dummy() {}" > plugins/demo-services/src/lib.rs
+    echo "pub fn _dummy() {}" > plugins/demo-services/src/lib.rs && \
+    echo "pub fn _dummy() {}" > plugins/physics-services/src/lib.rs && \
+    echo "pub fn _dummy() {}" > plugins/indicator-services/src/lib.rs
 
 # ===== 第 3 层: 预编译依赖(失败不阻断,因 dummy 与真实 features 可能不一致) =====
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -95,7 +103,10 @@ RUN rm -rf evorule-server/src \
            core/semantic_invariants/src \
            core/time_machine/src \
            core/workspace/src \
-           plugins/demo-services/src
+           core/plugin-kit/src \
+           plugins/demo-services/src \
+           plugins/physics-services/src \
+           plugins/indicator-services/src
 
 # 复制真实源码
 COPY evorule-server/src/ ./evorule-server/src/
@@ -109,7 +120,13 @@ COPY core/rule_tools/src/ ./core/rule_tools/src/
 COPY core/semantic_invariants/src/ ./core/semantic_invariants/src/
 COPY core/time_machine/src/ ./core/time_machine/src/
 COPY core/workspace/src/ ./core/workspace/src/
+COPY core/plugin-kit/src/ ./core/plugin-kit/src/
 COPY plugins/demo-services/src/ ./plugins/demo-services/src/
+COPY plugins/demo-services/official_native_services.json ./plugins/demo-services/official_native_services.json
+COPY plugins/physics-services/src/ ./plugins/physics-services/src/
+COPY plugins/physics-services/official_native_services.json ./plugins/physics-services/official_native_services.json
+COPY plugins/indicator-services/src/ ./plugins/indicator-services/src/
+COPY plugins/indicator-services/official_native_services.json ./plugins/indicator-services/official_native_services.json
 
 # ===== 第 5 层: 真实构建 =====
 # 注意: dummy 预编译(target cache mount 共享)会缓存本地 crate 的 dummy rlib,

@@ -7447,8 +7447,14 @@ pub fn resolve_governor_config(
         return None;
     }
 
+    // tower_governor 0.8 的 `per_second(n)` 语义是"每 n 秒回补 1 个令牌"
+    // (period = Duration::from_secs(n)),并非"每秒 n 个请求"。
+    // UV-032 实测定论(2026-09-01):此前传 per_sec=1 实为 1 req/s,合法流量被 429。
+    // 本参数语义 = 持续速率 req/s,故换算 period = 1000/per_sec 毫秒(≥1ms 下限防零)。
+    let period_ms = (1000 / per_sec).max(1);
+
     tower_governor::governor::GovernorConfigBuilder::default()
-        .per_second(per_sec)
+        .per_millisecond(period_ms)
         .burst_size(burst)
         .finish()
         .or_else(|| {
@@ -7501,7 +7507,7 @@ mod tests {
     #[test]
 
     fn test_resolve_governor_config_enabled_normal() {
-        // 默认配置：per_sec=1, burst=200 → 必须返回 Some
+        // 默认配置：per_sec=200(=200 req/s,period 5ms), burst=200 → 必须返回 Some
 
         let result = resolve_governor_config(1, 200);
 

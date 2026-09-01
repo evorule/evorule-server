@@ -480,9 +480,12 @@ impl ResolvedConfig {
             auto_verify: cli.auto_verify,
             auto_verify_threshold: cli.auto_verify_threshold.unwrap_or(1000),
             auto_verify_interval: cli.auto_verify_interval.unwrap_or(1),
-            // 速率限制：默认 200 req/s（per_sec=1, burst=200）。
+            // 速率限制：默认持续速率 200 req/s（burst=200;period 换算见
+            // resolve_governor_config 注释）。
+            // UV-032 实测修正(2026-09-01):此前误传 per_sec=1,经 resolve_governor_config
+            // 换算实为每秒回补 1 个令牌,合法多用户流量被持续 429。
             // --no-rate-limit 设为 0 → build_router() 完全跳过 GovernorLayer（真正禁用限速）
-            rate_limit_per_sec: if cli.no_rate_limit { 0 } else { 1 },
+            rate_limit_per_sec: if cli.no_rate_limit { 0 } else { 200 },
             service_registry: cli.service_registry.or(file.paths.service_registry),
             statement_whitelist: cli.statement_whitelist.or(file.paths.statement_whitelist),
             plugins: cli.plugins.or(file.paths.plugins),
@@ -1918,7 +1921,7 @@ mod tests {
         assert!(!cfg.auto_verify);
         assert_eq!(cfg.auto_verify_threshold, 1000);
         assert_eq!(cfg.auto_verify_interval, 1);
-        assert_eq!(cfg.rate_limit_per_sec, 1);
+        assert_eq!(cfg.rate_limit_per_sec, 200, "默认限速应为 200 req/s(UV-032 修正)");
     }
 
     #[test]
