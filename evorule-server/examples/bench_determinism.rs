@@ -113,6 +113,13 @@ async fn main() {
         }
         payload_hashes.insert(payload_hash);
 
+        // 会话用完即关(DELETE): 会话上限 1000, 1000 迭代不关会在末尾撞上限
+        // 被拒(空响应体), 与 load-drill.ps1 同款教训
+        let _ = client
+            .delete(format!("{}/api/sessions/{}", base_url, sess_id))
+            .send()
+            .await;
+
         if iter > 0 && iter % 100 == 0 {
             println!(
                 "[Iter {}] {} unique payload hashes (should be 1)",
@@ -207,6 +214,12 @@ async fn main() {
             );
         }
         chain_hashes.insert(last_hash);
+
+        // 会话用完即关(DELETE), 同 Test A
+        let _ = client
+            .delete(format!("{}/api/sessions/{}", base_url, sess_id))
+            .send()
+            .await;
     }
     let elapsed_b = start_b.elapsed();
     println!(

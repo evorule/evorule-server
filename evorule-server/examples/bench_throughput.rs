@@ -106,11 +106,15 @@ async fn main() {
         let handle = tokio::spawn(async move {
             let _permit = permit;
             for cmd_idx in 0..cmds_per_session {
+                // 指令格式对齐 Schema 门禁(attr/operation/value):
+                // 旧 path/value 格式提交即被拒(success:false), bench 只检 HTTP
+                // 状态码, 测得的是"拒绝快路径"吞吐而非真实命令路径(失真)
                 let cmd = json!({
                     "instruction": {
                         "type": "set",
                         "params": {
-                            "path": format!("bench_{}", cmd_idx),
+                            "attr": format!("bench_{}", cmd_idx),
+                            "operation": "set",
                             "value": cmd_idx as i64
                         }
                     }
@@ -196,6 +200,14 @@ async fn main() {
         read_elapsed.as_millis() as f64 / reads as f64
     );
     println!();
+
+    // === Phase 4: 会话清理 ===
+    for &sess_id in &session_ids {
+        let _ = client_arc
+            .delete(format!("{}/api/sessions/{}", url_arc, sess_id))
+            .send()
+            .await;
+    }
 
     // === Summary ===
     println!("=== Summary ===");

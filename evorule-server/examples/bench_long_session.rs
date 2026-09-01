@@ -64,29 +64,43 @@ async fn main() {
     //   {"type":"noop",     "params":{}}
     // (NOT "path" + "value" — that was the old format I used in 1.4 first attempt, which
     //  silently failed with Error entries in audit but version=0 and empty payload)
-    println!("[Phase 1] Firing {} commands sequentially...", num_facts);
+    // CR-20260901-001 适配: audit_new 增量化后 POST 秒回, 顺序提交速率(~2500/s)
+    // 远超反应器执行速率, 会使指令队列溢出(max_queue_len=1000, 溢出发 Error 清空
+    // 队列——命令入链但不执行)。长稳测试目标是 10000 条命令**全部执行**,
+    // 故分批提交并轮询 /state 等已提交命令全部落地后再继续。
+    println!(
+        "[Phase 1] Firing {} commands (batched, wait-for-execution)...",
+        num_facts
+    );
     let start = Instant::now();
-    for i in 0..num_facts {
-        let cmd = json!({
-            "instruction": {
-                "type": "set",
-                "params": {
-                    "attr": format!("long_{}", i),
-                    "operation": "set",
-                    "value": i as i64
+    const BATCH: usize = 100;
+    let mut submitted: usize = 0;
+    while submitted < num_facts {
+        let batch_end = (submitted + BATCH).min(num_facts);
+        for i in submitted..batch_end {
+            let cmd = json!({
+                "instruction": {
+                    "type": "set",
+                    "params": {
+                        "attr": format!("long_{}", i),
+                        "operation": "set",
+                        "value": i as i64
+                    }
                 }
+            });
+            let resp = client
+                .post(format!("{}/api/sessions/{}/command", base_url, sess_id))
+                .json(&cmd)
+                .send()
+                .await
+                .expect("command");
+            if !resp.status().is_success() {
+                eprintln!("[FAIL] cmd {} status={}", i, resp.status());
+                std::process::exit(1);
             }
-        });
-        let resp = client
-            .post(format!("{}/api/sessions/{}/command", base_url, sess_id))
-            .json(&cmd)
-            .send()
-            .await
-            .expect("command");
-        if !resp.status().is_success() {
-            eprintln!("[FAIL] cmd {} status={}", i, resp.status());
-            std::process::exit(1);
         }
+        submitted = batch_end;
+        wait_for_executed_keys(&client, &base_url, sess_id, submitted).await;
     }
     let fire_elapsed = start.elapsed();
     let fire_rate = num_facts as f64 / fire_elapsed.as_secs_f64();
@@ -131,6 +145,21 @@ async fn main() {
             entry_count, num_facts
         );
     }
+
+    // 验收门禁: 审计链中不得有 Error 事实(队列溢出/max_rounds 等执行错误)
+    let error_count = audit["entries"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|e| e["fact_type"].as_str() == Some("Error"))
+                .count()
+        })
+        .unwrap_or(0);
+    if error_count > 0 {
+        eprintln!("[FAIL] {} Error facts in audit chain", error_count);
+        std::process::exit(1);
+    }
+    println!("[OK] Zero Error facts in audit chain");
 
     // Verify chain integrity via dedicated endpoint
     let verify_resp = client
@@ -279,6 +308,44 @@ async fn main() {
     println!("Roundtrip:         OK (compressed)");
     println!();
     println!("✓ Long session stable for {} facts", num_facts);
+}
+
+/// 轮询 /state 等待已提交命令全部执行落地
+///
+/// bench 每条命令 set 一个唯一键 `long_{i}`，以 payload 中 `long_` 前缀键数
+/// 作为已执行进度。超时（120s）视为失败退出。
+async fn wait_for_executed_keys(
+    client: &reqwest::Client,
+    base_url: &str,
+    sess_id: u32,
+    expected: usize,
+) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let resp = client
+            .get(format!("{}/api/sessions/{}/state", base_url, sess_id))
+            .send()
+            .await
+            .expect("state poll");
+        if resp.status().is_success() {
+            let state: serde_json::Value = resp.json().await.expect("parse state poll");
+            let executed = state["payload"]
+                .as_object()
+                .map(|o| o.keys().filter(|k| k.starts_with("long_")).count())
+                .unwrap_or(0);
+            if executed >= expected {
+                return;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            eprintln!(
+                "[FAIL] execution catch-up timeout: expected >= {} executed keys",
+                expected
+            );
+            std::process::exit(1);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// Get RSS of evorule-server.exe via PowerShell
