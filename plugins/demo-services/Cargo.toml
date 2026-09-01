@@ -15,8 +15,8 @@ workspace = true
 
 [dependencies]
 # 核心层（crates.io 版本依赖，顶层 [patch.crates-io] 覆盖为本地源码）
-evorule-tcb = { version = "0.3.1" }
-evorule-reactor = { version = "0.3.1" }
+evorule-tcb = { version = "0.4.0" }
+evorule-reactor = { version = "0.4.0" }
 evorule-io-handlers = { path = "../../core/io_handlers" }
 evorule-rule-schema = { path = "../../core/rule_schema" }
 # 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)

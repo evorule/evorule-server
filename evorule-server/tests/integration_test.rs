@@ -240,13 +240,20 @@ async fn create_test_dispatcher(temp_dir: &std::path::Path) -> IoDispatcher {
         .build()
 }
 
-/// 等待 Stable 事实
-async fn wait_for_stable(rx: &mut evorule_reactor::EventReceiver) -> Option<JsonValue> {
-    timeout(Duration::from_secs(10), async {
+/// 等待 Stable 事实，返回会话最终 payload（经 FactsLog 快照）
+///
+/// CR-20260901-001：Stable 事实不再内嵌 final_snapshot（O(n²) 修复），
+/// 最终状态由最近一条 StateTransition.new_payload 承担，经
+/// `FactsLog::snapshot()` 获取。
+async fn wait_for_stable(
+    rx: &mut evorule_reactor::EventReceiver,
+    facts_log: &evorule_reactor::FactsLog,
+) -> Option<JsonValue> {
+    let stable = timeout(Duration::from_secs(10), async {
         loop {
             match rx.recv().await {
                 Ok(fact) => match fact {
-                    Fact::Stable { final_snapshot, .. } => return Some(final_snapshot),
+                    Fact::Stable { .. } => return Some(()),
                     Fact::Error { message, .. } => panic!("Reactor error: {}", message),
                     _ => {}
                 },
@@ -259,7 +266,8 @@ async fn wait_for_stable(rx: &mut evorule_reactor::EventReceiver) -> Option<Json
     })
     .await
     .ok()
-    .flatten()
+    .flatten();
+    stable.map(|()| facts_log.snapshot().0)
 }
 
 // ===== 测试用例 =====
@@ -274,7 +282,7 @@ async fn test_end_to_end_io_subscriber_with_save_memory() {
     let subscriber = IoSubscriber::new(dispatcher);
 
     let reactor = Reactor::builder(core_eval).max_rounds(100).build();
-    let (tx, mut rx, event_tx, _handle, _facts_log) = reactor.spawn();
+    let (tx, mut rx, event_tx, _handle, facts_log) = reactor.spawn();
 
     // 启动 I/O 订阅者
     let sub_rx = event_tx.subscribe();
@@ -292,7 +300,7 @@ async fn test_end_to_end_io_subscriber_with_save_memory() {
     .unwrap();
 
     // 等待 Stable
-    let snapshot = wait_for_stable(&mut rx)
+    let snapshot = wait_for_stable(&mut rx, &facts_log)
         .await
         .expect("Timed out waiting for Stable");
 
@@ -329,7 +337,7 @@ async fn test_end_to_end_save_memory_writes_file() {
     let subscriber = IoSubscriber::new(dispatcher);
 
     let reactor = Reactor::builder(core_eval).max_rounds(100).build();
-    let (tx, mut rx, event_tx, _handle, _facts_log) = reactor.spawn();
+    let (tx, mut rx, event_tx, _handle, facts_log) = reactor.spawn();
 
     // 启动 I/O 订阅者
     let sub_rx = event_tx.subscribe();
@@ -347,7 +355,7 @@ async fn test_end_to_end_save_memory_writes_file() {
     .unwrap();
 
     // 等待 Stable
-    let snapshot = wait_for_stable(&mut rx)
+    let snapshot = wait_for_stable(&mut rx, &facts_log)
         .await
         .expect("Timed out waiting for Stable");
 
@@ -377,7 +385,7 @@ async fn test_io_subscriber_handles_errors() {
     let subscriber = IoSubscriber::new(dispatcher);
 
     let reactor = Reactor::builder(core_eval).max_rounds(100).build();
-    let (tx, mut rx, event_tx, _handle, _facts_log) = reactor.spawn();
+    let (tx, mut rx, event_tx, _handle, facts_log) = reactor.spawn();
 
     // 启动 I/O 订阅者
     let sub_rx = event_tx.subscribe();
@@ -395,7 +403,7 @@ async fn test_io_subscriber_handles_errors() {
     .unwrap();
 
     // 等待 Stable（即使有错误也应有响应）
-    let snapshot = wait_for_stable(&mut rx)
+    let snapshot = wait_for_stable(&mut rx, &facts_log)
         .await
         .expect("Timed out waiting for Stable");
 
@@ -421,7 +429,7 @@ async fn test_multiple_io_requests_sequence() {
     let subscriber = IoSubscriber::new(dispatcher);
 
     let reactor = Reactor::builder(core_eval).max_rounds(200).build();
-    let (tx, mut rx, event_tx, _handle, _facts_log) = reactor.spawn();
+    let (tx, mut rx, event_tx, _handle, facts_log) = reactor.spawn();
 
     // 启动 I/O 订阅者
     let sub_rx = event_tx.subscribe();
@@ -450,7 +458,7 @@ async fn test_multiple_io_requests_sequence() {
     .unwrap();
 
     // 等待 Stable
-    let snapshot = wait_for_stable(&mut rx)
+    let snapshot = wait_for_stable(&mut rx, &facts_log)
         .await
         .expect("Timed out waiting for Stable");
 
@@ -552,7 +560,7 @@ fn test_hash_chain_verification() {
         },
         Fact::Stable {
             id: FactId(2),
-            final_snapshot: JsonValue::string("result1"),
+            version: 1,
         },
     ];
 

@@ -446,7 +446,7 @@ mod tests {
             cmd(1, "increment", JsonValue::empty_object()),
             Fact::Stable {
                 id: FactId(2),
-                final_snapshot: JsonValue::empty_object(),
+                version: 1,
             },
         ];
         write_session_wal(&dir, 1, &facts);
@@ -505,7 +505,7 @@ mod tests {
             cmd(1, "increment", JsonValue::empty_object()),
             Fact::Stable {
                 id: FactId(2),
-                final_snapshot: JsonValue::empty_object(),
+                version: 1,
             },
         ];
         write_session_wal(&dir, 3, &facts);
@@ -530,7 +530,7 @@ mod tests {
         let dir = tmp_wal_dir("cache");
         let facts = vec![Fact::Stable {
             id: FactId(1),
-            final_snapshot: JsonValue::empty_object(),
+            version: 1,
         }];
         write_session_wal(&dir, 5, &facts);
 

@@ -360,7 +360,12 @@ mod tests {
         let core_eval_path = tmp.path().join("core_eval.json");
         std::fs::write(
             &core_eval_path,
-            r#"{"transform":[{"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}}]}"#,
+            // UV-030 修复(2026-09-01): SessionApi 启动 fail-fast 校验要求宪法
+            // 必含 call_external 指令规则（LLM 审计桥平台契约），fixture 同步补入
+            r#"{"transform":[
+                {"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}},
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[],"on_false":[]}}
+            ]}"#,
         )
         .unwrap();
         SessionApi::new_with_full_config(
@@ -432,8 +437,8 @@ mod tests {
         );
         assert_eq!(manifest["entry_files"][0]["entry_id"], "entry-tax-001");
         assert_eq!(manifest["entry_files"][0]["file"], "entry-tax-001.json");
-        // T3: loader 递归扫描 → reload 后 bundle 规则被实际加载（core_eval 1 + bundle 条目 1）
-        assert_eq!(api.core_eval_len(), 2, "bundle 条目应随 reload 被加载");
+        // T3: loader 递归扫描 → reload 后 bundle 规则被实际加载（core_eval 2 + bundle 条目 1）
+        assert_eq!(api.core_eval_len(), 3, "bundle 条目应随 reload 被加载");
         // 无半成品：无残留临时/备份目录
         assert!(!tmp
             .path()
@@ -693,8 +698,8 @@ mod tests {
         let active = api.active_bundles().unwrap();
         assert_eq!(active.len(), 1, "单激活：同 dataset 仅一个激活");
         assert_eq!(active[0].bundle_id, "bundle-ds-tax-2024-v2");
-        // loader 只加载 v2 条目（core_eval 1 + v2 条目 1 = 2，v1 不残留）
-        assert_eq!(api.core_eval_len(), 2, "旧 bundle 规则不应被加载");
+        // loader 只加载 v2 条目（core_eval 2 + v2 条目 1 = 3，v1 不残留）
+        assert_eq!(api.core_eval_len(), 3, "旧 bundle 规则不应被加载");
     }
 
     #[tokio::test]

@@ -163,17 +163,20 @@ async fn create_test_dispatcher(temp_dir: &std::path::Path) -> IoDispatcher {
         .build()
 }
 
-/// 收集事件直到 Stable 或 Error，返回 (errors, stable_snapshot)
+/// 收集事件直到 Stable 或 Error，返回 (errors, stable_version)
+///
+/// CR-20260901-001：Stable 事实不再内嵌 final_snapshot（O(n²) 修复），
+/// 达到 Stable 的判定改为返回其 version（调用方仅判 is_some）。
 async fn collect_until_stable(
     rx: &mut evorule_reactor::EventReceiver,
     deadline: Duration,
-) -> (Vec<String>, Option<JsonValue>) {
+) -> (Vec<String>, Option<u64>) {
     let mut errors = Vec::new();
-    let snapshot = timeout(deadline, async {
+    let stable_version = timeout(deadline, async {
         loop {
             match rx.recv().await {
                 Ok(fact) => match fact {
-                    Fact::Stable { final_snapshot, .. } => return Some(final_snapshot),
+                    Fact::Stable { version, .. } => return Some(version),
                     Fact::Error { message, .. } => {
                         errors.push(message);
                     }
@@ -186,7 +189,7 @@ async fn collect_until_stable(
     })
     .await
     .unwrap_or(None);
-    (errors, snapshot)
+    (errors, stable_version)
 }
 
 /// 测试 1:I/O 错误传播
@@ -337,7 +340,7 @@ async fn test_reactor_continues_after_error() {
     let core_eval = load_core_eval();
 
     let reactor = Reactor::builder(core_eval).max_rounds(2).build();
-    let (tx, mut rx, _event_tx, _handle, _facts_log) = reactor.spawn();
+    let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
 
     // 第一阶段:触发 max_rounds 错误
     let instructions: Vec<JsonValue> = (0..5)
@@ -369,11 +372,10 @@ async fn test_reactor_continues_after_error() {
     );
     assert!(snapshot2.is_some(), "第二阶段应达到 Stable");
 
-    // 验证 increment 生效
-    if let Some(snap) = &snapshot2 {
-        if let Some(y_val) = snap.get("y").and_then(|v| v.as_i64()) {
-            assert_eq!(y_val, 42, "increment y=42 应生效");
-        }
+    // 验证 increment 生效（CR-20260901-001: Stable 不再内嵌快照,经 FactsLog 获取）
+    let (payload, _queue, _version) = facts_log.snapshot();
+    if let Some(y_val) = payload.get("y").and_then(|v| v.as_i64()) {
+        assert_eq!(y_val, 42, "increment y=42 应生效");
     }
 }
 
@@ -393,7 +395,7 @@ async fn test_reactor_continues_after_io_timeout() {
         .io_timeout_check_interval(Duration::from_millis(20))
         .build();
 
-    let (tx, mut rx, _event_tx, _handle, _facts_log) = reactor.spawn();
+    let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
 
     // 第一阶段:I/O 超时（不启动 IoSubscriber）
     let cmd1 = Fact::Command {
@@ -421,11 +423,10 @@ async fn test_reactor_continues_after_io_timeout() {
     );
     assert!(snapshot2.is_some(), "第二阶段应达到 Stable");
 
-    // 验证 increment 生效
-    if let Some(snap) = &snapshot2 {
-        if let Some(z_val) = snap.get("z").and_then(|v| v.as_i64()) {
-            assert_eq!(z_val, 99, "increment z=99 应生效");
-        }
+    // 验证 increment 生效（CR-20260901-001: Stable 不再内嵌快照,经 FactsLog 获取）
+    let (payload, _queue, _version) = facts_log.snapshot();
+    if let Some(z_val) = payload.get("z").and_then(|v| v.as_i64()) {
+        assert_eq!(z_val, 99, "increment z=99 应生效");
     }
 }
 

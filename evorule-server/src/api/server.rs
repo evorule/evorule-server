@@ -2594,12 +2594,18 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
             }
         }
 
-        Fact::Stable { id, final_snapshot } => {
+        // CR-20260901-001：Stable 瘦身为版本号（原 final_snapshot 全量快照为
+        // O(n²) 根因之一）；状态本体由最近一条 StateTransition.new_payload 承担，
+        // 消费方经会话 snapshot API 获取最终 payload
+        Fact::Stable { id, version } => {
             obj.insert("type".into(), serde_json::Value::String("Stable".into()));
 
             obj.insert("id".into(), serde_json::Value::Number(id.0.into()));
 
-            obj.insert("final_snapshot".into(), tcb_to_serde(final_snapshot));
+            obj.insert(
+                "version".into(),
+                serde_json::Value::Number((*version).into()),
+            );
         }
 
         Fact::PayloadUpdate { id, path, value } => {
@@ -4988,8 +4994,6 @@ pub enum FactEnvelope {
         id: u64,
         /// 版本号（FactsLog 中的版本）
         version: u64,
-        /// 最终的 payload 快照
-        final_snapshot: serde_json::Value,
     },
     /// 系统错误（超时或 TCB 内部错误）
     Error {
@@ -5052,10 +5056,10 @@ fn fact_to_envelope(fact: &Fact, version: u64) -> FactEnvelope {
             result: tcb_to_serde(result),
             error: error.clone(),
         },
-        Fact::Stable { id, final_snapshot } => FactEnvelope::Stable {
+        // CR-20260901-001：不再内嵌 final_snapshot 全量快照（O(n²) 根因）
+        Fact::Stable { id, .. } => FactEnvelope::Stable {
             id: id.0,
             version,
-            final_snapshot: tcb_to_serde(final_snapshot),
         },
         Fact::Error { id, message } => FactEnvelope::Error {
             id: id.0,
@@ -7618,14 +7622,10 @@ mod tests {
     #[test]
 
     fn test_fact_to_sse_data_stable() {
-        let mut payload = std::collections::BTreeMap::new();
-
-        payload.insert("x".to_string(), JsonValue::Integer(5));
-
         let fact = Fact::Stable {
             id: FactId(10),
 
-            final_snapshot: JsonValue::Object(payload),
+            version: 42,
         };
 
         let json: serde_json::Value = serde_json::from_str(&fact_to_sse_data(&fact)).unwrap();
@@ -7634,7 +7634,7 @@ mod tests {
 
         assert_eq!(json["id"], 10);
 
-        assert_eq!(json["final_snapshot"]["x"], 5);
+        assert_eq!(json["version"], 42);
     }
 
     #[test]
