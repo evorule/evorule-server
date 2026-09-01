@@ -44,6 +44,27 @@
 - rpsm 侧后续演进**不自动回灌**，升级须另立专项。
 - 许可一致：两侧均为 AGPL-3.0-or-later。
 
+## 测试套
+
+服务层单测（13 项：3 服务行为/输入校验/同输入逐位一致/声明文件守卫）+ 内核集成测试
+（`tests/`，自 rpsm `rpsm/tests` 于 2026-09-01 移植的内核正确性套件，65 项）：
+
+| 移植文件 | 覆盖 |
+|---|---|
+| test_conservation / test_rotation | 能量守恒（两种积分器/双体轨道）、取向积分与自由旋转守恒 |
+| test_contact_forces / test_spring | 弹簧-阻尼、接触摩擦、外力槽注入链路 |
+| test_air_drag / test_quad_drag | 线性/平方空气阻力（终速解析判据、耗散单调性） |
+| test_double_well / test_stratified_gravity | 双势阱保守势、有界重力带（箱阱势） |
+| test_joint / test_hinge | 软铰（动量守恒）与刚性铰链（位置/角度约束、能量有界） |
+| test_collision / test_rolling_collision | 恢复系数行为、旋转-碰撞耦合（滚动摩擦） |
+| test_environment / test_constants_lock / test_thermal_determinism | 模板重力注入行为、G/C 锁定、BLAKE3 双跑终态哈希确定性 |
+
+移植边界（诚实声明）：仅 rpsm-core 内核被 vendored，故依赖 rpsm_pla /
+rpsm_hci / rpsm_dkel 的测试段以等效形式移植（模板查值→常量字面量、规则求值→
+同语义本地函数、面板缺省→内核缺省），并在文件头注记逐条说明；PLA 观测/
+回溯/账本 3 个测试文件（test_pla / test_pla_hinge / e2e_modeled_force_demo）
+无内核侧等效面，未移植。各文件测试逻辑相对原文件逐行保真（除 import 改路）。
+
 ## 构建/测试
 
 ```bash

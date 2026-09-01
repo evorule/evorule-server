@@ -26,3 +26,6 @@ async-trait = "0.1"
 [dev-dependencies]
 # 测试用 async runtime（#[tokio::test] 需要 macros + rt）
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# 内核确定性 BLAKE3 终态哈希断言（tests/test_thermal_determinism.rs，与
+# evorule-server/evorule-reactor 同一 blake3 真相源）
+blake3 = "1"
