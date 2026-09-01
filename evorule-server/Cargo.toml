@@ -47,6 +47,9 @@ evorule-demo-services = { path = "../plugins/demo-services" }
 # UV-035: 确定性物理仿真原生插件（第二个进程内插件,泛化验证载体）
 evorule-physics-services = { path = "../plugins/physics-services" }
 
+# UV-037: 确定性金融技术指标原生插件（第三个进程内插件,Python 重写移植模式载体）
+evorule-indicator-services = { path = "../plugins/indicator-services" }
+
 # 异步运行时
 tokio = { version = "1", features = [
     "rt-multi-thread",

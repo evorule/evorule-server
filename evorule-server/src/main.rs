@@ -51,6 +51,7 @@ use evorule_io_handlers::{
 };
 // Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
 use evorule_demo_services::DemoServiceRouter;
+use evorule_indicator_services::IndicatorServiceRouter;
 use evorule_physics_services::PhysicsServiceRouter;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
@@ -576,6 +577,18 @@ fn physics_make_router_enabled(
     PhysicsServiceRouter::with_enabled(fallback, enabled).map(|r| Arc::new(r) as Arc<dyn IoHandler>)
 }
 
+fn indicator_make_router(fallback: Arc<dyn IoHandler>) -> Arc<dyn IoHandler> {
+    Arc::new(IndicatorServiceRouter::new(fallback))
+}
+
+fn indicator_make_router_enabled(
+    fallback: Arc<dyn IoHandler>,
+    enabled: &[&str],
+) -> Result<Arc<dyn IoHandler>, String> {
+    IndicatorServiceRouter::with_enabled(fallback, enabled)
+        .map(|r| Arc::new(r) as Arc<dyn IoHandler>)
+}
+
 /// 进程内插件登记表(声明序即挂载序与回落链序)。
 const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
@@ -589,6 +602,12 @@ const PLUGIN_DEFS: &[PluginDef] = &[
         service_names: PhysicsServiceRouter::native_service_names,
         make_router: physics_make_router,
         make_router_enabled: physics_make_router_enabled,
+    },
+    PluginDef {
+        id: "indicator-services",
+        service_names: IndicatorServiceRouter::native_service_names,
+        make_router: indicator_make_router,
+        make_router_enabled: indicator_make_router_enabled,
     },
 ];
 

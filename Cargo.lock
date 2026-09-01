@@ -888,6 +888,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-indicator-services"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "evorule-reactor",
+ "evorule-tcb",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "evorule-io-handlers"
 version = "0.3.0"
 dependencies = [
@@ -1033,6 +1044,7 @@ dependencies = [
  "evorule-demo-services",
  "evorule-governance",
  "evorule-hash",
+ "evorule-indicator-services",
  "evorule-io-handlers",
  "evorule-physics-services",
  "evorule-reactor",

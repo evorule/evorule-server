@@ -1,0 +1,32 @@
+{
+  "$schema": "https://gitee.com/evorule/evorule-server/raw/main/plugins/schema/official_native_services.schema.json",
+  "$id": "https://gitee.com/evorule/evorule-server/plugins/indicator-services/official_native_services.json",
+  "title": "indicator-services 官方原生服务声明（UV-029 声明文件化；UV-037 第三个插件）",
+  "version": "1.0.0",
+  "plugin_id": "indicator-services",
+  "description": "确定性金融技术指标原生服务（Python 参考实现语义逐位对齐的 Rust 重写）",
+  "license": "AGPL-3.0-or-later",
+  "$comment": "SSOT：执行侧 NATIVE_SERVICES 与治理侧服务目录种子均以本文件为准（sync-native-services.ps1 同步）。同步守卫锁定 name/sensitive/description 三字段与顺序。服务实现为无状态纯序列计算，无墙钟/无随机/无网络。",
+  "services": [
+    {
+      "name": "indicator_sma",
+      "sensitive": false,
+      "description": "简单移动平均 SMA(窗口 N,pandas rolling(N).mean() 语义,warmup 期 null)"
+    },
+    {
+      "name": "indicator_ema",
+      "sensitive": false,
+      "description": "指数移动平均 EMA(span N,pandas ewm(span=N, adjust=False) 语义,递推逐位对齐)"
+    },
+    {
+      "name": "indicator_macd",
+      "sensitive": false,
+      "description": "MACD 快慢线与柱(默认 12/26/9,三组 ewm(span, adjust=False) 组合)"
+    },
+    {
+      "name": "indicator_rsi",
+      "sensitive": false,
+      "description": "RSI(默认 14,Wilder 平滑 ewm(alpha=1/N, adjust=False),分类语义与参考实现逐分支对齐)"
+    }
+  ]
+}
