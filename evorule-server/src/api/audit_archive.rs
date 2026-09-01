@@ -134,24 +134,22 @@ fn session_wal_base(wal_dir: &Path, session_id: u64) -> PathBuf {
 /// 判断 Command 事实是否为 LLM 侧车审计命令（call_external + messages，
 /// 与 server 侧 `is_llm_audit_request` 的 IoRequest 谓词同口径）
 fn is_llm_sidecar_command(fact: &Fact) -> Option<String> {
-    if let Fact::Command { instruction, .. } = fact {
-        let itype = instruction.get("type").and_then(|v| v.as_str())?;
-        if itype != "call_external" {
-            return None;
-        }
-        let params = instruction.get("params")?;
-        if params.get("messages").is_none() {
-            return None;
-        }
-        if params.get("service_name").is_some() || params.get("name").is_some() {
-            return None;
-        }
-        return params
-            .get("audit_purpose")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+    let Fact::Command { instruction, .. } = fact else {
+        return None;
+    };
+    let itype = instruction.get("type").and_then(|v| v.as_str())?;
+    if itype != "call_external" {
+        return None;
     }
-    None
+    let params = instruction.get("params")?;
+    params.get("messages")?;
+    if params.get("service_name").is_some() || params.get("name").is_some() {
+        return None;
+    }
+    params
+        .get("audit_purpose")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// 读取单会话 WAL 全部记录（基础文件 + 分片合并；无该档案 → NotFound）

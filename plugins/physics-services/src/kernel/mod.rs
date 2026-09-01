@@ -285,6 +285,9 @@ impl PhysicalKernel {
 
     /// 累加每刚体合力到 `force_accum`：多体牛顿引力 + 均匀重力场 + 应用层外力。
     /// 每帧开始调用一次；速度 Verlet 在位置更新后调用第二次，以重算新位置处的力。
+    // 多体引力 O(n²) 对遍历 + 逐步按来源累加,拆函数需共享 bodies 可变借,
+    // 详见 GATE_REFERENCE.md §六(豁免索引)
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     fn accumulate_forces(&mut self) {
         for body in &mut self.bodies {
             body.force_accum = Vec3::default();

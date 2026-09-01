@@ -11,10 +11,10 @@
 //! # 落盘布局（Q12 数据资产化：物理隔离）
 //! - 规则包：`{rules_dir}/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
 //!   + `{rules_dir}/bundles/{bundle_id}/bundle_manifest.json`
-//!   （T3: 版本语义/法规基准/哈希/条目→文件映射）；
+//!     （T3: 版本语义/法规基准/哈希/条目→文件映射）；
 //! - 数据包：`{knowledge_dir}/bundles/{bundle_id}/{entry_id}.json`（payload 原样）
 //!   + 同构 manifest（条目映射含 schema_ref，D3）——与 rules_dir **物理隔离**，
-//!   TCB loader 扫描路径天然不触碰数据文件（Q12 W1，blocker 消除）。
+//!     TCB loader 扫描路径天然不触碰数据文件（Q12 W1，blocker 消除）。
 //!
 //! # 原子性
 //! - 临时目录写入 → rename 就位，写入失败清理临时目录，无半成品；
@@ -191,7 +191,7 @@ fn land_bundle_core(
     }
 
     // T4: 收集同 dataset 的旧 bundle 目录（不同 bundle_id），单激活替换
-    let stale_dirs = find_same_dataset_stale_dirs(&base, &result.dataset_id, &bundle.bundle_id);
+    let stale_dirs = find_same_dataset_stale_dirs(base, &result.dataset_id, &bundle.bundle_id);
 
     // 原子替换：旧版先移走为备份，新版本 rename 就位后清理备份；任一失败回滚
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new(); // (原路径, 备份路径)

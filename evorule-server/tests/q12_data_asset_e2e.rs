@@ -51,6 +51,8 @@ const SCENARIO_SCHEMA: &str = r#"{
 }"#;
 
 #[tokio::test]
+// 端到端全链场景用例(治理发布→执行直读),场景化测试不拆分
+#[allow(clippy::too_many_lines)]
 async fn q12_e2e_governance_publish_to_execution_direct_read() {
     // ================= 环境布局 =================
     // {tmp}/governance/          治理侧（SQLite + domain_schemas/）

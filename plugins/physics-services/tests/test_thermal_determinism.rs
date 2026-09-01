@@ -1,4 +1,4 @@
-﻿//! [evorule 移植等效] 本文件自 rpsm-demo `rpsm/tests/test_thermal_load.rs`(2026-09-01 快照)
+//! [evorule 移植等效] 本文件自 rpsm-demo `rpsm/tests/test_thermal_load.rs`(2026-09-01 快照)
 //! 移植为 evorule-physics-services 集成测试。
 //!
 //! 移植边界（诚实声明）：原用例的主体是 rpsm_hci 的配置热重载
@@ -9,6 +9,7 @@
 //!   1) 新重力（2G）生效：下落 t=1s 位移符合解析值；
 //!   2) 同输入双跑，终态 BLAKE3 一致——内核确定性的哈希级断言
 //!      （scenario-audit B 组「双跑逐字节一致」判据的仓内移植）。
+//!
 //! 性能回归不在正确性测试中断言（原文件既定路线：移交 criterion 基准）。
 
 // 集成测试保留 unwrap/expect 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）

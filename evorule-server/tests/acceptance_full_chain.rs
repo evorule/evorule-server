@@ -258,6 +258,8 @@ fn build_gov(tmp: &std::path::Path, llm_base_url: &str) -> (axum::Router, Arc<Ru
 // multi_thread：LLM 代理内 ureq 为阻塞调用（37 号同步主路径），单线程 runtime
 // 会被 oneshot 处理器饿死 mock evo-agent 任务 → 挂死；多 worker 下阻塞仅占一个 worker。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// 总验收主链:治理→发布→导入→执行→审计单用例贯通,场景化测试不拆分
+#[allow(clippy::too_many_lines)]
 async fn acceptance_governance_to_execution_full_chain() {
     let tmp = tempfile::tempdir().unwrap();
     let llm = spawn_mock_evo_agent().await;

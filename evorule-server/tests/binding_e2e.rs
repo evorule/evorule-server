@@ -398,9 +398,9 @@ async fn binding_e2e_missing_registry_binding_reports_self_healing_guidance() {
 
     // 运行时绑定缺失：io_request 如实失败（service_result = null 或缺席），会话 Stable 不挂死
     let service_result = wait_for_payload_key(&api, session_id, "service_result", 10).await;
-    match service_result {
-        Some(v) => assert!(v.is_null(), "绑定缺失时结果应为 null（如实失败），got: {v}"),
-        None => {} // 未回写也接受（错误被如实暴露，无伪造结果）
+    // 未回写也接受（错误被如实暴露，无伪造结果）
+    if let Some(v) = service_result {
+        assert!(v.is_null(), "绑定缺失时结果应为 null（如实失败），got: {v}");
     }
 
     // 绑定缺失的错误信息必须含自诊断指引（经公开 IoHandler::execute，与运行时同口径）

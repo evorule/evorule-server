@@ -199,7 +199,7 @@ impl PlatformSnapshot {
             // (事实日志 append-only,删除 = 追加墓碑;之后可重新创建同名实体)
             let deleted = v
                 .get("deleted")
-                .map_or(false, |b| matches!(b, JsonValue::Bool(true)));
+                .is_some_and(|b| matches!(b, JsonValue::Bool(true)));
             if deleted {
                 match kind {
                     "user" => {
@@ -237,7 +237,7 @@ impl PlatformSnapshot {
                         .unwrap_or_default();
                     let r = PlatformRole {
                         name: name.to_string(),
-                        builtin: v.get("builtin").map_or(false, |b| {
+                        builtin: v.get("builtin").is_some_and(|b| {
                             matches!(b, JsonValue::Bool(true))
                         }),
                         status: jstr(v, "status"),
@@ -254,7 +254,7 @@ impl PlatformSnapshot {
                             as u64,
                         revoked: v
                             .get("revoked")
-                            .map_or(false, |b| matches!(b, JsonValue::Bool(true))),
+                            .is_some_and(|b| matches!(b, JsonValue::Bool(true))),
                     };
                     snap.sessions.insert(name.to_string(), s);
                 }
@@ -686,11 +686,17 @@ async fn login(
 /// 生成于编译示例口令,非任何真实凭据。
 const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$OXJLd1pEUHQ2VzR2UWc$dVTJx8LwBvnrQOnAWhlgLb9uMqfnDGmVUXeRQHhUXEM";
 
+/// 平台会话校验失败响应（HTTP 状态 + JSON 错误体）
+type SessionAuthFailure = (StatusCode, Json<serde_json::Value>);
+
+/// 平台会话校验通过上下文（快照, 用户名, 权限集）
+type SessionContext = (PlatformSnapshot, String, Vec<String>);
+
 /// 从请求头提取平台会话并校验,返回 (快照, 用户名, 权限集)
 fn require_session(
     shared: &SharedFactsLog,
     headers: &HeaderMap,
-) -> Result<(PlatformSnapshot, String, Vec<String>), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<SessionContext, SessionAuthFailure> {
     let token_hash = bearer_token_hash(headers).map_err(err_json)?;
     let snap = PlatformSnapshot::replay(shared).map_err(err_json)?;
     let (username, perms) = snap
@@ -1590,12 +1596,14 @@ mod tests {
         .await
         .expect_ok();
         let snap = PlatformSnapshot::replay(&shared).unwrap();
-        assert!(snap.users.get("carol").is_none(), "墓碑后用户应消失");
+        assert!(!snap.users.contains_key("carol"), "墓碑后用户应消失");
         // 被删用户会话 token 失效
         assert!(require_session(&shared, &auth_headers(&viewer_token)).is_err());
     }
 
     #[tokio::test]
+    // 角色管理全流程用例(CRUD+内置保护断言),场景化测试不拆分
+    #[allow(clippy::too_many_lines)]
     async fn test_role_management_flow() {
         let shared = shared_log();
         ensure_seed(&shared).unwrap();
@@ -1690,7 +1698,7 @@ mod tests {
         .await
         .expect_ok();
         let snap = PlatformSnapshot::replay(&shared).unwrap();
-        assert!(snap.roles.get("analyst").is_none(), "墓碑后角色应消失");
+        assert!(!snap.roles.contains_key("analyst"), "墓碑后角色应消失");
 
         // 内置角色:不可删;administrator 权限集不可改;内置不可停用
         assert_eq!(

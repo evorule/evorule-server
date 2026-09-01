@@ -273,6 +273,7 @@ pub struct SessionApi {
     /// - C5：`GET /api/services` 能力对账的来源 `registry` 条目（带 version/description）；
     /// - C6：声明 `sensitive=true` 的服务必须 ∈ 本集合（注册表显式绑定，含端点/凭据配置位），
     ///   仅原生内嵌不满足敏感服务要求 → import 显式失败（不静默）。
+    ///
     /// 原生服务（`NATIVE_SERVICES` 声明表）由 `DemoServiceRouter` 恒在，不在此列表。
     registry_services: Arc<Vec<ServiceMeta>>,
 
@@ -3184,6 +3185,9 @@ async fn platform_events_handler(
 
 )]
 
+// 会话创建主路径:参数校验/配额/规则装载/WAL 初始化串联,拆函数需传递 6+ 状态,
+// 详见 GATE_REFERENCE.md §六(豁免索引)
+#[allow(clippy::cognitive_complexity)]
 async fn create_session(
     State(api): State<SessionApi>,
 
@@ -3490,6 +3494,8 @@ pub struct CreateSessionFromParentParams {
 
 )]
 
+// 派生会话创建:继承校验+版本语义,同 create_session 拆分受限
+#[allow(clippy::cognitive_complexity)]
 async fn create_session_from_parent(
     State(api): State<SessionApi>,
 
@@ -3592,6 +3598,8 @@ pub struct CreateSessionForkParams {
 
 )]
 
+// fork 会话创建:继承校验+版本语义,同 create_session 拆分受限
+#[allow(clippy::cognitive_complexity)]
 async fn create_session_fork(
     State(api): State<SessionApi>,
 
@@ -4548,6 +4556,8 @@ async fn session_audit_import_compressed(
 
 )]
 
+// payload 读写路径:权限/保护域/版本分支多,详见 GATE_REFERENCE.md §六(豁免索引)
+#[allow(clippy::cognitive_complexity)]
 async fn session_payload(
     State(api): State<SessionApi>,
 
@@ -6462,7 +6472,6 @@ impl GovernanceServer {
     /// - `rate_limit_burst`：突发上限（令牌桶容量）
     ///
     /// - `allowed_origins`：CORS 允许的 Origin 白名单（空=放行本机 loopback 任意端口，
-
     ///   非空=精确白名单）
     ///
     /// - `metrics_requires_auth`：/metrics 是否需要认证
