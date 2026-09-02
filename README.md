@@ -16,9 +16,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.4.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.4.1-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.4.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.4.1-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -404,4 +404,4 @@ EvoRule Server 采用 **AGPL + 商业授权双轨许可**(与[核心仓](https:/
 ## 联系方式
 
 - 邮箱:<evorulelab@gmail.com>
-- Gitee:[@evorulelab](https://gitee.com/evorule)
+- Gitee:[@evorule](https://gitee.com/evorule)
