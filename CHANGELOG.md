@@ -25,6 +25,22 @@
 
 ---
 
+## [0.4.1] - 2026-09-02
+
+### 🔄 变更
+
+- **核心引擎依赖 evorule-tcb / evorule-reactor / evorule-governance 0.4.0 → 0.4.1（UV-046 核心仓 P0 处置）**
+
+### ⚠️ Breaking Change
+
+- **`GET /api/sessions/:id/diff` 版本不可达返回 400** — 随核心仓 `time_machine::diff` 显式化（UV-046 B8b：不再静默回退空 payload），`a`/`b` 版本不可达时由"空 diff"改为 `400 BAD_REQUEST`（与 rewind 端点同语义）
+
+### 🧪 测试
+
+- 新增 `test_session_diff_unreachable_version`（不可达版本 → 400 断言）
+
+---
+
 ## [0.4.0] - 2026-09-02
 
 ### ⚠️ Breaking Changes

@@ -5238,7 +5238,13 @@ async fn session_diff(
 
     let facts = session.facts_log.history();
 
-    let diff = evorule_governance::time_machine::diff(&facts, params.a, params.b);
+    // UV-046 B8b 配套（evorule-governance 0.4.1）：diff 对 rewind 不可达版本
+    // 由静默回退空 payload 改为返回 Err(TimeMachineError)——与 rewind 端点
+    // 同语义映射为 400 BAD_REQUEST。
+    let diff = match evorule_governance::time_machine::diff(&facts, params.a, params.b) {
+        Ok(d) => d,
+        Err(_) => return Err(StatusCode::BAD_REQUEST),
+    };
 
     // 契约对齐(S1 修复,2026-08-03):
 

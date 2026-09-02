@@ -19,10 +19,10 @@ path = "src/main.rs"
 
 [dependencies]
 # 核心层 (crates.io 版本依赖)
-evorule-tcb = { version = "0.4.0" }
-evorule-reactor = { version = "0.4.0", features = ["persistence"] }
+evorule-tcb = { version = "0.4.1" }
+evorule-reactor = { version = "0.4.1", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
-evorule-governance = { version = "0.4.0", features = ["persistence"] }
+evorule-governance = { version = "0.4.1", features = ["persistence"] }
 # 审计档案链哈希重算（UV-016；与 evorule-reactor 同一 blake3 真相源）
 blake3 = "1"
 

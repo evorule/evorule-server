@@ -461,6 +461,27 @@ async fn test_session_diff() {
     assert!(json["summary"].is_string(), "summary 应为字符串");
 }
 
+/// 测试 3b：diff 版本不可达 → 400
+///
+/// UV-046 B8b 配套（evorule-governance 0.4.1）：diff 对 rewind 不可达版本
+/// 显式报错（不再静默回退空 payload），端点映射为 400 BAD_REQUEST。
+#[tokio::test]
+async fn test_session_diff_unreachable_version() {
+    let state = make_state();
+
+    let (_, json) = send(&state, "POST", "/api/sessions", None).await;
+    let session_id = json["session_id"].as_u64().unwrap();
+
+    let (status, _) = send(
+        &state,
+        "GET",
+        &format!("/api/sessions/{session_id}/diff?a=99999&b=100000"),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
 /// 测试 4：会话 fork（父子会话状态独立性）
 ///
 /// 验证 `SessionManager::create_session_from_parent_at_version` 经 HTTP 暴露后：
