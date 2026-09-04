@@ -364,6 +364,44 @@ impl SandboxService {
         std::fs::write(&export_path, &audit_data)
             .map_err(|e| WorkspaceError::internal(format!("write sandbox export failed: {e}")))?;
 
+        // UV-072: 关闭前(session 仍活)生成完整 TestReport 并落盘。
+        // 此前仅导出 fact 链文件,summary 报告未持久化 → 关闭后
+        // generate_test_report 实时取数 404 "session not found",
+        // 机器证据回填与"查看报告"功能全断。
+        // 报告文件与 facts 文件同目录同时间戳配对:report_sandbox_{id}_{ts}.json
+        // (generate_test_report 关闭态按 export_path 推导本路径读取)。
+        let report_path = format!("report_{}", export_path.rsplit('/').next().unwrap_or_default());
+        let report_path = format!("{}/{}", SANDBOX_REPORT_DIR, report_path);
+        {
+            let state_val = self.session_ops.get_session_state(tcb_session_id).await?;
+            let audit_val = self.session_ops.get_audit_report(tcb_session_id).await?;
+            let facts_val = self.session_ops.get_facts(tcb_session_id).await?;
+            let report = TestReportBuilder::new()
+                .sandbox_id(sandbox_id.to_string())
+                .workspace_id(sandbox.workspace_id.clone())
+                .tcb_session_id(tcb_session_id)
+                .parent_session_id(Some(sandbox.parent_session_id as u64))
+                .draft_ruleset_hash(sandbox.draft_ruleset_hash.clone().unwrap_or_default())
+                .state(state_val)
+                .audit(audit_val)
+                .facts(facts_val)
+                .build();
+            let report_json = serde_json::to_string_pretty(&report).map_err(|e| {
+                WorkspaceError::internal(format!("serialize test report failed: {e}"))
+            })?;
+            std::fs::write(&report_path, report_json).map_err(|e| {
+                WorkspaceError::internal(format!(
+                    "write sandbox test report failed: {e} (path: {report_path})"
+                ))
+            })?;
+            info!(
+                sandbox_id = sandbox_id,
+                report_path = %report_path,
+                verdict_failed = report.summary.failed,
+                "UV-072: sandbox test report persisted before close"
+            );
+        }
+
         // 关闭 session (尽力清理,失败仅告警)
         if let Err(e) = self.session_ops.close_session(tcb_session_id).await {
             warn!(
@@ -408,11 +446,43 @@ impl SandboxService {
     /// 生成测试报告 (从 sandbox session 的 audit + state + facts 聚合)
     ///
     /// 报告包含 BLAKE3 签名 (防篡改),可附带在发布队列项中供审批者查阅。
+    ///
+    /// UV-072: running 沙盒实时聚合(现状);closed 沙盒从 close 时持久化的
+    /// 报告文件读取(与 facts 导出同目录同时间戳配对:report_sandbox_{id}_{ts}.json,
+    /// 按 sandbox.export_path 推导)。文件缺失时显式报错含自诊断指引,
+    /// 不静默不伪造。
     pub async fn generate_test_report(&self, sandbox_id: i64) -> WorkspaceResult<TestReport> {
         let sandbox = self
             .db
             .get_sandbox_session(sandbox_id)?
             .ok_or_else(|| WorkspaceError::not_found("sandbox", sandbox_id.to_string()))?;
+
+        if sandbox.status == SandboxStatus::Closed {
+            let export_path = sandbox.export_path.as_deref().ok_or_else(|| {
+                WorkspaceError::not_found(
+                    "sandbox report (closed without export_path — 数据异常:关闭时未导出,\
+                     无法回溯报告;请重跑沙盒测试)",
+                    sandbox_id.to_string(),
+                )
+            })?;
+            let file_name = export_path.rsplit('/').next().unwrap_or_default();
+            let report_path = format!("{}/report_{}", SANDBOX_REPORT_DIR, file_name);
+            let content = std::fs::read_to_string(&report_path).map_err(|_| {
+                WorkspaceError::not_found(
+                    "sandbox report file",
+                    format!(
+                        "{report_path} (沙盒已关闭且报告文件缺失:可能被清理或属 UV-072 \
+                         修复前关闭的历史沙盒;请重跑沙盒测试以生成报告)"
+                    ),
+                )
+            })?;
+            let report: TestReport = serde_json::from_str(&content).map_err(|e| {
+                WorkspaceError::internal(format!(
+                    "sandbox report file corrupted: {e} (path: {report_path})"
+                ))
+            })?;
+            return Ok(report);
+        }
 
         let tcb_session_id = sandbox.tcb_session_id.unwrap_or(0) as u64;
 
@@ -508,7 +578,11 @@ impl SandboxService {
 
         let id = self.db.insert_test_dataset(
             &req.name,
-            req.workspace_id.as_deref(),
+            // 路径 workspace_id 为权威(REST 语义):数据集归属由 URL 决定;
+            // 请求体字段仅作上方一致性校验,不参与落库。
+            // UV-071:修复误用 req.workspace_id(缺省 NULL)导致
+            // "创建成功但列表按 workspace 过滤永远不可见"。
+            Some(workspace_id),
             &req.cases_json,
             case_count,
             &req.created_by,

@@ -1340,6 +1340,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.workspace_db.display()
     );
 
+    // UV-070: 全新实例引导初始化(启动期,幂等)。
+    // 死锁链(修复前):沙盒 fork 需 production_state.current_session_id →
+    // 生产会话仅由发布流(rolling_session)初始化 → 发布闸门一又要求已完成
+    // 的沙盒报告 → 全新实例三环互锁,"建规则→沙盒验证→发布"主链不可达
+    // (分发包首启同样命中;单测因预置 update_production_state 绕过而掩盖)。
+    // 修复:current_session_id=NULL(从未初始化)时自动创建初始生产会话
+    // (空规则集,仅宪法 core_eval),沙盒可 fork、闸门一保持刚性(T0 不动)。
+    // 初始化不构成发布:ruleset_version 保持 0,hash 置空串,operator 标记
+    // system:bootstrap 可追溯。已有生产会话的实例不受影响(幂等跳过)。
+    //
+    // 补强(重启失忆替换):SessionManager 为内存态,重启后既有
+    // current_session_id 指向已失忆会话 → 沙盒 fork 404。启动期以
+    // session_exists 校验,失忆视同未初始化:重建会话并替换引用,
+    // 但保留既有 ruleset_version/ruleset_hash(会话是进程内对象,
+    // 规则集状态经 rules_dir/production_state 持久,重建不改版本语义)。
+    let prod_state = workspace_db
+        .get_production_state()
+        .map_err(|e| format!("UV-070 启动期读取 production_state 失败: {e}"))?;
+    let need_bootstrap = match prod_state.current_session_id {
+        None => true,
+        Some(sid) => {
+            let alive = session_ops.session_exists(sid as u64).await;
+            if !alive {
+                warn!(
+                    stale_session_id = sid,
+                    "UV-070: 生产会话已失忆(server 重启后 SessionManager 为内存态),将重建"
+                );
+            }
+            !alive
+        }
+    };
+    if need_bootstrap {
+        let init_session_id = session_ops
+            .create_session()
+            .await
+            .map_err(|e| format!("UV-070 初始生产会话创建失败: {e}"))?;
+        workspace_db
+            .update_production_state(
+                init_session_id as i64,
+                // 保留重启前的版本与哈希(仅替换会话引用);
+                // 全新实例为 0/空串(初始化不构成发布)。
+                prod_state.ruleset_version,
+                prod_state.ruleset_hash.as_deref().unwrap_or(""),
+                "system:bootstrap",
+            )
+            .map_err(|e| format!("UV-070 production_state 写入失败: {e}"))?;
+        info!(
+            init_session_id,
+            "UV-070: 引导初始化 — 已创建初始生产会话(空规则集),沙盒/发布链解锁"
+        );
+    } else {
+        info!(
+            current_session_id = prod_state.current_session_id,
+            "UV-070: 已有生产会话,跳过引导初始化(幂等)"
+        );
+    }
+
     // AppState 注入 metrics 和 readiness
     // H6: metrics 总是注入（PrometheusMetrics 实现 IoMetrics trait）
     let state = AppState::new(
