@@ -372,7 +372,10 @@ impl SandboxService {
         // 机器证据回填与"查看报告"功能全断。
         // 报告文件与 facts 文件同目录同时间戳配对:report_sandbox_{id}_{ts}.json
         // (generate_test_report 关闭态按 export_path 推导本路径读取)。
-        let report_path = format!("report_{}", export_path.rsplit('/').next().unwrap_or_default());
+        let report_path = format!(
+            "report_{}",
+            export_path.rsplit('/').next().unwrap_or_default()
+        );
         let report_path = format!("{}/{}", SANDBOX_REPORT_DIR, report_path);
         {
             let state_val = self.session_ops.get_session_state(tcb_session_id).await?;

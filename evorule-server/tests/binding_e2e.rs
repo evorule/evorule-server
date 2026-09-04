@@ -280,7 +280,10 @@ async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
     assert_eq!(entries.len(), 1);
 
     let tests = BundleTests {
-        subset: vec![],
+        // UV-080 证据契约补口: verdict=pass 的导入必须携带可追溯标记
+        // (本测试焦点是三层绑定链而非测试证据, 显式人工背书放行;
+        // 旧形态空 subset + Pass 属 UV-080 禁止的假证据, 当时验证未覆盖本集成测试)
+        subset: vec!["human:publisher".to_string()],
         fixtures: vec![],
         verdict: TestVerdict::Pass,
     };

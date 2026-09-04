@@ -387,8 +387,60 @@ impl PublishService {
         let new_version = prod_state.ruleset_version + 1;
 
         // 1. 闸门一证据检查 (T0 决策: 未跑真实沙箱验证的发布不得默认 Pass)
+        // UV-083: 升级为与 UV-080 B2(import 侧)同口径——存在性 + closed + 报告一致性,
+        // 一律 fail-closed。旧实现仅查会话存在性(is_some),FAIL 报告/未关闭沙盒均可
+        // 过闸门,且 build_publish_bundle 的 verdict 硬编码 Pass——假 pass 证据落盘。
         let sandbox_verdict_pass = match item.test_report_sandbox_id {
-            Some(sandbox_id) => self.db.get_sandbox_session(sandbox_id)?.is_some(),
+            Some(sandbox_id) => match self.db.get_sandbox_session(sandbox_id)? {
+                None => false,
+                Some(sb) => {
+                    if sb.status != crate::SandboxStatus::Closed {
+                        return Err(WorkspaceError::invalid_input(format!(
+                            "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 状态为 {:?}\
+                             （非 closed，测试未完成），不得作为发布证据。\
+                             请在测试工作台完成沙盒测试并关闭出报告后重试",
+                            sb.status
+                        )));
+                    }
+                    // 报告一致性: 与 close_sandbox 落盘同口径推导 report_<basename>.json
+                    let export_path = sb.export_path.as_deref().ok_or_else(|| {
+                        WorkspaceError::invalid_input(format!(
+                            "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 已关闭但无报告\
+                             导出路径（数据异常）。请重跑沙盒测试"
+                        ))
+                    })?;
+                    let file_name = export_path.rsplit('/').next().unwrap_or_default();
+                    let report_path = format!("{}/report_{}", crate::SANDBOX_REPORT_DIR, file_name);
+                    let content = std::fs::read_to_string(&report_path).map_err(|_| {
+                        WorkspaceError::invalid_input(format!(
+                            "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告文件缺失\
+                             （{report_path}）。请重跑沙盒测试"
+                        ))
+                    })?;
+                    let report: Value = serde_json::from_str(&content).map_err(|e| {
+                        WorkspaceError::invalid_input(format!(
+                            "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告文件损坏: {e}"
+                        ))
+                    })?;
+                    let failed = report
+                        .pointer("/summary/failed")
+                        .and_then(|v| v.as_i64())
+                        .ok_or_else(|| {
+                            WorkspaceError::invalid_input(format!(
+                                "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告缺少\
+                                 summary.failed 字段（结构异常）"
+                            ))
+                        })?;
+                    if failed != 0 {
+                        return Err(WorkspaceError::invalid_input(format!(
+                            "发布被拒绝（闸门一 FAIL 报告）: 沙盒 #{sandbox_id} 测试报告有\
+                             {failed} 个失败用例，不得作为发布证据。\
+                             请修复规则后在测试工作台重新验证"
+                        )));
+                    }
+                    true
+                }
+            },
             None => false,
         };
         if !sandbox_verdict_pass {
@@ -616,7 +668,13 @@ fn build_publish_bundle(
         entries,
         data_dependencies: None,
         tests: BundleTests {
-            subset: Vec::new(),
+            // UV-083: 证据如实携带——闸门一已验证沙盒 closed + 报告 failed==0,
+            // subset 携带 sandbox:<id> 可追溯标记(旧实现硬编码空 subset + Pass,
+            // 属假证据形态;verdict 现为闸门一验证后的派生值,非无条件 Pass)
+            subset: item
+                .test_report_sandbox_id
+                .map(|sid| vec![format!("sandbox:{sid}")])
+                .unwrap_or_default(),
             fixtures: Vec::new(),
             verdict: evorule_bundle::TestVerdict::Pass,
         },
@@ -761,11 +819,22 @@ mod tests {
 
     /// 测试辅助: 创建已关闭 (closed) 的沙盒会话, 提供闸门一证据
     fn make_sandbox_evidence(db: &WorkspaceDb, ws_id: &str) -> i64 {
+        // UV-083: 闸门一升级后须 closed + PASS 报告文件——报告名加原子序号
+        // 防并行测试写同名文件互相覆盖;export_path basename 与报告文件名对应
+        // (与 close_sandbox/generate_test_report 落盘口径一致)
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let export_path = format!("./data/test_reports/report-{n}.json");
         let sid = db
             .insert_sandbox_session(None, ws_id, 100, None, 1, "head-1")
             .unwrap();
-        db.close_sandbox_session(sid, "./data/test_reports/report.json")
-            .unwrap();
+        db.close_sandbox_session(sid, &export_path).unwrap();
+        std::fs::create_dir_all(crate::SANDBOX_REPORT_DIR).unwrap();
+        std::fs::write(
+            format!("{}/report_report-{n}.json", crate::SANDBOX_REPORT_DIR),
+            r#"{"summary": {"total_cases": 1, "passed": 1, "failed": 0, "skipped": 0}}"#,
+        )
+        .unwrap();
         sid
     }
 
@@ -1275,6 +1344,194 @@ mod tests {
         let state = db.get_production_state().unwrap();
         assert_eq!(state.ruleset_version, 0);
         assert!(!tmp.path().join("rules/bundles").exists());
+    }
+
+    /// UV-083 测试辅助: 创建已关闭沙盒, 可选写入指定内容的报告文件
+    ///
+    /// `report_json = None` → 不写报告文件 (模拟报告缺失);
+    /// 报告名含进程 ID + 原子序号: 进程内序号防并行测试同名覆盖,
+    /// 进程 ID 防跨测试运行的残留同名文件干扰 (如"缺失"场景误读上次
+    /// 运行残留的损坏报告)。与 make_sandbox_evidence 落盘口径一致
+    /// (report_ + export_path basename)。
+    fn make_closed_sandbox(db: &WorkspaceDb, ws_id: &str, report_json: Option<&str>) -> i64 {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let tag = format!("closed-{}-{n}", std::process::id());
+        let export_path = format!("./data/test_reports/{tag}.json");
+        let sid = db
+            .insert_sandbox_session(None, ws_id, 100, None, 1, "head-1")
+            .unwrap();
+        db.close_sandbox_session(sid, &export_path).unwrap();
+        if let Some(json) = report_json {
+            std::fs::create_dir_all(crate::SANDBOX_REPORT_DIR).unwrap();
+            std::fs::write(
+                format!("{}/report_{tag}.json", crate::SANDBOX_REPORT_DIR),
+                json,
+            )
+            .unwrap();
+        }
+        sid
+    }
+
+    /// UV-083 测试辅助: 携带指定沙盒证据提交发布并审批通过, 断言被闸门一拒绝
+    ///
+    /// 同时断言 fail-closed 副作用: 队列保持 pending 可重试、版本不推进。
+    async fn expect_gate_one_rejection(
+        publish_svc: &PublishService,
+        db: &WorkspaceDb,
+        rule_svc_handle: &RuleMetaServiceHandle,
+        ws_id: &str,
+        sandbox_id: i64,
+        expect_msg: &str,
+    ) {
+        let rv_id = {
+            // 原子序号生成唯一规则名: 同一测试可能多次触发本辅助 (UNIQUE 约束)
+            static RULE_SEQ: AtomicU64 = AtomicU64::new(0);
+            let n = RULE_SEQ.fetch_add(1, Ordering::SeqCst);
+            make_candidate_rule(&rule_svc_handle.inner, db, ws_id, &format!("rule-gate-{n}")).await
+        };
+        let item = publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id.to_string(),
+                    rule_version_ids: vec![rv_id],
+                    test_report_sandbox_id: Some(sandbox_id),
+                    description: None,
+                },
+                "head-1",
+                &PublishRole::DepartmentHead,
+            )
+            .await
+            .unwrap();
+        let result = publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: None,
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await;
+        match &result {
+            Err(WorkspaceError::InvalidInput(msg)) => assert!(
+                msg.contains(expect_msg),
+                "闸门一错误消息应含 {expect_msg:?}, 实际: {msg}"
+            ),
+            other => panic!("应被闸门一拒绝(InvalidInput), 实际: {other:?}"),
+        }
+        // fail-closed: 队列保持 pending (补齐证据后可重试), 版本不推进
+        let after = db.get_publish_queue_item(item.id).unwrap().unwrap();
+        assert_eq!(after.status, PublishStatus::Pending);
+        assert_eq!(db.get_production_state().unwrap().ruleset_version, 0);
+    }
+
+    #[tokio::test]
+    async fn test_publish_rejects_running_sandbox() {
+        // UV-083: 未关闭沙盒 (running, 测试未完成) 不得作为发布证据
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let sid = db
+            .insert_sandbox_session(None, &ws_id, 100, None, 1, "head-1")
+            .unwrap(); // 不 close → running
+        expect_gate_one_rejection(
+            &publish_svc,
+            &db,
+            &rule_svc_handle,
+            &ws_id,
+            sid,
+            "非 closed",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_publish_rejects_fail_report() {
+        // UV-083: FAIL 报告 (有失败用例) 不得作为发布证据
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let sid = make_closed_sandbox(
+            &db,
+            &ws_id,
+            Some(r#"{"summary": {"total_cases": 2, "passed": 1, "failed": 1, "skipped": 0}}"#),
+        );
+        expect_gate_one_rejection(&publish_svc, &db, &rule_svc_handle, &ws_id, sid, "失败用例")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_publish_rejects_missing_report_file() {
+        // UV-083: 已关闭但报告文件缺失 (被清理/UV-072 修复前历史沙盒) → fail-closed 拒发布
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let sid = make_closed_sandbox(&db, &ws_id, None);
+        expect_gate_one_rejection(
+            &publish_svc,
+            &db,
+            &rule_svc_handle,
+            &ws_id,
+            sid,
+            "报告文件缺失",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_publish_rejects_malformed_report() {
+        // UV-083: 报告损坏 (非法 JSON) / 结构异常 (缺 summary.failed 字段) → fail-closed 拒发布
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let corrupted = make_closed_sandbox(&db, &ws_id, Some("not-a-json{{{"));
+        expect_gate_one_rejection(
+            &publish_svc,
+            &db,
+            &rule_svc_handle,
+            &ws_id,
+            corrupted,
+            "报告文件损坏",
+        )
+        .await;
+        let no_field = make_closed_sandbox(&db, &ws_id, Some(r#"{"summary": {"total_cases": 1}}"#));
+        expect_gate_one_rejection(
+            &publish_svc,
+            &db,
+            &rule_svc_handle,
+            &ws_id,
+            no_field,
+            "结构异常",
+        )
+        .await;
+    }
+
+    #[test]
+    fn test_build_publish_bundle_carries_sandbox_evidence() {
+        // UV-083: 发布 bundle 证据如实携带——tests.subset 含 sandbox:<id> 可追溯标记,
+        // verdict 为闸门一验证后的派生 Pass (旧实现硬编码空 subset + 无条件 Pass, 属假证据形态)。
+        // 注: 落盘的 bundle_manifest.json 为 BundleManifest 结构, 不含 tests 字段;
+        // tests 证据在 DatasetBundle 内存形态中由 BundleImporter 校验链消费。
+        let make_item = |sandbox_id: Option<i64>| PublishQueueItem {
+            id: 1,
+            workspace_id: "ws-1".to_string(),
+            final_candidate_rules: "[]".to_string(),
+            ruleset_hash: "hash".to_string(),
+            test_report_sandbox_id: sandbox_id,
+            submitted_by: "head-1".to_string(),
+            submitted_at: chrono::Utc::now(),
+            reviewed_by: None,
+            reviewed_at: None,
+            review_comment: None,
+            published_version: None,
+            published_at: None,
+            status: PublishStatus::Pending,
+            description: None,
+        };
+        let rules = vec![serde_json::json!({"key": "a"})];
+
+        // 携带沙盒证据 → subset 如实携带可追溯标记
+        let bundle = build_publish_bundle(&rules, &make_item(Some(42)), 1, "admin-1");
+        assert_eq!(bundle.tests.subset, vec!["sandbox:42".to_string()]);
+        assert_eq!(bundle.tests.verdict, evorule_bundle::TestVerdict::Pass);
+
+        // 无沙盒证据 → subset 为空 (该形态由闸门一拦截, 走不到 build_publish_bundle)
+        let bundle_no_ev = build_publish_bundle(&rules, &make_item(None), 1, "admin-1");
+        assert!(bundle_no_ev.tests.subset.is_empty());
     }
 
     #[test]
