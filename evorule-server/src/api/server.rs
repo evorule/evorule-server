@@ -1034,6 +1034,98 @@ impl SessionApi {
         })
         .map_err(|e| format!("快照包校验失败（不静默）: {e}"))?;
 
+        // ①.5 UV-080 B2: 测试证据引用校验(阶段一校验层·执行域侧——入执行域的口)。
+        // 与治理域 export 侧形状校验(evorule-rule export_with_tests)双闸同口径:
+        //   a. verdict=pass 必须携带可追溯标记(subset 非空且每项 sandbox:<id> 或
+        //      human:<actor>)——封死"零证据 pass"直 POST import 的伪造路径;
+        //   b. sandbox:<id> 引用必须在本机 workspace 元数据可追溯:
+        //      不存在(伪造/跨环境) → 拒收;非 closed(测试未完成) → 拒收;
+        //      报告 summary.failed≠0(fail 报告不得作 pass 证据) → 拒收;
+        //      报告文件缺失/损坏 → 拒收(fail-closed:校验层缺位即不通过,不静默)。
+        // human:<actor> 无需存在性校验(显式降级声明,人无表可查)。
+        // 跨环境信任(报告哈希/随包携带)登记为后续项——当前拒收符合
+        // "不让未经验证的信息通过"(40 号 §6.1 阶段一)。
+        if bundle.tests.verdict == evorule_bundle::TestVerdict::Pass {
+            let traceable = !bundle.tests.subset.is_empty()
+                && bundle
+                    .tests
+                    .subset
+                    .iter()
+                    .all(|s| s.starts_with("sandbox:") || s.starts_with("human:"));
+            if !traceable {
+                return Err(format!(
+                    "测试证据校验失败（不静默）: verdict=pass 的导入必须携带可追溯标记\
+                     (tests.subset 每项须为 sandbox:<沙盒ID> 或 human:<操作者>)。\
+                     请从治理域测试工作台导出(机器背书)或显式人工背书"
+                ));
+            }
+            for ref_item in &bundle.tests.subset {
+                let Some(sid_str) = ref_item.strip_prefix("sandbox:") else {
+                    continue; // human: 标记无需存在性校验
+                };
+                let sid: i64 = sid_str.parse().map_err(|_| {
+                    format!("测试证据校验失败: sandbox 引用格式非法({ref_item}),须为 sandbox:<数字ID>")
+                })?;
+                let ws_db = self.workspace_db.as_ref().ok_or_else(|| {
+                    format!(
+                        "测试证据校验失败: 引用了沙盒报告({ref_item})但 workspace 元数据未接线,\
+                         无法验证引用(fail-closed 不放行)"
+                    )
+                })?;
+                let sb = ws_db
+                    .get_sandbox_session(sid)
+                    .map_err(|e| format!("测试证据校验失败: 查询沙盒会话 {sid} 出错: {e}"))?
+                    .ok_or_else(|| {
+                        format!(
+                            "测试证据校验失败（不静默）: 沙盒引用 sandbox:{sid} 在本机不存在\
+                             (引用伪造或跨环境导入)。本机执行的规则集请从本机测试工作台导出;\
+                             跨环境信任需报告随包携带(后续项)"
+                        )
+                    })?;
+                if sb.status != evorule_workspace::SandboxStatus::Closed {
+                    return Err(format!(
+                        "测试证据校验失败: 沙盒 #{sid} 状态为 {:?}(非 closed,测试未完成),\
+                         不得作为 pass 证据",
+                        sb.status
+                    ));
+                }
+                // 报告一致性: 读关闭时落盘的 TestReport(与 generate_test_report
+                // 关闭态同口径推导 report_path)
+                let export_path = sb.export_path.as_deref().ok_or_else(|| {
+                    format!(
+                        "测试证据校验失败: 沙盒 #{sid} 关闭但无报告导出路径(数据异常),\
+                         请重跑沙盒测试"
+                    )
+                })?;
+                let file_name = export_path.rsplit('/').next().unwrap_or_default();
+                let report_path = format!(
+                    "{}/report_{}",
+                    evorule_workspace::SANDBOX_REPORT_DIR,
+                    file_name
+                );
+                let content = std::fs::read_to_string(&report_path).map_err(|_| {
+                    format!(
+                        "测试证据校验失败: 沙盒 #{sid} 报告文件缺失({report_path};\
+                         可能被清理),请重跑沙盒测试"
+                    )
+                })?;
+                let report: serde_json::Value = serde_json::from_str(&content)
+                    .map_err(|e| format!("测试证据校验失败: 沙盒 #{sid} 报告文件损坏: {e}"))?;
+                let failed = report
+                    .pointer("/summary/failed")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        format!("测试证据校验失败: 沙盒 #{sid} 报告缺少 summary.failed 字段(结构异常)")
+                    })?;
+                if failed != 0 {
+                    return Err(format!(
+                        "测试证据校验失败（不静默）: 沙盒 #{sid} 报告有 {failed} 个失败用例,\
+                         不得作为 pass 证据"
+                    ));
+                }
+            }
+        }
+
         // ② 第 7 项逐条 Schema 门禁（硬失败，防 loader fail-soft 静默跳过非法规则）。
         // Q12：Knowledge 条目不进 TCB，跳过 transform 门禁（D3 领域 schema 强校验
         // 已在 BundleImporter::validate 内完成——数据条目走自己的门禁，不是没有门禁）。
@@ -10035,7 +10127,8 @@ mod tests {
             }],
             data_dependencies: None,
             tests: BundleTests {
-                subset: vec![],
+                // UV-080 B2: pass 必带可追溯标记(篡改用例在哈希层先拒,此处形状合规)
+                subset: vec!["human:itest".into()],
                 fixtures: vec![],
                 verdict: TestVerdict::Pass,
             },
@@ -10157,7 +10250,9 @@ mod tests {
             }],
             data_dependencies: None,
             tests: BundleTests {
-                subset: vec![],
+                // UV-080 B2: pass 必带可追溯标记(执行域 import 侧校验);
+                // 测试意图=合法可导入知识包,人工背书形态
+                subset: vec!["human:q12-itest".into()],
                 fixtures: vec![],
                 verdict: TestVerdict::Pass,
             },
@@ -10308,6 +10403,272 @@ mod tests {
             !tmp.path().join("knowledge").join("bundles").exists(),
             "拒绝的 bundle 不得落盘"
         );
+    }
+
+    // ====================================================================
+    // UV-080 B2: 测试证据引用校验（执行域 import 侧——入执行域的口）
+    // ====================================================================
+
+    /// UV-080 B2-形状: verdict=pass 但 subset 为空(零证据 pass)→ 显式拒绝,
+    /// 封死绕过治理域手写伪造直 POST import 的路径。
+    #[tokio::test]
+    async fn test_uv080_import_rejects_pass_without_traceable_subset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/server_eval.json");
+        // 执行侧领域 schema 注册（与 test_knowledge_bundle_import 同构）
+        let ddir = tmp.path().join("knowledge").join("domain_schemas");
+        std::fs::create_dir_all(&ddir).unwrap();
+        std::fs::write(ddir.join("scenario.json"), Q12_SCENARIO_SCHEMA_JSON).unwrap();
+        let sessions = SessionApi::new_with_full_config(
+            vec![],
+            100,
+            None,
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            core_eval_path,
+            rules_dir.clone(),
+        );
+
+        let mut bundle = q12_knowledge_bundle(
+            "bundle-uv080-shape",
+            "ds-uv080-shape",
+            "scn-uv080",
+            "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+        );
+        // 零证据 pass: 空 subset
+        bundle.tests.subset = vec![];
+        bundle.audit.content_hash = bundle.compute_content_hash();
+
+        let err = sessions
+            .import_bundle(&bundle, false)
+            .await
+            .expect_err("零证据 pass 必须显式拒绝");
+        assert!(
+            err.contains("必须携带可追溯标记"),
+            "错误应指向可追溯标记缺失: {err}"
+        );
+        assert!(
+            !tmp.path().join("knowledge").join("bundles").exists(),
+            "拒绝的 bundle 不得落盘"
+        );
+    }
+
+    /// UV-080 B2-引用: sandbox:<id> 引用本机不存在的沙盒(伪造/跨环境)→ 显式拒绝。
+    /// resolver 环境与 test_knowledge_import_refresh 同构(schema URI 命中),
+    /// 另接线 in-memory workspace_db(沙盒表为空)。
+    #[tokio::test]
+    async fn test_uv080_import_rejects_phantom_sandbox_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/server_eval.json");
+        // 执行侧领域 schema 注册（与 test_knowledge_bundle_import 同构）
+        let ddir = tmp.path().join("knowledge").join("domain_schemas");
+        std::fs::create_dir_all(&ddir).unwrap();
+        std::fs::write(ddir.join("scenario.json"), Q12_SCENARIO_SCHEMA_JSON).unwrap();
+        let sessions = SessionApi::new_with_full_config(
+            vec![],
+            100,
+            None,
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            core_eval_path,
+            rules_dir.clone(),
+        )
+        .with_workspace_db(Arc::new(
+            evorule_workspace::WorkspaceDb::in_memory().unwrap(),
+        ));
+
+        let mut bundle = q12_knowledge_bundle(
+            "bundle-uv080-ref",
+            "ds-uv080-ref",
+            "scn-uv080-ref",
+            "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+        );
+        // 引用不存在的沙盒 999
+        bundle.tests.subset = vec!["sandbox:999".into()];
+        bundle.audit.content_hash = bundle.compute_content_hash();
+
+        let err = sessions
+            .import_bundle(&bundle, false)
+            .await
+            .expect_err("幻影沙盒引用必须显式拒绝");
+        assert!(
+            err.contains("在本机不存在"),
+            "错误应指向沙盒引用不存在: {err}"
+        );
+        assert!(
+            !tmp.path().join("knowledge").join("bundles").exists(),
+            "拒绝的 bundle 不得落盘"
+        );
+    }
+
+    /// UV-080 B2-正路径: human:<actor> 显式人工背书 → 放行(无需存在性校验,
+    /// 标记即显式降级声明)。
+    #[tokio::test]
+    async fn test_uv080_import_allows_human_endorsement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/server_eval.json");
+        // 执行侧领域 schema 注册（与 test_knowledge_bundle_import 同构）
+        let ddir = tmp.path().join("knowledge").join("domain_schemas");
+        std::fs::create_dir_all(&ddir).unwrap();
+        std::fs::write(ddir.join("scenario.json"), Q12_SCENARIO_SCHEMA_JSON).unwrap();
+        let sessions = SessionApi::new_with_full_config(
+            vec![],
+            100,
+            None,
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            core_eval_path,
+            rules_dir.clone(),
+        );
+
+        // q12_knowledge_bundle 的 subset 已是 human 背书形态(UV-080 适配)
+        let bundle = q12_knowledge_bundle(
+            "bundle-uv080-human",
+            "ds-uv080-human",
+            "scn-uv080-human",
+            "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+        );
+        let result = sessions
+            .import_bundle(&bundle, false)
+            .await
+            .expect("human 背书应放行(显式降级,无需存在性校验)");
+        assert_eq!(result.dataset_id, "ds-uv080-human");
+        assert_eq!(result.entry_count, 1);
+    }
+
+    /// UV-080 B2-真实沙盒引用: closed 沙盒 + PASS 报告(failed=0)→ 放行;
+    /// FAIL 报告(failed>0)→ 拒收(fail 报告不得作 pass 证据)。
+    /// 在 in-memory db 造真实沙盒记录 + 磁盘报告文件(与 close_sandbox 落盘
+    /// 同构:report_<facts basename>.json 于 SANDBOX_REPORT_DIR)。
+    #[tokio::test]
+    async fn test_uv080_import_sandbox_reference_with_report_consistency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/server_eval.json");
+        // 执行侧领域 schema 注册（与 test_knowledge_bundle_import 同构）
+        let ddir = tmp.path().join("knowledge").join("domain_schemas");
+        std::fs::create_dir_all(&ddir).unwrap();
+        std::fs::write(ddir.join("scenario.json"), Q12_SCENARIO_SCHEMA_JSON).unwrap();
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        let sessions = SessionApi::new_with_full_config(
+            vec![],
+            100,
+            None,
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            core_eval_path,
+            rules_dir.clone(),
+        )
+        .with_workspace_db(ws_db.clone());
+
+        // 先建 workspace 行(沙盒记录外键依赖) + 两个 closed 沙盒记录: PASS / FAIL
+        // DateTime<Utc> 从 production_state 行取(chrono 非 evorule-server 直接依赖,
+        // 不为此新增依赖)
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let ws_id = format!("ws-uv080-{ts}");
+        {
+            let now_dt = ws_db
+                .get_production_state()
+                .unwrap()
+                .updated_at;
+            let ws = evorule_workspace::models::WorkspaceRecord {
+                id: ws_id.clone(),
+                name: "ws-uv080".into(),
+                owner_id: "test:uv080".into(),
+                created_at: now_dt,
+                updated_at: now_dt,
+                archived_at: None,
+                state: evorule_workspace::models::WorkspaceState::Active,
+                description: None,
+            };
+            ws_db.insert_workspace(&ws).unwrap();
+        }
+        let report_dir = evorule_workspace::SANDBOX_REPORT_DIR;
+        std::fs::create_dir_all(report_dir).unwrap();
+        let facts_1 = format!("audit_sandbox_1_{ts}.json");
+        let facts_2 = format!("audit_sandbox_2_{ts}.json");
+        let sb_pass = ws_db
+            .insert_sandbox_session(None, &ws_id, 1, Some("hash-uv080"), 1, "test:uv080")
+            .unwrap();
+        let sb_fail = ws_db
+            .insert_sandbox_session(None, &ws_id, 1, Some("hash-uv080"), 1, "test:uv080")
+            .unwrap();
+        // insert 自增从 1 起;以实际返回 id 为准写报告与引用
+        let export_1 = format!("{report_dir}/{facts_1}");
+        let export_2 = format!("{report_dir}/{facts_2}");
+        ws_db.close_sandbox_session(sb_pass, &export_1).unwrap();
+        ws_db.close_sandbox_session(sb_fail, &export_2).unwrap();
+        // 报告文件(与 generate_test_report 落盘同构:report_<facts basename>)
+        std::fs::write(
+            format!("{report_dir}/report_{facts_1}"),
+            r#"{"summary": {"total_cases": 9, "passed": 9, "failed": 0, "skipped": 0}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{report_dir}/report_{facts_2}"),
+            r#"{"summary": {"total_cases": 9, "passed": 7, "failed": 2, "skipped": 0}}"#,
+        )
+        .unwrap();
+
+        // PASS 沙盒引用 → 放行
+        let mut bundle = q12_knowledge_bundle(
+            "bundle-uv080-sb-pass",
+            "ds-uv080-sb-pass",
+            "scn-uv080-sb-pass",
+            "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+        );
+        bundle.tests.subset = vec![format!("sandbox:{sb_pass}")];
+        bundle.audit.content_hash = bundle.compute_content_hash();
+        let result = sessions
+            .import_bundle(&bundle, false)
+            .await
+            .expect("closed 沙盒 + PASS 报告引用应放行");
+        assert_eq!(result.dataset_id, "ds-uv080-sb-pass");
+        assert_eq!(result.entry_count, 1);
+
+        // FAIL 沙盒引用 → 拒收(报告一致性)
+        let mut bundle = q12_knowledge_bundle(
+            "bundle-uv080-sb-fail",
+            "ds-uv080-sb-fail",
+            "scn-uv080-sb-fail",
+            "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+        );
+        bundle.tests.subset = vec![format!("sandbox:{sb_fail}")];
+        bundle.audit.content_hash = bundle.compute_content_hash();
+        let err = sessions
+            .import_bundle(&bundle, false)
+            .await
+            .expect_err("FAIL 报告不得作为 pass 证据");
+        assert!(
+            err.contains("失败用例"),
+            "错误应指向报告失败用例: {err}"
+        );
+
+        // 清理测试报告文件(写于 crate 相对路径 ./data/sandbox_reports,仓库忽略区)
+        let _ = std::fs::remove_file(format!("{report_dir}/report_{facts_1}"));
+        let _ = std::fs::remove_file(format!("{report_dir}/report_{facts_2}"));
     }
 
     /// Q12 W6-3：schema_ref 领域 schema 未注册（resolver 未命中）→ 拒绝入库

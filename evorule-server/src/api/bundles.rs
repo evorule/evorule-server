@@ -319,7 +319,9 @@ mod tests {
                 }],
             }),
             tests: BundleTests {
-                subset: vec![],
+                // UV-080 B2: pass 必带可追溯标记(执行域 import 侧校验);
+                // 测试意图=合法可导入包,人工背书形态
+                subset: vec!["human:test-user".into()],
                 fixtures: vec![],
                 verdict: TestVerdict::Pass,
             },

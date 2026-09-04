@@ -41,7 +41,9 @@ use crate::session_bridge::SessionOps;
 use crate::test_report::{TestReport, TestReportBuilder};
 
 /// 沙盒测试报告导出目录
-const SANDBOX_REPORT_DIR: &str = "./data/sandbox_reports";
+/// pub(UV-080 B2): 执行域 import 侧证据一致性校验需按同一规则推导报告路径
+/// (report_<facts 文件 basename>.json,与 generate_test_report 关闭态同口径)
+pub const SANDBOX_REPORT_DIR: &str = "./data/sandbox_reports";
 
 /// 沙盒编排服务
 ///

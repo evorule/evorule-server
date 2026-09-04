@@ -591,7 +591,8 @@ async fn acceptance_governance_to_execution_full_chain() {
     assert_eq!(st, axum::http::StatusCode::OK, "查询: {found}");
     assert_eq!(found["items"].as_array().unwrap().len(), 1, "{found}");
 
-    // 带真实闸门一证据导出（T0 决策：执行侧导入要求 verdict=Pass，不默认 Pass）
+    // 带闸门一证据导出（T0 决策：执行侧导入要求 verdict=Pass，不默认 Pass；
+    // UV-080 双闸：pass 必带可追溯标记——本链未起沙盒，显式人工背书形态）
     let (st, bundle) = send(
         &app,
         "POST",
@@ -600,7 +601,7 @@ async fn acceptance_governance_to_execution_full_chain() {
         Some(json!({
             "dataset_id": "ds-acc",
             "version": "v1",
-            "tests": { "subset": [], "fixtures": [], "verdict": "pass" }
+            "tests": { "subset": ["human:acc-scientist"], "fixtures": [], "verdict": "pass" }
         })),
     )
     .await;

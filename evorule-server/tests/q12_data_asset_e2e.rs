@@ -195,7 +195,9 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
     assert_eq!(entries[0].status, Some(LifecycleStatus::Active));
 
     let tests = BundleTests {
-        subset: vec![],
+        // UV-080 B2: pass 必带可追溯标记(执行域 import 侧校验);
+        // 本链未起沙盒,显式人工背书形态
+        subset: vec!["human:q12-e2e".into()],
         fixtures: vec![],
         verdict: TestVerdict::Pass,
     };
