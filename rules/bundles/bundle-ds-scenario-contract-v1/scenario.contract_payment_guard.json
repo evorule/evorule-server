@@ -1,0 +1,73 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "contract_payment_check",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "attr": "data",
+            "operation": "set",
+            "value": "__exec__.instruction.params"
+          },
+          "type": "set"
+        },
+        {
+          "params": {
+            "domain": {
+              "inner": [
+                {
+                  "path": "__exec__.payload.data.contract.signed",
+                  "type": "eq",
+                  "value": true
+                },
+                {
+                  "path": "__exec__.payload.data.approval_id",
+                  "type": "exists"
+                },
+                {
+                  "path": "__exec__.payload.data.payment.amount",
+                  "type": "lt",
+                  "value": 100000
+                }
+              ],
+              "type": "all"
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.payment.status",
+                  "operation": "set",
+                  "value": "blocked"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.payment.block_reason",
+                  "operation": "set",
+                  "value": "付款前提缺失：需合同已签 + 审批单存在 + 金额低于 100000"
+                },
+                "type": "set"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.payment.status",
+                  "operation": "set",
+                  "value": "approved"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

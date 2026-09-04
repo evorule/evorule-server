@@ -1,0 +1,14 @@
+{
+  "bundle_id": "bundle-ds-scenario-expense-v1",
+  "dataset_id": "ds-scenario-expense",
+  "source_version": "v1",
+  "selection_mode": "auto_by_effective_date",
+  "effective_from": "2026-01-01",
+  "content_hash": "blake3:469f6433578ffa5d82a6d7c8e7603a112ccca695e27cff345b1811385b8fb9c3",
+  "entry_files": [
+    {
+      "entry_id": "scenario.expense_compliance",
+      "file": "scenario.expense_compliance.json"
+    }
+  ]
+}

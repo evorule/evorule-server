@@ -1,0 +1,59 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "ai_mfa_gate_check",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "attr": "data",
+            "operation": "set",
+            "value": "__exec__.instruction.params"
+          },
+          "type": "set"
+        },
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.data.request.mfa_verified",
+              "type": "eq",
+              "value": true
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.request.gate_decision",
+                  "operation": "set",
+                  "value": "blocked"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.request.gate_note",
+                  "operation": "set",
+                  "value": "等保 2.0 三级 §8.1.4.1.d：资金类操作需先通过 MFA 验证，已阻断并留痕"
+                },
+                "type": "set"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.request.gate_decision",
+                  "operation": "set",
+                  "value": "allowed"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]

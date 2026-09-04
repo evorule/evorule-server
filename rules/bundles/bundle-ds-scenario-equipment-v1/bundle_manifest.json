@@ -1,0 +1,14 @@
+{
+  "bundle_id": "bundle-ds-scenario-equipment-v1",
+  "dataset_id": "ds-scenario-equipment",
+  "source_version": "v1",
+  "selection_mode": "auto_by_effective_date",
+  "effective_from": "2026-01-01",
+  "content_hash": "blake3:7f3a6d91db1ee1cddcd770bc993051ffc6cd38e9598114e2455564ae635c6fc6",
+  "entry_files": [
+    {
+      "entry_id": "scenario.equipment_inspection",
+      "file": "scenario.equipment_inspection.json"
+    }
+  ]
+}

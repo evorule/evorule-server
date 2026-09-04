@@ -1,0 +1,14 @@
+{
+  "bundle_id": "bundle-ds-scenario-ai-mfa-v1",
+  "dataset_id": "ds-scenario-ai-mfa",
+  "source_version": "v1",
+  "selection_mode": "auto_by_effective_date",
+  "effective_from": "2026-01-01",
+  "content_hash": "blake3:faa4aeb09e8c78167ae2dcf1ac806dc64f1a76ed1e3d009aa4e70965182d4e14",
+  "entry_files": [
+    {
+      "entry_id": "scenario.ai_mfa_gate",
+      "file": "scenario.ai_mfa_gate.json"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "bundle_id": "bundle-ds-scenario-contract-v1",
+  "dataset_id": "ds-scenario-contract",
+  "source_version": "v1",
+  "selection_mode": "auto_by_effective_date",
+  "effective_from": "2026-01-01",
+  "content_hash": "blake3:a01bd3b944280c197bfada53854786d3697b73cc8f23f14cf175904ffdc4eb82",
+  "entry_files": [
+    {
+      "entry_id": "scenario.contract_payment_guard",
+      "file": "scenario.contract_payment_guard.json"
+    }
+  ]
+}

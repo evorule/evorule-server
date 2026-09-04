@@ -4,7 +4,7 @@
   "source_version": "v3",
   "selection_mode": "auto_by_effective_date",
   "effective_from": "2024-01-01",
-  "content_hash": "sha256:b80b6632d3f24f17e544db35fc55610961cc1eeaff5f3dfbba50810b0547a040",
+  "content_hash": "blake3:c377ec1bb50aa2f573de4047a3c4d5ba52d6595230620e6b145b2cb59a75d192",
   "entry_files": [
     {
       "entry_id": "rule-audit-alert",

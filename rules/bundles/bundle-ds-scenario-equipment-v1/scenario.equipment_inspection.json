@@ -1,0 +1,89 @@
+[
+  {
+    "params": {
+      "domain": {
+        "instruction_type": "equipment_inspection_check",
+        "type": "instruction"
+      },
+      "on_true": [
+        {
+          "params": {
+            "attr": "data",
+            "operation": "set",
+            "value": "__exec__.instruction.params"
+          },
+          "type": "set"
+        },
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.data.sensor.temperature",
+              "type": "lt",
+              "value": 80
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.inspection.alarm_level",
+                  "operation": "set",
+                  "value": "escalate"
+                },
+                "type": "set"
+              },
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.inspection.escalate_to",
+                  "operation": "set",
+                  "value": "值班主管工单队列"
+                },
+                "type": "set"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.inspection.alarm_level",
+                  "operation": "set",
+                  "value": "normal"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        },
+        {
+          "params": {
+            "domain": {
+              "path": "__exec__.payload.data.sensor.vibration",
+              "type": "lt",
+              "value": 5
+            },
+            "on_false": [
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.inspection.vibration_status",
+                  "operation": "set",
+                  "value": "abnormal"
+                },
+                "type": "set"
+              }
+            ],
+            "on_true": [
+              {
+                "params": {
+                  "attr": "__exec__.payload.data.inspection.vibration_status",
+                  "operation": "set",
+                  "value": "normal"
+                },
+                "type": "set"
+              }
+            ]
+          },
+          "type": "branch"
+        }
+      ]
+    },
+    "type": "branch"
+  }
+]
