@@ -23,6 +23,7 @@ use evorule_governance::permission::{PermissionEntry, PermissionState, Permissio
 use evorule_governance::shared_facts_log::SharedFactsLog;
 use evorule_reactor::{CallerRole, FactId, IoCallContext};
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 /// 权限条目写入所用的来源会话 ID（0 = 系统/全局，非任何真实会话）
 const GLOBAL_SESSION: u64 = 0;
@@ -63,6 +64,15 @@ fn snapshot(
 }
 
 /// `GET /api/permissions` → 列出全部权限条目（含当前版本号）
+#[utoipa::path(
+    get,
+    path = "/api/permissions",
+    tag = "permissions",
+    responses(
+        (status = 200, description = "全部权限条目（含当前版本号）", body = serde_json::Value),
+        (status = 500, description = "权限快照重建失败", body = serde_json::Value)
+    )
+)]
 async fn list_permissions(
     State(shared): State<SharedFactsLog>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
@@ -77,6 +87,17 @@ async fn list_permissions(
 }
 
 /// `GET /api/permissions/{id}` → 查询单条权限条目
+#[utoipa::path(
+    get,
+    path = "/api/permissions/{id}",
+    tag = "permissions",
+    params(("id" = String, Path, description = "权限条目 ID")),
+    responses(
+        (status = 200, description = "单条权限条目", body = serde_json::Value),
+        (status = 404, description = "条目不存在", body = serde_json::Value),
+        (status = 500, description = "权限快照重建失败", body = serde_json::Value)
+    )
+)]
 async fn get_permission(
     State(shared): State<SharedFactsLog>,
     Path(id): Path<String>,
@@ -106,6 +127,20 @@ fn validate_identity(req: &PermissionEntry) -> Result<(), (StatusCode, Json<serd
 }
 
 /// `POST /api/permissions` → 新建一条权限（强制 Draft 状态，id 冲突返回 409）
+#[utoipa::path(
+    post,
+    path = "/api/permissions",
+    tag = "permissions",
+    // 请求体为治理层 evorule_governance::permission::PermissionEntry（外部 crate 类型，
+    // 无法在本仓补 ToSchema derive，故以 Value 标注并在此说明权威结构）
+    request_body(content = serde_json::Value, description = "权限条目（PermissionEntry 结构，仅 id 必填，其余字段可缺省）"),
+    responses(
+        (status = 200, description = "已创建（强制 Draft 状态）", body = serde_json::Value),
+        (status = 400, description = "permission id 为空", body = serde_json::Value),
+        (status = 409, description = "id 冲突（已存在）", body = serde_json::Value),
+        (status = 500, description = "写入失败", body = serde_json::Value)
+    )
+)]
 async fn create_permission(
     State(shared): State<SharedFactsLog>,
     Json(mut entry): Json<PermissionEntry>,
@@ -134,6 +169,19 @@ async fn create_permission(
 }
 
 /// `PUT /api/permissions/{id}` → 全量替换一条权限（幂等：不存在则创建）
+#[utoipa::path(
+    put,
+    path = "/api/permissions/{id}",
+    tag = "permissions",
+    params(("id" = String, Path, description = "权限条目 ID")),
+    // 同 create_permission：治理层 PermissionEntry 结构（外部 crate 类型）
+    request_body(content = serde_json::Value, description = "权限条目全量替换（PermissionEntry 结构，path id 须与 body id 一致）"),
+    responses(
+        (status = 200, description = "已替换（不存在则创建，已 Active 保持 Active）", body = serde_json::Value),
+        (status = 400, description = "path id 与 body id 不一致或 id 为空", body = serde_json::Value),
+        (status = 500, description = "写入失败", body = serde_json::Value)
+    )
+)]
 async fn update_permission(
     State(shared): State<SharedFactsLog>,
     Path(id): Path<String>,
@@ -159,6 +207,16 @@ async fn update_permission(
 }
 
 /// `DELETE /api/permissions/{id}` → 删除（写墓碑，历史保留）
+#[utoipa::path(
+    delete,
+    path = "/api/permissions/{id}",
+    tag = "permissions",
+    params(("id" = String, Path, description = "权限条目 ID")),
+    responses(
+        (status = 200, description = "已删除（写墓碑，历史保留）", body = serde_json::Value),
+        (status = 500, description = "写入失败", body = serde_json::Value)
+    )
+)]
 async fn delete_permission(
     State(shared): State<SharedFactsLog>,
     Path(id): Path<String>,
@@ -170,6 +228,18 @@ async fn delete_permission(
 }
 
 /// `POST /api/permissions/{id}/submit` → 提交审批（Draft → Candidate）
+#[utoipa::path(
+    post,
+    path = "/api/permissions/{id}/submit",
+    tag = "permissions",
+    params(("id" = String, Path, description = "权限条目 ID")),
+    responses(
+        (status = 200, description = "已提交审批（Draft → Candidate）", body = serde_json::Value),
+        (status = 400, description = "状态不满足提交条件", body = serde_json::Value),
+        (status = 404, description = "条目不存在", body = serde_json::Value),
+        (status = 500, description = "写入失败", body = serde_json::Value)
+    )
+)]
 async fn submit_permission(
     State(shared): State<SharedFactsLog>,
     Path(id): Path<String>,
@@ -195,13 +265,26 @@ async fn submit_permission(
 }
 
 /// 审批请求体
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ReviewRequest {
     /// `true` = 批准（→ Active），`false` = 拒绝（→ Rejected）
     pub approve: bool,
 }
 
 /// `POST /api/permissions/{id}/review` → 审批裁决（Candidate → Active/Rejected）
+#[utoipa::path(
+    post,
+    path = "/api/permissions/{id}/review",
+    tag = "permissions",
+    params(("id" = String, Path, description = "权限条目 ID")),
+    request_body = ReviewRequest,
+    responses(
+        (status = 200, description = "已裁决（Candidate → Active/Rejected）", body = serde_json::Value),
+        (status = 400, description = "状态不满足裁决条件", body = serde_json::Value),
+        (status = 404, description = "条目不存在", body = serde_json::Value),
+        (status = 500, description = "写入失败", body = serde_json::Value)
+    )
+)]
 async fn review_permission(
     State(shared): State<SharedFactsLog>,
     Path(id): Path<String>,
@@ -229,6 +312,15 @@ async fn review_permission(
 }
 
 /// `GET /api/permissions/version` → 权限快照版本与条目数量
+#[utoipa::path(
+    get,
+    path = "/api/permissions/version",
+    tag = "permissions",
+    responses(
+        (status = 200, description = "权限快照版本与条目数量", body = serde_json::Value),
+        (status = 500, description = "权限快照重建失败", body = serde_json::Value)
+    )
+)]
 async fn permissions_version(
     State(shared): State<SharedFactsLog>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
@@ -241,7 +333,7 @@ async fn permissions_version(
 }
 
 /// 判定测试请求体
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct EvaluateRequest {
     /// 待判定的资源串
     pub resource: String,
@@ -258,6 +350,16 @@ pub struct EvaluateRequest {
 }
 
 /// `POST /api/permissions/evaluate` → 按给定上下文跑一次权限判定（只读）
+#[utoipa::path(
+    post,
+    path = "/api/permissions/evaluate",
+    tag = "permissions",
+    request_body = EvaluateRequest,
+    responses(
+        (status = 200, description = "判定结果（verdict=allow/deny/candidate）", body = serde_json::Value),
+        (status = 500, description = "权限快照重建失败", body = serde_json::Value)
+    )
+)]
 async fn evaluate_permission(
     State(shared): State<SharedFactsLog>,
     Json(req): Json<EvaluateRequest>,

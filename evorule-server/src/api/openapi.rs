@@ -90,6 +90,39 @@ use utoipa::OpenApi;
         crate::api::knowledge::knowledge_datasets_handler,
         crate::api::knowledge::knowledge_entries_handler,
         crate::api::knowledge::knowledge_entry_handler,
+        // services / metrics 组（C5 能力对账 / Prometheus 抓取，UV-068 补注册）
+        crate::api::server::list_services_handler,
+        crate::api::server::metrics_handler,
+        // audit 档案与平台事件组（UV-016 / UV-018，注解已有，UV-068 补注册）
+        crate::api::server::platform_events_handler,
+        crate::api::server::archive_sessions,
+        crate::api::server::archive_session_audit,
+        // platform-auth 组（UV-017 平台授权，15 端点，UV-068 补注册）
+        crate::api::platform_auth::bootstrap,
+        crate::api::platform_auth::login,
+        crate::api::platform_auth::logout,
+        crate::api::platform_auth::me,
+        crate::api::platform_auth::auth_status,
+        crate::api::platform_auth::change_password,
+        crate::api::platform_auth::list_permissions,
+        crate::api::platform_auth::list_users,
+        crate::api::platform_auth::create_user,
+        crate::api::platform_auth::update_user,
+        crate::api::platform_auth::delete_user,
+        crate::api::platform_auth::list_roles,
+        crate::api::platform_auth::create_role,
+        crate::api::platform_auth::update_role,
+        crate::api::platform_auth::delete_role,
+        // permissions 组（A-流 权限系统，9 端点，UV-068 补注册）
+        crate::api::permissions::list_permissions,
+        crate::api::permissions::create_permission,
+        crate::api::permissions::get_permission,
+        crate::api::permissions::update_permission,
+        crate::api::permissions::delete_permission,
+        crate::api::permissions::submit_permission,
+        crate::api::permissions::review_permission,
+        crate::api::permissions::permissions_version,
+        crate::api::permissions::evaluate_permission,
         // openapi 元数据
         crate::api::openapi::openapi_json,
     ),
@@ -153,6 +186,19 @@ use utoipa::OpenApi;
         crate::api::knowledge::KnowledgeEntriesResponse,
         crate::knowledge_store::KnowledgeDatasetSummary,
         crate::knowledge_store::KnowledgeEntryRecord,
+        // services 组（C5 能力对账）
+        crate::api::server::BoundServiceInfo,
+        // platform-auth 组请求体（UV-017）
+        crate::api::platform_auth::CredentialsReq,
+        crate::api::platform_auth::BootstrapReq,
+        crate::api::platform_auth::ChangePasswordReq,
+        crate::api::platform_auth::CreateUserReq,
+        crate::api::platform_auth::UpdateUserReq,
+        crate::api::platform_auth::CreateRoleReq,
+        crate::api::platform_auth::UpdateRoleReq,
+        // permissions 组请求体（A-流）
+        crate::api::permissions::ReviewRequest,
+        crate::api::permissions::EvaluateRequest,
         // 查询参数
         crate::api::server::CreateSessionFromParentParams,
         crate::api::server::CreateSessionForkParams,
@@ -195,4 +241,163 @@ pub async fn openapi_json() -> Result<Json<serde_json::Value>, axum::http::Statu
         tracing::error!(error = %e, "OpenAPI spec 序列化失败");
         axum::http::StatusCode::INTERNAL_SERVER_ERROR
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// UV-068 契约测试：openapi.json 必须覆盖全部已注册路由（防再漂移）。
+    ///
+    /// 端点清单与路由注册面同步维护：
+    /// - server.rs `build_router()` 的全部 `.route(...)` 调用
+    ///   （public_routes / protected_routes / metrics_router / 条件挂载的 abort——
+    ///   abort 路由默认不注册但文档恒注册，故同样纳入清单）
+    /// - `platform_auth_router()`（platform_auth.rs，挂入 public_routes）
+    /// - `permissions_router()`（permissions.rs，挂入 protected_routes）
+    /// - workspace 端点族抽查（完整清单以 evorule-workspace 的
+    ///   `workspace_openapi()` 为准，此处按族抽代表路径）
+    ///
+    /// 新增 `.route()` 的同步纪律：补 `#[utoipa::path]` 注解 → 在 [ApiDoc]
+    /// `paths(...)` 注册 → 在本清单追加路径；缺一步本测试变红。
+    #[test]
+    fn test_openapi_covers_all_registered_paths() {
+        let spec = merged_openapi();
+        let paths = &spec.paths.paths;
+
+        // ===== server.rs public_routes（免认证） =====
+        let registered: &[&str] = &[
+            "/api/health",
+            "/api/health/liveness",
+            "/api/health/readiness",
+            "/api/rules/validate",
+            "/api/openapi.json",
+            "/api/services",
+            // ===== platform_auth_router（UV-017，挂入 public_routes） =====
+            "/api/platform/auth/bootstrap",
+            "/api/platform/auth/login",
+            "/api/platform/auth/logout",
+            "/api/platform/auth/me",
+            "/api/platform/auth/status",
+            "/api/platform/auth/change-password",
+            "/api/platform/permissions",
+            "/api/platform/users",
+            "/api/platform/users/{username}",
+            "/api/platform/roles",
+            "/api/platform/roles/{name}",
+            // ===== abort（--allow-abort 条件挂载，文档恒注册） =====
+            "/api/sessions/{id}/abort",
+            // ===== server.rs protected_routes（受认证保护） =====
+            "/api/command",
+            "/api/payload",
+            "/api/state",
+            "/api/audit",
+            "/api/audit/platform-events",
+            "/api/sessions",
+            "/api/audit-archive/sessions",
+            "/api/audit-archive/sessions/{id}/audit",
+            "/api/sessions/from/{parent_id}",
+            "/api/sessions/fork/{parent_id}",
+            "/api/sessions/{id}",
+            "/api/sessions/reap",
+            "/api/sessions/{id}/command",
+            "/api/sessions/{id}/state",
+            "/api/sessions/{id}/audit",
+            "/api/sessions/{id}/audit/verify",
+            "/api/sessions/{id}/audit/export",
+            "/api/sessions/{id}/audit/import",
+            "/api/sessions/{id}/audit/export/compressed",
+            "/api/sessions/{id}/audit/import/compressed",
+            "/api/sessions/{id}/audit/causal/{fact_id}",
+            "/api/sessions/{id}/payload",
+            "/api/sessions/{id}/events",
+            "/api/sessions/{id}/io_response",
+            "/api/sessions/{id}/replay",
+            "/api/sessions/{id}/history",
+            "/api/sessions/{id}/rewind",
+            "/api/sessions/{id}/diff",
+            "/api/sessions/{id}/facts",
+            "/api/shared/facts",
+            "/api/shared/facts/{fact_id}/source",
+            "/api/shared/facts/{fact_id}/used_by",
+            "/api/shared/facts/version",
+            "/api/shared/facts/rollup",
+            "/api/sessions/{id}/used_at_startup",
+            "/api/sessions/{id}/debug/phase",
+            "/api/sessions/{id}/debug/queue",
+            "/api/sessions/{id}/debug/pending_io",
+            "/api/sessions/{id}/interrupt",
+            "/api/sessions/{id}/finished",
+            "/api/sessions/{id}/causal_depth",
+            "/api/sessions/{id}/invariants",
+            "/api/sessions/{id}/pending_io_count",
+            "/api/sessions/{id}/step",
+            "/api/sessions/{id}/snapshot",
+            "/api/sessions/{id}/audit/auto_verify",
+            "/api/rules/reload",
+            "/api/rules",
+            "/api/bundles/import",
+            "/api/bundles/import/dry-run",
+            "/api/bundles/active",
+            "/api/bundles/imports",
+            "/api/knowledge",
+            "/api/knowledge/{ds}/entries",
+            "/api/knowledge/{ds}/entries/{entry_id}",
+            // ===== permissions_router（A-流，挂入 protected_routes） =====
+            "/api/permissions",
+            "/api/permissions/{id}",
+            "/api/permissions/version",
+            "/api/permissions/evaluate",
+            "/api/permissions/{id}/submit",
+            "/api/permissions/{id}/review",
+            // ===== metrics_router =====
+            "/metrics",
+            // ===== workspace 端点族抽查（evorule-workspace build_workspace_router） =====
+            "/api/workspaces",
+            "/api/workspaces/{id}",
+            "/api/workspaces/{id}/members",
+            "/api/workspaces/{id}/members/{user_id}",
+            "/api/workspaces/{id}/rules",
+            "/api/workspaces/{id}/rules/{rule_id}",
+            "/api/workspaces/{id}/rules/{rule_id}/versions",
+            "/api/workspaces/{id}/sessions",
+            "/api/workspaces/{id}/sandboxes",
+            "/api/workspaces/{id}/test-datasets",
+            "/api/publish/queue",
+            "/api/publish/rollback",
+            "/api/production/state",
+            "/api/rules/translate/to_transform",
+            "/api/workspaces/{id}/verdict_contracts",
+            "/api/workspaces/{id}/verdict/evaluate",
+            "/api/sessions/{id}/clock/lookup",
+        ];
+
+        for path in registered {
+            assert!(
+                paths.contains_key(*path),
+                "openapi.json 漏报端点 {path}：补 #[utoipa::path] 注解并在 ApiDoc paths(...) 注册"
+            );
+        }
+
+        // method 级抽查（utoipa 同路径多注解自动合并为单 PathItem）
+        assert!(
+            paths["/api/sessions"].get.is_some() && paths["/api/sessions"].post.is_some(),
+            "/api/sessions 应同时有 GET/POST"
+        );
+        assert!(
+            paths["/api/permissions/{id}"].put.is_some(),
+            "/api/permissions/{{id}} 应为 PUT（与 permissions_router 注册一致）"
+        );
+        assert!(
+            paths["/api/platform/users/{username}"].patch.is_some()
+                && paths["/api/platform/users/{username}"].delete.is_some(),
+            "/api/platform/users/{{username}} 应同时有 PATCH/DELETE"
+        );
+        assert!(
+            paths["/api/platform/roles"].get.is_some() && paths["/api/platform/roles"].post.is_some(),
+            "/api/platform/roles 应同时有 GET/POST"
+        );
+        assert!(paths["/api/services"].get.is_some(), "/api/services 应有 GET");
+        assert!(paths["/metrics"].get.is_some(), "/metrics 应有 GET");
+    }
 }

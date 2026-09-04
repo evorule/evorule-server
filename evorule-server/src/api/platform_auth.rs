@@ -35,6 +35,7 @@ use axum::{Json, Router};
 use blake3::Hasher;
 use evorule_governance::shared_facts_log::SharedFactsLog;
 use evorule_tcb::JsonValue;
+use utoipa::ToSchema;
 
 use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
@@ -530,13 +531,13 @@ fn builtin_role_description(name: &str) -> &'static str {
 // 请求体
 // ---------------------------------------------------------------------------
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ToSchema)]
 pub struct CredentialsReq {
     pub username: String,
     pub password: String,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ToSchema)]
 pub struct BootstrapReq {
     pub username: String,
     pub password: String,
@@ -544,7 +545,7 @@ pub struct BootstrapReq {
     pub display_name: String,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ToSchema)]
 pub struct ChangePasswordReq {
     pub old_password: String,
     pub new_password: String,
@@ -581,6 +582,18 @@ use crate::api::server::AppState;
 
 /// `POST /api/platform/auth/bootstrap` — 首启创建管理员。
 /// 仅当平台无任何用户时可用(幂等保护);成功即登录态建立的前置。
+#[utoipa::path(
+    post,
+    path = "/api/platform/auth/bootstrap",
+    tag = "platform-auth",
+    request_body = BootstrapReq,
+    responses(
+        (status = 201, description = "管理员已创建(role=administrator)", body = serde_json::Value),
+        (status = 400, description = "用户名非法或密码长度不足 8 位", body = serde_json::Value),
+        (status = 409, description = "平台已存在用户,bootstrap 不可用", body = serde_json::Value),
+        (status = 500, description = "口令哈希/事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn bootstrap(
     State(shared): State<SharedFactsLog>,
     Json(req): Json<BootstrapReq>,
@@ -624,6 +637,17 @@ async fn bootstrap(
 /// `POST /api/platform/auth/login` — 登录。
 /// 返回 { token, user(不含哈希), permissions, permissions_version }。
 /// 失败如实区分:凭据错误 / 用户停用(均 401,审计链记录 login_failed)。
+#[utoipa::path(
+    post,
+    path = "/api/platform/auth/login",
+    tag = "platform-auth",
+    request_body = CredentialsReq,
+    responses(
+        (status = 200, description = "登录成功,返回会话 token(明文仅此一次)与权限集", body = serde_json::Value),
+        (status = 401, description = "用户名/密码错误或用户已停用", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn login(State(shared): State<SharedFactsLog>, Json(req): Json<CredentialsReq>) -> ApiResult {
     ensure_seed(&shared)?;
     let snap = PlatformSnapshot::replay(&shared)?;
@@ -785,6 +809,16 @@ pub async fn unified_auth_middleware(
 }
 
 /// `POST /api/platform/auth/logout` — 吊销当前会话(幂等)。
+#[utoipa::path(
+    post,
+    path = "/api/platform/auth/logout",
+    tag = "platform-auth",
+    responses(
+        (status = 200, description = "会话已吊销(重复登出幂等成功)", body = serde_json::Value),
+        (status = 401, description = "无效或已吊销的会话", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn logout(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     let token_hash = bearer_token_hash(&headers).map_err(err_json)?;
     let snap = PlatformSnapshot::replay(&shared).map_err(err_json)?;
@@ -807,6 +841,16 @@ async fn logout(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> Api
 
 /// `GET /api/platform/auth/me` — 当前用户 + 最新权限矩阵。
 /// 前端以此刷新 can() 缓存(permissions_version 变化即授权有变更)。
+#[utoipa::path(
+    get,
+    path = "/api/platform/auth/me",
+    tag = "platform-auth",
+    responses(
+        (status = 200, description = "当前用户档案(不含口令哈希)与最新权限矩阵", body = serde_json::Value),
+        (status = 401, description = "未认证/会话失效", body = serde_json::Value),
+        (status = 500, description = "事实回放失败", body = serde_json::Value)
+    )
+)]
 async fn me(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     let (snap, username, perms) = require_session(&shared, &headers)?;
     let user = snap
@@ -831,6 +875,18 @@ async fn me(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResu
 }
 
 /// `POST /api/platform/auth/change-password` — 本人改密(需旧密码)。
+#[utoipa::path(
+    post,
+    path = "/api/platform/auth/change-password",
+    tag = "platform-auth",
+    request_body = ChangePasswordReq,
+    responses(
+        (status = 200, description = "密码已修改", body = serde_json::Value),
+        (status = 400, description = "新密码长度不足 8 位", body = serde_json::Value),
+        (status = 401, description = "未认证或旧密码错误", body = serde_json::Value),
+        (status = 500, description = "口令哈希/事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn change_password(
     State(shared): State<SharedFactsLog>,
     headers: HeaderMap,
@@ -1002,6 +1058,15 @@ fn ensure_other_active_admin(
 
 /// `GET /api/platform/auth/status` — 公开:登录页判断是否需要 bootstrap 引导。
 /// UV-020:同时下发演示登录入口开关(demo_auth),登录页据此隐藏演示模式入口。
+#[utoipa::path(
+    get,
+    path = "/api/platform/auth/status",
+    tag = "platform-auth",
+    responses(
+        (status = 200, description = "引导状态(needs_bootstrap)与演示登录开关(demo_auth)", body = serde_json::Value),
+        (status = 500, description = "事实回放失败", body = serde_json::Value)
+    )
+)]
 async fn auth_status(
     State(shared): State<SharedFactsLog>,
     State(demo): State<crate::api::server::DemoAuthFlag>,
@@ -1018,6 +1083,16 @@ async fn auth_status(
 }
 
 /// `GET /api/platform/permissions` — 权限点注册表(登录用户可读,角色编辑器渲染用)。
+#[utoipa::path(
+    get,
+    path = "/api/platform/permissions",
+    tag = "platform-auth",
+    responses(
+        (status = 200, description = "权限点注册表(actions)与内置角色(builtin_roles)", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 500, description = "事实回放失败", body = serde_json::Value)
+    )
+)]
 async fn list_permissions(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     require_session(&shared, &headers)?;
     let builtin_roles: Vec<serde_json::Value> = BUILTIN_ROLES
@@ -1037,6 +1112,17 @@ async fn list_permissions(State(shared): State<SharedFactsLog>, headers: HeaderM
 }
 
 /// `GET /api/platform/users` — 用户列表(view_users 或 manage_users)。
+#[utoipa::path(
+    get,
+    path = "/api/platform/users",
+    tag = "platform-auth",
+    responses(
+        (status = 200, description = "用户列表(不含口令哈希)", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 403, description = "缺少 view_users / manage_users 权限", body = serde_json::Value),
+        (status = 500, description = "事实回放失败", body = serde_json::Value)
+    )
+)]
 async fn list_users(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     let snap = require_any_permission(&shared, &headers, &["view_users", "manage_users"])?;
     let users: Vec<serde_json::Value> = snap.users.values().map(user_json).collect();
@@ -1046,7 +1132,7 @@ async fn list_users(State(shared): State<SharedFactsLog>, headers: HeaderMap) ->
     ))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ToSchema)]
 pub struct CreateUserReq {
     pub username: String,
     pub password: String,
@@ -1060,6 +1146,20 @@ pub struct CreateUserReq {
 }
 
 /// `POST /api/platform/users` — 创建用户(manage_users)。
+#[utoipa::path(
+    post,
+    path = "/api/platform/users",
+    tag = "platform-auth",
+    request_body = CreateUserReq,
+    responses(
+        (status = 201, description = "用户已创建", body = serde_json::Value),
+        (status = 400, description = "用户名/密码非法或角色不存在/已停用", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_users 权限", body = serde_json::Value),
+        (status = 409, description = "用户已存在", body = serde_json::Value),
+        (status = 500, description = "口令哈希/事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn create_user(
     State(shared): State<SharedFactsLog>,
     headers: HeaderMap,
@@ -1106,7 +1206,7 @@ async fn create_user(
     ))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ToSchema)]
 pub struct UpdateUserReq {
     #[serde(default)]
     pub display_name: Option<String>,
@@ -1123,6 +1223,21 @@ pub struct UpdateUserReq {
 /// `PATCH /api/platform/users/{username}` — 部分更新用户档案/角色/状态(manage_users)。
 ///
 /// 保护规则:不能停用自己的账号;不能停用/降级最后一名 ACTIVE 管理员。
+#[utoipa::path(
+    patch,
+    path = "/api/platform/users/{username}",
+    tag = "platform-auth",
+    params(("username" = String, Path, description = "用户名")),
+    request_body = UpdateUserReq,
+    responses(
+        (status = 200, description = "用户档案已更新", body = serde_json::Value),
+        (status = 400, description = "status 取值非法或角色不存在/已停用", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_users 权限/停用自己/最后一名管理员保护", body = serde_json::Value),
+        (status = 409, description = "用户不存在", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn update_user(
     State(shared): State<SharedFactsLog>,
     headers: HeaderMap,
@@ -1186,6 +1301,19 @@ async fn update_user(
 ///
 /// 保护规则:不能删除自己;不能删除最后一名 ACTIVE 管理员。
 /// 用户被删后其全部会话立即失效(回放后无此用户,validate_session 报 InvalidToken)。
+#[utoipa::path(
+    delete,
+    path = "/api/platform/users/{username}",
+    tag = "platform-auth",
+    params(("username" = String, Path, description = "用户名")),
+    responses(
+        (status = 200, description = "用户已删除(墓碑事实,历史保留)", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_users 权限/删除自己/最后一名管理员保护", body = serde_json::Value),
+        (status = 409, description = "用户不存在", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn delete_user(
     State(shared): State<SharedFactsLog>,
     headers: HeaderMap,
@@ -1220,6 +1348,16 @@ async fn delete_user(
 }
 
 /// `GET /api/platform/roles` — 角色列表(登录用户可读,工作流中的角色引用需要)。
+#[utoipa::path(
+    get,
+    path = "/api/platform/roles",
+    tag = "platform-auth",
+    responses(
+        (status = 200, description = "角色列表(含内置角色与权限集)", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 500, description = "事实回放失败", body = serde_json::Value)
+    )
+)]
 async fn list_roles(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
     require_session(&shared, &headers)?;
     let snap = PlatformSnapshot::replay(&shared).map_err(err_json)?;
@@ -1230,7 +1368,7 @@ async fn list_roles(State(shared): State<SharedFactsLog>, headers: HeaderMap) ->
     ))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ToSchema)]
 pub struct CreateRoleReq {
     pub name: String,
     #[serde(default)]
@@ -1239,6 +1377,20 @@ pub struct CreateRoleReq {
 }
 
 /// `POST /api/platform/roles` — 创建自定义角色(manage_roles)。
+#[utoipa::path(
+    post,
+    path = "/api/platform/roles",
+    tag = "platform-auth",
+    request_body = CreateRoleReq,
+    responses(
+        (status = 201, description = "自定义角色已创建", body = serde_json::Value),
+        (status = 400, description = "角色名非法或包含未知权限点", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_roles 权限", body = serde_json::Value),
+        (status = 409, description = "角色已存在", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn create_role(
     State(shared): State<SharedFactsLog>,
     headers: HeaderMap,
@@ -1274,7 +1426,7 @@ async fn create_role(
     ))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, ToSchema)]
 pub struct UpdateRoleReq {
     #[serde(default)]
     pub description: Option<String>,
@@ -1288,6 +1440,21 @@ pub struct UpdateRoleReq {
 ///
 /// 保护规则:内置角色不可停用;administrator 权限集不可修改(计划 D4);
 /// 其余内置角色权限集可调整(计划 §5 D4:内置不可删,administrator 单独锁权限集)。
+#[utoipa::path(
+    patch,
+    path = "/api/platform/roles/{name}",
+    tag = "platform-auth",
+    params(("name" = String, Path, description = "角色名")),
+    request_body = UpdateRoleReq,
+    responses(
+        (status = 200, description = "角色已更新", body = serde_json::Value),
+        (status = 400, description = "status 取值非法或包含未知权限点", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_roles 权限/内置角色不可停用/内置管理员权限集不可修改", body = serde_json::Value),
+        (status = 409, description = "角色不存在", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn update_role(
     State(shared): State<SharedFactsLog>,
     headers: HeaderMap,
@@ -1344,6 +1511,19 @@ async fn update_role(
 /// `DELETE /api/platform/roles/{name}` — 删除自定义角色(墓碑事实,manage_roles)。
 ///
 /// 保护规则:内置角色不可删除;仍有用户挂靠时拒绝(计划 D4:删除前检查引用)。
+#[utoipa::path(
+    delete,
+    path = "/api/platform/roles/{name}",
+    tag = "platform-auth",
+    params(("name" = String, Path, description = "角色名")),
+    responses(
+        (status = 200, description = "自定义角色已删除(墓碑事实)", body = serde_json::Value),
+        (status = 401, description = "未认证", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_roles 权限/内置角色不可删除", body = serde_json::Value),
+        (status = 409, description = "角色不存在或仍有用户挂靠", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
 async fn delete_role(
     State(shared): State<SharedFactsLog>,
     headers: HeaderMap,

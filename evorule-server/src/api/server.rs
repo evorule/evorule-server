@@ -2732,6 +2732,14 @@ async fn readiness(State(flag): State<ReadinessFlag>) -> Result<Json<ApiResponse
 ///
 /// 此端点免认证（Prometheus scraper 通常不携带 token），但仍受速率限制和并发限制保护。
 ///
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    tag = "metrics",
+    responses(
+        (status = 200, description = "Prometheus 文本格式指标", content_type = "text/plain", body = String)
+    )
+)]
 async fn metrics_handler(State(metrics): State<SharedMetrics>) -> String {
     metrics.render_as_text()
 }
@@ -7079,6 +7087,14 @@ pub struct BoundServiceInfo {
 /// service_registry.json（`registry`，带配置的 version/description）。
 /// 供场景包导入前的服务需求预检（02 方案 §3.5）与治理侧服务目录
 /// （`GET /v1/services`）做服务需求核对。
+#[utoipa::path(
+    get,
+    path = "/api/services",
+    tag = "services",
+    responses(
+        (status = 200, description = "执行侧已绑定服务全集（native + registry）", body = Vec<BoundServiceInfo>)
+    )
+)]
 pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<BoundServiceInfo>> {
     let mut out: Vec<BoundServiceInfo> = DemoServiceRouter::native_service_names()
         .iter()
