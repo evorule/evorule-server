@@ -54,14 +54,14 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     }
 }
 
-/// 从本仓 resources/core_eval.json 加载 transform 列表,并附加应用剧本兼容规则
+/// 从本仓 resources/server_eval.json 加载 transform 列表,并附加应用剧本兼容规则
 ///
 /// T8 迁出后 core_eval.json 为最小评估集(原子+控制流+兜底)。本测试为验证
 /// IoSubscriber/IoDispatcher 机制层行为,附加旧指令(save_memory/query_db/http_get)
 /// 与 call_service 的应用剧本形态 transform 规则——运行宪法由消费方自持(属地原则)。
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_path = manifest_dir.join("../resources/core_eval.json");
+    let core_eval_path = manifest_dir.join("../resources/server_eval.json");
 
     let json_str = std::fs::read_to_string(&core_eval_path)
         .unwrap_or_else(|e| panic!("Failed to read core_eval.json: {}", e));

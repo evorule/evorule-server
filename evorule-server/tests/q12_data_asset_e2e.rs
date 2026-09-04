@@ -220,7 +220,7 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
 
     // ================= 执行侧导入 =================
     let core_eval_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/server_eval.json");
     let sessions = SessionApi::new_with_full_config(
         vec![],
         100,

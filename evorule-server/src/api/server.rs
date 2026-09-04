@@ -231,7 +231,7 @@ pub struct SessionApi {
     /// reload 时会更新此处 + SessionManager 内部 core_eval
     core_eval: Arc<std::sync::RwLock<Arc<Vec<JsonValue>>>>,
 
-    /// core_eval.json 路径（TCB 宪法路径，reload 时重新读取）
+    /// core_eval.json 路径（TCB 宪法路径，reload 时重新读取；UV-044 起默认名 server_eval.json）
     core_eval_path: std::path::PathBuf,
 
     /// rules_dir 路径（业务规则目录，reload 时重扫描）
@@ -345,7 +345,7 @@ impl SessionApi {
             false,
             1000,
             1,
-            std::path::PathBuf::from("./resources/core_eval.json"),
+            std::path::PathBuf::from("./resources/server_eval.json"),
             std::path::PathBuf::from("./rules"),
         )
     }
@@ -776,16 +776,38 @@ impl SessionApi {
     fn load_core_eval_transforms(
         core_eval_path: &std::path::Path,
     ) -> Result<Vec<JsonValue>, String> {
-        let tcb_raw = std::fs::read_to_string(core_eval_path).map_err(|e| {
-            format!(
-                "读取 core_eval.json 失败 {}: {}",
-                core_eval_path.display(),
-                e
-            )
-        })?;
+        let tcb_raw = match std::fs::read_to_string(core_eval_path) {
+            Ok(s) => s,
+            Err(e) => {
+                // UV-044 兼容检测（拒绝静默回退）:v0.4.1 起 server 份宪法业务规则集由
+                // core_eval.json 更名为 server_eval.json。检测到"新名缺失但旧名存在"时,
+                // 显式给出迁移指引而非自动回退读旧名——遵循"系统自愈 + 用户可见"原则。
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    let legacy = core_eval_path.with_file_name("core_eval.json");
+                    if core_eval_path.file_name().and_then(|n| n.to_str())
+                        == Some("server_eval.json")
+                        && legacy.exists()
+                    {
+                        return Err(format!(
+                            "宪法文件 {} 不存在,但同目录检测到旧名 {} — v0.4.1 起 server 份宪法\
+                             业务规则集已更名为 server_eval.json(UV-044,与 evorule 仓宪法原则区分)。\
+                             迁移指引: ①将旧文件重命名为 server_eval.json;或 ②以 --core-eval / \
+                             EVORULE_CORE_EVAL / 配置文件 paths.core_eval 显式指定旧路径",
+                            core_eval_path.display(),
+                            legacy.display()
+                        ));
+                    }
+                }
+                return Err(format!(
+                    "读取宪法文件失败 {}: {}",
+                    core_eval_path.display(),
+                    e
+                ));
+            }
+        };
 
         let tcb_json: serde_json::Value = serde_json::from_str(&tcb_raw)
-            .map_err(|e| format!("解析 core_eval.json 失败: {}", e))?;
+            .map_err(|e| format!("解析宪法文件失败: {}", e))?;
 
         let tcb: Vec<JsonValue> = tcb_json
             .get("transform")
@@ -793,14 +815,14 @@ impl SessionApi {
             .map(|arr| arr.iter().cloned().map(serde_to_tcb).collect())
             .ok_or_else(|| {
                 format!(
-                    "core_eval.json {} 没有 transform 数组字段",
+                    "宪法文件 {} 没有 transform 数组字段",
                     core_eval_path.display()
                 )
             })?;
 
         if tcb.is_empty() {
             return Err(format!(
-                "core_eval.json {} 的 transform 数组为空",
+                "宪法文件 {} 的 transform 数组为空",
                 core_eval_path.display()
             ));
         }
@@ -824,7 +846,7 @@ impl SessionApi {
         });
         if !has_call_external {
             return Err(format!(
-                "core_eval.json {} 缺少 call_external 指令规则 — LLM 审计桥将静默失效,拒绝启动。\
+                "宪法文件 {} 缺少 call_external 指令规则 — LLM 审计桥将静默失效,拒绝启动。\
                  自诊断指引: ①检查该文件 transform 数组中是否存在 params.domain.instruction_type == \"call_external\" 的规则;\
                  ②v0.4.0 最小评估集不含该规则(ReAct 剧本迁出决策),需升级至 v0.4.1+ 或从源仓权威宪法同步;\
                  ③若为自定义宪法,请补入该规则或改用 --core-eval 指向完整宪法",
@@ -9631,9 +9653,9 @@ mod tests {
             1000,
             1,
             // TCB 宪法路径：相对仓库根定位（测试 CWD 为 crate 目录，
-            // "./resources/core_eval.json" 解析不到，滚动热重载 reload_from_disk 必读该文件）
+            // "./resources/server_eval.json" 解析不到，滚动热重载 reload_from_disk 必读该文件）
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../resources/core_eval.json"),
+                .join("../resources/server_eval.json"),
             rules_dir.clone(),
         );
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
@@ -9892,7 +9914,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../resources/core_eval.json");
+            .join("../resources/server_eval.json");
 
         // 执行侧领域 schema 注册（运维注入通道：{knowledge_dir}/domain_schemas/）
         let ddir = tmp.path().join("knowledge").join("domain_schemas");
@@ -9974,7 +9996,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../resources/core_eval.json");
+            .join("../resources/server_eval.json");
         let sessions = SessionApi::new_with_full_config(
             vec![],
             100,
@@ -10028,7 +10050,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../resources/core_eval.json");
+            .join("../resources/server_eval.json");
         let sessions = SessionApi::new_with_full_config(
             vec![],
             100,

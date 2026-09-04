@@ -316,7 +316,7 @@ async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
 /// `registry_present=false` 时注册表为空（负向：漏配场景）。
 fn build_session_api(rules_dir: &std::path::Path, echo_url: Option<&str>) -> SessionApi {
     let core_eval_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/server_eval.json");
 
     let registry = match echo_url {
         Some(url) => ServiceRegistry::load_from_str(&format!(

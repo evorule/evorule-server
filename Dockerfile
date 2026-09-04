@@ -8,7 +8,7 @@
 # 包含:
 #   - evorule-server/   (主 bin)
 #   - core/             (server 配套 lib: auth/io_handlers/metrics/...)
-#   - resources/        (CC0 资源: core_eval.json)
+#   - resources/        (CC0 资源: server_eval.json)
 #   - Cargo.toml + Cargo.lock (workspace 顶层)
 #
 # evorule 核心 (evorule-tcb/reactor/governance) 从 crates.io 拉,
@@ -155,8 +155,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制二进制
 COPY --from=builder /usr/local/bin/evorule-server /usr/local/bin/evorule-server
 
-# 复制 CC0 资源 (本仓自带 core_eval.json)
-COPY resources/core_eval.json /etc/evorule/core_eval.json
+# 复制 CC0 资源 (本仓自带 server_eval.json;UV-044 更名,旧名 core_eval.json)
+COPY resources/server_eval.json /etc/evorule/server_eval.json
 
 # 创建非 root 用户(安全: 容器逃逸时不获得 root 权限)
 RUN useradd -r -u 1000 -m -d /home/evorule -s /usr/sbin/nologin evorule \
@@ -170,7 +170,7 @@ EXPOSE 18080
 
 # 默认启动配置
 ENV EVORULE_ADDR=0.0.0.0:18080
-ENV EVORULE_CORE_EVAL=/etc/evorule/core_eval.json
+ENV EVORULE_CORE_EVAL=/etc/evorule/server_eval.json
 ENV EVORULE_DB_PATH=/data/evorule.db
 ENV EVORULE_MEMORY_DIR=/data/memory
 ENV EVORULE_LOG_LEVEL=info

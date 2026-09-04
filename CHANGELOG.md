@@ -30,6 +30,7 @@
 ### 🔄 变更
 
 - **核心引擎依赖 evorule-tcb / evorule-reactor / evorule-governance 0.4.0 → 0.4.1（UV-046 核心仓 P0 处置）**
+- **宪法文件更名 `resources/core_eval.json` → `resources/server_eval.json`（UV-044）** — 在文件名层面区分"宪法原则"（evorule 仓 `evorule-tcb/core_eval.json`）与"server 业务规则集"（本仓），落实 UV-043 双文件职责模型。`--core-eval` / `EVORULE_CORE_EVAL` / 配置字段 `paths.core_eval` 名称不变，仅默认路径指向新名；启动期新增旧名兼容检测——默认路径缺失但同目录存在旧名 `core_eval.json` 时拒绝启动并给出迁移指引（不静默回退）。已发 v0.4.0 包内旧名文件继续有效（显式指定路径即可）
 
 ### ⚠️ Breaking Change
 

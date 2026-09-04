@@ -60,7 +60,7 @@ else {
     $exe = Join-Path $repoRoot "target\debug\evorule-server.exe"
     $tmp = Join-Path $env:TEMP "evorule-plugins-e2e-$(Get-Random)"
     New-Item -ItemType Directory -Path (Join-Path $tmp "rules") -Force | Out-Null
-    $coreEval = Join-Path $repoRoot "resources\core_eval.json"
+    $coreEval = Join-Path $repoRoot "resources\server_eval.json"
 
     # 四份清单（三插件子集/三插件停用/混合/非法未知名——sampling 为 demo 真实
     # 原生服务的近似拼写,实名是 sampling_service;physics 场景用 physics_energy

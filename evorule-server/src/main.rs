@@ -229,7 +229,7 @@ struct Cli {
     #[arg(long, env = "EVORULE_SERVICE_TOKEN")]
     service_token: Option<String>,
 
-    /// 宪法文件路径（core_eval.json，不可热重载）
+    /// 宪法文件路径（server_eval.json，不可热重载；UV-044 更名）
     #[arg(long, env = "EVORULE_CORE_EVAL")]
     core_eval: Option<PathBuf>,
 
@@ -448,8 +448,9 @@ impl ResolvedConfig {
             core_eval: cli
                 .core_eval
                 .or(file.paths.core_eval)
-                // 默认指向本仓 resources/
-                .unwrap_or_else(|| PathBuf::from("./resources/core_eval.json")),
+                // 默认指向本仓 resources/(UV-044:v0.4.1 起 server 份宪法业务规则集
+                // 更名为 server_eval.json,与 evorule 仓宪法原则 core_eval.json 区分)
+                .unwrap_or_else(|| PathBuf::from("./resources/server_eval.json")),
             rules_dir: cli
                 .rules_dir
                 .or(file.paths.rules_dir)
@@ -689,16 +690,16 @@ fn ensure_dir(path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-/// 加载 core_eval.json 并转换为 transform 列表
+/// 加载宪法文件(server_eval.json)并转换为 transform 列表
 ///
 /// 注：当前服务器 runtime 不再使用此函数（改用 SessionApi::load_merged_transforms_from_fs 统一合并），
 /// 保留仅用于单元测试。
 #[cfg(test)]
 fn load_core_eval(path: &PathBuf) -> Result<Vec<JsonValue>, String> {
     let json_str = std::fs::read_to_string(path)
-        .map_err(|e| format!("读取 core_eval.json 失败 {}: {}", path.display(), e))?;
+        .map_err(|e| format!("读取宪法文件失败 {}: {}", path.display(), e))?;
     let json: serde_json::Value =
-        serde_json::from_str(&json_str).map_err(|e| format!("解析 core_eval.json 失败: {}", e))?;
+        serde_json::from_str(&json_str).map_err(|e| format!("解析宪法文件失败: {}", e))?;
     let transform: Vec<JsonValue> = json
         .get("transform")
         .and_then(|v| v.as_array())
@@ -706,7 +707,7 @@ fn load_core_eval(path: &PathBuf) -> Result<Vec<JsonValue>, String> {
         .unwrap_or_default();
     if transform.is_empty() {
         return Err(format!(
-            "core_eval.json 中没有 transform 规则(文件: {}),\
+            "宪法文件中没有 transform 规则(文件: {}),\
              请检查文件内容是否包含 \"transform\" 数组字段",
             path.display()
         ));
@@ -1984,7 +1985,7 @@ mod tests {
     fn test_resolve_defaults() {
         let cfg = ResolvedConfig::resolve(minimal_cli(), FileConfig::default());
         assert_eq!(cfg.addr, "0.0.0.0:18080");
-        assert_eq!(cfg.core_eval, PathBuf::from("./resources/core_eval.json"));
+        assert_eq!(cfg.core_eval, PathBuf::from("./resources/server_eval.json"));
         assert_eq!(cfg.rules_dir, PathBuf::from("./rules"));
         assert_eq!(cfg.db_path, PathBuf::from("./data/evorule.db"));
         assert_eq!(cfg.memory_dir, PathBuf::from("./data/memory"));
@@ -2213,9 +2214,9 @@ mod tests {
 
     #[test]
     fn test_load_core_eval_nonexistent() {
-        let err = load_core_eval(&PathBuf::from("/nonexistent/core_eval.json"))
+        let err = load_core_eval(&PathBuf::from("/nonexistent/server_eval.json"))
             .expect_err("不存在的文件应报错");
-        assert!(err.contains("读取 core_eval.json 失败"));
+        assert!(err.contains("读取宪法文件失败"));
     }
 
     // ============ ensure_dir 测试 ============

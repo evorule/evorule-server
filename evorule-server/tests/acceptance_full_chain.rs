@@ -184,7 +184,7 @@ async fn spawn_echo_service() -> String {
 /// 执行侧 SessionApi（与 binding_e2e 同口径：ServiceRegistryHandler + echo 注册表）
 fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi {
     let core_eval_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/core_eval.json");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/server_eval.json");
     let registry = ServiceRegistry::load_from_str(&format!(
         r#"{{ "{SVC}": {{ "url": "{echo_url}", "method": "POST" }} }}"#
     ))

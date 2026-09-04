@@ -31,7 +31,7 @@
 |---|---|---|
 | **本仓所有代码** | **AGPL-3.0-or-later / 商业许可(双轨)** | 详见 [LICENSE](LICENSE) 与 [DUAL_LICENSE.md](DUAL_LICENSE.md)/ [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md);开源采用 AGPL,闭源商业/白标需商业授权 |
 | **`docs/` 下文档** | **CC-BY-4.0** | 文档自由引用,须署名 |
-| **`resources/core_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法(解释器规范)——从 [核心仓](https://gitee.com/evorule/evorule)同步,任何人可自由使用 |
+| **`resources/server_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法·server 业务规则集(解释器规范+会话桥接)——v0.4.1 前旧名 `core_eval.json`(UV-044);与 [核心仓](https://gitee.com/evorule/evorule)宪法原则职责不同、独立演进,任何人可自由使用 |
 
 ## 依赖说明
 

@@ -12,7 +12,7 @@
 //! 4. **会话 fork** — 父子会话状态独立性
 //! 5. **因果链查询** — 追溯指定 Fact 的因果链
 //!
-//! 这些测试加载真实的 `core_eval.json`，
+//! 这些测试加载真实的 `server_eval.json`，
 //! 使用 `set` 指令产生可验证的 payload 变更，覆盖 HTTP handler →
 //! evorule-governance → evorule-reactor 的完整调用链。
 
@@ -62,21 +62,21 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     }
 }
 
-/// 加载 `core_eval.json`
+/// 加载 `server_eval.json`
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // evorule-server 独立仓:resources/ 在 crate 上一级(evorule-server/),
     // 故只需一级 `..`。原 `../../` 是从 evorule-application 仓复制时的遗留路径。
-    let core_eval_path = manifest_dir.join("../resources/core_eval.json");
+    let core_eval_path = manifest_dir.join("../resources/server_eval.json");
     let json_str = std::fs::read_to_string(&core_eval_path).unwrap_or_else(|e| {
         panic!(
-            "Failed to read core_eval.json at {}: {}",
+            "Failed to read server_eval.json at {}: {}",
             core_eval_path.display(),
             e
         )
     });
     let json: serde_json::Value =
-        serde_json::from_str(&json_str).expect("Failed to parse core_eval.json");
+        serde_json::from_str(&json_str).expect("Failed to parse server_eval.json");
     json.get("transform")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().cloned().map(serde_to_tcb).collect())
@@ -617,12 +617,12 @@ async fn test_session_rule_hot_reload() {
     let tmp_dir = TempDir::new().expect("Failed to create temp dir");
     let tmp_path = tmp_dir.path();
 
-    // 复制本仓宪法 resources/core_eval.json 到临时目录(T8 属地原则:不再跨仓引用 evorule-tcb 资产)
+    // 复制本仓宪法 resources/server_eval.json 到临时目录(T8 属地原则:不再跨仓引用 evorule-tcb 资产)
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_source = manifest_dir.join("../resources/core_eval.json");
+    let core_eval_source = manifest_dir.join("../resources/server_eval.json");
     let core_eval_content = fs::read_to_string(&core_eval_source).unwrap_or_else(|e| {
         panic!(
-            "Failed to read core_eval.json at {}: {}",
+            "Failed to read server_eval.json at {}: {}",
             core_eval_source.display(),
             e
         )
@@ -815,7 +815,7 @@ async fn test_audit_archive_replay_after_close_and_restart() {
 
     // 复制宪法到临时目录（与 hot_reload 测试同口径）
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_source = manifest_dir.join("../resources/core_eval.json");
+    let core_eval_source = manifest_dir.join("../resources/server_eval.json");
     let core_eval_content = fs::read_to_string(&core_eval_source).unwrap();
     let core_eval_path = tmp_path.join("core_eval.json");
     fs::write(&core_eval_path, &core_eval_content).unwrap();

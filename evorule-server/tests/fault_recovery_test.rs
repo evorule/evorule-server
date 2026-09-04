@@ -54,14 +54,14 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     }
 }
 
-/// 从本仓 resources/core_eval.json 加载 transform 列表,并附加应用剧本规则
+/// 从本仓 resources/server_eval.json 加载 transform 列表,并附加应用剧本规则
 ///
 /// T8 迁出后 core_eval.json 为最小评估集(原子+控制流+兜底),且不再跨仓引用
 /// evorule-tcb 资产(属地原则:运行宪法由消费方自持)。本测试为验证故障恢复
 /// 机制层行为,附加 call_service 的应用剧本形态 transform 规则。
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let core_eval_path = manifest_dir.join("../resources/core_eval.json");
+    let core_eval_path = manifest_dir.join("../resources/server_eval.json");
     let json_str = std::fs::read_to_string(&core_eval_path)
         .unwrap_or_else(|e| panic!("Failed to read core_eval.json: {}", e));
     let json: serde_json::Value =

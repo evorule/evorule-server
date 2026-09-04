@@ -3,5 +3,7 @@
 
 # TCB 宪法双仓关系:钉死 LF,消除行尾检出伪影。两份宪法自本仓 v0.4.1 起为
 # 同源分叉(核心=最小评估集,本仓=最小集+会话桥接规则,见 CHANGELOG
-# v0.4.1/v0.4.2),版本号与内容均不要求一致;核心最小集变更仍应人工合入本仓副本
-resources/core_eval.json text eol=lf
+# v0.4.1/v0.4.2),版本号与内容均不要求一致;server 份独立演进,核心最小集
+# 变更按需人工评估合入(UV-043 职责模型)。
+# UV-044:本仓文件更名为 server_eval.json,与核心仓宪法原则 core_eval.json 区分
+resources/server_eval.json text eol=lf
