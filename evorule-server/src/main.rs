@@ -1248,7 +1248,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // C5/C6：注册表显式绑定元数据（version/description）注入，供 /api/services 能力对账
     // 与 sensitive 服务绑定核对使用（02 方案服务契约三层闭环 层3）。
     .with_registry_services(registry.service_metadata());
-    session_api.start_reaper();
 
     // 创建 readiness flag（优雅退出时设为 false）
     let readiness: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
@@ -1298,6 +1297,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // T5: 把 workspace 元数据库注入 SessionApi，使 bundle 导入时写入审计溯源（bundle_imports 表，
     // 管理元数据墙钟旁路，不参与 fact/哈希/审计验证链）。须在 workspace_db 创建后、AppState 组装前注入。
     let session_api = session_api.with_workspace_db(workspace_db.clone());
+    // UV-079 ①: reaper 启动移到 workspace_db 注入之后——生产会话保活 + 失忆自愈
+    // 重建依赖该接线(原时序在注入前启动,reaper 拿不到 production_state)。
+    session_api.start_reaper();
     let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(session_api.clone());
     let workspace_service = Arc::new(evorule_workspace::WorkspaceService::new(
         workspace_db.clone(),

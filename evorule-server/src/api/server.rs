@@ -670,8 +670,21 @@ impl SessionApi {
     ///
     /// 应在服务器启动时调用一次。清理间隔为 5 分钟。
     ///
+    /// UV-079 ①: 必须在 `with_workspace_db` **之后**调用——生产会话保护与
+    /// 自愈重建依赖 workspace 元数据接线(main.rs 已调整启动时序)。
+    ///
     pub fn start_reaper(&self) {
         let sessions = self.sessions.clone();
+
+        let workspace_db = self.workspace_db.clone();
+
+        // UV-079 ①: 自愈重建句柄(仅 workspace_db 接线时启用;单测/无元数据
+        // 环境退化为原始 reap 行为,无保护无自愈)
+        let recovery_api = if workspace_db.is_some() {
+            Some(self.clone())
+        } else {
+            None
+        };
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(evorule_governance::session::REAPER_INTERVAL);
@@ -681,12 +694,10 @@ impl SessionApi {
             loop {
                 interval.tick().await;
 
-                let reaped = {
-                    let mgr = sessions.lock().await;
+                let (finished, expired) =
+                    reap_once(&sessions, workspace_db.as_ref(), recovery_api.as_ref()).await;
 
-                    mgr.reap_all()
-                };
-
+                let reaped = finished + expired;
                 if reaped > 0 {
                     tracing::info!(
                         reaped_count = reaped,
@@ -1204,6 +1215,118 @@ impl SessionApi {
     ) -> Result<(), String> {
         evorule_workspace::bundle_land::land_bundle_atomically(&self.rules_dir, bundle, result)
     }
+}
+
+/// UV-079 ①: reaper 单次回收(生产会话保活 + 失忆自愈重建)。
+///
+/// 从 `start_reaper` 抽出为独立异步函数以便单测(后台 spawn 任务不可直测)。
+/// 三段语义:
+///
+/// 1. **保活**: 回收前先 touch 生产会话。查询端点(state/invariants/finished)
+///    均不 touch,监控大屏在线也不保活——生产会话 30min 无命令即被 TTL 回收,
+///    `production_state.current_session_id` 成幻影引用(监控轮询/沙盒 fork 全
+///    404),直到重启才被 UV-070 重建。生产会话是当前生效规则集的执行载体,
+///    生命周期归治理链管辖(rolling_session 切换/server 退出),不适用空闲
+///    回收语义。
+/// 2. **回收**: `reap_all()`(此时生产会话 last_activity 刚刷新,TTL 检查不会
+///    命中;`reap_finished` 仍可回收 reactor 已退出的生产会话——那正是需要
+///    自愈的场景)。
+/// 3. **自愈**: 回收后检测生产会话存活,失忆则 error 报警 + 重建(与 UV-070
+///    启动期重建同构:保留 ruleset_version/hash,operator=system:reaper-recovery,
+///    语义为"替换会话引用"而非发布)。旧会话 WAL 留痕仍在磁盘(audit_archive
+///    可重建),内存 auditor 已随回收丢失——error 级报警供追溯(报警面纪律:
+///    静默处置允许,静默通过禁止)。
+///
+/// `workspace_db` 为 None(单测/无元数据接线)时退化为纯回收,无保护无自愈。
+/// 返回 (finished, expired) 细分(后台 reaper 记总数,手动 reap 端点报细分)。
+async fn reap_once(
+    sessions: &Arc<Mutex<session::SessionManager>>,
+    workspace_db: Option<&Arc<evorule_workspace::WorkspaceDb>>,
+    recovery_api: Option<&SessionApi>,
+) -> (usize, usize) {
+    let prod_id: Option<u64> = workspace_db.and_then(|db| {
+        db.get_production_state()
+            .inspect_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    "UV-079: reaper 读取 production_state 失败,本 tick 跳过生产会话保活(报警不静默)"
+                )
+            })
+            .ok()
+            .and_then(|ps| ps.current_session_id.map(|i| i as u64))
+    });
+
+    // 1. 保活: 生产会话仍存活则刷新 last_activity(TTL 检查随后不会命中)
+    if let Some(pid) = prod_id {
+        let mgr = sessions.lock().await;
+        if mgr.get_session(pid).is_some() {
+            mgr.touch_session(pid);
+        }
+    }
+
+    // 2. 回收(生产会话刚被 touch,TTL 不命中;finished 的生产会话会被回收,
+    //    由下一段自愈兜底)
+    let finished = {
+        let mgr = sessions.lock().await;
+
+        mgr.reap_finished()
+    };
+
+    let expired = {
+        let mgr = sessions.lock().await;
+
+        mgr.reap_expired()
+    };
+
+    // 3. 自愈: 生产会话失忆(被 reap_finished 回收/reactor 异常退出)时报警 + 重建
+    if let (Some(pid), Some(api), Some(db)) = (prod_id, recovery_api, workspace_db) {
+        let alive = api.sessions.lock().await.get_session(pid).is_some();
+        if !alive {
+            tracing::error!(
+                session_id = pid,
+                "UV-079: 生产会话失忆(reaper 回收/reactor 异常退出),触发运行期自愈重建"
+            );
+            // SessionOps::create_session 会为新会话 spawn IoSubscriber(与 UV-070
+            // 启动期重建同一条链)
+            match evorule_workspace::SessionOps::create_session(api).await {
+                Ok(new_id) => {
+                    let (version, hash) = db
+                        .get_production_state()
+                        .map(|ps| {
+                            (
+                                ps.ruleset_version,
+                                ps.ruleset_hash.as_deref().unwrap_or("").to_string(),
+                            )
+                        })
+                        .unwrap_or((0, String::new()));
+                    match db.update_production_state(new_id as i64, version, &hash, "system:reaper-recovery") {
+                        Ok(()) => {
+                            tracing::info!(
+                                stale_session_id = pid,
+                                new_session_id = new_id,
+                                "UV-079: 生产会话已自愈重建(保留 ruleset_version/hash,语义为替换会话引用)"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                new_session_id = new_id,
+                                "UV-079: 自愈重建 production_state 写入失败,新会话已建但引用未切换(下次 tick 重试)"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = ?e,
+                        "UV-079: 自愈重建会话创建失败,生产链路受阻(沙盒 fork/监控将 404)直至重建成功"
+                    );
+                }
+            }
+        }
+    }
+
+    (finished, expired)
 }
 
 // =============================================================================
@@ -3406,11 +3529,14 @@ async fn session_metadata(
 )]
 
 async fn session_reap(State(api): State<SessionApi>) -> Result<Json<ReapResponse>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let finished = sessions.reap_finished();
-
-    let expired = sessions.reap_expired();
+    // UV-079 ①: 手动回收与后台 reaper 走同一 reap_once——生产会话保活 +
+    // 失忆自愈(否则手动触发 reap 可绕过保护,把 TTL 到期的生产会话回收成幻影)
+    let (finished, expired) = reap_once(
+        &api.sessions,
+        api.workspace_db.as_ref(),
+        Some(&api),
+    )
+    .await;
 
     Ok(Json(ReapResponse {
         finished,
@@ -3438,6 +3564,8 @@ async fn session_reap(State(api): State<SessionApi>) -> Result<Json<ReapResponse
 
         (status = 200, description = "会话已关闭", body = SessionIdResponse),
 
+        (status = 409, description = "拒绝关闭：该会话是生产会话（production_state.current_session_id 引用中），须走治理发布流切换或重启 server 重建"),
+
         (status = 404, description = "会话不存在")
 
     )
@@ -3451,6 +3579,35 @@ async fn close_session(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // UV-079 ①b: 生产会话删除保护(fail-fast + 自诊断指引)。
+    // DELETE 恰指向 production_state.current_session_id 时,删除后引用成
+    // 幻影(监控大屏轮询 404、沙盒 fork 404),直到重启才被 UV-070 重建。
+    // 生产会话生命周期归治理链管辖(rolling_session 切换/server 退出导出),
+    // 不开放裸删除;确需重置请走治理发布流切换,或重启 server(触发 UV-070 重建)。
+    // 注: rolling_session 对旧生产会话的回收走内部 drain+close(SessionOps
+    // trait,switch 之后才关闭),不经本 HTTP 端点,治理链不受此保护影响。
+    if let Some(ws_db) = &api.workspace_db {
+        match ws_db.get_production_state() {
+            Ok(ps) if ps.current_session_id == Some(session_id as i64) => {
+                tracing::warn!(
+                    session_id,
+                    "UV-079: 拒绝删除生产会话(production_state.current_session_id 引用中)"
+                );
+                return Err(StatusCode::CONFLICT);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // fail-closed: 读不到状态 = 无法排除是生产会话,保守拒绝
+                tracing::error!(
+                    error = %e,
+                    session_id,
+                    "UV-079: close_session 读取 production_state 失败,保守拒绝删除"
+                );
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
     let result = {
         let sessions = api.sessions.lock().await;
 
@@ -8364,17 +8521,19 @@ mod tests {
 
         let governance = GovernanceApi::new(tx, facts_log, auditor);
 
-        let sessions = SessionApi::new(core_eval, 100);
+        // P10: 构造测试用 WorkspaceState (内存 SQLite + 桥接到 sessions)
+
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+
+        // UV-079 ①: SessionApi 接线 workspace_db(close_session 生产会话保护 +
+        // reaper 保活/自愈依赖);与 main.rs 生产装配时序一致
+        let sessions = SessionApi::new(core_eval, 100).with_workspace_db(ws_db.clone());
 
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
 
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
 
         let shared_facts = SharedFactsLog::new();
-
-        // P10: 构造测试用 WorkspaceState (内存 SQLite + 桥接到 sessions)
-
-        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
 
         let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(sessions.clone());
 
@@ -9056,6 +9215,114 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         assert_eq!(json["sessions"][0].as_u64(), Some(session_id));
+    }
+
+    // --- UV-079 ①: reaper 生产会话保活 + 失忆自愈 + 删除保护 ---
+
+    /// UV-079 ①a: reap_once 保活——生产会话被 touch,非生产会话 TTL 到期被回收。
+    /// 内含对照组: 两会话同时创建同时到期,仅生产会话存活 ⇒ 存活来自保活而非 TTL 未到。
+    #[tokio::test]
+    async fn test_uv079_reap_once_keeps_production_session_alive() {
+        let mut instr = std::collections::BTreeMap::new();
+        instr.insert("type".to_string(), JsonValue::string("noop"));
+        let core_eval = vec![JsonValue::Object(instr)];
+
+        // 短 TTL(100ms) 直接组装 SessionManager,绕过 SessionApi 默认 30min TTL
+        let sessions: Arc<Mutex<session::SessionManager>> = Arc::new(Mutex::new(
+            session::SessionManager::with_limits(
+                core_eval,
+                100,
+                100,
+                std::time::Duration::from_millis(100),
+            ),
+        ));
+
+        let prod_id = sessions.lock().await.create_session().unwrap();
+        let other_id = sessions.lock().await.create_session().unwrap();
+
+        let db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        db.update_production_state(prod_id as i64, 0, "", "test:uv079")
+            .unwrap();
+
+        // 等待两会话空闲到期(150ms > 100ms TTL;reap_once 内 touch 会重置
+        // 生产会话的 last_activity,故其存活只能来自保活)
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let (finished, expired) = reap_once(&sessions, Some(&db), None).await;
+
+        // 非生产会话被回收;生产会话被 touch 保活存活(幻影引用未发生)
+        assert_eq!(finished + expired, 1);
+        assert!(sessions.lock().await.get_session(prod_id).is_some());
+        assert!(sessions.lock().await.get_session(other_id).is_none());
+    }
+
+    /// UV-079 ①a: reap_once 自愈——幻影引用(current_session_id 指向不存在的
+    /// 会话,UV-079 原始形态)被检测并重建,版本/哈希保留。
+    #[tokio::test]
+    async fn test_uv079_reap_once_recovers_phantom_production_reference() {
+        let (state, _) = make_test_state();
+        let api = state.sessions.clone();
+        let db = api.workspace_db.clone().unwrap();
+        let sessions = api.sessions.clone();
+
+        // 构造幻影: 引用不存在的会话 999,版本 5/哈希 hash-abc
+        db.update_production_state(999, 5, "hash-abc", "test:uv079")
+            .unwrap();
+
+        reap_once(&sessions, Some(&db), Some(&api)).await;
+
+        let ps = db.get_production_state().unwrap();
+        let new_id = ps.current_session_id.expect("自愈后必有生产会话引用");
+        assert_ne!(new_id, 999);
+        // 语义为"替换会话引用"而非发布: 版本/哈希保留
+        assert_eq!(ps.ruleset_version, 5);
+        assert_eq!(ps.ruleset_hash.as_deref(), Some("hash-abc"));
+        assert_eq!(ps.last_operated_by.as_deref(), Some("system:reaper-recovery"));
+        // 新会话真实存活(不再是幻影)
+        assert!(sessions.lock().await.get_session(new_id as u64).is_some());
+    }
+
+    /// UV-079 ①b: DELETE 生产会话被 409 拒绝且会话存活;普通会话删除不受影响。
+    #[tokio::test]
+    async fn test_uv079_close_production_session_rejected_409() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+        let api = state.sessions.clone();
+        let db = api.workspace_db.clone().unwrap();
+
+        // 创建两个会话,其一标记为生产
+        let (prod_id, other_id) = {
+            let mgr = api.sessions.lock().await;
+            let p = mgr.create_session().unwrap();
+            let o = mgr.create_session().unwrap();
+            (p, o)
+        };
+        db.update_production_state(prod_id as i64, 0, "", "test:uv079")
+            .unwrap();
+
+        // 删除生产会话 → 409 拒绝(fail-fast,指引走治理流/重启)
+        let (status, _) = oneshot_json(
+            router.clone(),
+            "DELETE",
+            &format!("/api/sessions/{prod_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // 会话未被关闭(保护生效)
+        assert!(api.sessions.lock().await.get_session(prod_id).is_some());
+
+        // 删除普通会话 → 200(既有行为不受影响)
+        let (status, _) = oneshot_json(
+            router.clone(),
+            "DELETE",
+            &format!("/api/sessions/{other_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(api.sessions.lock().await.get_session(other_id).is_none());
     }
 
     // --- 014 强制中止端点（--allow-abort） ---
