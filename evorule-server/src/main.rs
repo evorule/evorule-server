@@ -1549,7 +1549,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 9. 启动服务器（带优雅退出）
     // 使用 into_make_service_with_connect_info 注入客户端 IP，
     // 以支持 GovernorLayer（速率限制）按 IP 限流
-    let listener = tokio::net::TcpListener::bind(&cfg.addr).await?;
+    // UV-056:bind 失败必须双通道可见 —— ①error! 级日志落 --log-file 文件
+    // （此前 `?` 直接传播,日志文件止于启动 info 流无 ERROR 行）;②格式化错误
+    // 消息返回 main（stderr 打印,分发包 bat 以 2>> 收集 stderr 后用户可查）。
+    let bind_addr = &cfg.addr;
+    let listener = match tokio::net::TcpListener::bind(bind_addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            // 端口号从 addr 字符串尾部截取(供 netstat 定位指引;解析失败给兜底提示)
+            let port = bind_addr.rsplit(':').next().unwrap_or("<端口解析失败>");
+            error!(
+                "监听地址绑定失败 {}: {} — 端口大概率已被占用。自诊断指引: \
+                 ①Windows 下 `netstat -ano | findstr :{port}` 找到占用进程 PID,\
+                 任务管理器确认后结束该进程(常见为上次未退出的 evorule-server 残留实例);\
+                 ②或用 --addr 换一个空闲端口(同时更新前端指向);\
+                 ③若为治理端口 18081,同法处置 evorule-rule-serve 残留实例",
+                bind_addr,
+                e,
+                port = port
+            );
+            return Err(format!(
+                "监听地址绑定失败 {}: {} — 端口大概率已被占用\
+                 （详见日志文件 ERROR 记录: netstat -ano | findstr :{port} 定位占用进程）",
+                bind_addr,
+                e,
+                port = port
+            )
+            .into());
+        }
+    };
     let router = server.build_router();
     let serve = axum::serve(
         listener,
