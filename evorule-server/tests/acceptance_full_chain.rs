@@ -704,7 +704,15 @@ async fn acceptance_credential_scan_blocks_publish() {
         "POST",
         "/v1/datasets",
         Some(&root),
-        Some(json!({ "dataset_id": "ds-cred", "name": "含凭据数据集", "domain": ["tax"] })),
+        // law_ref:通过 UV-051 前置校验(auto_by_effective_date 缺省模式需生效基准),
+        // 让发布链抵达凭据扫描断言点(UV-077:此前 fixture 缺锚被前置校验先拦,
+        // 断言"凭据扫描拦截"永不成立)
+        Some(json!({
+            "dataset_id": "ds-cred",
+            "name": "含凭据数据集",
+            "domain": ["tax"],
+            "law_ref": { "document_id": "acc-cred-scan", "effective_from": "2026-01-01" }
+        })),
     )
     .await;
     assert_eq!(st, axum::http::StatusCode::CREATED, "{body}");
