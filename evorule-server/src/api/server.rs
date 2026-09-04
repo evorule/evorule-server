@@ -240,6 +240,9 @@ pub struct SessionApi {
     /// knowledge 数据资产目录（Q12 W1：与 rules_dir 物理隔离，`{knowledge_dir}/bundles/`）
     knowledge_dir: std::path::PathBuf,
 
+    /// 模板市场目录（UV-084 W4 / UV-064：与 rules_dir 物理隔离，`{marketplace_dir}/templates/{id}/`）
+    marketplace_dir: std::path::PathBuf,
+
     /// 执行侧数据资产库（Q12 W2：启动/导入时从 knowledge_dir 加载；W3 经
     /// `knowledge_store()` 直读。数据条目不进 TCB，本库是执行侧唯一消费通道）
     knowledge_store: Arc<std::sync::RwLock<Arc<crate::knowledge_store::KnowledgeStore>>>,
@@ -423,6 +426,14 @@ impl SessionApi {
             .parent()
             .map(|p| p.join("knowledge"))
             .unwrap_or_else(|| std::path::PathBuf::from("knowledge"));
+
+        // UV-084 W4：模板市场目录与 rules_dir 物理隔离（同 knowledge 派生法：
+        // `{rules 父目录}/marketplace`）。TCB 扫描 rules_dir，用户上传内容
+        // 绝不可入规则加载路径。目录懒创建（首次上传时建）。
+        let marketplace_dir = rules_dir
+            .parent()
+            .map(|p| p.join("marketplace"))
+            .unwrap_or_else(|| std::path::PathBuf::from("marketplace"));
         let (knowledge_store, knowledge_load_error) =
             match crate::knowledge_store::KnowledgeStore::load_from_disk(&knowledge_dir) {
                 Ok(ks) => (ks, None),
@@ -446,6 +457,8 @@ impl SessionApi {
             rules_dir,
 
             knowledge_dir,
+
+            marketplace_dir,
 
             knowledge_store: Arc::new(std::sync::RwLock::new(Arc::new(knowledge_store))),
 
@@ -1870,6 +1883,9 @@ pub struct AppState {
     /// UV-020:演示登录入口开关（--demo-auth，默认开）。
     /// 经 /api/platform/auth/status 公开下发，登录页据此隐藏演示入口。
     demo_auth: bool,
+
+    /// 模板市场目录句柄（UV-084 W4 / UV-064；经 FromRef 供 marketplace handler 提取）
+    marketplace_dir: MarketplaceDir,
 }
 
 impl AppState {
@@ -1888,6 +1904,9 @@ impl AppState {
         workspace: WorkspaceState,
         sanitizer: Arc<InputSanitizer>,
     ) -> Self {
+        // UV-084 W4：模板市场目录自 SessionApi 派生（rules_dir 父目录拼接）——
+        // 同模块直读私有字段；先取路径再移动 sessions，避免 use-after-move
+        let marketplace_dir = MarketplaceDir(sessions.marketplace_dir.clone());
         Self {
             governance,
 
@@ -1903,6 +1922,7 @@ impl AppState {
             sanitizer,
             // UV-020:演示登录入口默认开（体验包语义；生产建议 --demo-auth false）
             demo_auth: true,
+            marketplace_dir,
         }
     }
 
@@ -1967,6 +1987,16 @@ impl FromRef<AppState> for WorkspaceState {
 impl FromRef<AppState> for Arc<InputSanitizer> {
     fn from_ref(state: &AppState) -> Self {
         state.sanitizer.clone()
+    }
+}
+
+/// 模板市场目录句柄（UV-084 W4 / UV-064；经 FromRef 从 AppState 派生，handler 直取）
+#[derive(Clone)]
+pub struct MarketplaceDir(pub std::path::PathBuf);
+
+impl FromRef<AppState> for MarketplaceDir {
+    fn from_ref(state: &AppState) -> Self {
+        state.marketplace_dir.clone()
     }
 }
 
@@ -7059,6 +7089,8 @@ impl GovernanceServer {
             )
             // 权限管理端点族（A-流 权限系统，受认证保护）
             .merge(crate::api::permissions::permissions_router())
+            // 模板市场端点族（UV-084 W4 / UV-064 实化，受认证保护）
+            .merge(crate::api::marketplace::marketplace_router())
             // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)
             .merge(evorule_workspace::build_workspace_router())
             // abort 双保险：条件挂载（--allow-abort 关闭时为空 Router）

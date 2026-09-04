@@ -63,8 +63,8 @@ tokio = { version = "1", features = [
     "signal",
 ] }
 
-# HTTP API(直接使用 axum 类型)
-axum = "0.8"
+# HTTP API(直接使用 axum 类型;multipart 供模板市场上传 UV-084 W4)
+axum = { version = "0.8", features = ["multipart"] }
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "limit", "fs"] }
 tower_governor = "0.8"
