@@ -25,7 +25,7 @@ MAJOR.MINOR.PATCH
 - **MINOR**: 新功能(新 HTTP 路由、新 lib、新 feature flag)
 - **PATCH**: bug 修复、性能优化、文档更新
 
-**预发布标签**:`v0.4.0-alpha.1` / `v0.4.0-beta.1`(发布前测试)
+**预发布标签**:`v0.4.1-alpha.1` / `v0.4.1-beta.1`(发布前测试)
 
 ---
 
@@ -105,7 +105,7 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 | v0.x.0 → v1.0.0 | 3-6 个月 | API 锁定 + 安全审计 + 文档完善 |
 | v1.0.0 之后 | 6-8 周/版本 | 正式 release,严格 semver |
 
-**当前阶段**:v0.4.0
+**当前阶段**:v0.4.1
 
 ---
 
@@ -114,7 +114,7 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 - `vX.Y.Z` —— 正式发布
 - `vX.Y.Z-alpha.N` —— 内部测试
 - `vX.Y.Z-beta.N` —— 公开测试
-- 不用 `v0.4.0-rc.1` 这种(我们没 RC 阶段)
+- 不用 `v0.4.1-rc.1` 这种(我们没 RC 阶段)
 
 ---
 

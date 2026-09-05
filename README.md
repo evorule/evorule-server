@@ -34,18 +34,22 @@
 
 ---
 
-> ## ✅ v0.4.0 — 稳定发布 (2026-09-02)
+> ## ✅ v0.4.1 — 稳定发布 (2026-09-02)
 >
-> 这是 EvoRule Server 仓的**第四个版本**。
+> 这是 EvoRule Server 仓的**第五个版本**。
 > **本仓库独立 release**,不绑核心仓的发布节奏。
 >
-> v0.4.0 主要变化:核心引擎升级 0.4.0(单会话长跑 O(n²) 性能缺陷修复,
-> 实测 10000 命令会话 51s 全程平坦;⚠️ WAL 事实格式升级单向——新代码可读旧格式,
-> 旧代码不可读新格式);平台用户体系与统一认证;审计档案只读 API;
+> 0.4.1 主要变化:核心引擎依赖 0.4.0 → 0.4.1(UV-046 核心仓 P0 处置);
+> ⚠️ `GET /api/sessions/:id/diff` 版本不可达由"空 diff"改为 `400 BAD_REQUEST`;
+> 宪法文件更名 `core_eval.json` → `server_eval.json`(启动期旧名兼容检测,不静默回退)。
+> 详见 [CHANGELOG](CHANGELOG.md)。
+> 上一版 0.4.0:核心引擎升级 0.4.0(单会话长跑 O(n²) 性能缺陷修复,
+> 实测 10000 命令会话 51s 全程平坦);平台用户体系与统一认证;审计档案只读 API;
 > 插件清单三级配置(`--plugins`);physics-services / indicator-services 两个确定性原生插件;
 > 负载演练与性能基准三件套;AGPL + 商业双许可体系。
-> 上一版 0.3.0(2026-08-26):核心库依赖 crates.io 0.3.2;`core/rule_schema` Schema 门禁;
-> /api/bundles 规则包 API;/api/permissions 权限 API;evorule-bundle 快照包共享校验。
+> 更早版本见 [CHANGELOG](CHANGELOG.md)。
+>
+> **版本策略**:生态内各仓版本号**独立发展、独立发布**,互不强求一致——核心仓(evorule)技术定位稳定、几乎不改动,本仓与其他各仓快速演进,版本号只与本仓 CHANGELOG 对应。
 >
 > 本仓库**不是** EvoRule 的核心引擎 —— 核心引擎以 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 形式发布到 crates.io。本仓的定位是**框架的官方 HTTP server 实现** + server 配套的 lib(auth / io_handlers / metrics / hot_reload / debug_control / semantic_invariants / time_machine / rule_tools / workspace)。
 >
