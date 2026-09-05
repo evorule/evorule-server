@@ -518,7 +518,7 @@ cargo build --release
 
 见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-> 本生态以 **Gitee 为主仓**,GitHub 为同步镜像——Issue 与 PR 请提交到 [Gitee](https://gitee.com/evorule/evorule-server)。
+> Issue 与 PR 请提交到 [Gitee](https://gitee.com/evorule/evorule-server)。
 
 ---
 

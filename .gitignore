@@ -73,3 +73,6 @@ wendang/**
 # 临时测试脚本和输出（联调时产生，不应进版本控制）
 test_api.ps1
 test_output.txt
+
+# 本地 cargo override（不进 CI，见 evorule-server/Cargo.toml UV-100 注释）
+.cargo/config.toml

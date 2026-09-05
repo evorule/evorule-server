@@ -99,7 +99,10 @@ jobs:
           key: test-${{ hashFiles('**/Cargo.toml') }}
 
       - name: cargo test --workspace
-        run: cargo test --workspace --all-features
+        # UV-100: 去掉 --all-features —— full-chain-tests 门控的三个跨仓集成
+        # 测试依赖兄弟仓 evorule-rule（git rev dev-dep），CI 默认布局不启用该
+        # feature（required-features 未满足不编译）；本地联测见 Cargo.toml 注释
+        run: cargo test --workspace
 
   # ===== Release build =====
   build:

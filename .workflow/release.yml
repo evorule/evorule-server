@@ -1,0 +1,120 @@
+# EvoRule Server Gitee Release 流水线 (Gitee Go)
+#
+# 定位: gitee 是主仓/发布主入口; github 是镜像(承担双平台构建并回传附件)
+# 触发: 推送 v* tag (网页流水线"触发器"配置 Tag 前缀 v)
+# 产物: Linux x86_64 musl 静态二进制 + sha256, 发布到 Gitee Release
+#       Windows x86_64 二进制由 .github/workflows/release.yml 的 attach-gitee
+#       job 构建后经 Gitee OpenAPI 附加到同一 Release(幂等,不存在则创建)
+#
+# 备注(对齐 evorule 仓 UV-098 记录): Gitee Go 云端 agent 对当前账号不可用
+# (agents not available,资源侧问题);本文件为 agent 就绪后的原生构建脚本,
+# 当前实际发版由 .github/workflows/release.yml 承担。
+#
+# 网页配置指引:
+# 1. 仓库页 → 流水线 → 新建流水线 → 代码视图,粘贴本文件
+#    (若 triggers 段保存报错,删除 triggers 段,改在网页触发器里配 Tag 前缀 v)
+# 2. 流水线参数/私密参数: 添加 GITEE_TOKEN (个人令牌,勾选 releases+projects 权限)
+# 3. 保存后推送 v* tag 即自动触发;也可手动运行验证
+version: '1.0'
+name: release
+displayName: 'EvoRule Server Release(tag 触发,Linux musl 构建,发布 Gitee Release)'
+triggers:
+  push:
+    tags:
+      prefix: 'v'
+
+stages:
+  - name: stage-build-release
+    displayName: '构建 Linux musl 并发布'
+    steps:
+      - step: shell@agent
+        name: build-linux-release
+        displayName: '构建 + 发布'
+        inputs:
+          - name: SHELL_SCRIPT
+            value: |
+              set -e
+              echo "=== EvoRule Server Release 流水线 ==="
+              # tag 上运行校验 + 取 TAG(不依赖平台变量名,git 现场取最稳)
+              git describe --tags --exact-match >/dev/null 2>&1 || { echo "ERROR: 流水线未运行在 tag 上"; exit 1; }
+              TAG=$(git describe --tags --exact-match)
+              echo "TAG=$TAG  commit=$(git rev-parse --short HEAD)"
+
+              # 1. Rust 工具链(与 evorule 仓 CI 同口径 1.97.1;Gitee 原生支持到 1.93,超出版本自装)
+              source "$HOME/.cargo/env" 2>/dev/null || true
+              # 国内构建机走 rsproxy 镜像,失败再退官方源
+              export RUSTUP_DIST_SERVER="${RUSTUP_DIST_SERVER:-https://rsproxy.cn}"
+              export RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT:-https://rsproxy.cn/rustup}"
+              if ! rustc --version 2>/dev/null | grep -q '1.97'; then
+                echo "安装 Rust 1.97.1 (dist=$RUSTUP_DIST_SERVER) ..."
+                if ! rustup toolchain install 1.97.1 --profile minimal --no-self-update 2>/dev/null; then
+                  curl --retry 3 --retry-delay 5 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1 --profile minimal --no-modify-path
+                  source "$HOME/.cargo/env"
+                fi
+              fi
+              rustup default 1.97.1 2>/dev/null || true
+              rustc --version
+              rustup target add x86_64-unknown-linux-musl
+              # cargo 拉依赖走 rsproxy(无该配置则写一份;已有 config 跳过)
+              if ! grep -q rsproxy "$HOME/.cargo/config.toml" 2>/dev/null && ! grep -q rsproxy "$HOME/.cargo/config" 2>/dev/null; then
+                mkdir -p "$HOME/.cargo"
+                cat > "$HOME/.cargo/config.toml" <<'CARGOEOF'
+              [source.crates-io]
+              replace-with = 'rsproxy-sparse'
+              [source.rsproxy-sparse]
+              registry = "sparse+https://rsproxy.cn/index/"
+              [registries.rsproxy]
+              index = "sparse+https://rsproxy.cn/index/"
+              CARGOEOF
+                echo "cargo 已配置 rsproxy 镜像"
+              fi
+
+              # 2. musl 系统工具(glibc 侧静态链接支撑;TLS 为 rustls,无系统 OpenSSL 依赖)
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq && apt-get install -y -qq musl-tools || echo "WARN: musl-tools 安装异常,继续尝试构建"
+              fi
+
+              # 3. 构建 server 二进制(与 .github/workflows/release.yml 同口径)
+              cargo build -p evorule-server --release --target x86_64-unknown-linux-musl --bin evorule-server
+
+              # 4. binary sanity check(防"编译过但起不来"被当成成功)
+              cd target/x86_64-unknown-linux-musl/release
+              ./evorule-server --help >/dev/null
+              sha256sum evorule-server > evorule-server-linux-x86_64.sha256
+              cp evorule-server evorule-server-linux-x86_64
+              ls -la evorule-server-linux-x86_64*
+
+              # 5. 发布到 Gitee Release(OpenAPI v5;幂等:已存在则复用,供 github 侧附加 Windows 产物)
+              REPO="evorule/evorule-server"
+              if [ -z "$GITEE_TOKEN" ]; then echo "ERROR: 私密参数 GITEE_TOKEN 未配置"; exit 1; fi
+              RELEASE_RESP=$(curl --retry 3 --retry-delay 5 --retry-connrefused -fsS -X POST \
+                "https://gitee.com/api/v5/repos/${REPO}/releases" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: token ${GITEE_TOKEN}" \
+                -d "{\"tag_name\":\"${TAG}\",\"name\":\"EvoRule Server ${TAG}\",\"body\":\"EvoRule Server ${TAG} — 详见 CHANGELOG.md\",\"target_commitish\":\"main\"}" \
+                || echo "")
+              RELEASE_ID=$(echo "${RELEASE_RESP}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || echo "")
+              if [ -z "$RELEASE_ID" ]; then
+                echo "Release 可能已存在,按 tag 查询..."
+                RELEASE_ID=$(curl --retry 3 --retry-delay 5 --retry-connrefused -fsS \
+                  "https://gitee.com/api/v5/repos/${REPO}/releases/tags/${TAG}" \
+                  -H "Authorization: token ${GITEE_TOKEN}" \
+                  | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+              fi
+              if [ -z "$RELEASE_ID" ]; then
+                echo "ERROR: 无法获取 Release id"
+                echo "响应: ${RELEASE_RESP}"
+                exit 1
+              fi
+              echo "Release id: ${RELEASE_ID}"
+
+              for f in evorule-server-linux-x86_64 evorule-server-linux-x86_64.sha256; do
+                echo "上传 ${f} ..."
+                curl --retry 3 --retry-delay 5 --retry-connrefused -fsS -X POST \
+                  "https://gitee.com/api/v5/repos/${REPO}/releases/${RELEASE_ID}/attach_files" \
+                  -H "Authorization: token ${GITEE_TOKEN}" \
+                  -F "file=@${f}"
+                echo ""
+              done
+              echo "DONE: https://gitee.com/${REPO}/releases/tag/${TAG}"
+              echo "(Windows 产物由 GitHub Actions attach-gitee job 附加到同一 Release)"

@@ -327,23 +327,9 @@ impl SandboxService {
             .get_sandbox_session(sandbox_id)?
             .ok_or_else(|| WorkspaceError::not_found("sandbox", sandbox_id.to_string()))?;
 
-        if sandbox.status != SandboxStatus::Running {
-            return Err(WorkspaceError::InvalidStateTransition {
-                from: sandbox.status.as_str().to_string(),
-                to: SandboxStatus::Closed.as_str().to_string(),
-            });
-        }
-
-        // 校验成员权限
-        if !self
-            .db
-            .is_workspace_member(&sandbox.workspace_id, closed_by)?
-        {
-            return Err(WorkspaceError::forbidden(format!(
-                "user {closed_by} is not a member of workspace {}",
-                sandbox.workspace_id
-            )));
-        }
+        // UV-100: 认知复杂度拆分 — 校验/导出/报告三个语义块提为独立方法,
+        // 编排逻辑留在本函数(此前 31/25 触发 clippy cognitive_complexity)
+        self.validate_sandbox_close(&sandbox, closed_by)?;
 
         let tcb_session_id = sandbox.tcb_session_id.unwrap_or(0) as u64;
 
@@ -353,18 +339,9 @@ impl SandboxService {
         }
 
         // 导出 test Fact (通过 audit/export API, 存为 JSON 文件)
-        let export_path = format!(
-            "{}/sandbox_{}_{}.json",
-            SANDBOX_REPORT_DIR,
-            sandbox_id,
-            chrono::Utc::now().timestamp()
-        );
-        let audit_data = self.session_ops.get_audit_export(tcb_session_id).await?;
-        std::fs::create_dir_all(SANDBOX_REPORT_DIR).map_err(|e| {
-            WorkspaceError::internal(format!("create sandbox_report dir failed: {e}"))
-        })?;
-        std::fs::write(&export_path, &audit_data)
-            .map_err(|e| WorkspaceError::internal(format!("write sandbox export failed: {e}")))?;
+        let export_path = self
+            .export_sandbox_facts(sandbox_id, tcb_session_id)
+            .await?;
 
         // UV-072: 关闭前(session 仍活)生成完整 TestReport 并落盘。
         // 此前仅导出 fact 链文件,summary 报告未持久化 → 关闭后
@@ -372,40 +349,8 @@ impl SandboxService {
         // 机器证据回填与"查看报告"功能全断。
         // 报告文件与 facts 文件同目录同时间戳配对:report_sandbox_{id}_{ts}.json
         // (generate_test_report 关闭态按 export_path 推导本路径读取)。
-        let report_path = format!(
-            "report_{}",
-            export_path.rsplit('/').next().unwrap_or_default()
-        );
-        let report_path = format!("{}/{}", SANDBOX_REPORT_DIR, report_path);
-        {
-            let state_val = self.session_ops.get_session_state(tcb_session_id).await?;
-            let audit_val = self.session_ops.get_audit_report(tcb_session_id).await?;
-            let facts_val = self.session_ops.get_facts(tcb_session_id).await?;
-            let report = TestReportBuilder::new()
-                .sandbox_id(sandbox_id.to_string())
-                .workspace_id(sandbox.workspace_id.clone())
-                .tcb_session_id(tcb_session_id)
-                .parent_session_id(Some(sandbox.parent_session_id as u64))
-                .draft_ruleset_hash(sandbox.draft_ruleset_hash.clone().unwrap_or_default())
-                .state(state_val)
-                .audit(audit_val)
-                .facts(facts_val)
-                .build();
-            let report_json = serde_json::to_string_pretty(&report).map_err(|e| {
-                WorkspaceError::internal(format!("serialize test report failed: {e}"))
-            })?;
-            std::fs::write(&report_path, report_json).map_err(|e| {
-                WorkspaceError::internal(format!(
-                    "write sandbox test report failed: {e} (path: {report_path})"
-                ))
-            })?;
-            info!(
-                sandbox_id = sandbox_id,
-                report_path = %report_path,
-                verdict_failed = report.summary.failed,
-                "UV-072: sandbox test report persisted before close"
-            );
-        }
+        self.persist_test_report(&sandbox, tcb_session_id, &export_path)
+            .await?;
 
         // 关闭 session (尽力清理,失败仅告警)
         if let Err(e) = self.session_ops.close_session(tcb_session_id).await {
@@ -446,6 +391,94 @@ impl SandboxService {
         );
 
         Ok(export_path)
+    }
+
+    /// close_sandbox 前置校验: 状态必须 Running + 操作者必须是工作区成员
+    fn validate_sandbox_close(
+        &self,
+        sandbox: &SandboxSession,
+        closed_by: &str,
+    ) -> WorkspaceResult<()> {
+        if sandbox.status != SandboxStatus::Running {
+            return Err(WorkspaceError::InvalidStateTransition {
+                from: sandbox.status.as_str().to_string(),
+                to: SandboxStatus::Closed.as_str().to_string(),
+            });
+        }
+
+        if !self
+            .db
+            .is_workspace_member(&sandbox.workspace_id, closed_by)?
+        {
+            return Err(WorkspaceError::forbidden(format!(
+                "user {closed_by} is not a member of workspace {}",
+                sandbox.workspace_id
+            )));
+        }
+        Ok(())
+    }
+
+    /// 导出 session 审计 fact 链到 SANDBOX_REPORT_DIR, 返回导出文件路径
+    async fn export_sandbox_facts(
+        &self,
+        sandbox_id: i64,
+        tcb_session_id: u64,
+    ) -> WorkspaceResult<String> {
+        let export_path = format!(
+            "{}/sandbox_{}_{}.json",
+            SANDBOX_REPORT_DIR,
+            sandbox_id,
+            chrono::Utc::now().timestamp()
+        );
+        let audit_data = self.session_ops.get_audit_export(tcb_session_id).await?;
+        std::fs::create_dir_all(SANDBOX_REPORT_DIR).map_err(|e| {
+            WorkspaceError::internal(format!("create sandbox_report dir failed: {e}"))
+        })?;
+        std::fs::write(&export_path, &audit_data)
+            .map_err(|e| WorkspaceError::internal(format!("write sandbox export failed: {e}")))?;
+        Ok(export_path)
+    }
+
+    /// UV-072: 生成完整 TestReport 并落盘 (与 facts 文件同目录同时间戳配对)
+    async fn persist_test_report(
+        &self,
+        sandbox: &SandboxSession,
+        tcb_session_id: u64,
+        export_path: &str,
+    ) -> WorkspaceResult<()> {
+        let sandbox_id = sandbox.id;
+        let report_path = format!(
+            "{}/report_{}",
+            SANDBOX_REPORT_DIR,
+            export_path.rsplit('/').next().unwrap_or_default()
+        );
+        let state_val = self.session_ops.get_session_state(tcb_session_id).await?;
+        let audit_val = self.session_ops.get_audit_report(tcb_session_id).await?;
+        let facts_val = self.session_ops.get_facts(tcb_session_id).await?;
+        let report = TestReportBuilder::new()
+            .sandbox_id(sandbox_id.to_string())
+            .workspace_id(sandbox.workspace_id.clone())
+            .tcb_session_id(tcb_session_id)
+            .parent_session_id(Some(sandbox.parent_session_id as u64))
+            .draft_ruleset_hash(sandbox.draft_ruleset_hash.clone().unwrap_or_default())
+            .state(state_val)
+            .audit(audit_val)
+            .facts(facts_val)
+            .build();
+        let report_json = serde_json::to_string_pretty(&report)
+            .map_err(|e| WorkspaceError::internal(format!("serialize test report failed: {e}")))?;
+        std::fs::write(&report_path, report_json).map_err(|e| {
+            WorkspaceError::internal(format!(
+                "write sandbox test report failed: {e} (path: {report_path})"
+            ))
+        })?;
+        info!(
+            sandbox_id = sandbox_id,
+            report_path = %report_path,
+            verdict_failed = report.summary.failed,
+            "UV-072: sandbox test report persisted before close"
+        );
+        Ok(())
     }
 
     /// 生成测试报告 (从 sandbox session 的 audit + state + facts 聚合)

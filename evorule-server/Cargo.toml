@@ -111,7 +111,8 @@ subsetter = "0.2.6"
 [dev-dependencies]
 # H6: benchmarks 迁移到应用层后需要的依赖
 # bench_determinism/long_session/throughput 通过 HTTP 调用 evorule-server 进行压测
-reqwest = { version = "0.12", features = ["json"] }
+# UV-100: rustls TLS——Linux musl 静态发版构建不依赖系统 OpenSSL
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # bench_determinism 计算 payload hash (审计⑥ C3: 统一走 evorule-hash)
 evorule-hash = "0.1.3"
 # 配置解析测试需要临时文件
@@ -122,13 +123,39 @@ tower = { version = "0.5", features = ["util"] }
 # → export_knowledge → 执行侧 import_bundle → KnowledgeStore 直读全链。
 # 仅 dev 依赖，不进生产依赖图；evorule-bundle/evorule-hash 经 workspace patch
 # 收敛到同一本地源，治理侧与执行侧校验口径同源。
-evorule-rule = { path = "../../evorule-rule" }
+# CI 兼容（UV-100）：三仓集成测试（acceptance_full_chain/binding_e2e/
+# q12_data_asset_e2e）依赖兄弟仓 evorule-rule，CI 检出布局无此仓 →
+# 原写法 path="../../evorule-rule" 使 workspace manifest 加载必挂（fmt/clippy/
+# build/test 连锁红）。改为 git 依赖锁 rev（CI 可独立 resolve）+ feature 门控
+# full-chain-tests + 三个 [[test]] required-features（CI 默认不编译这三个
+# 跨仓测试，测试命令去掉 --all-features；本地联测见 scripts/ 文档）。
+# 本地用工作区版本：.cargo/config.toml（gitignore，不进 CI）加
+# [patch."https://gitee.com/evorule/evorule-rule.git"]
+# evorule-rule = { path = "../../evorule-rule" }
+# 待 evorule-rule 发版 crates.io 后可切换为 version 依赖进一步简化。
+evorule-rule = { git = "https://gitee.com/evorule/evorule-rule.git", rev = "28d35aef03d58b8916c4036ac4d55b808052162e" }
 
 [features]
 # H6: metrics feature 已移除（Prometheus 实现始终启用，由 metrics_impl.rs 提供）
 # evorule-governance 不再有 metrics feature（IoMetrics trait 总是可用）
 default = ["persistence"]
 persistence = ["evorule-governance/persistence", "evorule-reactor/persistence"]
+# 跨仓全链集成测试门控开关（dev-dep git 形态不可 optional，故本 feature
+# 仅作 [[test]] required-features 门控，不绑定依赖）
+full-chain-tests = []
+
+# 三个跨仓集成测试须显式启用 full-chain-tests 才编译
+[[test]]
+name = "acceptance_full_chain"
+required-features = ["full-chain-tests"]
+
+[[test]]
+name = "binding_e2e"
+required-features = ["full-chain-tests"]
+
+[[test]]
+name = "q12_data_asset_e2e"
+required-features = ["full-chain-tests"]
 
 [lints]
 # 继承顶层 [workspace.lints] (C4 forbid unsafe / C5 unwrap·expect·panic = deny)

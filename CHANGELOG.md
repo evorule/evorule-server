@@ -30,6 +30,7 @@
 ### 🔄 变更
 
 - **核心引擎依赖 evorule-tcb / evorule-reactor / evorule-governance 0.4.0 → 0.4.1（UV-046 核心仓 P0 处置）**
+- **HTTP 客户端 TLS 后端切换 native-tls → rustls（UV-100 发版链）** — 全部 reqwest 依赖（6 个 core crate + bench dev 依赖）改为 `default-features = false` + `rustls-tls`：Linux musl 静态发版构建不再依赖系统 OpenSSL；证书信任根由系统 OpenSSL 切换为内置 webpki-roots（公网 HTTPS 调用无感；企业自签 CA 场景需另行评估）
 - **宪法文件更名 `resources/core_eval.json` → `resources/server_eval.json`（UV-044）** — 在文件名层面区分"宪法原则"（evorule 仓 `evorule-tcb/core_eval.json`）与"server 业务规则集"（本仓），落实 UV-043 双文件职责模型。`--core-eval` / `EVORULE_CORE_EVAL` / 配置字段 `paths.core_eval` 名称不变，仅默认路径指向新名；启动期新增旧名兼容检测——默认路径缺失但同目录存在旧名 `core_eval.json` 时拒绝启动并给出迁移指引（不静默回退）。已发 v0.4.0 包内旧名文件继续有效（显式指定路径即可）
 
 ### ⚠️ Breaking Change

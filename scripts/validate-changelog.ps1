@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 # validate-changelog.ps1
 # VERSION_STRATEGY.md 4.5
 # Check: CHANGELOG has section for current version + release-mode has no [Unreleased]/[未发布]
@@ -14,8 +14,11 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 # 各仓独立发布:仅校验本仓(evorule-server workspace)
+# UV-100: 路径必须用 Join-Path 拼接 —— 字符串内插 "$repoRoot\CHANGELOG.md"
+# 在 Linux pwsh 下 Test-Path 兼容 \ 放行,但 .NET ReadAllText 严格不认 \ →
+# FileNotFoundException(CI docs-check job 挂因);Join-Path 产平台正确分隔符
 $projects = [ordered]@{}
-$projects['evorule-server'] = @{ Version = "$repoRoot\Cargo.toml"; Changelog = "$repoRoot\CHANGELOG.md" }
+$projects['evorule-server'] = @{ Version = (Join-Path $repoRoot 'Cargo.toml'); Changelog = (Join-Path $repoRoot 'CHANGELOG.md') }
 
 function Read-Version {
     param([string]$Path)

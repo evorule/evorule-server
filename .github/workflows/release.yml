@@ -1,0 +1,186 @@
+# Release workflow for EvoRule Server
+#
+# 触发: 推送 v* tag
+# 产物: 双平台二进制 (GitHub Release 附件)
+#   - Linux   x86_64 (ubuntu-latest, 静态 musl)
+#   - Windows x86_64 (windows-latest)
+#
+# 设计说明:
+# - 与 evorule 仓同构: gitee 是主仓/发布主入口, github 是镜像(承担双平台
+#   构建并经 Gitee OpenAPI 回传附件, 幂等创建 Release)
+# - TLS 后端为 rustls(UV-100), musl 静态构建无系统 OpenSSL 依赖
+# - tag 格式: v0.4.1 等
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ==========================================================================
+  # 1. 双平台矩阵构建
+  # ==========================================================================
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: evorule-server-linux-x86_64
+            ext: ""
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: evorule-server-windows-x86_64
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: 安装 musl 工具链 (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: 构建 server 二进制
+        run: cargo build -p evorule-server --release --target ${{ matrix.target }} --bin evorule-server
+
+      - name: binary sanity check (防"编译过但起不来"被当成成功)
+        run: target/${{ matrix.target }}/release/evorule-server${{ matrix.ext }} --help >/dev/null
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/evorule-server${{ matrix.ext }}
+
+  # ==========================================================================
+  # 2. 汇总发布 (GitHub Release)
+  # ==========================================================================
+  release:
+    name: release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载所有二进制
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # merge-multiple=true 时 artifacts/ 内是构建产物本体(evorule-server / evorule-server.exe),
+      # 不是 artifact 名 —— 校验后重命名补平台后缀,发布资产名即平台名
+      - name: 校验产物并补平台后缀
+        run: |
+          ls -la artifacts/
+          test -f artifacts/evorule-server
+          test -f artifacts/evorule-server.exe
+          mv artifacts/evorule-server artifacts/evorule-server-linux-x86_64
+          mv artifacts/evorule-server.exe artifacts/evorule-server-windows-x86_64.exe
+          ls -la artifacts/
+
+      - name: 创建 Release 并附加二进制
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/evorule-server-linux-x86_64
+            artifacts/evorule-server-windows-x86_64.exe
+          generate_release_notes: true
+
+  # ==========================================================================
+  # 3. 双平台产物附加到 Gitee Release (gitee 是主仓/发布主入口)
+  #    与 evorule 仓同构: Gitee Go 云端 agent 对当前账号不可用(agents not
+  #    available,资源侧问题登记台账 UV-098),双平台二进制均由本侧构建并经
+  #    Gitee OpenAPI 附加到 gitee Release;agent 就绪后可切回原生构建
+  #    (脚本见 .workflow/release.yml)。
+  #    幂等: gitee release 不存在则创建,存在则复用。
+  #    需在 github 仓库 Settings → Secrets and variables → Actions 配置 GITEE_TOKEN
+  #    (Gitee 个人令牌,勾选 releases + projects 权限)
+  # ==========================================================================
+  attach-gitee:
+    name: attach-all-to-gitee
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载 Linux 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: evorule-server-linux-x86_64
+          path: gitee-assets/linux
+
+      - name: 下载 Windows 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: evorule-server-windows-x86_64
+          path: gitee-assets/windows
+
+      - name: 补平台后缀并计算 sha256
+        run: |
+          mv gitee-assets/linux/evorule-server gitee-assets/evorule-server-linux-x86_64
+          mv gitee-assets/windows/evorule-server.exe gitee-assets/evorule-server-windows-x86_64.exe
+          cd gitee-assets
+          sha256sum evorule-server-linux-x86_64 evorule-server-windows-x86_64.exe > sha256-checks.txt
+          sha256sum evorule-server-linux-x86_64 > evorule-server-linux-x86_64.sha256
+          sha256sum evorule-server-windows-x86_64.exe > evorule-server-windows-x86_64.exe.sha256
+          cat sha256-checks.txt
+          ls -la
+
+      - name: 附加到 Gitee Release
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -e
+          REPO="evorule/evorule-server"
+          TAG="${GITHUB_REF_NAME}"
+          if [ -z "$GITEE_TOKEN" ]; then echo "ERROR: github secrets 缺 GITEE_TOKEN"; exit 1; fi
+          echo "TAG=$TAG → gitee release"
+
+          # 幂等: 已存在则按 tag 查询,否则创建
+          RELEASE_ID=$(curl --retry 3 --retry-delay 5 --retry-connrefused -fsS \
+            "https://gitee.com/api/v5/repos/${REPO}/releases/tags/${TAG}" \
+            -H "Authorization: token ${GITEE_TOKEN}" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+          if [ -z "$RELEASE_ID" ]; then
+            echo "gitee release 不存在,创建..."
+            RELEASE_RESP=$(curl --retry 3 --retry-delay 5 --retry-connrefused -fsS -X POST \
+              "https://gitee.com/api/v5/repos/${REPO}/releases" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: token ${GITEE_TOKEN}" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"EvoRule Server ${TAG}\",\"body\":\"EvoRule Server ${TAG} — 详见 CHANGELOG.md\",\"target_commitish\":\"main\"}" \
+              || echo "")
+            RELEASE_ID=$(echo "${RELEASE_RESP}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || echo "")
+          fi
+          if [ -z "$RELEASE_ID" ]; then
+            echo "ERROR: 无法获取 gitee release id"
+            exit 1
+          fi
+          echo "gitee Release id: ${RELEASE_ID}"
+
+          cd gitee-assets
+          for f in evorule-server-linux-x86_64 evorule-server-linux-x86_64.sha256 evorule-server-windows-x86_64.exe evorule-server-windows-x86_64.exe.sha256; do
+            echo "上传 ${f} ..."
+            curl --retry 3 --retry-delay 5 --retry-connrefused -fsS -X POST \
+              "https://gitee.com/api/v5/repos/${REPO}/releases/${RELEASE_ID}/attach_files" \
+              -H "Authorization: token ${GITEE_TOKEN}" \
+              -F "file=@${f}"
+            echo ""
+          done
+          echo "DONE: https://gitee.com/${REPO}/releases/tag/${TAG}"

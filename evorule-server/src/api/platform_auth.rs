@@ -767,13 +767,16 @@ fn unauthorized_response() -> axum::response::Response {
 /// 4. 全部未命中 → 401 + 统一 JSON 错误体(此前为空 body 的裸状态码)。
 ///
 /// 403 语义由端点层自理:平台管理端点在 handler 内校验权限点。
+///
+/// (UV-100: 直返 `Response`——原 `Result<Response, Response>` 两分支都产出
+/// Response,Err 包装无语义且触发 clippy result_large_err(Response ≥128 字节))
 pub async fn unified_auth_middleware(
     State((auth_config, shared)): State<(crate::auth::AuthConfig, SharedFactsLog)>,
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
-) -> Result<axum::response::Response, axum::response::Response> {
+) -> axum::response::Response {
     if !auth_config.is_enabled() {
-        return Ok(next.run(req).await);
+        return next.run(req).await;
     }
     let raw = req
         .headers()
@@ -785,26 +788,29 @@ pub async fn unified_auth_middleware(
     if !raw.is_empty() && auth_config.validate(&raw) {
         let identity = auth_config.identity(&raw);
         req.extensions_mut().insert(identity);
-        return Ok(next.run(req).await);
+        return next.run(req).await;
     }
     // 平台会话凭据(非空才尝试;空 token 直接 401,与静态路径 N1 规则一致)
     if raw.is_empty() {
-        return Err(unauthorized_response());
+        return unauthorized_response();
     }
     let token_hash = Hasher::new()
         .update(raw.as_bytes())
         .finalize()
         .to_hex()
         .to_string();
-    let snap = PlatformSnapshot::replay(&shared).map_err(|_| unauthorized_response())?;
+    let snap = match PlatformSnapshot::replay(&shared) {
+        Ok(snap) => snap,
+        Err(_) => return unauthorized_response(),
+    };
     match snap.validate_session(&token_hash, now_ms()) {
         Ok((username, _perms)) => {
             req.extensions_mut()
                 .insert(crate::auth::CallerIdentity::User);
             tracing::debug!(username = %username, "平台会话认证通过");
-            Ok(next.run(req).await)
+            next.run(req).await
         }
-        Err(_) => Err(unauthorized_response()),
+        Err(_) => unauthorized_response(),
     }
 }
 

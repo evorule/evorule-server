@@ -1010,6 +1010,160 @@ impl SessionApi {
         true
     }
 
+    /// ①.5 测试证据引用校验（UV-080 B2·阶段一校验层·执行域侧——入执行域的口）。
+    /// 与治理域 export 侧形状校验(evorule-rule export_with_tests)双闸同口径:
+    ///   a. verdict=pass 必须携带可追溯标记(subset 非空且每项 sandbox:<id> 或
+    ///      human:<actor>)——封死"零证据 pass"直 POST import 的伪造路径;
+    ///   b. sandbox:<id> 引用必须在本机 workspace 元数据可追溯:
+    ///      不存在(伪造/跨环境) → 拒收;非 closed(测试未完成) → 拒收;
+    ///      报告 summary.failed≠0(fail 报告不得作 pass 证据) → 拒收;
+    ///      报告文件缺失/损坏 → 拒收(fail-closed:校验层缺位即不通过,不静默)。
+    /// human:<actor> 无需存在性校验(显式降级声明,人无表可查)。
+    /// 跨环境信任(报告哈希/随包携带)登记为后续项——当前拒收符合
+    /// "不让未经验证的信息通过"(40 号 §6.1 阶段一)。
+    /// (UV-100: 自 import_bundle 提取,控制函数行数/复杂度)
+    fn validate_test_evidence(&self, bundle: &evorule_bundle::DatasetBundle) -> Result<(), String> {
+        if bundle.tests.verdict != evorule_bundle::TestVerdict::Pass {
+            return Ok(()); // 非 pass 无要求
+        }
+        let traceable = !bundle.tests.subset.is_empty()
+            && bundle
+                .tests
+                .subset
+                .iter()
+                .all(|s| s.starts_with("sandbox:") || s.starts_with("human:"));
+        if !traceable {
+            return Err(
+                "测试证据校验失败（不静默）: verdict=pass 的导入必须携带可追溯标记\
+                 (tests.subset 每项须为 sandbox:<沙盒ID> 或 human:<操作者>)。\
+                 请从治理域测试工作台导出(机器背书)或显式人工背书"
+                    .to_string(),
+            );
+        }
+        for ref_item in &bundle.tests.subset {
+            let Some(sid_str) = ref_item.strip_prefix("sandbox:") else {
+                continue; // human: 标记无需存在性校验
+            };
+            let sid: i64 = sid_str.parse().map_err(|_| {
+                format!("测试证据校验失败: sandbox 引用格式非法({ref_item}),须为 sandbox:<数字ID>")
+            })?;
+            let ws_db = self.workspace_db.as_ref().ok_or_else(|| {
+                format!(
+                    "测试证据校验失败: 引用了沙盒报告({ref_item})但 workspace 元数据未接线,\
+                     无法验证引用(fail-closed 不放行)"
+                )
+            })?;
+            let sb = ws_db
+                .get_sandbox_session(sid)
+                .map_err(|e| format!("测试证据校验失败: 查询沙盒会话 {sid} 出错: {e}"))?
+                .ok_or_else(|| {
+                    format!(
+                        "测试证据校验失败（不静默）: 沙盒引用 sandbox:{sid} 在本机不存在\
+                         (引用伪造或跨环境导入)。本机执行的规则集请从本机测试工作台导出;\
+                         跨环境信任需报告随包携带(后续项)"
+                    )
+                })?;
+            if sb.status != evorule_workspace::SandboxStatus::Closed {
+                return Err(format!(
+                    "测试证据校验失败: 沙盒 #{sid} 状态为 {:?}(非 closed,测试未完成),\
+                     不得作为 pass 证据",
+                    sb.status
+                ));
+            }
+            // 报告一致性: 读关闭时落盘的 TestReport(与 generate_test_report
+            // 关闭态同口径推导 report_path)
+            let export_path = sb.export_path.as_deref().ok_or_else(|| {
+                format!(
+                    "测试证据校验失败: 沙盒 #{sid} 关闭但无报告导出路径(数据异常),\
+                     请重跑沙盒测试"
+                )
+            })?;
+            let file_name = export_path.rsplit('/').next().unwrap_or_default();
+            let report_path = format!(
+                "{}/report_{}",
+                evorule_workspace::SANDBOX_REPORT_DIR,
+                file_name
+            );
+            let content = std::fs::read_to_string(&report_path).map_err(|_| {
+                format!(
+                    "测试证据校验失败: 沙盒 #{sid} 报告文件缺失({report_path};\
+                     可能被清理),请重跑沙盒测试"
+                )
+            })?;
+            let report: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| format!("测试证据校验失败: 沙盒 #{sid} 报告文件损坏: {e}"))?;
+            let failed = report
+                .pointer("/summary/failed")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| {
+                    format!("测试证据校验失败: 沙盒 #{sid} 报告缺少 summary.failed 字段(结构异常)")
+                })?;
+            if failed != 0 {
+                return Err(format!(
+                    "测试证据校验失败（不静默）: 沙盒 #{sid} 报告有 {failed} 个失败用例,\
+                     不得作为 pass 证据"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// ③ 第 8 项执行侧服务绑定核对（T6 阻断项 ①）：bundle 声明的服务必须已绑定，
+    /// 缺失 → **显式失败**（不静默）。防"治理侧声明 / 执行侧未绑定 → 运行时
+    /// unknown service_name"（35 号 三层绑定：执行侧 service_registry 绑定）。
+    /// 核对集 = 原生叶子能力 + service_registry.json（`with_bound_services` 注入）。
+    /// C6（02 方案层 3）：sensitive=true 的服务必须**注册表显式绑定**。
+    /// (UV-100: 自 import_bundle 提取,控制函数行数/复杂度)
+    fn validate_service_bindings(
+        &self,
+        bundle: &evorule_bundle::DatasetBundle,
+    ) -> Result<(), String> {
+        let Some(dd) = &bundle.data_dependencies else {
+            return Ok(());
+        };
+        let missing: Vec<&str> = dd
+            .services
+            .iter()
+            .map(|s| s.service_name.as_str())
+            .filter(|name| !self.bound_services.contains(*name))
+            .collect();
+        if !missing.is_empty() {
+            let mut bound: Vec<&str> = self.bound_services.iter().map(String::as_str).collect();
+            bound.sort_unstable();
+            return Err(format!(
+                "快照包声明了执行侧未绑定的服务（不静默）: {}；当前已绑定: {}",
+                missing.join(", "),
+                bound.join(", ")
+            ));
+        }
+
+        // C6（02 方案层 3）：声明 sensitive=true 的服务必须**注册表显式绑定**
+        // （service_registry.json，端点/凭据配置位），仅原生内嵌不满足敏感服务要求
+        // （涉及凭据的服务必须可由运维显式配置/核对）。未经注册表绑定 → 显式失败（不静默）。
+        let registry_names: HashSet<&str> = self
+            .registry_services
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        let sensitive_unbound: Vec<&str> = dd
+            .services
+            .iter()
+            .filter(|s| s.sensitive)
+            .map(|s| s.service_name.as_str())
+            .filter(|name| !registry_names.contains(name))
+            .collect();
+        if !sensitive_unbound.is_empty() {
+            let mut reg: Vec<&str> = registry_names.iter().copied().collect();
+            reg.sort_unstable();
+            return Err(format!(
+                "快照包声明了 sensitive 服务但执行侧未在 service_registry 显式绑定（不静默）: {}；当前注册表: {}",
+                sensitive_unbound.join(", "),
+                reg.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
     /// T2: 导入快照包（36 号 集成契约）—— 6 项硬校验 → 逐条 Schema 门禁 → 服务绑定核对
     /// → 原子落盘 → 触发 reload。
     ///
@@ -1047,101 +1201,8 @@ impl SessionApi {
         })
         .map_err(|e| format!("快照包校验失败（不静默）: {e}"))?;
 
-        // ①.5 UV-080 B2: 测试证据引用校验(阶段一校验层·执行域侧——入执行域的口)。
-        // 与治理域 export 侧形状校验(evorule-rule export_with_tests)双闸同口径:
-        //   a. verdict=pass 必须携带可追溯标记(subset 非空且每项 sandbox:<id> 或
-        //      human:<actor>)——封死"零证据 pass"直 POST import 的伪造路径;
-        //   b. sandbox:<id> 引用必须在本机 workspace 元数据可追溯:
-        //      不存在(伪造/跨环境) → 拒收;非 closed(测试未完成) → 拒收;
-        //      报告 summary.failed≠0(fail 报告不得作 pass 证据) → 拒收;
-        //      报告文件缺失/损坏 → 拒收(fail-closed:校验层缺位即不通过,不静默)。
-        // human:<actor> 无需存在性校验(显式降级声明,人无表可查)。
-        // 跨环境信任(报告哈希/随包携带)登记为后续项——当前拒收符合
-        // "不让未经验证的信息通过"(40 号 §6.1 阶段一)。
-        if bundle.tests.verdict == evorule_bundle::TestVerdict::Pass {
-            let traceable = !bundle.tests.subset.is_empty()
-                && bundle
-                    .tests
-                    .subset
-                    .iter()
-                    .all(|s| s.starts_with("sandbox:") || s.starts_with("human:"));
-            if !traceable {
-                return Err(format!(
-                    "测试证据校验失败（不静默）: verdict=pass 的导入必须携带可追溯标记\
-                     (tests.subset 每项须为 sandbox:<沙盒ID> 或 human:<操作者>)。\
-                     请从治理域测试工作台导出(机器背书)或显式人工背书"
-                ));
-            }
-            for ref_item in &bundle.tests.subset {
-                let Some(sid_str) = ref_item.strip_prefix("sandbox:") else {
-                    continue; // human: 标记无需存在性校验
-                };
-                let sid: i64 = sid_str.parse().map_err(|_| {
-                    format!(
-                        "测试证据校验失败: sandbox 引用格式非法({ref_item}),须为 sandbox:<数字ID>"
-                    )
-                })?;
-                let ws_db = self.workspace_db.as_ref().ok_or_else(|| {
-                    format!(
-                        "测试证据校验失败: 引用了沙盒报告({ref_item})但 workspace 元数据未接线,\
-                         无法验证引用(fail-closed 不放行)"
-                    )
-                })?;
-                let sb = ws_db
-                    .get_sandbox_session(sid)
-                    .map_err(|e| format!("测试证据校验失败: 查询沙盒会话 {sid} 出错: {e}"))?
-                    .ok_or_else(|| {
-                        format!(
-                            "测试证据校验失败（不静默）: 沙盒引用 sandbox:{sid} 在本机不存在\
-                             (引用伪造或跨环境导入)。本机执行的规则集请从本机测试工作台导出;\
-                             跨环境信任需报告随包携带(后续项)"
-                        )
-                    })?;
-                if sb.status != evorule_workspace::SandboxStatus::Closed {
-                    return Err(format!(
-                        "测试证据校验失败: 沙盒 #{sid} 状态为 {:?}(非 closed,测试未完成),\
-                         不得作为 pass 证据",
-                        sb.status
-                    ));
-                }
-                // 报告一致性: 读关闭时落盘的 TestReport(与 generate_test_report
-                // 关闭态同口径推导 report_path)
-                let export_path = sb.export_path.as_deref().ok_or_else(|| {
-                    format!(
-                        "测试证据校验失败: 沙盒 #{sid} 关闭但无报告导出路径(数据异常),\
-                         请重跑沙盒测试"
-                    )
-                })?;
-                let file_name = export_path.rsplit('/').next().unwrap_or_default();
-                let report_path = format!(
-                    "{}/report_{}",
-                    evorule_workspace::SANDBOX_REPORT_DIR,
-                    file_name
-                );
-                let content = std::fs::read_to_string(&report_path).map_err(|_| {
-                    format!(
-                        "测试证据校验失败: 沙盒 #{sid} 报告文件缺失({report_path};\
-                         可能被清理),请重跑沙盒测试"
-                    )
-                })?;
-                let report: serde_json::Value = serde_json::from_str(&content)
-                    .map_err(|e| format!("测试证据校验失败: 沙盒 #{sid} 报告文件损坏: {e}"))?;
-                let failed = report
-                    .pointer("/summary/failed")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| {
-                        format!(
-                            "测试证据校验失败: 沙盒 #{sid} 报告缺少 summary.failed 字段(结构异常)"
-                        )
-                    })?;
-                if failed != 0 {
-                    return Err(format!(
-                        "测试证据校验失败（不静默）: 沙盒 #{sid} 报告有 {failed} 个失败用例,\
-                         不得作为 pass 证据"
-                    ));
-                }
-            }
-        }
+        // ①.5 UV-080 B2: 测试证据引用校验 —— 详见 validate_test_evidence 文档
+        self.validate_test_evidence(bundle)?;
 
         // ② 第 7 项逐条 Schema 门禁（硬失败，防 loader fail-soft 静默跳过非法规则）。
         // Q12：Knowledge 条目不进 TCB，跳过 transform 门禁（D3 领域 schema 强校验
@@ -1160,52 +1221,8 @@ impl SessionApi {
             }
         }
 
-        // ③ 第 8 项执行侧服务绑定核对（T6 阻断项 ①）：bundle 声明的服务必须已绑定，
-        // 缺失 → **显式失败**（不静默）。防"治理侧声明 / 执行侧未绑定 → 运行时
-        // unknown service_name"（35 号 三层绑定：执行侧 service_registry 绑定）。
-        // 核对集 = 原生叶子能力 + service_registry.json（`with_bound_services` 注入）。
-        if let Some(dd) = &bundle.data_dependencies {
-            let missing: Vec<&str> = dd
-                .services
-                .iter()
-                .map(|s| s.service_name.as_str())
-                .filter(|name| !self.bound_services.contains(*name))
-                .collect();
-            if !missing.is_empty() {
-                let mut bound: Vec<&str> = self.bound_services.iter().map(String::as_str).collect();
-                bound.sort_unstable();
-                return Err(format!(
-                    "快照包声明了执行侧未绑定的服务（不静默）: {}；当前已绑定: {}",
-                    missing.join(", "),
-                    bound.join(", ")
-                ));
-            }
-
-            // C6（02 方案层 3）：声明 sensitive=true 的服务必须**注册表显式绑定**
-            // （service_registry.json，端点/凭据配置位），仅原生内嵌不满足敏感服务要求
-            // （涉及凭据的服务必须可由运维显式配置/核对）。未经注册表绑定 → 显式失败（不静默）。
-            let registry_names: HashSet<&str> = self
-                .registry_services
-                .iter()
-                .map(|m| m.name.as_str())
-                .collect();
-            let sensitive_unbound: Vec<&str> = dd
-                .services
-                .iter()
-                .filter(|s| s.sensitive)
-                .map(|s| s.service_name.as_str())
-                .filter(|name| !registry_names.contains(name))
-                .collect();
-            if !sensitive_unbound.is_empty() {
-                let mut reg: Vec<&str> = registry_names.iter().copied().collect();
-                reg.sort_unstable();
-                return Err(format!(
-                    "快照包声明了 sensitive 服务但执行侧未在 service_registry 显式绑定（不静默）: {}；当前注册表: {}",
-                    sensitive_unbound.join(", "),
-                    reg.join(", ")
-                ));
-            }
-        }
+        // ③ 第 8 项执行侧服务绑定核对 —— 详见 validate_service_bindings 文档
+        self.validate_service_bindings(bundle)?;
 
         if dry_run {
             return Ok(result);
@@ -1326,6 +1343,115 @@ impl SessionApi {
     }
 }
 
+/// 读取生产会话 ID(UV-079 reaper 辅助)。
+/// (UV-100: 自 reap_once 提取,控制认知复杂度)读取失败 error 报警后按 None
+/// 处理——本 tick 跳过保活/自愈,不阻断回收(报警不静默)。
+fn production_session_id(
+    workspace_db: Option<&Arc<evorule_workspace::WorkspaceDb>>,
+) -> Option<u64> {
+    workspace_db.and_then(|db| {
+        db.get_production_state()
+            .inspect_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    "UV-079: reaper 读取 production_state 失败,本 tick 跳过生产会话保活(报警不静默)"
+                )
+            })
+            .ok()
+            .and_then(|ps| ps.current_session_id.map(|i| i as u64))
+    })
+}
+
+/// 生产会话保活:仍存活则刷新 last_activity(TTL 检查随后不会命中)。
+/// (UV-100: 自 reap_once 提取,控制认知复杂度)
+async fn keepalive_production_session(
+    sessions: &Arc<Mutex<session::SessionManager>>,
+    prod_id: Option<u64>,
+) {
+    if let Some(pid) = prod_id {
+        let mgr = sessions.lock().await;
+        if mgr.get_session(pid).is_some() {
+            mgr.touch_session(pid);
+        }
+    }
+}
+
+/// 自愈重建第二步:切换 production_state 会话引用(保留 ruleset_version/hash)。
+/// (UV-100: 自 recover_production_session 提取,控制认知复杂度)
+fn switch_production_reference(
+    workspace_db: &Arc<evorule_workspace::WorkspaceDb>,
+    pid: u64,
+    new_id: u64,
+) {
+    let (version, hash) = workspace_db
+        .get_production_state()
+        .map(|ps| {
+            (
+                ps.ruleset_version,
+                ps.ruleset_hash.as_deref().unwrap_or("").to_string(),
+            )
+        })
+        .unwrap_or((0, String::new()));
+    match workspace_db.update_production_state(
+        new_id as i64,
+        version,
+        &hash,
+        "system:reaper-recovery",
+    ) {
+        Ok(()) => {
+            tracing::info!(
+                stale_session_id = pid,
+                new_session_id = new_id,
+                "UV-079: 生产会话已自愈重建(保留 ruleset_version/hash,语义为替换会话引用)"
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                new_session_id = new_id,
+                "UV-079: 自愈重建 production_state 写入失败,新会话已建但引用未切换(下次 tick 重试)"
+            );
+        }
+    }
+}
+
+/// 生产会话自愈重建:失忆(被 reap_finished 回收/reactor 异常退出)时报警 + 重建。
+/// 与 UV-070 启动期重建同构:保留 ruleset_version/hash,operator=system:reaper-recovery,
+/// 语义为"替换会话引用"而非发布。
+/// (UV-100: 自 reap_once 提取,控制认知复杂度)
+async fn recover_production_session(
+    recovery_api: &SessionApi,
+    workspace_db: &Arc<evorule_workspace::WorkspaceDb>,
+    pid: u64,
+) {
+    let alive = recovery_api
+        .sessions
+        .lock()
+        .await
+        .get_session(pid)
+        .is_some();
+    if alive {
+        return;
+    }
+    tracing::error!(
+        session_id = pid,
+        "UV-079: 生产会话失忆(reaper 回收/reactor 异常退出),触发运行期自愈重建"
+    );
+    // SessionOps::create_session 会为新会话 spawn IoSubscriber(与 UV-070
+    // 启动期重建同一条链)
+    let new_id = match evorule_workspace::SessionOps::create_session(recovery_api).await {
+        Ok(new_id) => new_id,
+        Err(e) => {
+            tracing::error!(
+                error = ?e,
+                "UV-079: 自愈重建会话创建失败,生产链路受阻(沙盒 fork/监控将 404)直至重建成功"
+            );
+            return;
+        }
+    };
+    switch_production_reference(workspace_db, pid, new_id);
+}
+
 /// UV-079 ①: reaper 单次回收(生产会话保活 + 失忆自愈重建)。
 ///
 /// 从 `start_reaper` 抽出为独立异步函数以便单测(后台 spawn 任务不可直测)。
@@ -1348,30 +1474,16 @@ impl SessionApi {
 ///
 /// `workspace_db` 为 None(单测/无元数据接线)时退化为纯回收,无保护无自愈。
 /// 返回 (finished, expired) 细分(后台 reaper 记总数,手动 reap 端点报细分)。
+/// (UV-100: 读取/保活/自愈三个语义块提为独立方法,控制认知复杂度)
 async fn reap_once(
     sessions: &Arc<Mutex<session::SessionManager>>,
     workspace_db: Option<&Arc<evorule_workspace::WorkspaceDb>>,
     recovery_api: Option<&SessionApi>,
 ) -> (usize, usize) {
-    let prod_id: Option<u64> = workspace_db.and_then(|db| {
-        db.get_production_state()
-            .inspect_err(|e| {
-                tracing::error!(
-                    error = %e,
-                    "UV-079: reaper 读取 production_state 失败,本 tick 跳过生产会话保活(报警不静默)"
-                )
-            })
-            .ok()
-            .and_then(|ps| ps.current_session_id.map(|i| i as u64))
-    });
+    let prod_id = production_session_id(workspace_db);
 
     // 1. 保活: 生产会话仍存活则刷新 last_activity(TTL 检查随后不会命中)
-    if let Some(pid) = prod_id {
-        let mgr = sessions.lock().await;
-        if mgr.get_session(pid).is_some() {
-            mgr.touch_session(pid);
-        }
-    }
+    keepalive_production_session(sessions, prod_id).await;
 
     // 2. 回收(生产会话刚被 touch,TTL 不命中;finished 的生产会话会被回收,
     //    由下一段自愈兜底)
@@ -1389,55 +1501,7 @@ async fn reap_once(
 
     // 3. 自愈: 生产会话失忆(被 reap_finished 回收/reactor 异常退出)时报警 + 重建
     if let (Some(pid), Some(api), Some(db)) = (prod_id, recovery_api, workspace_db) {
-        let alive = api.sessions.lock().await.get_session(pid).is_some();
-        if !alive {
-            tracing::error!(
-                session_id = pid,
-                "UV-079: 生产会话失忆(reaper 回收/reactor 异常退出),触发运行期自愈重建"
-            );
-            // SessionOps::create_session 会为新会话 spawn IoSubscriber(与 UV-070
-            // 启动期重建同一条链)
-            match evorule_workspace::SessionOps::create_session(api).await {
-                Ok(new_id) => {
-                    let (version, hash) = db
-                        .get_production_state()
-                        .map(|ps| {
-                            (
-                                ps.ruleset_version,
-                                ps.ruleset_hash.as_deref().unwrap_or("").to_string(),
-                            )
-                        })
-                        .unwrap_or((0, String::new()));
-                    match db.update_production_state(
-                        new_id as i64,
-                        version,
-                        &hash,
-                        "system:reaper-recovery",
-                    ) {
-                        Ok(()) => {
-                            tracing::info!(
-                                stale_session_id = pid,
-                                new_session_id = new_id,
-                                "UV-079: 生产会话已自愈重建(保留 ruleset_version/hash,语义为替换会话引用)"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                new_session_id = new_id,
-                                "UV-079: 自愈重建 production_state 写入失败,新会话已建但引用未切换(下次 tick 重试)"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = ?e,
-                        "UV-079: 自愈重建会话创建失败,生产链路受阻(沙盒 fork/监控将 404)直至重建成功"
-                    );
-                }
-            }
-        }
+        recover_production_session(api, db, pid).await;
     }
 
     (finished, expired)
