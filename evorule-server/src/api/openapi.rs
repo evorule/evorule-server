@@ -402,10 +402,14 @@ mod tests {
             "/api/platform/users/{{username}} 应同时有 PATCH/DELETE"
         );
         assert!(
-            paths["/api/platform/roles"].get.is_some() && paths["/api/platform/roles"].post.is_some(),
+            paths["/api/platform/roles"].get.is_some()
+                && paths["/api/platform/roles"].post.is_some(),
             "/api/platform/roles 应同时有 GET/POST"
         );
-        assert!(paths["/api/services"].get.is_some(), "/api/services 应有 GET");
+        assert!(
+            paths["/api/services"].get.is_some(),
+            "/api/services 应有 GET"
+        );
         assert!(paths["/metrics"].get.is_some(), "/metrics 应有 GET");
     }
 }

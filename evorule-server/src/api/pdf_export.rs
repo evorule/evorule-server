@@ -186,11 +186,7 @@ fn find_cjk_font(explicit: Option<&std::path::Path>) -> Result<FontSource, Strin
 }
 
 /// 在目录树中按文件名查找（深度限制防符号链接环）
-fn find_file_recursive(
-    dir: &std::path::Path,
-    name: &str,
-    depth: usize,
-) -> Option<PathBuf> {
+fn find_file_recursive(dir: &std::path::Path, name: &str, depth: usize) -> Option<PathBuf> {
     if depth > 4 {
         return None;
     }
@@ -237,7 +233,12 @@ const LINE_GAP: f32 = 1.6; // 行距倍数
 #[derive(Clone)]
 enum Op {
     /// 文本（基线锚点，PDF 坐标系：原点左下）
-    Text { x: f32, y: f32, size: f32, text: String },
+    Text {
+        x: f32,
+        y: f32,
+        size: f32,
+        text: String,
+    },
     /// 水平线（表格分隔/节分隔）
     Rule { x0: f32, x1: f32, y: f32 },
 }
@@ -448,7 +449,9 @@ fn build_layout(req: &PdfExportRequest, metrics: &GlyphMetrics) -> Vec<Vec<Op>> 
         .and_then(|o| o.pdf_title.as_deref())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("evorule 导出报告");
-    let org = opts.and_then(|o| o.pdf_organization.as_deref()).unwrap_or("");
+    let org = opts
+        .and_then(|o| o.pdf_organization.as_deref())
+        .unwrap_or("");
 
     let mut ly = Layout::new();
 
@@ -482,7 +485,8 @@ fn build_layout(req: &PdfExportRequest, metrics: &GlyphMetrics) -> Vec<Vec<Op>> 
             ),
             (
                 "范围",
-                meta.and_then(|m| m.range_description.clone()).unwrap_or_default(),
+                meta.and_then(|m| m.range_description.clone())
+                    .unwrap_or_default(),
             ),
             (
                 "会话",
@@ -494,7 +498,8 @@ fn build_layout(req: &PdfExportRequest, metrics: &GlyphMetrics) -> Vec<Vec<Op>> 
             ),
             (
                 "Console 版本",
-                meta.and_then(|m| m.console_version.clone()).unwrap_or_default(),
+                meta.and_then(|m| m.console_version.clone())
+                    .unwrap_or_default(),
             ),
             (
                 "模板",
@@ -507,7 +512,9 @@ fn build_layout(req: &PdfExportRequest, metrics: &GlyphMetrics) -> Vec<Vec<Op>> 
                 continue;
             }
             let label = format!("{k}:");
-            for (i, l) in wrap_text(&v, metrics, SIZE_BODY, CONTENT_W - 80.0).into_iter().enumerate()
+            for (i, l) in wrap_text(&v, metrics, SIZE_BODY, CONTENT_W - 80.0)
+                .into_iter()
+                .enumerate()
             {
                 ly.ensure(SIZE_BODY * LINE_GAP);
                 if i == 0 {
@@ -568,8 +575,10 @@ fn render_value_block(ly: &mut Layout, metrics: &GlyphMetrics, v: &Value) {
             let total = items.len();
             for (i, item) in items.iter().take(MAX_DATA_ROWS).enumerate() {
                 let head = format!("[{}] ", i + 1);
-                let head_w: f32 =
-                    head.chars().filter_map(|c| metrics.char_width(c, SIZE_BODY)).sum();
+                let head_w: f32 = head
+                    .chars()
+                    .filter_map(|c| metrics.char_width(c, SIZE_BODY))
+                    .sum();
                 let summary = value_summary(item);
                 for (j, l) in wrap_text(&summary, metrics, SIZE_BODY, CONTENT_W - head_w)
                     .into_iter()
@@ -587,7 +596,9 @@ fn render_value_block(ly: &mut Layout, metrics: &GlyphMetrics, v: &Value) {
                 ly.line(
                     MARGIN,
                     SIZE_BODY,
-                    &format!("…共 {total} 条，已截断至前 {MAX_DATA_ROWS} 条（完整数据请导出 JSON）"),
+                    &format!(
+                        "…共 {total} 条，已截断至前 {MAX_DATA_ROWS} 条（完整数据请导出 JSON）"
+                    ),
                 );
             }
         }
@@ -599,8 +610,9 @@ fn render_value_block(ly: &mut Layout, metrics: &GlyphMetrics, v: &Value) {
                     .filter_map(|c| metrics.char_width(c, SIZE_BODY))
                     .sum();
                 let summary = value_summary(val);
-                for (j, l) in
-                    wrap_text(&summary, metrics, SIZE_BODY, CONTENT_W - label_w).into_iter().enumerate()
+                for (j, l) in wrap_text(&summary, metrics, SIZE_BODY, CONTENT_W - label_w)
+                    .into_iter()
+                    .enumerate()
                 {
                     ly.ensure(SIZE_BODY * LINE_GAP);
                     if j == 0 {
@@ -671,9 +683,12 @@ fn write_pdf(
 
     let mut pdf = Pdf::new();
     pdf.catalog(catalog_id).pages(page_tree_id);
-    pdf.pages(page_tree_id)
-        .count(pages.len() as i32)
-        .kids(pages.iter().enumerate().map(|(i, _)| Ref::new(100 + 2 * i as i32)));
+    pdf.pages(page_tree_id).count(pages.len() as i32).kids(
+        pages
+            .iter()
+            .enumerate()
+            .map(|(i, _)| Ref::new(100 + 2 * i as i32)),
+    );
 
     // --- 字体对象族 ---
     let upem = metrics.face.units_per_em() as f32;
@@ -764,9 +779,7 @@ fn write_pdf(
         let mut page = pdf.page(page_id);
         page.parent(page_tree_id)
             .media_box(Rect::new(0.0, 0.0, PAGE_W, PAGE_H));
-        page.resources()
-            .fonts()
-            .pair(Name(b"F0"), type0_id);
+        page.resources().fonts().pair(Name(b"F0"), type0_id);
 
         let mut content = Content::new();
         for op in ops {
@@ -839,8 +852,7 @@ fn collect_widths(
     let upem = metrics.face.units_per_em() as f32;
     let mut push_char = |c: char| {
         if let Some(g) = metrics.face.glyph_index(c) {
-            if let (Some(cid), Some(adv)) = (remapper.get(g.0), metrics.face.glyph_hor_advance(g))
-            {
+            if let (Some(cid), Some(adv)) = (remapper.get(g.0), metrics.face.glyph_hor_advance(g)) {
                 if !out.iter().any(|(c2, _)| *c2 == cid) {
                     out.push((cid, adv as f32 / upem * 1000.0));
                 }
@@ -896,11 +908,7 @@ fn write_tounicode_pairs(
 }
 
 /// 文本 → Identity-H 字节流（CID = remapped GID，两字节大端）
-fn encode_text(
-    text: &str,
-    metrics: &GlyphMetrics,
-    remapper: &subsetter::GlyphRemapper,
-) -> Vec<u8> {
+fn encode_text(text: &str, metrics: &GlyphMetrics, remapper: &subsetter::GlyphRemapper) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(text.len() * 2);
     for c in text.chars() {
         if let Some(g) = metrics.face.glyph_index(c) {
@@ -953,16 +961,18 @@ async fn pdf_export_handler(
     payload: Result<Json<PdfExportRequest>, JsonRejection>,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     // Json rejection → 统一错误形状（不用 axum 默认文本，保持消费方可解析）
-    let Json(req) = payload.map_err(|rej| {
-        err(StatusCode::BAD_REQUEST, format!("请求体解析失败: {rej}"))
-    })?;
+    let Json(req) =
+        payload.map_err(|rej| err(StatusCode::BAD_REQUEST, format!("请求体解析失败: {rej}")))?;
 
     // 请求级可见性：server 无通用 access log，端点自带一行请求日志（消费方排障用）
     tracing::info!(
         "PDF 导出请求: content_type={}, raw_data={} 字节级数据, options={:?}",
         req.content_type,
         req.raw_data.is_some(),
-        req.options.as_ref().map(|o| o.pdf_title.is_some()).unwrap_or(false)
+        req.options
+            .as_ref()
+            .map(|o| o.pdf_title.is_some())
+            .unwrap_or(false)
     );
 
     match render_pdf(&req) {
@@ -972,7 +982,12 @@ async fn pdf_export_handler(
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "application/pdf")
                 .body(Body::from(bytes))
-                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("响应构造失败: {e}")))?)
+                .map_err(|e| {
+                    err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("响应构造失败: {e}"),
+                    )
+                })?)
         }
         Err(msg) => {
             // 字体环境问题 → 500；请求内容问题（缺字符/缺 content_type）→ 400
@@ -1014,8 +1029,8 @@ mod tests {
 
     #[test]
     fn nonexistent_explicit_font_fails_with_guidance() {
-        let e = find_cjk_font(Some(std::path::Path::new("Z:/definitely/not/here.ttf")))
-            .unwrap_err();
+        let e =
+            find_cjk_font(Some(std::path::Path::new("Z:/definitely/not/here.ttf"))).unwrap_err();
         assert!(e.contains("--pdf-font"), "错误应带修复指引: {e}");
     }
 
@@ -1125,8 +1140,7 @@ mod tests {
 
         // 触发条件：① 行内空格（英文整词断行入口）② 空格后跟多字节字符
         // ③ 累计宽度超 max_w 触发回退。窄 max_w 强制多次断行。
-        let text = "规则 audit 链路完整性 verification 与中文审计事实留痕记录，"
-            .repeat(8);
+        let text = "规则 audit 链路完整性 verification 与中文审计事实留痕记录，".repeat(8);
         let lines = wrap_text(&text, &metrics, 10.0, 120.0);
         assert!(lines.len() > 1, "窄宽度应产生多行: {}", lines.len());
         for l in &lines {

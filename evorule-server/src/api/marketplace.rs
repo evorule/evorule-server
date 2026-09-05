@@ -85,10 +85,8 @@ fn generate_id() -> String {
 /// 原子写入（同目录临时文件 + rename，与 server 落盘惯例一致）
 fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)
-        .map_err(|e| format!("写临时文件失败({}): {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("原子改名失败({}): {e}", path.display()))
+    std::fs::write(&tmp, bytes).map_err(|e| format!("写临时文件失败({}): {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("原子改名失败({}): {e}", path.display()))
 }
 
 /// 读取单条模板元数据文件
@@ -121,11 +119,7 @@ fn store_template(
     if meta_in.get("type").and_then(|v| v.as_str()).is_none() {
         return Err("模板元数据缺少 type".into());
     }
-    if meta_in
-        .get("category")
-        .and_then(|v| v.as_str())
-        .is_none()
-    {
+    if meta_in.get("category").and_then(|v| v.as_str()).is_none() {
         return Err("模板元数据缺少 category".into());
     }
 
@@ -153,7 +147,10 @@ fn store_template(
     let content_path = dir.join("content.bin");
     atomic_write(&content_path, content)?;
     let meta_path = dir.join("meta.json");
-    atomic_write(&meta_path, &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?)?;
+    atomic_write(
+        &meta_path,
+        &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+    )?;
 
     Ok(meta)
 }
@@ -188,11 +185,7 @@ fn update_template(
     if meta_in.get("type").and_then(|v| v.as_str()).is_none() {
         return Err("模板元数据缺少 type".into());
     }
-    if meta_in
-        .get("category")
-        .and_then(|v| v.as_str())
-        .is_none()
-    {
+    if meta_in.get("category").and_then(|v| v.as_str()).is_none() {
         return Err("模板元数据缺少 category".into());
     }
 
@@ -201,7 +194,13 @@ fn update_template(
     let obj = new_meta
         .as_object_mut()
         .ok_or_else(|| "模板元数据必须是 JSON 对象".to_string())?;
-    for key in ["id", "source", "download_url", "download_count", "created_at"] {
+    for key in [
+        "id",
+        "source",
+        "download_url",
+        "download_count",
+        "created_at",
+    ] {
         if let Some(v) = meta.get(key) {
             obj.insert(key.into(), v.clone());
         }
@@ -258,10 +257,7 @@ fn list_templates_from(marketplace_dir: &std::path::Path) -> Result<Vec<Value>, 
 }
 
 /// 读取模板内容（返回 元数据 + 字节；供 download 处理计数后回写）
-fn load_template(
-    marketplace_dir: &std::path::Path,
-    id: &str,
-) -> Result<(Value, Vec<u8>), String> {
+fn load_template(marketplace_dir: &std::path::Path, id: &str) -> Result<(Value, Vec<u8>), String> {
     if !valid_id(id) {
         return Err(format!("非法模板 ID: {id:?}（只允许字母数字与 - _）"));
     }
@@ -356,8 +352,8 @@ fn chrono_now_iso() -> String {
 async fn list_templates(
     State(dir): State<MarketplaceDir>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let templates = list_templates_from(&dir.0)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let templates =
+        list_templates_from(&dir.0).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let count = templates.len();
     Ok(Json(serde_json::json!({
         "success": true,
@@ -400,10 +396,12 @@ async fn upload_template(
                 meta = Some(v);
             }
             "content" => {
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("content 字段读取失败: {e}")))?;
+                let bytes = field.bytes().await.map_err(|e| {
+                    err(
+                        StatusCode::BAD_REQUEST,
+                        format!("content 字段读取失败: {e}"),
+                    )
+                })?;
                 if bytes.len() > MAX_CONTENT_BYTES {
                     return Err(err(
                         StatusCode::BAD_REQUEST,
@@ -416,15 +414,23 @@ async fn upload_template(
         }
     }
     let meta = meta.ok_or_else(|| {
-        err(StatusCode::BAD_REQUEST, "multipart 缺少 meta 字段（JSON 模板元数据）")
+        err(
+            StatusCode::BAD_REQUEST,
+            "multipart 缺少 meta 字段（JSON 模板元数据）",
+        )
     })?;
     let content = content.ok_or_else(|| {
-        err(StatusCode::BAD_REQUEST, "multipart 缺少 content 字段（模板内容）")
+        err(
+            StatusCode::BAD_REQUEST,
+            "multipart 缺少 content 字段（模板内容）",
+        )
     })?;
 
     let template = store_template(&dir.0, &meta, &content)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(Json(serde_json::json!({ "success": true, "template": template })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "template": template }),
+    ))
 }
 
 /// `PATCH /api/marketplace/templates/{id}` → 编辑模板（UV-087）
@@ -468,10 +474,12 @@ async fn update_template_handler(
                 meta = Some(v);
             }
             "content" => {
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("content 字段读取失败: {e}")))?;
+                let bytes = field.bytes().await.map_err(|e| {
+                    err(
+                        StatusCode::BAD_REQUEST,
+                        format!("content 字段读取失败: {e}"),
+                    )
+                })?;
                 if bytes.len() > MAX_CONTENT_BYTES {
                     return Err(err(
                         StatusCode::BAD_REQUEST,
@@ -484,7 +492,10 @@ async fn update_template_handler(
         }
     }
     let meta = meta.ok_or_else(|| {
-        err(StatusCode::BAD_REQUEST, "multipart 缺少 meta 字段（JSON 模板元数据）")
+        err(
+            StatusCode::BAD_REQUEST,
+            "multipart 缺少 meta 字段（JSON 模板元数据）",
+        )
     })?;
 
     let template = update_template(&dir.0, &id, &meta, content.as_deref()).map_err(|msg| {
@@ -495,7 +506,9 @@ async fn update_template_handler(
         };
         err(status, msg)
     })?;
-    Ok(Json(serde_json::json!({ "success": true, "template": template })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "template": template }),
+    ))
 }
 
 /// `GET /api/marketplace/templates/{id}/download` → 下载内容（递增下载计数）
@@ -538,7 +551,12 @@ async fn download_template(
             format!("attachment; filename=\"{filename}.json\""),
         )
         .body(axum::body::Body::from(content))
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("响应构建失败: {e}")))
+        .map_err(|e| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("响应构建失败: {e}"),
+            )
+        })
 }
 
 /// `DELETE /api/marketplace/templates/{id}` → 删除模板
@@ -565,9 +583,7 @@ async fn delete_template_handler(
         };
         err(status, msg)
     })?;
-    Ok(Json(
-        serde_json::json!({ "success": true, "deleted": id }),
-    ))
+    Ok(Json(serde_json::json!({ "success": true, "deleted": id })))
 }
 
 // ============================================================================
@@ -608,7 +624,10 @@ mod tests {
         for t in [&t1, &t2] {
             assert_eq!(t["source"], "user");
             assert_eq!(t["download_count"], 0);
-            assert!(t["download_url"].as_str().unwrap().starts_with("/api/marketplace/templates/"));
+            assert!(t["download_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("/api/marketplace/templates/"));
             assert!(t["content_hash"].as_str().unwrap().len() >= 32);
         }
         // ID 不同
@@ -724,10 +743,9 @@ mod tests {
             .join(a["id"].as_str().unwrap())
             .join("meta.json");
         let mut m = read_meta(&apath).unwrap();
-        m.as_object_mut().unwrap().insert(
-            "created_at".into(),
-            json!("2000-01-01T00:00:00Z"),
-        );
+        m.as_object_mut()
+            .unwrap()
+            .insert("created_at".into(), json!("2000-01-01T00:00:00Z"));
         std::fs::write(&apath, serde_json::to_vec(&m).unwrap()).unwrap();
         let b = store_template(dir, &sample_meta(), b"2").unwrap();
 

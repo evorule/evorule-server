@@ -830,8 +830,8 @@ impl SessionApi {
             }
         };
 
-        let tcb_json: serde_json::Value = serde_json::from_str(&tcb_raw)
-            .map_err(|e| format!("解析宪法文件失败: {}", e))?;
+        let tcb_json: serde_json::Value =
+            serde_json::from_str(&tcb_raw).map_err(|e| format!("解析宪法文件失败: {}", e))?;
 
         let tcb: Vec<JsonValue> = tcb_json
             .get("transform")
@@ -1077,7 +1077,9 @@ impl SessionApi {
                     continue; // human: 标记无需存在性校验
                 };
                 let sid: i64 = sid_str.parse().map_err(|_| {
-                    format!("测试证据校验失败: sandbox 引用格式非法({ref_item}),须为 sandbox:<数字ID>")
+                    format!(
+                        "测试证据校验失败: sandbox 引用格式非法({ref_item}),须为 sandbox:<数字ID>"
+                    )
                 })?;
                 let ws_db = self.workspace_db.as_ref().ok_or_else(|| {
                     format!(
@@ -1128,7 +1130,9 @@ impl SessionApi {
                     .pointer("/summary/failed")
                     .and_then(|v| v.as_i64())
                     .ok_or_else(|| {
-                        format!("测试证据校验失败: 沙盒 #{sid} 报告缺少 summary.failed 字段(结构异常)")
+                        format!(
+                            "测试证据校验失败: 沙盒 #{sid} 报告缺少 summary.failed 字段(结构异常)"
+                        )
                     })?;
                 if failed != 0 {
                     return Err(format!(
@@ -1404,7 +1408,12 @@ async fn reap_once(
                             )
                         })
                         .unwrap_or((0, String::new()));
-                    match db.update_production_state(new_id as i64, version, &hash, "system:reaper-recovery") {
+                    match db.update_production_state(
+                        new_id as i64,
+                        version,
+                        &hash,
+                        "system:reaper-recovery",
+                    ) {
                         Ok(()) => {
                             tracing::info!(
                                 stale_session_id = pid,
@@ -3653,12 +3662,7 @@ async fn session_metadata(
 async fn session_reap(State(api): State<SessionApi>) -> Result<Json<ReapResponse>, StatusCode> {
     // UV-079 ①: 手动回收与后台 reaper 走同一 reap_once——生产会话保活 +
     // 失忆自愈(否则手动触发 reap 可绕过保护,把 TTL 到期的生产会话回收成幻影)
-    let (finished, expired) = reap_once(
-        &api.sessions,
-        api.workspace_db.as_ref(),
-        Some(&api),
-    )
-    .await;
+    let (finished, expired) = reap_once(&api.sessions, api.workspace_db.as_ref(), Some(&api)).await;
 
     Ok(Json(ReapResponse {
         finished,
@@ -9356,14 +9360,13 @@ mod tests {
         let core_eval = vec![JsonValue::Object(instr)];
 
         // 短 TTL(100ms) 直接组装 SessionManager,绕过 SessionApi 默认 30min TTL
-        let sessions: Arc<Mutex<session::SessionManager>> = Arc::new(Mutex::new(
-            session::SessionManager::with_limits(
+        let sessions: Arc<Mutex<session::SessionManager>> =
+            Arc::new(Mutex::new(session::SessionManager::with_limits(
                 core_eval,
                 100,
                 100,
                 std::time::Duration::from_millis(100),
-            ),
-        ));
+            )));
 
         let prod_id = sessions.lock().await.create_session().unwrap();
         let other_id = sessions.lock().await.create_session().unwrap();
@@ -9405,7 +9408,10 @@ mod tests {
         // 语义为"替换会话引用"而非发布: 版本/哈希保留
         assert_eq!(ps.ruleset_version, 5);
         assert_eq!(ps.ruleset_hash.as_deref(), Some("hash-abc"));
-        assert_eq!(ps.last_operated_by.as_deref(), Some("system:reaper-recovery"));
+        assert_eq!(
+            ps.last_operated_by.as_deref(),
+            Some("system:reaper-recovery")
+        );
         // 新会话真实存活(不再是幻影)
         assert!(sessions.lock().await.get_session(new_id as u64).is_some());
     }
@@ -10625,10 +10631,7 @@ mod tests {
             .as_millis();
         let ws_id = format!("ws-uv080-{ts}");
         {
-            let now_dt = ws_db
-                .get_production_state()
-                .unwrap()
-                .updated_at;
+            let now_dt = ws_db.get_production_state().unwrap().updated_at;
             let ws = evorule_workspace::models::WorkspaceRecord {
                 id: ws_id.clone(),
                 name: "ws-uv080".into(),
@@ -10697,10 +10700,7 @@ mod tests {
             .import_bundle(&bundle, false)
             .await
             .expect_err("FAIL 报告不得作为 pass 证据");
-        assert!(
-            err.contains("失败用例"),
-            "错误应指向报告失败用例: {err}"
-        );
+        assert!(err.contains("失败用例"), "错误应指向报告失败用例: {err}");
 
         // 清理测试报告文件(写于 crate 相对路径 ./data/sandbox_reports,仓库忽略区)
         let _ = std::fs::remove_file(format!("{report_dir}/report_{facts_1}"));
