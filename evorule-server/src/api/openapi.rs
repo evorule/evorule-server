@@ -123,9 +123,10 @@ use utoipa::OpenApi;
         crate::api::permissions::review_permission,
         crate::api::permissions::permissions_version,
         crate::api::permissions::evaluate_permission,
-        // marketplace 组（UV-084 W4 / UV-064 模板市场实化，4 端点）
+        // marketplace 组（UV-084 W4 / UV-064 模板市场实化，4 端点；UV-087 补编辑 5 端点）
         crate::api::marketplace::list_templates,
         crate::api::marketplace::upload_template,
+        crate::api::marketplace::update_template_handler,
         crate::api::marketplace::download_template,
         crate::api::marketplace::delete_template_handler,
         // openapi 元数据
