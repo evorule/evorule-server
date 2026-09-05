@@ -129,6 +129,8 @@ use utoipa::OpenApi;
         crate::api::marketplace::update_template_handler,
         crate::api::marketplace::download_template,
         crate::api::marketplace::delete_template_handler,
+        // export 组（UV-084 W6 / UV-066 服务端 PDF 纯 Rust 文本型）
+        crate::api::pdf_export::pdf_export_handler,
         // openapi 元数据
         crate::api::openapi::openapi_json,
     ),

@@ -14,6 +14,7 @@ pub mod bundles;
 pub mod knowledge;
 pub mod marketplace;
 pub mod openapi;
+pub mod pdf_export;
 pub mod permissions;
 pub mod platform_auth;
 pub mod server;

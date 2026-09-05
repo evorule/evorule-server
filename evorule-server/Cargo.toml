@@ -104,6 +104,9 @@ async-trait = "0.1"
 
 # Phase 1: 第一层输入净化（正则匹配 + 静默改写，可复用公共服务）
 regex = "1"
+pdf-writer = "0.15.0"
+ttf-parser = "0.25.1"
+subsetter = "0.2.6"
 
 [dev-dependencies]
 # H6: benchmarks 迁移到应用层后需要的依赖

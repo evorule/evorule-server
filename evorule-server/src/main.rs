@@ -372,6 +372,12 @@ struct Cli {
         value_parser = clap::value_parser!(bool),
     )]
     demo_auth: Option<bool>,
+
+    /// 服务端 PDF 导出的中文字体显式指定（UV-084 W6）：TTF/OTF/TTC 路径。
+    /// 缺省时自动探测系统字体（Windows: msyh/simhei/simsun；Linux: Noto Sans CJK/
+    /// 文泉驿）；探测不到时 PDF 导出显式报错（fail-fast，不生成缺字 PDF）。
+    #[arg(long, env = "EVORULE_PDF_FONT")]
+    pdf_font: Option<PathBuf>,
 }
 
 /// 合并后的最终配置（CLI > env > file > default）
@@ -916,7 +922,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_config = load_config_file(&cli.config);
 
     // 按 CLI > env > file > default 优先级解析
+    // （pdf_font 提前取出：它不经 ResolvedConfig 链，直接注入 pdf_export 的
+    //  进程级静态配置——该模块唯一消费者是 /api/export/pdf handler）
+    let pdf_font = cli.pdf_font.clone();
     let cfg = ResolvedConfig::resolve(cli, file_config);
+
+    // UV-084 W6：服务端 PDF 字体覆盖（--pdf-font；缺省=自动探测系统字体）
+    evorule_server::api::pdf_export::set_font_override(pdf_font);
 
     // 1. 初始化日志（支持 JSON 结构化日志，支持文件持久化）
     // C2 修复: 必须持有 _log_guard 直到进程退出,否则 tracing_appender 后台线程

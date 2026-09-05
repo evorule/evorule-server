@@ -7091,6 +7091,9 @@ impl GovernanceServer {
             .merge(crate::api::permissions::permissions_router())
             // 模板市场端点族（UV-084 W4 / UV-064 实化，受认证保护）
             .merge(crate::api::marketplace::marketplace_router())
+            // 服务端 PDF 导出（UV-084 W6 / UV-066 实化，纯 Rust 文本型；受认证
+            // 保护 + 独立 body 上限 32MB——console 可携带全量审计事实）
+            .merge(crate::api::pdf_export::pdf_export_router())
             // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)
             .merge(evorule_workspace::build_workspace_router())
             // abort 双保险：条件挂载（--allow-abort 关闭时为空 Router）
