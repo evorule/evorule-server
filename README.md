@@ -488,6 +488,12 @@ evorule-server --plugins ./plugin_manifest.json
 
 ## 部署
 
+### 升级与兼容
+
+- **升级顺序**:本仓与核心引擎 crate(`evorule-tcb` / `evorule-reactor`)的审计链事实格式同步演进——升级本仓时**必须同时升级核心引擎依赖**,勿混用新旧版本组合。
+- **WAL 向前兼容性**:审计链对新事实类型的反序列化策略为**显式拒绝**(fail-fast)——旧版进程读取含新事实类型的 WAL 会报 `InvalidFact(unknown fact type: ...)` 并拒绝启动,**不会静默丢弃或跳过**;遇到该错误的处置 = 将进程升级到与 WAL 写入方同代或更新的版本。
+- 升级前建议备份 `data/`(WAL 与数据库);命中归因事实为记录性数据,升级后统计计数从零重新聚合(历史全量以审计链为准)。
+
 ### Docker(推荐)
 
 ```bash
