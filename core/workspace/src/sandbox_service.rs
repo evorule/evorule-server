@@ -41,7 +41,7 @@ use crate::session_bridge::SessionOps;
 use crate::test_report::{TestReport, TestReportBuilder};
 
 /// 沙盒测试报告导出目录
-/// pub(UV-080 B2): 执行域 import 侧证据一致性校验需按同一规则推导报告路径
+/// pub: 执行域 import 侧证据一致性校验需按同一规则推导报告路径
 /// (report_<facts 文件 basename>.json,与 generate_test_report 关闭态同口径)
 pub const SANDBOX_REPORT_DIR: &str = "./data/sandbox_reports";
 
@@ -327,7 +327,7 @@ impl SandboxService {
             .get_sandbox_session(sandbox_id)?
             .ok_or_else(|| WorkspaceError::not_found("sandbox", sandbox_id.to_string()))?;
 
-        // UV-100: 认知复杂度拆分 — 校验/导出/报告三个语义块提为独立方法,
+        // : 认知复杂度拆分 — 校验/导出/报告三个语义块提为独立方法,
         // 编排逻辑留在本函数(此前 31/25 触发 clippy cognitive_complexity)
         self.validate_sandbox_close(&sandbox, closed_by)?;
 
@@ -343,7 +343,7 @@ impl SandboxService {
             .export_sandbox_facts(sandbox_id, tcb_session_id)
             .await?;
 
-        // UV-072: 关闭前(session 仍活)生成完整 TestReport 并落盘。
+        // : 关闭前(session 仍活)生成完整 TestReport 并落盘。
         // 此前仅导出 fact 链文件,summary 报告未持久化 → 关闭后
         // generate_test_report 实时取数 404 "session not found",
         // 机器证据回填与"查看报告"功能全断。
@@ -439,7 +439,7 @@ impl SandboxService {
         Ok(export_path)
     }
 
-    /// UV-072: 生成完整 TestReport 并落盘 (与 facts 文件同目录同时间戳配对)
+    /// : 生成完整 TestReport 并落盘 (与 facts 文件同目录同时间戳配对)
     async fn persist_test_report(
         &self,
         sandbox: &SandboxSession,
@@ -476,7 +476,7 @@ impl SandboxService {
             sandbox_id = sandbox_id,
             report_path = %report_path,
             verdict_failed = report.summary.failed,
-            "UV-072: sandbox test report persisted before close"
+            ": sandbox test report persisted before close"
         );
         Ok(())
     }
@@ -485,7 +485,7 @@ impl SandboxService {
     ///
     /// 报告包含 BLAKE3 签名 (防篡改),可附带在发布队列项中供审批者查阅。
     ///
-    /// UV-072: running 沙盒实时聚合(现状);closed 沙盒从 close 时持久化的
+    /// : running 沙盒实时聚合(现状);closed 沙盒从 close 时持久化的
     /// 报告文件读取(与 facts 导出同目录同时间戳配对:report_sandbox_{id}_{ts}.json,
     /// 按 sandbox.export_path 推导)。文件缺失时显式报错含自诊断指引,
     /// 不静默不伪造。
@@ -509,7 +509,7 @@ impl SandboxService {
                 WorkspaceError::not_found(
                     "sandbox report file",
                     format!(
-                        "{report_path} (沙盒已关闭且报告文件缺失:可能被清理或属 UV-072 \
+                        "{report_path} (沙盒已关闭且报告文件缺失:可能被清理或属 \
                          修复前关闭的历史沙盒;请重跑沙盒测试以生成报告)"
                     ),
                 )
@@ -618,7 +618,7 @@ impl SandboxService {
             &req.name,
             // 路径 workspace_id 为权威(REST 语义):数据集归属由 URL 决定;
             // 请求体字段仅作上方一致性校验,不参与落库。
-            // UV-071:修复误用 req.workspace_id(缺省 NULL)导致
+            // :修复误用 req.workspace_id(缺省 NULL)导致
             // "创建成功但列表按 workspace 过滤永远不可见"。
             Some(workspace_id),
             &req.cases_json,

@@ -1009,7 +1009,8 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule"
-version = "0.3.1"
+version = "0.3.0"
+source = "git+https://gitee.com/evorule/evorule-rule.git?rev=28d35aef03d58b8916c4036ac4d55b808052162e#28d35aef03d58b8916c4036ac4d55b808052162e"
 dependencies = [
  "axum",
  "base64",
@@ -4645,3 +4646,7 @@ dependencies = [
  "log",
  "simd-adler32",
 ]
+
+[[patch.unused]]
+name = "evorule-rule"
+version = "0.3.1"

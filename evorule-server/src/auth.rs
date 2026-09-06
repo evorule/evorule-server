@@ -11,9 +11,9 @@
 //! # 安全加固
 //! - 使用 `subtle::ConstantTimeEq` 做恒定时间比较，防止时序攻击
 //! - 支持 Token 轮换：`current_tokens` + `previous_tokens` 双 token 并存过渡
-//! - `validate()` 遍历所有 token，不因匹配到就提前返回，避免枚举攻击
+//! - `validate` 遍历所有 token，不因匹配到就提前返回，避免枚举攻击
 //!
-//! UV-017 W2b：HTTP 中间件职责已移交 `api::platform_auth::unified_auth_middleware`
+//! W2b：HTTP 中间件职责已移交 `api::platform_auth::unified_auth_middleware`
 //! （双凭据：静态 token 或平台会话），本模块只保留凭据模型（AuthConfig /
 //! CallerIdentity）与受保护域判定（requires_service_identity）。
 
@@ -90,7 +90,7 @@ impl AuthConfig {
         }
     }
 
-    /// 是否启用认证（UV-017 W2b：统一中间件据此决定放行/校验）
+    /// 是否启用认证
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
@@ -147,7 +147,7 @@ impl AuthConfig {
                 found = true;
             }
         }
-        // B5-server：service token 同样可通过认证（身份区分在 identity()）
+        // B5-server：service token 同样可通过认证（身份区分在 identity）
         for t in self.current_service_tokens.iter() {
             if Self::ct_eq(token, t) {
                 found = true;
@@ -315,7 +315,7 @@ mod tests {
     fn test_with_service_tokens_filters_empty() {
         let config = AuthConfig::new(vec!["user_token".to_string()], true)
             .with_service_tokens(vec![String::new(), "service_token".to_string()]);
-        // 空 token 不进列表（与 new() 的 N1 修复规则一致）
+        // 空 token 不进列表（与 new 的 N1 修复规则一致）
         assert!(!config.validate(""));
         assert!(config.validate("service_token"));
     }

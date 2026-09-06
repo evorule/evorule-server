@@ -30,7 +30,7 @@
 | 文档 | 主题 | 说明 |
 |:---|:---|:---|
 | [VERSION_STRATEGY.md](VERSION_STRATEGY.md) | 版本策略 | 语义化版本规则、发布清单 |
-| [CHANGELOG.md](CHANGELOG.md) | 更新日志 | Keep a Changelog v1.0 格式;每版所有重大变更(B1-B3 / N1-N6 / S1-S4) |
+| [CHANGELOG.md](CHANGELOG.md) | 更新日志 | Keep a Changelog v1.0 格式;每版所有重大变更（-B3 / N1-N6 / S1-S4） |
 | [GATE_REFERENCE.md](GATE_REFERENCE.md) | 门控参考 | build.rs 编译时门禁 + Clippy workspace lints + 豁免索引 |
 
 ### 2.2 法律、协议、贡献
@@ -74,10 +74,10 @@
 ```
 evorule-server/
 ├── core/
-│   ├── auth/              # Bearer token 认证(N1: 空token过滤)
+│   ├── auth/              # Bearer token 认证（空token过滤）
 │   ├── debug_control/     # 调试 API 控制
 │   ├── hot_reload/        # 规则热重载(S1: 删除事件语义 / N4: auth_token)
-│   ├── io_handlers/       # I/O handler 实现(N2: scheme校验 / N6: key长度 / B1: SSRF redirect)
+│   ├── io_handlers/       # I/O handler 实现（scheme校验 / N6: key长度 / B1: SSRF redirect）
 │   ├── metrics/           # Prometheus 指标实现
 │   ├── plugin-kit/        # 插件机制公共件(NativeService trait/声明项/泛型过滤路由器,三插件归一)
 │   ├── rule_schema/       # 规则 Schema 门禁 (0.3.0 新增, /api/rules/validate 权威基准)
@@ -87,17 +87,17 @@ evorule-server/
 │   └── workspace/         # 多租户工作空间 + 规则元数据管理 (0.3.0 新增)
 ├── evorule-server/        # 主 bin(axum HTTP + SSE + Session 管理)
 │   └── src/
-│       ├── api/server.rs  # HTTP 路由 + 中间件(B2: reload认证 / S2: metrics可选认证 / S3: CORS通配符检测)
+│       ├── api/server.rs  # HTTP 路由 + 中间件（reload认证 / S2: metrics可选认证 / S3: CORS通配符检测）
 │       ├── api/bundles.rs # 规则包 API (0.3.0 新增: 导入/列出/回滚)
 │       ├── api/permissions.rs # 权限 API (0.3.0 新增)
 │       ├── api/openapi.rs # OpenAPI 单一真相源 (0.3.0 新增)
-│       ├── auth.rs        # 认证逻辑(N1)
-│       ├── main.rs        # 启动入口(B3: fail-closed启动)
-│       └── metrics_impl.rs # Prometheus 指标收集(N3: 指标基数防护)
-├── plugins/               # 进程内原生插件 (0.3.0 新增;UV-035 起多插件登记)
+│       ├── auth.rs        # 认证逻辑
+│       ├── main.rs        # 启动入口（fail-closed启动）
+│       └── metrics_impl.rs # Prometheus 指标收集（指标基数防护）
+├── plugins/               # 进程内原生插件 (0.3.0 新增;起多插件登记)
 │   ├── demo-services/     # Rust 原生业务服务示例(复合路由: 原生优先, HTTP回落)
-│   ├── physics-services/  # 确定性物理仿真插件(UV-035, vendored rpsm-core 内核)
-│   └── indicator-services/ # 确定性金融技术指标插件(UV-037, pandas 语义逐位对齐 Rust 重写)
+│   ├── physics-services/  # 确定性物理仿真插件
+│   └── indicator-services/ # 确定性金融技术指标插件
 ├── rules/                 # 规则包目录
 │   └── bundles/           # 规则包示例 (bundle-ds-yuanze-01-v3 等)
 ├── resources/

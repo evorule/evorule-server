@@ -12,7 +12,7 @@ pub struct HotReloadConfig {
     pub evorule_server_url: String,
     /// 会话 ID（为空时创建新会话）
     pub session_id: Option<u64>,
-    /// 认证 token（N4：当 evorule-server 启用认证时必需）
+    /// 认证 token（当 evorule-server 启用认证时必需）
     ///
     /// 设置后，所有发往 evorule-server 的请求会携带 `Authorization: Bearer <token>` 头。
     pub auth_token: Option<String>,

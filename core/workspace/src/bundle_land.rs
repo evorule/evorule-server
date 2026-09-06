@@ -8,17 +8,17 @@
 //! （evorule-server `SessionApi::import_bundle`）共用一份实现，
 //! 消除两份 land 实现漂移的通道（与 evorule-bundle 的 SSOT 原则一致）。
 //!
-//! # 落盘布局（Q12 数据资产化：物理隔离）
+//! # 落盘布局（数据资产化：物理隔离）
 //! - 规则包：`{rules_dir}/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
 //!   + `{rules_dir}/bundles/{bundle_id}/bundle_manifest.json`
-//!     （T3: 版本语义/法规基准/哈希/条目→文件映射）；
+//!     （版本语义/法规基准/哈希/条目→文件映射）；
 //! - 数据包：`{knowledge_dir}/bundles/{bundle_id}/{entry_id}.json`（payload 原样）
 //!   + 同构 manifest（条目映射含 schema_ref，D3）——与 rules_dir **物理隔离**，
-//!     TCB loader 扫描路径天然不触碰数据文件（Q12 W1，blocker 消除）。
+//!     TCB loader 扫描路径天然不触碰数据文件（，blocker 消除）。
 //!
 //! # 原子性
 //! - 临时目录写入 → rename 就位，写入失败清理临时目录，无半成品；
-//! - 同 dataset 旧 bundle 单激活替换（T4），rename 失败回滚恢复旧版。
+//! - 同 dataset 旧 bundle 单激活替换，rename 失败回滚恢复旧版。
 
 use std::path::{Path, PathBuf};
 
@@ -55,20 +55,20 @@ pub struct BundleManifest {
 pub struct EntryFileManifest {
     pub entry_id: String,
     pub file: String,
-    /// Knowledge 条目：领域 JSON Schema 引用（Q12 D3）；Rule 条目省略（None 不序列化）
+    /// Knowledge 条目：领域 JSON Schema 引用（D3）；Rule 条目省略（None 不序列化）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_ref: Option<String>,
-    /// Knowledge 条目：领域分类（Q12 段2 P1 执行侧数据面过滤；Rule 条目省略）。
+    /// Knowledge 条目：领域分类（段2 P1 执行侧数据面过滤；Rule 条目省略）。
     /// serde default 兼容旧 manifest（缺字段 → None，过滤不命中但不报错）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
-    /// Knowledge 条目：标签（Q12 段2 P1 执行侧数据面过滤；空省略）
+    /// Knowledge 条目：标签（段2 P1 执行侧数据面过滤；空省略）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
 
 /// 原子落盘：`{rules_dir}/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
-/// + `bundle_manifest.json`（T3：版本语义/法规基准/哈希/条目→文件映射）。
+/// + `bundle_manifest.json`（版本语义/法规基准/哈希/条目→文件映射）。
 ///
 /// - 同 dataset 再次导入 → 替换旧 bundle 目录（单激活替换语义，T4 细化）；
 /// - 写入失败 → 清理临时目录，无半成品；
@@ -81,7 +81,7 @@ pub fn land_bundle_atomically(
     land_bundle_core(&rules_dir.join("bundles"), bundle, result, false)
 }
 
-/// 原子落盘（Q12 W1 数据资产通道）：`{knowledge_dir}/bundles/{bundle_id}/{entry_id}.json`
+/// 原子落盘（数据资产通道）：`{knowledge_dir}/bundles/{bundle_id}/{entry_id}.json`
 /// （`rule_body` 字段承载领域 payload，零转译）+ 同构 `bundle_manifest.json`
 /// （条目映射含 `schema_ref`）。
 ///
@@ -241,7 +241,7 @@ fn land_bundle_core(
     Ok(())
 }
 
-/// 找出 base 下与指定 dataset 相同（且 bundle_id 不同）的旧 bundle 目录（T4 单激活）。
+/// 找出 base 下与指定 dataset 相同（且 bundle_id 不同）的旧 bundle 目录（单激活）。
 ///
 /// 跳过隐藏目录（临时/备份目录）与不含 manifest 的目录；manifest 读取失败静默跳过。
 fn find_same_dataset_stale_dirs(base: &Path, dataset_id: &str, bundle_id: &str) -> Vec<PathBuf> {

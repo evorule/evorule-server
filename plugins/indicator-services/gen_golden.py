@@ -1,4 +1,4 @@
-# UV-037 黄金值生成器（一次性工具，产物硬编码进 Rust 单测）
+# 黄金值生成器（一次性工具，产物硬编码进 Rust 单测）
 # 用 pandas 语义（与 indicator_calculator.py 同口径）计算 4 组黄金值：
 #   sma/ema/macd/rsi —— 打印 repr 全精度值供 Rust 端逐位比对。
 # 运行：python gen_golden.py
@@ -20,7 +20,7 @@ def fmt(values):
 
 s = pd.Series(SERIES)
 
-# SMA(5): rolling(5).mean() → 前 4 位 NaN
+# SMA(5): rolling(5).mean → 前 4 位 NaN
 sma5 = s.rolling(5).mean()
 print("SMA5 =", fmt(sma5.tolist()))
 

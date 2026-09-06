@@ -84,7 +84,7 @@ evorule-server --config evorule.json --log-format json
 | `--openapi-ui` | `EVORULE_OPENAPI_UI` | `false` | 启用 Swagger UI（/api/docs） |
 | `--allow-loopback` | `EVORULE_ALLOW_LOOPBACK` | `false` | 允许 I/O handler 访问 loopback 地址（生产环境永远不要启用） |
 
-> **安全约束**: 无 token 且绑定非 loopback 地址时 **fail-closed 拒绝启动**（B3）。loopback 地址（127.0.0.1 / [::1]）仍允许无认证启动供本地开发。
+> **安全约束**: 无 token 且绑定非 loopback 地址时 **fail-closed 拒绝启动**。loopback 地址（127.0.0.1 / [::1]）仍允许无认证启动供本地开发。
 
 ---
 
@@ -128,8 +128,8 @@ evorule-server --config evorule.json --log-format json
 - 测试代码外禁止 `unwrap`/`expect`/`panic`（C5）
 - Bearer token 认证使用恒定时间比较（防止时序攻击）
 - 空 token 过滤（防止 `ct_eq("", "")` 返回 true 的空 token 通过认证）
-- SSRF 防护：HttpHandler 禁用 HTTP 重定向跟随（B1），默认禁止 loopback 地址
-- POST /api/rules/reload 移入认证保护（B2）
+- SSRF 防护：HttpHandler 禁用 HTTP 重定向跟随，默认禁止 loopback 地址
+- POST /api/rules/reload 移入认证保护
 - 输入清洗：`input_sanitizer.rs` 防止恶意输入注入
 
 ---

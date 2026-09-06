@@ -16,7 +16,7 @@ evorule-reactor = { version = "0.4.0" }
 
 # I/O SDK
 sqlx = { version = "0.8.1", features = ["runtime-tokio", "sqlite"] } # SQLite
-# UV-100: rustls TLS——Linux musl 静态发版构建不依赖系统 OpenSSL(native-tls 缺省已关)
+# : rustls TLS——Linux musl 静态发版构建不依赖系统 OpenSSL(native-tls 缺省已关)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] } # HTTP 客户端
 url = "2"                                                          # URL 解析（SSRF 防护用）
 

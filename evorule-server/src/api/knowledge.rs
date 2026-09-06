@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 执行侧数据面端点（Q12 段2 P1 · D1 三端点）
+//! 执行侧数据面端点（段2 P1 · D1 三端点）
 //!
 //! - `GET /api/knowledge`：已承载数据资产的数据集清单；
 //! - `GET /api/knowledge/{ds}/entries?q=&domain=&tags=`：条目检索（与治理侧同语法，
@@ -270,7 +270,7 @@ mod tests {
             }],
             data_dependencies: None,
             tests: BundleTests {
-                // UV-080 B2: pass 必带可追溯标记(执行域 import 侧校验);
+                // B2: pass 必带可追溯标记(执行域 import 侧校验);
                 // 测试意图=合法可导入知识包,人工背书形态
                 subset: vec!["human:q12-s2-itest".into()],
                 fixtures: vec![],
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["count"], 1, "{body}");
         assert_eq!(body["entries"][0]["entry_id"], "scn-001", "{body}");
-        // manifest 携带 domain/tags（Q12 段2 P1 新字段）
+        // manifest 携带 domain/tags（段2 P1 新字段）
         assert_eq!(body["entries"][0]["domain"], "physics", "{body}");
         assert_eq!(body["entries"][0]["tags"][0], "spring", "{body}");
 

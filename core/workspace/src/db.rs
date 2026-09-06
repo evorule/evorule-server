@@ -650,7 +650,7 @@ impl WorkspaceDb {
 
     pub fn delete_member(&self, workspace_id: &str, user_id: &str) -> WorkspaceResult<()> {
         // 注意: std::sync::Mutex 不可重入,锁必须在调用 get_member 前释放,
-        // 否则 get_member 内部 self.lock() 会死锁。
+        // 否则 get_member 内部 self.lock 会死锁。
         let affected = {
             let conn = self.lock()?;
             conn.execute(
@@ -1639,7 +1639,7 @@ impl WorkspaceDb {
 // =============================================================================
 
 impl WorkspaceDb {
-    /// 记录一次 bundle 导入溯源 (T5)
+    /// 记录一次 bundle 导入溯源 
     ///
     /// 返回自增 id。`imported_at` 由本方法以墙钟生成 (管理元数据, 旁路),
     /// 不参与 fact / 内容哈希 / 审计验证链。

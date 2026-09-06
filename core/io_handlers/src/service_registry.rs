@@ -540,7 +540,7 @@ mod tests {
         let params = JsonValue::object_from_pairs(&[("service_name", JsonValue::string("nope"))]);
         let err = handler.resolve(&params).unwrap_err();
         assert!(err.contains("unknown service_name 'nope'"));
-        // 自愈原则：绑定缺失错误必须携带可自助排查的指引（B2 测试门口径）
+        // 自愈原则：绑定缺失错误必须携带可自助排查的指引（测试门口径）
         assert!(err.contains("自诊断指引"), "应含自诊断指引, got: {err}");
         assert!(
             err.contains("--service-registry"),

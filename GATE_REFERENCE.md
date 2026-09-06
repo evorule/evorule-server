@@ -42,10 +42,10 @@ evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但�
 | --- | --- | --- | --- |
 | panic-prone (G1/F11) | ❌ L1 + L2 双保险 | ❌ **L1 + L2 双保险** (S1) | 跨仓一致 |
 | unsafe (G2/T10) | ❌ L1 字面量 deny | ❌ **L1' forbid** (更强) | server 仓用 forbid |
-| async/tokio (T14) | ❌ tier0 禁止 | ✅ **必需** | axum HTTP server |
-| I/O (T4) | ❌ tier0 禁止 | ✅ **必需** | DB/HTTP/Memory handler |
-| HashMap (T8) | ❌ tier0 禁止 | ✅ **必需** | session 管理 |
-| SystemTime (T5) | ❌ tier0 禁止 | ✅ **必需** | 超时/日志/审计 |
+| async/tokio （4） | ❌ tier0 禁止 | ✅ **必需** | axum HTTP server |
+| I/O  | ❌ tier0 禁止 | ✅ **必需** | DB/HTTP/Memory handler |
+| HashMap  | ❌ tier0 禁止 | ✅ **必需** | session 管理 |
+| SystemTime  | ❌ tier0 禁止 | ✅ **必需** | 超时/日志/审计 |
 | 控制流硬编码 (G8) | ❌ tier1/tier2 禁止 | N/A | server 不处理规则指令 |
 | 业务术语 (S5.2) | ❌ tier1/tier2 禁止 | N/A | server 不处理规则指令 |
 
@@ -99,7 +99,7 @@ evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但�
 
 ### 3.6 豁免机制
 
-- `strip_test_mod()`: 剥离 `#[cfg(test)] mod tests { ... }` 块, 不扫描测试代码
+- `strip_test_mod`: 剥离 `#[cfg(test)] mod tests { ... }` 块, 不扫描测试代码
 - 注释行豁免: `//` 开头的行 (含 `///`、`//!`) 不扫描
 - `EVORULE_SKIP_GATE=1`: 紧急跳过, 编译时输出 `cargo:warning` 提醒
 
@@ -221,7 +221,7 @@ workspace = true
 
 ### 7.2 src/ mod tests 豁免
 
-src/ 内 `#[cfg(test)] mod <ident> { ... }` 块是测试代码, build.rs 的 `strip_test_mod()` 自动剥离 (支持任意 mod 名: `tests` / `whitelist_tests` / `ssrf_tests` 等, 只要被 `#[cfg(test)]` 修饰就整体剥离), 不需要额外 `#[allow]`。
+src/ 内 `#[cfg(test)] mod <ident> { ... }` 块是测试代码, build.rs 的 `strip_test_mod` 自动剥离 (支持任意 mod 名: `tests` / `whitelist_tests` / `ssrf_tests` 等, 只要被 `#[cfg(test)]` 修饰就整体剥离), 不需要额外 `#[allow]`。
 
 **实现要点** (2026-08-01 修复):
 - `skip_to_mod_tests` 匹配紧跟 `#[cfg(test)]` 的任意 `mod <ident>` (不向后搜索, 避免跨代码误匹配远处的 mod)

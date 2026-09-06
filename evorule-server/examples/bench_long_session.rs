@@ -64,7 +64,7 @@ async fn main() {
     //   {"type":"noop",     "params":{}}
     // (NOT "path" + "value" — that was the old format I used in 1.4 first attempt, which
     //  silently failed with Error entries in audit but version=0 and empty payload)
-    // CR-20260901-001 适配: audit_new 增量化后 POST 秒回, 顺序提交速率(~2500/s)
+    // 适配: audit_new 增量化后 POST 秒回, 顺序提交速率(~2500/s)
     // 远超反应器执行速率, 会使指令队列溢出(max_queue_len=1000, 溢出发 Error 清空
     // 队列——命令入链但不执行)。长稳测试目标是 10000 条命令**全部执行**,
     // 故分批提交并轮询 /state 等已提交命令全部落地后再继续。

@@ -1,6 +1,6 @@
 # 版本与升级兼容策略(精简版)
 
-> 完整版与证据:evorule-project knowledge 仓 ops/版本与升级兼容策略.md;本文件为 server 侧落地同步版(UV-031)。
+> 完整版与证据:evorule-project knowledge 仓 ops/版本与升级兼容策略.md;本文件为 server 侧落地同步版。
 > 原则:升级前必冷备+演练(scripts/acceptance-backup-restore.ps1);恢复失败拒绝启动是特性不是缺陷。
 
 ## 数据层兼容契约
@@ -9,7 +9,7 @@
 |---|---|---|
 | WAL(data\wal\,JSON-lines+BLAKE3 行 hash) | 无格式版本头,兼容性取决于 Fact JSON 序列化 | 同 minor 版本保证可恢复;跨 minor 升级前冷备,恢复失败→拒绝启动,处置见知识库 runbook §4.1 |
 | SQLite(evorule.db/workspace.db) | 幂等建表+ALTER 前滚 | 新版开旧库自动补结构;不支持降级 |
-| 宪法(resources/server_eval.json,v0.4.x;0.4.1 前旧名 core_eval.json) | 启动期 fail-fast 校验关键指令规则(call_external 等)+ 旧名兼容检测给迁移指引(UV-044) | 缺规则拒绝启动+三步自诊断;剧本自持于消费方,宪法版本演进记录于文件 metadata |
+| 宪法(resources/server_eval.json,v0.4.x;0.4.1 前旧名 core_eval.json) | 启动期 fail-fast 校验关键指令规则(call_external 等)+ 旧名兼容检测给迁移指引 | 缺规则拒绝启动+三步自诊断;剧本自持于消费方,宪法版本演进记录于文件 metadata |
 
 ## 破坏性变更惯例
 

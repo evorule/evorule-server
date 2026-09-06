@@ -1,8 +1,8 @@
-﻿# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
 <#
 .SYNOPSIS
-    UV-032 W3 负载演练:多用户并发长时运行(server 真实 API)
+    W3 负载演练:多用户并发长时运行(server 真实 API)
 
 .DESCRIPTION
     N 个并发用户循环执行 建会话→K 条命令→读审计档案,持续指定时长。
@@ -93,7 +93,7 @@ for ($u = 1; $u -le $Users; $u++) {
                     $null = Invoke-RestMethod -Uri "$api/api/audit-archive/sessions" -TimeoutSec 10
                 }
                 # 会话轮换:用完即关(DELETE),模拟真实多用户生命周期。
-                # UV-032 首轮教训:不关会话 ~12 分钟耗尽 max=1000 活跃会话上限,
+                # 首轮教训:不关会话 ~12 分钟耗尽 max=1000 活跃会话上限,
                 # 其余时间全部是被上限拒绝的无效错误。
                 $null = Invoke-RestMethod -Uri "$api/api/sessions/$sid" -Method Delete -TimeoutSec 10
                 $closed++

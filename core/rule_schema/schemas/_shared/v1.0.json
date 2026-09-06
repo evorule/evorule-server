@@ -234,7 +234,7 @@
                   "io_type": { "type": "string", "description": "如 call_external / call_service；I/O 结果按 io_type 隔离写入 __io_results__.<io_type>（复数，P1-03）" }
                 },
                 "additionalProperties": { "$ref": "#/$defs/path_or_literal" },
-                "description": "io_type 专属参数（call_external: messages 必填路径 + tools? 可选；call_service: service_name + args?）。可选参数必须以 '?' 后缀显式声明（M4 审计决策）：键名带 ? 时路径解析失败可跳过（业务性缺省），不带 ? 时解析失败立即报错——可选必须显式声明，禁止静默推断。所有参数值经 resolve_path_or_literal：__ 前缀字符串必须语法合法（防 x. 等运行时错误）"
+                "description": "io_type 专属参数（call_external: messages 必填路径 + tools? 可选；call_service: service_name + args?）。可选参数必须以 '?' 后缀显式声明（审计决策）：键名带 ? 时路径解析失败可跳过（业务性缺省），不带 ? 时解析失败立即报错——可选必须显式声明，禁止静默推断。所有参数值经 resolve_path_or_literal：__ 前缀字符串必须语法合法（防 x. 等运行时错误）"
               }
             }
           }

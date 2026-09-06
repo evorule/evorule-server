@@ -1,11 +1,11 @@
-# 原生服务声明同步脚本（UV-029 声明文件化；UV-035 泛化至多插件）
+# 原生服务声明同步脚本
 #
 # SSOT : evorule-server/plugins/<插件 id>/official_native_services.json（每插件一份）
 # 目的 : evorule-rule/src/model/official_native_services.<插件 id>.embedded.json
 #        （include_str! 构建期嵌入，治理侧按登记表声明序聚合）
 #
-# 插件登记（UV-035 泛化：新增插件 = 在此表追加一项，流程代码零改动）：
-#   ① demo-services      ② physics-services      ③ indicator-services(UV-037)
+# 插件登记：
+#   ① demo-services      ② physics-services      ③ indicator-services
 #
 # 流程 = 节奏强制（逐插件）：复制 → 字节核验 → 双侧守卫测试
 #   执行侧守卫：各插件声明文件 vs 其 NATIVE_SERVICES（三字段+序）

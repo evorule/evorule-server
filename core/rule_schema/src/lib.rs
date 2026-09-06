@@ -184,7 +184,7 @@ fn build_validators() -> Validators {
         .build(&service_registry_schema)
         .expect("构建 service_registry 校验器失败（内嵌 schema 静态合法）");
 
-    // knowledge 门禁（Q12 W5）：知识数据资产文档完整校验——双形态条目
+    // knowledge 门禁（）：知识数据资产文档完整校验——双形态条目
     // （文档 content / 数据 payload+schema_ref）oneOf 互斥 + _meta 治理骨架。
     let mut kn_opts = Validator::options();
     kn_opts.with_draft(Draft::Draft202012);
@@ -275,7 +275,7 @@ pub fn validate_service_registry(doc: &Value) -> SchemaReport {
     collect_report(&VALIDATORS.service_registry, doc, "service_registry")
 }
 
-/// 校验知识数据资产文档（Q12 W5，knowledge/v1.0 完整校验）。
+/// 校验知识数据资产文档（，knowledge/v1.0 完整校验）。
 ///
 /// 双形态条目强制互斥：文档条目（content）与数据条目（payload + schema_ref）
 /// 不得混于同一条目；治理骨架（kind=knowledge + _meta）与 rule_set 同源。

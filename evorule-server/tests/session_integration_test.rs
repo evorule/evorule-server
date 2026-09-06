@@ -86,7 +86,7 @@ fn load_core_eval() -> Vec<JsonValue> {
 /// 构造测试用 `WorkspaceState`（内存 SQLite + 桥接到 SessionApi）
 ///
 /// 为不需要实际测试 workspace 功能的集成测试提供默认 WorkspaceState，
-/// 满足 `AppState::new()` 第 6 参数的类型要求。
+/// 满足 `AppState::new` 第 6 参数的类型要求。
 fn make_workspace_state(sessions: &SessionApi) -> evorule_workspace::api::WorkspaceState {
     let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
     let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(sessions.clone());
@@ -463,7 +463,7 @@ async fn test_session_diff() {
 
 /// 测试 3b：diff 版本不可达 → 400
 ///
-/// UV-046 B8b 配套（evorule-governance 0.4.1）：diff 对 rewind 不可达版本
+/// B8b 配套（evorule-governance 0.4.1）：diff 对 rewind 不可达版本
 /// 显式报错（不再静默回退空 payload），端点映射为 400 BAD_REQUEST。
 #[tokio::test]
 async fn test_session_diff_unreachable_version() {
@@ -617,7 +617,7 @@ async fn test_session_rule_hot_reload() {
     let tmp_dir = TempDir::new().expect("Failed to create temp dir");
     let tmp_path = tmp_dir.path();
 
-    // 复制本仓宪法 resources/server_eval.json 到临时目录(T8 属地原则:不再跨仓引用 evorule-tcb 资产)
+    // 复制本仓宪法 resources/server_eval.json 到临时目录（属地原则:不再跨仓引用 evorule-tcb 资产）
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let core_eval_source = manifest_dir.join("../resources/server_eval.json");
     let core_eval_content = fs::read_to_string(&core_eval_source).unwrap_or_else(|e| {
@@ -802,7 +802,7 @@ async fn test_session_rule_hot_reload() {
     // TempDir 在作用域结束时自动清理
 }
 
-/// UV-016：审计档案端到端 — 会话关闭/重启后经 /api/audit-archive 回看审计链
+/// ：审计档案端到端 — 会话关闭/重启后经 /api/audit-archive 回看审计链
 #[tokio::test]
 async fn test_audit_archive_replay_after_close_and_restart() {
     use std::fs;

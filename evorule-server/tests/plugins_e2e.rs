@@ -1,5 +1,5 @@
-//! 插件清单端到端验收（后端插件清单化，15 号实施计划 W4；UV-035 泛化至双插件；
-//! UV-037 泛化至三插件）
+//! 插件清单端到端验收（后端插件清单化，15 号实施计划 W4；泛化至双插件；
+//! 泛化至三插件）
 //!
 //! 不新增机制，做**运行时闭环实证**——与 main.rs 生产装配同构（过滤路由器 +
 //! ServiceRegistryHandler HTTP 回落），非桩模拟：
@@ -11,9 +11,9 @@
 //!    （fail-fast + 可自愈，对齐系统自愈原则），不伪造结果。
 //! 3. 确定性：启用服务名序 = `NATIVE_SERVICES` 声明序，与清单书写序无关
 //!    （健康快照 /api/health plugins 节的能力对账口径）。
-//! 4. UV-035 双插件：physics-services 按生产同构链挂载——原生命中、
+//! 4. 双插件：physics-services 按生产同构链挂载——原生命中、
 //!    插件内未启用回落、链尾诚实报错、声明序锁定。
-//! 5. UV-037 三插件：indicator-services 以第二种集成模式（Python 参考实现
+//! 5. 三插件：indicator-services 以第二种集成模式（Python 参考实现
 //!    Rust 重写）挂载，链 demo → physics → indicator → HTTP——原生命中
 //!    （含 warmup null 语义）、未启用穿透、声明序锁定。
 //!
@@ -42,7 +42,7 @@ fn subset_router(enabled: &[&str]) -> DemoServiceRouter {
     DemoServiceRouter::with_enabled(fallback, enabled).unwrap()
 }
 
-/// UV-035 生产同构双插件链：demo 路由器为链首，physics 承接其回落，
+/// 生产同构双插件链：demo 路由器为链首，physics 承接其回落，
 /// HTTP 注册表为链尾（与 main.rs PLUGIN_DEFS 声明序挂载一致：
 /// 链首 demo 未命中 → physics → 链尾 HTTP）。
 fn dual_plugin_router(demo_enabled: &[&str], physics_enabled: &[&str]) -> DemoServiceRouter {
@@ -55,7 +55,7 @@ fn dual_plugin_router(demo_enabled: &[&str], physics_enabled: &[&str]) -> DemoSe
     DemoServiceRouter::with_enabled(physics, demo_enabled).unwrap()
 }
 
-/// UV-037 生产同构三插件链（与 main.rs 一致）：
+/// 生产同构三插件链（与 main.rs 一致）：
 /// 链首 demo 未命中 → physics 未命中 → indicator → 链尾 HTTP 注册表。
 fn triple_plugin_router(
     demo_enabled: &[&str],
@@ -136,7 +136,7 @@ fn subset_manifest_enabled_names_follow_declaration_order() {
 }
 
 // ============================================================================
-// UV-035 双插件：physics-services 生产同构链场景
+// 双插件：physics-services 生产同构链场景
 // ============================================================================
 
 /// 双插件正向：physics_energy 子集启用 → 原生进程内命中（确定性，无网络）。
@@ -239,7 +239,7 @@ async fn dual_plugin_demo_service_still_hit_through_physics_layer() {
 }
 
 // ============================================================================
-// UV-037 三插件：indicator-services 生产同构链场景（第二种集成模式）
+// 三插件：indicator-services 生产同构链场景（第二种集成模式）
 // ============================================================================
 
 /// 三插件正向：indicator_sma 子集启用 → 穿透 demo/physics 两层后原生命中
@@ -321,7 +321,7 @@ fn triple_plugin_indicator_enabled_names_follow_declaration_order() {
 }
 
 /// 三插件互不干扰：demo 服务在链首原生命中（indicator 层挂载不改变
-/// 既有插件行为；与 UV-035 双插件回归语义一致）。
+/// 既有插件行为；与 双插件回归语义一致）。
 #[tokio::test]
 async fn triple_plugin_demo_service_still_hit_through_indicator_layer() {
     let router = triple_plugin_router(&["config_persist"], &["physics_energy"], &["indicator_sma"]);

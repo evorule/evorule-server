@@ -186,15 +186,15 @@ GET /api/sessions/1/state
 }
 ```
 
-> **D-S2 对齐(2026-08-03)**：实际响应含 `payload` / `queue` / `version` / `reactor` 四字段。`phase` 不是顶层字段，而是嵌套在 `reactor` 子对象中（值来自 `ReactorPhase::as_str()`，全小写：`idle` / `draining` / `executing` / `awaiting_io` / `stable` / `error`）。此前的文档把 `phase` 写在顶层且大写为 `Stable`，与实现不符。
+> **D-S2 对齐(2026-08-03)**：实际响应含 `payload` / `queue` / `version` / `reactor` 四字段。`phase` 不是顶层字段，而是嵌套在 `reactor` 子对象中（值来自 `ReactorPhase::as_str`，全小写：`idle` / `draining` / `executing` / `awaiting_io` / `stable` / `error`）。此前的文档把 `phase` 写在顶层且大写为 `Stable`，与实现不符。
 
 业务数据在 `state["payload"]` 下（见 PITFALLS 坑 12）。客户端轮询示例：
 
 ```python
 def wait_for_field(client, session_id, field_path, timeout=30.0):
     """轮询直到 payload 中指定字段出现"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.time + timeout
+    while time.time < deadline:
         state = client.get_state(session_id)
         payload = state.get("payload", {})
         if _resolve_path(payload, field_path) is not None:
@@ -308,7 +308,7 @@ Content-Type: application/gzip
 # → {"imported": true, "verify_ok": true, "status": "ok", "format": "gzip"}
 ```
 
-**用途**：跨实例迁移、离线分析、备份恢复。导入后自动 `verify()` 校验完整性。
+**用途**：跨实例迁移、离线分析、备份恢复。导入后自动 `verify` 校验完整性。
 
 > ⚠️ 导入是**破坏性操作**，会覆盖目标 session 的审计链。建议先导出备份。
 
@@ -410,7 +410,7 @@ evorule-tcb 只支持 **6 种** domain 类型（`domain.rs:evaluate_domain_inner
 | 类型 | 参数 | 语义 | 限制 |
 |------|------|------|------|
 | `eq` | `path`, `value` | 路径值 == 目标值 | 支持任意 JsonValue（Integer/String/Bool/Null/Object/Array） |
-| `lt` | `path`, `value` | 路径值 < 目标值 | **只支持 Integer**（`as_i64()`），浮点/字符串返回 false |
+| `lt` | `path`, `value` | 路径值 < 目标值 | **只支持 Integer**（`as_i64`），浮点/字符串返回 false |
 | `exists` | `path` | 路径存在 | 含 null 值（路径存在但值为 null 也返回 true） |
 | `instruction` | `instruction_type` | 匹配当前指令的 type | 用于 transform 规则的条件匹配 |
 | `all` | `inner`（数组） | 所有子域为真 | 空列表 = true；AND 语义 |
@@ -450,7 +450,7 @@ evorule-tcb 只支持 **6 种** domain 类型（`domain.rs:evaluate_domain_inner
 
 **浮点比较的限制**：
 
-`lt` 只支持 Integer 比较（`as_i64()`），浮点字符串如 `"0.001"` 会被拒绝返回 false。这是 Kani 形式化验证的约束——避免浮点不确定性破坏确定性保证。浮点比较必须外部化到 I/O 服务中（见 §4.5）。
+`lt` 只支持 Integer 比较（`as_i64`），浮点字符串如 `"0.001"` 会被拒绝返回 false。这是 Kani 形式化验证的约束——避免浮点不确定性破坏确定性保证。浮点比较必须外部化到 I/O 服务中（见 §4.5）。
 
 **eq/lt value 不支持路径引用**：
 
@@ -521,7 +521,7 @@ cargo run --bin evorule-server -- `
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-app = FastAPI()
+app = FastAPI
 
 class SolveRequest(BaseModel):
     target_pose: dict
@@ -635,7 +635,7 @@ bundle-ds-yuanze-01-v3/
 └── ... (最多 64 条规则，受 MAX_TRANSFORM_RULES 限制)
 ```
 
-> **注意**: 规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + 原子落盘机制（T2：36 号集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。
+> **注意**: 规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + 原子落盘机制（36 号集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。
 
 ---
 

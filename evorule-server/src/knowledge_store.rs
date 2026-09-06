@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! KnowledgeStore —— 执行侧数据资产库（Q12 W2/W3）
+//! KnowledgeStore —— 执行侧数据资产库（/W3）
 //!
 //! 数据资产与规则资产**物理隔离**的执行侧消费通道：
 //! - 落盘布局由 `evorule_workspace::bundle_land::land_knowledge_bundle_atomically`
@@ -11,7 +11,7 @@
 //!   （`(dataset_id, entry_id)` → payload + schema_ref + 溯源），供原生服务
 //!   （IoHandler 侧，如 RPSM）按 dataset_id/entry_id 直读——MVP 不做网络数据面；
 //! - **load_rules_dir_transforms 零改动**：knowledge 目录与 rules_dir 物理隔离，
-//!   TCB 加载路径天然不触碰数据文件（Q12 blocker 消除方式）。
+//!   TCB 加载路径天然不触碰数据文件（blocker 消除方式）。
 //!
 //! # fail-fast 口径
 //! - 加载时 manifest 缺失/非法、条目文件缺失/非法 JSON → **显式 Err**（不静默跳过）：
@@ -42,9 +42,9 @@ pub struct KnowledgeEntryRecord {
     pub bundle_id: String,
     /// 治理侧源版本（溯源）
     pub source_version: String,
-    /// 领域分类（Q12 段2 P1：manifest 携带，数据面过滤用；旧 manifest → 空）
+    /// 领域分类（段2 P1：manifest 携带，数据面过滤用；旧 manifest → 空）
     pub domain: String,
-    /// 标签（Q12 段2 P1：manifest 携带，数据面过滤用；旧 manifest → 空）
+    /// 标签（段2 P1：manifest 携带，数据面过滤用；旧 manifest → 空）
     pub tags: Vec<String>,
 }
 
@@ -145,7 +145,7 @@ impl KnowledgeStore {
         })
     }
 
-    /// 直读单条数据资产（W3：原生服务按 dataset_id/entry_id 取 payload）
+    /// 直读单条数据资产（原生服务按 dataset_id/entry_id 取 payload）
     pub fn get(&self, dataset_id: &str, entry_id: &str) -> Option<&KnowledgeEntryRecord> {
         self.entries
             .get(&(dataset_id.to_string(), entry_id.to_string()))
@@ -176,7 +176,7 @@ impl KnowledgeStore {
         self.bundle_count
     }
 
-    /// 数据集级清单（Q12 段2 P1/S1：`GET /api/knowledge` 数据源）
+    /// 数据集级清单（段2 P1/S1：`GET /api/knowledge` 数据源）
     ///
     /// 按 dataset_id 聚合（BTreeMap 序，确定性）：来源 bundle 集合、条目数、
     /// schema_ref 集合。执行侧单激活语义下同 dataset 通常仅一个 bundle，
@@ -205,7 +205,7 @@ impl KnowledgeStore {
         acc.into_values().collect()
     }
 
-    /// 进程内过滤检索（Q12 段2 P1/S1：`GET /api/knowledge/{ds}/entries` 数据源）
+    /// 进程内过滤检索（段2 P1/S1：`GET /api/knowledge/{ds}/entries` 数据源）
     ///
     /// 过滤语义与治理侧 `search_knowledge_entries` 同口径：
     /// - `dataset_id`：Some 时仅该数据集（None = 全库）；
@@ -256,7 +256,7 @@ impl KnowledgeStore {
     }
 }
 
-/// 数据集级清单项（Q12 段2 P1/S1：`GET /api/knowledge` 响应元素）
+/// 数据集级清单项（段2 P1/S1：`GET /api/knowledge` 响应元素）
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct KnowledgeDatasetSummary {
     pub dataset_id: String,
@@ -267,7 +267,7 @@ pub struct KnowledgeDatasetSummary {
     pub schema_refs: Vec<String>,
 }
 
-/// 领域 schema 解析（Q12 D3 执行侧注入点）：
+/// 领域 schema 解析（D3 执行侧注入点）：
 /// 扫描 `{knowledge_dir}/domain_schemas/*.json`，以 schema `$id`（缺省文件名）为键索引。
 /// 未命中返回 None（调用方门禁显式拒绝，不静默放行）。
 ///

@@ -1,5 +1,5 @@
 {
-  "$comment": "原生服务声明 SSOT(UV-029 泛化,UV-035 第二插件):本插件执行侧 NATIVE_SERVICES(plugins/physics-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 physics-services 插件本地声明,与 demo-services 的声明文件分仓分文件、由治理侧聚合。",
+  "$comment": "原生服务声明 SSOT(泛化,第二插件):本插件执行侧 NATIVE_SERVICES(plugins/physics-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 physics-services 插件本地声明,与 demo-services 的声明文件分仓分文件、由治理侧聚合。",
   "version": 1,
   "services": [
     { "name": "physics_simulate", "sensitive": false, "description": "确定性物理仿真推进(刚体+辛积分器,vendored rpsm-core 内核)" },

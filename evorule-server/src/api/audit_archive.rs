@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 审计档案（只读）— 从 WAL 重建历史会话审计链（UV-016）
+//! 审计档案（只读）— 从 WAL 重建历史会话审计链
 //!
 //! # 定位
 //!

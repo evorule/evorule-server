@@ -5,7 +5,7 @@
 //!
 //! # 来源与同步边界(诚实声明)
 //! - 本模块自独立实验仓 `rpsm-demo/rpsm-core`(workspace v0.1.0)一次性 vendored 引入
-//!   (UV-035),除导入路径调整(`crate::math` → `crate::kernel::math`)与 lint 豁免标注外,
+//!   ,除导入路径调整(`crate::math` → `crate::kernel::math`)与 lint 豁免标注外,
 //!   逐行保持原实现;rpsm 侧后续演进不自动回灌,升级须另立专项。
 //! - 许可一致:两侧均为 AGPL-3.0-or-later。
 //!

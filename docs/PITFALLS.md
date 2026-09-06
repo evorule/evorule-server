@@ -22,7 +22,7 @@
 
 | #   | 坑                                 | 一句话避坑                                                                                               |
 | --- | ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| 1   | SessionApi 未注入 dispatcher       | `SessionApi::new(...).with_dispatcher(dispatcher.clone())` 必须调用                                      |
+| 1   | SessionApi 未注入 dispatcher       | `SessionApi::new(...).with_dispatcher(dispatcher.clone)` 必须调用                                      |
 | 2   | 多 session 的 IoSubscriber         | 每个 session 创建时都要 spawn 自己的 IoSubscriber                                                        |
 | 3   | IoDispatcher 不可 Clone            | `#[derive(Clone)]`（内部全是 Arc，天然可共享）                                                           |
 | 4   | ServiceRegistry 返回字符串         | `call_service` 的响应需手动 `serde_json::from_str` 解析                                                  |
@@ -54,13 +54,13 @@
 
 **现象**：指令提交后反应器卡住，60 秒后 IoRequest 超时，payload 中 `__io_result__` 始终不出现。
 
-**根因**：`main.rs` 中创建了 `IoDispatcher` 并用于启动全局 `IoSubscriber`，但构造 `SessionApi` 时**没有调用 `.with_dispatcher()`**。`SessionApi` 的 `dispatcher` 字段保持 `None`，导致 `create_session` handler 中不会为新 session spawn IoSubscriber，session 的 IoRequest 无人处理。
+**根因**：`main.rs` 中创建了 `IoDispatcher` 并用于启动全局 `IoSubscriber`，但构造 `SessionApi` 时**没有调用 `.with_dispatcher`**。`SessionApi` 的 `dispatcher` 字段保持 `None`，导致 `create_session` handler 中不会为新 session spawn IoSubscriber，session 的 IoRequest 无人处理。
 
 **修复**：
 
 ```rust
 // main.rs — 关键：clone 一份给 SessionApi
-let session_dispatcher = dispatcher.clone();  // IoDispatcher 已 derive(Clone)
+let session_dispatcher = dispatcher.clone;  // IoDispatcher 已 derive(Clone)
 
 let session_api = SessionApi::new_with_full_config(...)
     .with_dispatcher(session_dispatcher);  // ← 必须调用
@@ -83,12 +83,12 @@ let session_api = SessionApi::new_with_full_config(...)
 ```rust
 // server.rs create_session handler
 if let Some(ref dispatcher) = api.dispatcher {
-    let sessions = api.sessions.lock().await;
+    let sessions = api.sessions.lock.await;
     if let Some(session) = sessions.get_session(id) {
-        let event_rx = session.event_tx.subscribe();
-        let command_tx = session.command_tx.clone();
-        let subscriber = IoSubscriber::new(dispatcher.clone())
-            .with_metrics(metrics.clone());
+        let event_rx = session.event_tx.subscribe;
+        let command_tx = session.command_tx.clone;
+        let subscriber = IoSubscriber::new(dispatcher.clone)
+            .with_metrics(metrics.clone);
         tokio::spawn(async move {
             if let Err(e) = subscriber.run(event_rx, command_tx).await {
                 tracing::error!(session_id = id, error = %e, "IoSubscriber 异常退出");
@@ -106,7 +106,7 @@ if let Some(ref dispatcher) = api.dispatcher {
 
 **触发场景**：坑 1 和坑 2 的前置条件——多个 session 需要共享同一个 dispatcher。
 
-**现象**：`dispatcher.clone()` 编译失败，`IoDispatcher` 没有 `Clone` 实现。
+**现象**：`dispatcher.clone` 编译失败，`IoDispatcher` 没有 `Clone` 实现。
 
 **根因**：`IoDispatcher` struct 未标注 `#[derive(Clone)]`。
 
@@ -179,7 +179,7 @@ Ok(raw)
 
    ```python
    for i in range(6):
-       sid = client.create_session()
+       sid = client.create_session
        client.send_command(sid, {"type": "sampling_decider", ...})
        # __io_result__ 在新 session 中不存在，会发起新 I/O
    ```
@@ -298,20 +298,20 @@ match execute_meta_instruction(instr, state, depth + 1) {
 
 **根因**：`HttpHandler` 内置 SSRF 防护，默认拒绝 loopback（127.0.0.0/8, ::1）和私有 IP（10.x, 172.16-31.x, 192.168.x）。这是生产安全要求，但阻碍本地开发。
 
-**修复**：新增 `--allow-loopback` CLI 标志和 `new_dev_allow_loopback()` 构造函数：
+**修复**：新增 `--allow-loopback` CLI 标志和 `new_dev_allow_loopback` 构造函数：
 
 ```rust
 // http_handler.rs
-pub fn new_dev_allow_loopback() -> Self {
-    // ... 同 new()，但 allow_loopback: true
+pub fn new_dev_allow_loopback -> Self {
+    // ... 同 new，但 allow_loopback: true
 }
 
 // main.rs
 let http = Arc::new(if cfg.allow_loopback {
     warn!("🔓 --allow-loopback 已启用：SSRF 防护放行 loopback（仅限本地开发！）");
-    HttpHandler::new_dev_allow_loopback()
+    HttpHandler::new_dev_allow_loopback
 } else {
-    HttpHandler::new()
+    HttpHandler::new
 });
 ```
 
@@ -319,7 +319,7 @@ let http = Arc::new(if cfg.allow_loopback {
 
 - `--allow-loopback` **仅限本地开发**，生产环境**永远不要**启用
 - SSRF 防护是 P0 安全要求（见 `docs/security/`），放行 loopback 意味着规则可以访问内网服务
-- 测试用 `#[cfg(test)]` 的 `new_for_tests()` 不受此影响
+- 测试用 `#[cfg(test)]` 的 `new_for_tests` 不受此影响
 
 ---
 
@@ -356,7 +356,7 @@ Ok((
         // 不设 Content-Encoding —— 实体是 gzip 文件，不是传输编码
     ],
     compressed,
-).into_response())
+).into_response)
 ```
 
 修复后压缩比从 118.7% 恢复到正常的 **42.6%**（3043 bytes JSON → 1296 bytes gzip）。
@@ -484,13 +484,13 @@ Ok((
 | 类型          | 语义             | 限制                                                    |
 | ------------- | ---------------- | ------------------------------------------------------- |
 | `eq`          | 路径值 == 目标值 | 支持任意 JsonValue                                      |
-| `lt`          | 路径值 < 目标值  | **只支持 Integer**（`as_i64()` 转换失败直接返回 false） |
+| `lt`          | 路径值 < 目标值  | **只支持 Integer**（`as_i64` 转换失败直接返回 false） |
 | `exists`      | 路径存在         | 含 null 值                                              |
 | `instruction` | 指令类型匹配     | —                                                       |
 | `all`         | AND 组合         | `inner` 为数组，空列表 = true                           |
 | `not`         | 取反             | `inner` 为单个子域                                      |
 
-没有 `or` / `gt` / `gte` / `lte` / `neq` / `any`。且 `lt` 只比较 Integer（`as_i64()`），浮点字符串如 `"0.001"` 会被拒绝，返回 false。
+没有 `or` / `gt` / `gte` / `lte` / `neq` / `any`。且 `lt` 只比较 Integer（`as_i64`），浮点字符串如 `"0.001"` 会被拒绝，返回 false。
 
 **修复方案**：
 
@@ -639,7 +639,7 @@ resp = http.post(f"{url}/api/sessions/{sid}/command",
 
 ```python
 # 全局审计（单反应器模式，与 session 无关）
-client.get_audit()  # → GET /api/audit
+client.get_audit  # → GET /api/audit
 
 # 会话审计（session 模式，每会话独立哈希链）
 client.get_session_audit(session_id)  # → GET /api/sessions/{id}/audit
@@ -899,25 +899,25 @@ causal_chain 长度=1 → 追溯的是根因 Command，换 IoResponse 追溯看�
 
 ## 五、升级与发布（4 个坑，0.3.0 新增）
 
-### 坑 20：audit_report() 返回值从 String 改为 Result → 编译错误
+### 坑 20：audit_report 返回值从 String 改为 Result → 编译错误
 
-**触发场景**：从 v0.2.x 升级到 0.3.0，代码中调用 `api.audit_report().await` 或 `session.audit_report()`。
+**触发场景**：从 v0.2.x 升级到 0.3.0，代码中调用 `api.audit_report.await` 或 `session.audit_report`。
 
 **现象**：编译错误，`mismatched types: expected struct String, found enum Result<String, serde_json::Error>`。
 
-**根因**：0.3.0 同步 evorule 核心 0.3.2 的 Breaking Change，`auditor.report()`/`auditor.export()` 从 `String` 改为 `Result<String, serde_json::Error>`，不再静默退化为 `"{}"`。`GovernanceApi::audit_report()` 和 `session.audit_report()` 同步变更。
+**根因**：0.3.0 同步 evorule 核心 0.3.2 的 Breaking Change，`auditor.report`/`auditor.export` 从 `String` 改为 `Result<String, serde_json::Error>`，不再静默退化为 `"{}"`。`GovernanceApi::audit_report` 和 `session.audit_report` 同步变更。
 
 **修复方案**：
 ```rust
 // v0.2.x（旧）
-let report: String = api.audit_report().await;
+let report: String = api.audit_report.await;
 
 // 0.3.0（新）
-let report: String = api.audit_report().await?;  // 传播错误
+let report: String = api.audit_report.await?;  // 传播错误
 // 或
-let report: String = api.audit_report().await.unwrap_or_else(|e| {
+let report: String = api.audit_report.await.unwrap_or_else(|e| {
     tracing::error!("审计报告序列化失败: {e}");
-    "{}".to_string()
+    "{}".to_string
 });
 ```
 
@@ -965,7 +965,7 @@ let report: String = api.audit_report().await.unwrap_or_else(|e| {
 
 **现象**：导入返回 `{"imported": false, "status": "rolled_back", "error": "..."}`，检查活跃规则包列表发现该包完全不存在，不是 14 条成功 1 条失败。
 
-**根因**：规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + **原子落盘**机制（T2：36 号集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。这是有意设计，避免"半生效"状态导致难以排查的问题。
+**根因**：规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + **原子落盘**机制（36 号集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。这是有意设计，避免"半生效"状态导致难以排查的问题。
 
 **修复方案**：
 1. 查看返回的 `error` 字段，定位失败的规则文件和具体原因

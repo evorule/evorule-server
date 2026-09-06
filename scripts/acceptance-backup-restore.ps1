@@ -1,7 +1,7 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-# UV-031 备份/恢复演练脚本(V1-a) — 全程使用 %TEMP% 沙箱目录与独立端口,不触碰任何真实数据目录。
+# 备份/恢复演练脚本(V1-a) — 全程使用 %TEMP% 沙箱目录与独立端口,不触碰任何真实数据目录。
 #
 # 场景:
 #   1 全量备份 -> 数据目录清空 -> 恢复 -> 重启 -> 断言审计档案回放完整

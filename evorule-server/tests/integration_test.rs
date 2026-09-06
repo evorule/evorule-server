@@ -242,9 +242,9 @@ async fn create_test_dispatcher(temp_dir: &std::path::Path) -> IoDispatcher {
 
 /// 等待 Stable 事实，返回会话最终 payload（经 FactsLog 快照）
 ///
-/// CR-20260901-001：Stable 事实不再内嵌 final_snapshot（O(n²) 修复），
+///：Stable 事实不再内嵌 final_snapshot（O(n²) 修复），
 /// 最终状态由最近一条 StateTransition.new_payload 承担，经
-/// `FactsLog::snapshot()` 获取。
+/// `FactsLog::snapshot` 获取。
 async fn wait_for_stable(
     rx: &mut evorule_reactor::EventReceiver,
     facts_log: &evorule_reactor::FactsLog,

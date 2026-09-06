@@ -231,24 +231,24 @@ pub struct SessionApi {
     /// reload 时会更新此处 + SessionManager 内部 core_eval
     core_eval: Arc<std::sync::RwLock<Arc<Vec<JsonValue>>>>,
 
-    /// core_eval.json 路径（TCB 宪法路径，reload 时重新读取；UV-044 起默认名 server_eval.json）
+    /// core_eval.json 路径（TCB 宪法路径，reload 时重新读取；起默认名 server_eval.json）
     core_eval_path: std::path::PathBuf,
 
     /// rules_dir 路径（业务规则目录，reload 时重扫描）
     rules_dir: std::path::PathBuf,
 
-    /// knowledge 数据资产目录（Q12 W1：与 rules_dir 物理隔离，`{knowledge_dir}/bundles/`）
+    /// knowledge 数据资产目录（与 rules_dir 物理隔离，`{knowledge_dir}/bundles/`）
     knowledge_dir: std::path::PathBuf,
 
-    /// 模板市场目录（UV-084 W4 / UV-064：与 rules_dir 物理隔离，`{marketplace_dir}/templates/{id}/`）
+    /// 模板市场目录
     marketplace_dir: std::path::PathBuf,
 
-    /// 执行侧数据资产库（Q12 W2：启动/导入时从 knowledge_dir 加载；W3 经
-    /// `knowledge_store()` 直读。数据条目不进 TCB，本库是执行侧唯一消费通道）
+    /// 执行侧数据资产库（启动/导入时从 knowledge_dir 加载；W3 经
+    /// `knowledge_store` 直读。数据条目不进 TCB，本库是执行侧唯一消费通道）
     knowledge_store: Arc<std::sync::RwLock<Arc<crate::knowledge_store::KnowledgeStore>>>,
 
-    /// 启动加载数据资产库失败记录（Q12 W2 fail-fast 口径：不静默掩盖——服务器仍可跑
-    /// 规则，但数据面异常必须可见；经 `knowledge_load_error()` 暴露，导入刷新成功即清除）
+    /// 启动加载数据资产库失败记录（fail-fast 口径：不静默掩盖——服务器仍可跑
+    /// 规则，但数据面异常必须可见；经 `knowledge_load_error` 暴露，导入刷新成功即清除）
     knowledge_load_error: Arc<std::sync::RwLock<Option<String>>>,
 
     /// I/O 分发器（clone 给每个新 session 的 IoSubscriber，共享底层 handler）
@@ -256,13 +256,13 @@ pub struct SessionApi {
     /// None 时 session 的 IoRequest 无人处理（纯计算场景）
     dispatcher: Option<IoDispatcher>,
 
-    /// workspace 元数据库（T5：bundle 导入审计溯源 bundle_imports 表）
+    /// workspace 元数据库（bundle 导入审计溯源 bundle_imports 表）
     ///
     /// 仅用于写入/查询**管理元数据**（墙钟旁路），绝不参与 fact / 内容哈希 / 审计验证链。
     /// 未接线（None）时不记录 bundle 导入溯源（如单元测试环境）。
     workspace_db: Option<Arc<evorule_workspace::WorkspaceDb>>,
 
-    /// 执行侧已绑定服务名集合（T6 阻断项 ①：import_bundle 服务绑定核对）
+    /// 执行侧已绑定服务名集合（阻断项 ①：import_bundle 服务绑定核对）
     ///
     /// = 原生叶子能力（evorule-demo-services `NATIVE_SERVICES` 声明表）+ 注册表
     /// （service_registry.json）的并集。`import_bundle` 校验 bundle 声明的服务必须
@@ -279,7 +279,7 @@ pub struct SessionApi {
     /// 原生服务（`NATIVE_SERVICES` 声明表）由 `DemoServiceRouter` 恒在，不在此列表。
     registry_services: Arc<Vec<ServiceMeta>>,
 
-    /// 审计档案（UV-016）：wal_dir 下历史会话 WAL 的只读重建缓存。
+    /// 审计档案：wal_dir 下历史会话 WAL 的只读重建缓存。
     /// 与活跃会话 API 物理隔离（独立 /api/audit-archive 前缀），全程无 WAL 写路径。
     archive_cache: Arc<std::sync::Mutex<audit_archive::ArchiveCache>>,
 }
@@ -420,14 +420,14 @@ impl SessionApi {
 
         // Q12 W2：knowledge 数据资产目录与 rules_dir 物理隔离（`{rules 父目录}/knowledge`），
         // 启动即加载数据资产库。目录不存在 → 空库（执行侧可只跑规则不承载数据资产）；
-        // 加载失败不静默：记录错误并经 `knowledge_load_error()` 显式暴露（服务器仍可跑
+        // 加载失败不静默：记录错误并经 `knowledge_load_error` 显式暴露（服务器仍可跑
         // 规则——数据资产完整性问题不应阻断规则执行，但绝不允许不可见）。
         let knowledge_dir = rules_dir
             .parent()
             .map(|p| p.join("knowledge"))
             .unwrap_or_else(|| std::path::PathBuf::from("knowledge"));
 
-        // UV-084 W4：模板市场目录与 rules_dir 物理隔离（同 knowledge 派生法：
+        // W4：模板市场目录与 rules_dir 物理隔离（同 knowledge 派生法：
         // `{rules 父目录}/marketplace`）。TCB 扫描 rules_dir，用户上传内容
         // 绝不可入规则加载路径。目录懒创建（首次上传时建）。
         let marketplace_dir = rules_dir
@@ -478,7 +478,7 @@ impl SessionApi {
             // 注册表显式绑定元数据：默认空（C5/C6；由 with_registry_services 注入）
             registry_services: Arc::new(Vec::new()),
 
-            // UV-016：审计档案只读缓存（wal_dir 透传；None=纯内存模式无档案）
+            // ：审计档案只读缓存（wal_dir 透传；None=纯内存模式无档案）
             archive_cache: Arc::new(std::sync::Mutex::new(audit_archive::ArchiveCache::new(
                 wal_dir,
             ))),
@@ -568,7 +568,7 @@ impl SessionApi {
         }
     }
 
-    /// knowledge 数据资产目录路径（Q12 W1：与 rules_dir 物理隔离）
+    /// knowledge 数据资产目录路径（与 rules_dir 物理隔离）
     pub fn knowledge_dir(&self) -> &std::path::Path {
         &self.knowledge_dir
     }
@@ -581,7 +581,7 @@ impl SessionApi {
         }
     }
 
-    /// 重新从磁盘加载数据资产库（Q12 W2 导入/运维刷新通道）。
+    /// 重新从磁盘加载数据资产库（导入/运维刷新通道）。
     ///
     /// - 加载失败 → Err（fail-fast，不静默：落盘已发生但内存索引未更新，
     ///   调用方必须知悉数据面与磁盘不一致）；
@@ -662,7 +662,7 @@ impl SessionApi {
     /// 返回当前活跃会话数（语义修正）
     ///
     ///
-    /// 与 `sse_connection_count()` 的区别：
+    /// 与 `sse_connection_count` 的区别：
     ///
     /// - `sse_connection_count`：SSE 连接数（一个会话可能无 SSE 或多 SSE）
     ///
@@ -683,7 +683,7 @@ impl SessionApi {
     ///
     /// 应在服务器启动时调用一次。清理间隔为 5 分钟。
     ///
-    /// UV-079 ①: 必须在 `with_workspace_db` **之后**调用——生产会话保护与
+    /// ①: 必须在 `with_workspace_db` **之后**调用——生产会话保护与
     /// 自愈重建依赖 workspace 元数据接线(main.rs 已调整启动时序)。
     ///
     pub fn start_reaper(&self) {
@@ -691,7 +691,7 @@ impl SessionApi {
 
         let workspace_db = self.workspace_db.clone();
 
-        // UV-079 ①: 自愈重建句柄(仅 workspace_db 接线时启用;单测/无元数据
+        // ①: 自愈重建句柄(仅 workspace_db 接线时启用;单测/无元数据
         // 环境退化为原始 reap 行为,无保护无自愈)
         let recovery_api = if workspace_db.is_some() {
             Some(self.clone())
@@ -803,7 +803,7 @@ impl SessionApi {
         let tcb_raw = match std::fs::read_to_string(core_eval_path) {
             Ok(s) => s,
             Err(e) => {
-                // UV-044 兼容检测（拒绝静默回退）:v0.4.1 起 server 份宪法业务规则集由
+                // 兼容检测（拒绝静默回退）:v0.4.1 起 server 份宪法业务规则集由
                 // core_eval.json 更名为 server_eval.json。检测到"新名缺失但旧名存在"时,
                 // 显式给出迁移指引而非自动回退读旧名——遵循"系统自愈 + 用户可见"原则。
                 if e.kind() == std::io::ErrorKind::NotFound {
@@ -814,7 +814,7 @@ impl SessionApi {
                     {
                         return Err(format!(
                             "宪法文件 {} 不存在,但同目录检测到旧名 {} — v0.4.1 起 server 份宪法\
-                             业务规则集已更名为 server_eval.json(UV-044,与 evorule 仓宪法原则区分)。\
+                             业务规则集已更名为 server_eval.json(,与 evorule 仓宪法原则区分)。\
                              迁移指引: ①将旧文件重命名为 server_eval.json;或 ②以 --core-eval / \
                              EVORULE_CORE_EVAL / 配置文件 paths.core_eval 显式指定旧路径",
                             core_eval_path.display(),
@@ -851,7 +851,7 @@ impl SessionApi {
             ));
         }
 
-        // UV-030 修复(2026-09-01): call_external 指令规则是 LLM 审计桥的平台契约。
+        // 修复(2026-09-01): call_external 指令规则是 LLM 审计桥的平台契约。
         // 会话反应器的 IoRequest 完全由宪法规则驱动;若宪法缺该规则,LLM 审计桥命令会被
         // all([]) 兜底规则静默 no-op(无 IoRequest、无 Error 事实),违反"拒绝静默通过"原则。
         // 因此启动期 fail-fast 校验,并给出可自诊断的修复指引。
@@ -912,7 +912,7 @@ impl SessionApi {
         out
     }
 
-    /// 递归收集规则 .json 文件路径（T3）：跳过子目录的 manifest，其余按目录展开
+    /// 递归收集规则 .json 文件路径：跳过子目录的 manifest，其余按目录展开
     fn collect_json_files_recursive(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(read_dir) = std::fs::read_dir(dir) else {
             return;
@@ -920,7 +920,7 @@ impl SessionApi {
         for entry in read_dir.flatten() {
             let p = entry.path();
             if p.is_dir() {
-                // 跳过隐藏目录（T4：`.tmp/.bak/.stale` 等临时/备份目录不参与加载）
+                // 跳过隐藏目录（`.tmp/.bak/.stale` 等临时/备份目录不参与加载）
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if name.starts_with('.') {
                     continue;
@@ -1010,7 +1010,7 @@ impl SessionApi {
         true
     }
 
-    /// ①.5 测试证据引用校验（UV-080 B2·阶段一校验层·执行域侧——入执行域的口）。
+    /// ①.5 测试证据引用校验。
     /// 与治理域 export 侧形状校验(evorule-rule export_with_tests)双闸同口径:
     ///   a. verdict=pass 必须携带可追溯标记(subset 非空且每项 sandbox:<id> 或
     ///      human:<actor>)——封死"零证据 pass"直 POST import 的伪造路径;
@@ -1021,7 +1021,7 @@ impl SessionApi {
     /// human:<actor> 无需存在性校验(显式降级声明,人无表可查)。
     /// 跨环境信任(报告哈希/随包携带)登记为后续项——当前拒收符合
     /// "不让未经验证的信息通过"(40 号 §6.1 阶段一)。
-    /// (UV-100: 自 import_bundle 提取,控制函数行数/复杂度)
+    /// 
     fn validate_test_evidence(&self, bundle: &evorule_bundle::DatasetBundle) -> Result<(), String> {
         if bundle.tests.verdict != evorule_bundle::TestVerdict::Pass {
             return Ok(()); // 非 pass 无要求
@@ -1108,12 +1108,12 @@ impl SessionApi {
         Ok(())
     }
 
-    /// ③ 第 8 项执行侧服务绑定核对（T6 阻断项 ①）：bundle 声明的服务必须已绑定，
+    /// ③ 第 8 项执行侧服务绑定核对（阻断项 ①）：bundle 声明的服务必须已绑定，
     /// 缺失 → **显式失败**（不静默）。防"治理侧声明 / 执行侧未绑定 → 运行时
     /// unknown service_name"（35 号 三层绑定：执行侧 service_registry 绑定）。
     /// 核对集 = 原生叶子能力 + service_registry.json（`with_bound_services` 注入）。
     /// C6（02 方案层 3）：sensitive=true 的服务必须**注册表显式绑定**。
-    /// (UV-100: 自 import_bundle 提取,控制函数行数/复杂度)
+    /// 
     fn validate_service_bindings(
         &self,
         bundle: &evorule_bundle::DatasetBundle,
@@ -1201,7 +1201,7 @@ impl SessionApi {
         })
         .map_err(|e| format!("快照包校验失败（不静默）: {e}"))?;
 
-        // ①.5 UV-080 B2: 测试证据引用校验 —— 详见 validate_test_evidence 文档
+        // ①.5 B2: 测试证据引用校验 —— 详见 validate_test_evidence 文档
         self.validate_test_evidence(bundle)?;
 
         // ② 第 7 项逐条 Schema 门禁（硬失败，防 loader fail-soft 静默跳过非法规则）。
@@ -1330,7 +1330,7 @@ impl SessionApi {
     }
 
     /// 原子落盘：`rules/bundles/{bundle_id}/{entry_id}.json`（rule_body 原样零转译）
-    /// + `bundle_manifest.json`（T3：版本语义/法规基准/哈希/条目→文件映射）。
+    /// + `bundle_manifest.json`（版本语义/法规基准/哈希/条目→文件映射）。
     ///
     /// 审计⑥ 批 B（C5）: 实现下沉至 evorule-workspace（落盘 SSOT，发布链共用一份），
     /// 此处为薄委托。
@@ -1343,8 +1343,8 @@ impl SessionApi {
     }
 }
 
-/// 读取生产会话 ID(UV-079 reaper 辅助)。
-/// (UV-100: 自 reap_once 提取,控制认知复杂度)读取失败 error 报警后按 None
+/// 读取生产会话 ID。
+/// 读取失败 error 报警后按 None
 /// 处理——本 tick 跳过保活/自愈,不阻断回收(报警不静默)。
 fn production_session_id(
     workspace_db: Option<&Arc<evorule_workspace::WorkspaceDb>>,
@@ -1354,7 +1354,7 @@ fn production_session_id(
             .inspect_err(|e| {
                 tracing::error!(
                     error = %e,
-                    "UV-079: reaper 读取 production_state 失败,本 tick 跳过生产会话保活(报警不静默)"
+                    ": reaper 读取 production_state 失败,本 tick 跳过生产会话保活(报警不静默)"
                 )
             })
             .ok()
@@ -1363,7 +1363,7 @@ fn production_session_id(
 }
 
 /// 生产会话保活:仍存活则刷新 last_activity(TTL 检查随后不会命中)。
-/// (UV-100: 自 reap_once 提取,控制认知复杂度)
+/// 
 async fn keepalive_production_session(
     sessions: &Arc<Mutex<session::SessionManager>>,
     prod_id: Option<u64>,
@@ -1377,7 +1377,7 @@ async fn keepalive_production_session(
 }
 
 /// 自愈重建第二步:切换 production_state 会话引用(保留 ruleset_version/hash)。
-/// (UV-100: 自 recover_production_session 提取,控制认知复杂度)
+/// 
 fn switch_production_reference(
     workspace_db: &Arc<evorule_workspace::WorkspaceDb>,
     pid: u64,
@@ -1402,23 +1402,23 @@ fn switch_production_reference(
             tracing::info!(
                 stale_session_id = pid,
                 new_session_id = new_id,
-                "UV-079: 生产会话已自愈重建(保留 ruleset_version/hash,语义为替换会话引用)"
+                ": 生产会话已自愈重建(保留 ruleset_version/hash,语义为替换会话引用)"
             );
         }
         Err(e) => {
             tracing::error!(
                 error = %e,
                 new_session_id = new_id,
-                "UV-079: 自愈重建 production_state 写入失败,新会话已建但引用未切换(下次 tick 重试)"
+                ": 自愈重建 production_state 写入失败,新会话已建但引用未切换(下次 tick 重试)"
             );
         }
     }
 }
 
 /// 生产会话自愈重建:失忆(被 reap_finished 回收/reactor 异常退出)时报警 + 重建。
-/// 与 UV-070 启动期重建同构:保留 ruleset_version/hash,operator=system:reaper-recovery,
+/// 与 启动期重建同构:保留 ruleset_version/hash,operator=system:reaper-recovery,
 /// 语义为"替换会话引用"而非发布。
-/// (UV-100: 自 reap_once 提取,控制认知复杂度)
+/// 
 async fn recover_production_session(
     recovery_api: &SessionApi,
     workspace_db: &Arc<evorule_workspace::WorkspaceDb>,
@@ -1435,16 +1435,16 @@ async fn recover_production_session(
     }
     tracing::error!(
         session_id = pid,
-        "UV-079: 生产会话失忆(reaper 回收/reactor 异常退出),触发运行期自愈重建"
+        ": 生产会话失忆(reaper 回收/reactor 异常退出),触发运行期自愈重建"
     );
-    // SessionOps::create_session 会为新会话 spawn IoSubscriber(与 UV-070
+    // SessionOps::create_session 会为新会话 spawn IoSubscriber(与 
     // 启动期重建同一条链)
     let new_id = match evorule_workspace::SessionOps::create_session(recovery_api).await {
         Ok(new_id) => new_id,
         Err(e) => {
             tracing::error!(
                 error = ?e,
-                "UV-079: 自愈重建会话创建失败,生产链路受阻(沙盒 fork/监控将 404)直至重建成功"
+                ": 自愈重建会话创建失败,生产链路受阻(沙盒 fork/监控将 404)直至重建成功"
             );
             return;
         }
@@ -1452,7 +1452,7 @@ async fn recover_production_session(
     switch_production_reference(workspace_db, pid, new_id);
 }
 
-/// UV-079 ①: reaper 单次回收(生产会话保活 + 失忆自愈重建)。
+/// ①: reaper 单次回收(生产会话保活 + 失忆自愈重建)。
 ///
 /// 从 `start_reaper` 抽出为独立异步函数以便单测(后台 spawn 任务不可直测)。
 /// 三段语义:
@@ -1460,13 +1460,13 @@ async fn recover_production_session(
 /// 1. **保活**: 回收前先 touch 生产会话。查询端点(state/invariants/finished)
 ///    均不 touch,监控大屏在线也不保活——生产会话 30min 无命令即被 TTL 回收,
 ///    `production_state.current_session_id` 成幻影引用(监控轮询/沙盒 fork 全
-///    404),直到重启才被 UV-070 重建。生产会话是当前生效规则集的执行载体,
+///    404),直到重启才被 重建。生产会话是当前生效规则集的执行载体,
 ///    生命周期归治理链管辖(rolling_session 切换/server 退出),不适用空闲
 ///    回收语义。
-/// 2. **回收**: `reap_all()`(此时生产会话 last_activity 刚刷新,TTL 检查不会
+/// 2. **回收**: `reap_all`(此时生产会话 last_activity 刚刷新,TTL 检查不会
 ///    命中;`reap_finished` 仍可回收 reactor 已退出的生产会话——那正是需要
 ///    自愈的场景)。
-/// 3. **自愈**: 回收后检测生产会话存活,失忆则 error 报警 + 重建(与 UV-070
+/// 3. **自愈**: 回收后检测生产会话存活,失忆则 error 报警 + 重建(与 
 ///    启动期重建同构:保留 ruleset_version/hash,operator=system:reaper-recovery,
 ///    语义为"替换会话引用"而非发布)。旧会话 WAL 留痕仍在磁盘(audit_archive
 ///    可重建),内存 auditor 已随回收丢失——error 级报警供追溯(报警面纪律:
@@ -1474,7 +1474,7 @@ async fn recover_production_session(
 ///
 /// `workspace_db` 为 None(单测/无元数据接线)时退化为纯回收,无保护无自愈。
 /// 返回 (finished, expired) 细分(后台 reaper 记总数,手动 reap 端点报细分)。
-/// (UV-100: 读取/保活/自愈三个语义块提为独立方法,控制认知复杂度)
+/// 
 async fn reap_once(
     sessions: &Arc<Mutex<session::SessionManager>>,
     workspace_db: Option<&Arc<evorule_workspace::WorkspaceDb>>,
@@ -1953,11 +1953,11 @@ pub struct AppState {
     /// Phase 1: 输入净化器（HTTP 入口 Prompt 注入防御，静默改写）
     sanitizer: Arc<InputSanitizer>,
 
-    /// UV-020:演示登录入口开关（--demo-auth，默认开）。
+    /// :演示登录入口开关（--demo-auth，默认开）。
     /// 经 /api/platform/auth/status 公开下发，登录页据此隐藏演示入口。
     demo_auth: bool,
 
-    /// 模板市场目录句柄（UV-084 W4 / UV-064；经 FromRef 供 marketplace handler 提取）
+    /// 模板市场目录句柄
     marketplace_dir: MarketplaceDir,
 }
 
@@ -1977,7 +1977,7 @@ impl AppState {
         workspace: WorkspaceState,
         sanitizer: Arc<InputSanitizer>,
     ) -> Self {
-        // UV-084 W4：模板市场目录自 SessionApi 派生（rules_dir 父目录拼接）——
+        // W4：模板市场目录自 SessionApi 派生（rules_dir 父目录拼接）——
         // 同模块直读私有字段；先取路径再移动 sessions，避免 use-after-move
         let marketplace_dir = MarketplaceDir(sessions.marketplace_dir.clone());
         Self {
@@ -1993,25 +1993,25 @@ impl AppState {
 
             workspace,
             sanitizer,
-            // UV-020:演示登录入口默认开（体验包语义；生产建议 --demo-auth false）
+            // :演示登录入口默认开（体验包语义；生产建议 --demo-auth false）
             demo_auth: true,
             marketplace_dir,
         }
     }
 
-    /// UV-020:设置演示登录入口开关（builder 风格，默认 true）
+    /// :设置演示登录入口开关（builder 风格，默认 true）
     pub fn with_demo_auth(mut self, enabled: bool) -> Self {
         self.demo_auth = enabled;
         self
     }
 
-    /// UV-020:演示登录入口是否可用
+    /// :演示登录入口是否可用
     pub fn demo_auth(&self) -> bool {
         self.demo_auth
     }
 }
 
-/// UV-020:演示登录入口开关的 axum 状态提取器（经 FromRef 从 AppState 派生）。
+/// :演示登录入口开关的 axum 状态提取器（经 FromRef 从 AppState 派生）。
 #[derive(Clone, Copy, Debug)]
 pub struct DemoAuthFlag(pub bool);
 
@@ -2063,7 +2063,7 @@ impl FromRef<AppState> for Arc<InputSanitizer> {
     }
 }
 
-/// 模板市场目录句柄（UV-084 W4 / UV-064；经 FromRef 从 AppState 派生，handler 直取）
+/// 模板市场目录句柄
 #[derive(Clone)]
 pub struct MarketplaceDir(pub std::path::PathBuf);
 
@@ -2097,7 +2097,7 @@ pub struct ApiResponse {
     pub fact_id: Option<u64>,
 }
 
-/// UV-030 插件健康快照（启动时由 main 注入；未注入 = 未配置清单,原生插件缺省全启用）
+/// 插件健康快照（启动时由 main 注入；未注入 = 未配置清单,原生插件缺省全启用）
 static PLUGIN_HEALTH: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
 
 /// 启动期注入插件健康快照（main.rs 在插件清单校验通过后调用一次）
@@ -2105,7 +2105,7 @@ pub fn set_plugin_health(v: serde_json::Value) {
     let _ = PLUGIN_HEALTH.set(v);
 }
 
-/// `/api/health` 专用响应（UV-030:新增可选 plugins 节,其余端点仍用 ApiResponse）
+/// `/api/health` 专用响应
 
 #[derive(Debug, Serialize, ToSchema)]
 
@@ -2116,7 +2116,7 @@ pub struct HealthResponse {
     /// 消息
     pub message: String,
 
-    /// 插件健康快照（UV-030:进程内插件挂载事实,启动期注入,始终如实呈现）
+    /// 插件健康快照
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugins: Option<serde_json::Value>,
 }
@@ -2239,7 +2239,7 @@ pub struct ReactorStatus {
 ///
 /// 对应 evorule_governance::auditor::AuditEntry，
 ///
-/// 运行时通过 Auditor::report() 序列化产出，字段语义完全一致。
+/// 运行时通过 Auditor::report 序列化产出，字段语义完全一致。
 ///
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 
@@ -2931,7 +2931,7 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
             }
         }
 
-        // CR-20260901-001：Stable 瘦身为版本号（原 final_snapshot 全量快照为
+        //：Stable 瘦身为版本号（原 final_snapshot 全量快照为
         // O(n²) 根因之一）；状态本体由最近一条 StateTransition.new_payload 承担，
         // 消费方经会话 snapshot API 获取最终 payload
         Fact::Stable { id, version } => {
@@ -2994,7 +2994,7 @@ async fn health() -> Json<HealthResponse> {
 
         message: "ok".to_string(),
 
-        // UV-030:插件健康快照(未配置清单 → 省略该节)
+        // :插件健康快照(未配置清单 → 省略该节)
         plugins: PLUGIN_HEALTH.get().cloned(),
     })
 }
@@ -3084,7 +3084,7 @@ async fn metrics_handler(State(metrics): State<SharedMetrics>) -> String {
     metrics.render_as_text()
 }
 
-/// HTTP 请求计数中间件（N3：接入 http_requests_total 指标）
+/// HTTP 请求计数中间件（接入 http_requests_total 指标）
 ///
 ///
 /// 用 method + 归一化 path + status 作为 label。
@@ -3403,9 +3403,9 @@ async fn get_audit(
     }
 }
 
-// ===== 平台认证事件报表（UV-018,只读）=====
+// ===== 平台认证事件报表=====
 
-/// 平台认证事件条目（UV-018 只读报表）
+/// 平台认证事件条目
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlatformEventEntry {
     /// 共享事实 ID（链序 = 写入时间序）
@@ -3420,7 +3420,7 @@ pub struct PlatformEventEntry {
     pub detail: serde_json::Value,
 }
 
-/// 平台认证事件查询参数（UV-018）
+/// 平台认证事件查询参数
 #[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct PlatformEventsQuery {
@@ -3430,7 +3430,7 @@ pub struct PlatformEventsQuery {
     pub limit: Option<usize>,
 }
 
-/// `GET /api/audit/platform-events` — 平台认证事件报表（UV-018,只读）
+/// `GET /api/audit/platform-events` — 平台认证事件报表
 ///
 /// 自 SharedFactsLog 读取 `platform.event.*` 事实（append-only,随共享 WAL
 /// 入 prev_hash 链,`platform_auth::append_auth_event` 写入）,按链序返回。
@@ -3724,7 +3724,7 @@ async fn session_metadata(
 )]
 
 async fn session_reap(State(api): State<SessionApi>) -> Result<Json<ReapResponse>, StatusCode> {
-    // UV-079 ①: 手动回收与后台 reaper 走同一 reap_once——生产会话保活 +
+    // ①: 手动回收与后台 reaper 走同一 reap_once——生产会话保活 +
     // 失忆自愈(否则手动触发 reap 可绕过保护,把 TTL 到期的生产会话回收成幻影)
     let (finished, expired) = reap_once(&api.sessions, api.workspace_db.as_ref(), Some(&api)).await;
 
@@ -3769,11 +3769,11 @@ async fn close_session(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // UV-079 ①b: 生产会话删除保护(fail-fast + 自诊断指引)。
+    // ①b: 生产会话删除保护(fail-fast + 自诊断指引)。
     // DELETE 恰指向 production_state.current_session_id 时,删除后引用成
-    // 幻影(监控大屏轮询 404、沙盒 fork 404),直到重启才被 UV-070 重建。
+    // 幻影(监控大屏轮询 404、沙盒 fork 404),直到重启才被 重建。
     // 生产会话生命周期归治理链管辖(rolling_session 切换/server 退出导出),
-    // 不开放裸删除;确需重置请走治理发布流切换,或重启 server(触发 UV-070 重建)。
+    // 不开放裸删除;确需重置请走治理发布流切换,或重启 server(触发 重建)。
     // 注: rolling_session 对旧生产会话的回收走内部 drain+close(SessionOps
     // trait,switch 之后才关闭),不经本 HTTP 端点,治理链不受此保护影响。
     if let Some(ws_db) = &api.workspace_db {
@@ -3781,7 +3781,7 @@ async fn close_session(
             Ok(ps) if ps.current_session_id == Some(session_id as i64) => {
                 tracing::warn!(
                     session_id,
-                    "UV-079: 拒绝删除生产会话(production_state.current_session_id 引用中)"
+                    ": 拒绝删除生产会话(production_state.current_session_id 引用中)"
                 );
                 return Err(StatusCode::CONFLICT);
             }
@@ -3791,7 +3791,7 @@ async fn close_session(
                 tracing::error!(
                     error = %e,
                     session_id,
-                    "UV-079: close_session 读取 production_state 失败,保守拒绝删除"
+                    ": close_session 读取 production_state 失败,保守拒绝删除"
                 );
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
@@ -4377,7 +4377,7 @@ pub struct AuditReportQuery {
     pub include_content: Option<bool>,
 }
 
-/// 审计档案会话列表 handler（UV-016）
+/// 审计档案会话列表 handler
 ///
 /// `GET /api/audit-archive/sessions` → wal_dir 下全部历史会话档案（只读）。
 /// 与活跃会话 API 物理隔离：本端点纯只读，无 touch/写路径；
@@ -4412,7 +4412,7 @@ async fn archive_sessions(
     })))
 }
 
-/// 审计档案单会话审计 handler（UV-016）
+/// 审计档案单会话审计 handler
 ///
 /// `GET /api/audit-archive/sessions/{id}/audit?include_content=true`
 /// → 从 WAL 重建该历史会话的审计链（活跃会话审计同形响应）。
@@ -4660,7 +4660,7 @@ async fn session_audit_export(
 /// 1. 导入操作会**完全覆盖**当前会话的审计链，具有破坏性
 /// 2. 应仅允许管理员或授权用户调用此接口
 /// 3. 建议在调用前验证导入数据的来源和完整性
-/// 4. 导入后会自动调用 `verify()` 验证审计链完整性
+/// 4. 导入后会自动调用 `verify` 验证审计链完整性
 ///
 /// # 返回
 /// - `200 OK`：导入成功且审计链验证通过
@@ -4813,7 +4813,7 @@ async fn session_audit_export_compressed(
 /// `POST /api/sessions/:id/audit/import/compressed` → 导入 gzip 压缩的审计链
 ///
 /// 请求体为 gzip 二进制数据（`Content-Type: application/gzip`）。
-/// 解压后等价于 [`session_audit_import`]，导入成功后自动调用 `verify()`。
+/// 解压后等价于 [`session_audit_import`]，导入成功后自动调用 `verify`。
 ///
 /// **安全注意事项** 与 [`session_audit_import`] 相同。
 #[utoipa::path(
@@ -5297,7 +5297,7 @@ async fn session_replay(
 
 /// Fact 信封（带版本号的 Fact JSON 表示）
 ///
-/// 用于 history/replay 端点的响应元素 schema。每项是 `Fact::to_json()` 输出
+/// 用于 history/replay 端点的响应元素 schema。每项是 `Fact::to_json` 输出
 /// 附加 `version` 字段，由 `type` 判别 7 种变体（与 core `Fact` 逐一对应）。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "type")]
@@ -5379,7 +5379,7 @@ pub enum FactEnvelope {
     },
 }
 
-/// 将 core `Fact` 转换为强类型信封（附加版本号，字段与 `Fact::to_json()` 对齐）
+/// 将 core `Fact` 转换为强类型信封（附加版本号，字段与 `Fact::to_json` 对齐）
 fn fact_to_envelope(fact: &Fact, version: u64) -> FactEnvelope {
     match fact {
         Fact::Command { id, instruction } => FactEnvelope::Command {
@@ -5429,7 +5429,7 @@ fn fact_to_envelope(fact: &Fact, version: u64) -> FactEnvelope {
             result: tcb_to_serde(result),
             error: error.clone(),
         },
-        // CR-20260901-001：不再内嵌 final_snapshot 全量快照（O(n²) 根因）
+        //：不再内嵌 final_snapshot 全量快照（O(n²) 根因）
         Fact::Stable { id, .. } => FactEnvelope::Stable { id: id.0, version },
         Fact::Error { id, message } => FactEnvelope::Error {
             id: id.0,
@@ -5615,7 +5615,7 @@ async fn session_diff(
 
     let facts = session.facts_log.history();
 
-    // UV-046 B8b 配套（evorule-governance 0.4.1）：diff 对 rewind 不可达版本
+    // B8b 配套（evorule-governance 0.4.1）：diff 对 rewind 不可达版本
     // 由静默回退空 payload 改为返回 Err(TimeMachineError)——与 rewind 端点
     // 同语义映射为 400 BAD_REQUEST。
     let diff = match evorule_governance::time_machine::diff(&facts, params.a, params.b) {
@@ -6915,7 +6915,7 @@ impl GovernanceServer {
     /// 创建禁用认证 + 禁用限速的基准测试服务器（仅用于 benchmarks）
     #[allow(dead_code)]
     pub fn bench(state: AppState, addr: String) -> Self {
-        // per_sec=0 触发 build_router() 完全跳过 GovernorLayer（真正禁用限速）
+        // per_sec=0 触发 build_router 完全跳过 GovernorLayer（真正禁用限速）
 
         Self::new(
             state,
@@ -6952,7 +6952,7 @@ impl GovernanceServer {
     ///
     /// `GovernorLayer` 依赖 `ConnectInfo<SocketAddr>` 提取客户端 IP，
     ///
-    /// 因此 bin 启动时必须使用 `into_make_service_with_connect_info::<SocketAddr>()`。
+    /// 因此 bin 启动时必须使用 `into_make_service_with_connect_info::<SocketAddr>`。
     ///
     ///
     ///
@@ -6973,17 +6973,17 @@ impl GovernanceServer {
 
         // rate_limit_per_sec == 0 表示完全禁用限速（不添加 GovernorLayer）
 
-        // 修复：之前用 (1, 1_000_000) 模拟"无限速"，但 GovernorConfigBuilder::finish()
+        // 修复：之前用 (1, 1_000_000) 模拟"无限速"，但 GovernorConfigBuilder::finish
 
-        // 可能 fallback 到 GovernorConfig::default()（默认低限速），导致 --no-rate-limit
+        // 可能 fallback 到 GovernorConfig::default（默认低限速），导致 --no-rate-limit
 
-        // 实际仍触发 429。现在通过 resolve_governor_config() 条件性返回 None 来跳过 GovernorLayer。
+        // 实际仍触发 429。现在通过 resolve_governor_config 条件性返回 None 来跳过 GovernorLayer。
 
         //
 
         // 注意：GovernorLayer 不能存入 Option<GovernorLayer> 变量（其 M/RespBody 泛型
 
-        // 只能在 .layer() 调用时通过 Layer trait 约束推断），因此采用 match 分支。
+        // 只能在 .layer 调用时通过 Layer trait 约束推断），因此采用 match 分支。
 
         // 公开路由（免认证）— health/liveness/readiness/metrics
 
@@ -7008,7 +7008,7 @@ impl GovernanceServer {
             // C5：执行侧已绑定服务能力对账（仅只读能力元数据，不改状态）——
             // 供场景包导入前服务需求预检与治理侧服务目录（GET /v1/services）核对。
             .route("/api/services", get(list_services_handler))
-            // UV-017 平台授权:bootstrap/login/status 免认证;其余平台端点
+            // 平台授权:bootstrap/login/status 免认证;其余平台端点
             // (me/管理端点等)handler 内自校验平台 token/权限点。
             .merge(crate::api::platform_auth::platform_auth_router());
 
@@ -7028,11 +7028,11 @@ impl GovernanceServer {
             .route("/api/payload", post(update_payload))
             .route("/api/state", get(get_state))
             .route("/api/audit", get(get_audit))
-            // UV-018:平台认证事件报表(只读,自 SharedFactsLog platform.event.* 派生)
+            // :平台认证事件报表(只读,自 SharedFactsLog platform.event.* 派生)
             .route("/api/audit/platform-events", get(platform_events_handler))
             // 多会话模式路由
             .route("/api/sessions", post(create_session).get(list_sessions))
-            // UV-016：审计档案（只读，历史会话 WAL 重建；与活跃会话 API 物理隔离）
+            // ：审计档案（只读，历史会话 WAL 重建；与活跃会话 API 物理隔离）
             .route("/api/audit-archive/sessions", get(archive_sessions))
             .route(
                 "/api/audit-archive/sessions/{id}/audit",
@@ -7157,9 +7157,9 @@ impl GovernanceServer {
             )
             // 权限管理端点族（A-流 权限系统，受认证保护）
             .merge(crate::api::permissions::permissions_router())
-            // 模板市场端点族（UV-084 W4 / UV-064 实化，受认证保护）
+            // 模板市场端点族
             .merge(crate::api::marketplace::marketplace_router())
-            // 服务端 PDF 导出（UV-084 W6 / UV-066 实化，纯 Rust 文本型；受认证
+            // 服务端 PDF 导出（/ 实化，纯 Rust 文本型；受认证
             // 保护 + 独立 body 上限 32MB——console 可携带全量审计事实）
             .merge(crate::api::pdf_export::pdf_export_router())
             // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)
@@ -7167,7 +7167,7 @@ impl GovernanceServer {
             // abort 双保险：条件挂载（--allow-abort 关闭时为空 Router）
             .merge(abort_router)
             // rewind/diff 已移至 application/core/time_machine（本地实现）
-            // UV-017 W2b:统一认证中间件(双凭据:静态 user/service token 或
+            // W2b:统一认证中间件(双凭据:静态 user/service token 或
             // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
             // 内部调用方沿用静态 service token,无需改造。
             .layer(axum::middleware::from_fn_with_state(
@@ -7276,7 +7276,7 @@ impl GovernanceServer {
 
         // 合并路由 + 全局安全层（从内到外：body limit → concurrency → cors → rate limit）
 
-        // 修复：当 resolve_governor_config() 返回 None 时，完全跳过 GovernorLayer（真正禁用限速）
+        // 修复：当 resolve_governor_config 返回 None 时，完全跳过 GovernorLayer（真正禁用限速）
 
         // S2：/metrics 根据 metrics_requires_auth 决定是否需要认证
 
@@ -7354,7 +7354,7 @@ impl GovernanceServer {
             }
 
             Some(cfg) => {
-                // 修正(2026-09-01,UV-032 W3 演练排障发现):原公式 burst/per_sec
+                // 修正(2026-09-01,W3 演练排障发现):原公式 burst/per_sec
                 // 会把默认配置误报为"1 req/s(burst=200)",误导排障(实际持续速率
                 // = per_sec req/s:令牌桶每 1000/per_sec 毫秒回补 1 个令牌,
                 // burst 只是桶容量/突发上限,实测 135+ req/s 持续零 429)。
@@ -7374,13 +7374,13 @@ impl GovernanceServer {
     /// 启动 HTTP 服务器
     ///
     ///
-    /// 使用 `into_make_service_with_connect_info::<SocketAddr>()` 注入客户端 IP，
+    /// 使用 `into_make_service_with_connect_info::<SocketAddr>` 注入客户端 IP，
     ///
     /// 以支持 `GovernorLayer`（速率限制）的按 IP 限流。
     ///
     #[allow(dead_code)]
     pub async fn serve(self) -> Result<(), std::io::Error> {
-        // H6: 此方法为预留 API（main.rs 使用 build_router() + axum::serve 自行启动以支持优雅退出）
+        // H6: 此方法为预留 API（main.rs 使用 build_router + axum::serve 自行启动以支持优雅退出）
 
         let router = self.build_router();
 
@@ -7819,9 +7819,9 @@ async fn reload_rules_handler(
 ///
 /// # 设计理由
 ///
-/// `GovernorConfigBuilder::finish()` 可能返回 `None`，旧代码用
+/// `GovernorConfigBuilder::finish` 可能返回 `None`，旧代码用
 ///
-/// `unwrap_or_else(GovernorConfig::default)` fallback，但 `default()` 的限速值
+/// `unwrap_or_else(GovernorConfig::default)` fallback，但 `default` 的限速值
 ///
 /// 很低，会导致 `--no-rate-limit` 名义禁用、实际仍强限速的 bug。
 ///
@@ -7843,7 +7843,7 @@ pub fn resolve_governor_config(
 
     // tower_governor 0.8 的 `per_second(n)` 语义是"每 n 秒回补 1 个令牌"
     // (period = Duration::from_secs(n)),并非"每秒 n 个请求"。
-    // UV-032 实测定论(2026-09-01):此前传 per_sec=1 实为 1 req/s,合法流量被 429。
+    // 实测定论(2026-09-01):此前传 per_sec=1 实为 1 req/s,合法流量被 429。
     // 本参数语义 = 持续速率 req/s,故换算 period = 1000/per_sec 毫秒(≥1ms 下限防零)。
     let period_ms = (1000 / per_sec).max(1);
 
@@ -7888,7 +7888,7 @@ mod tests {
     #[test]
 
     fn test_resolve_governor_config_disabled_when_both_zero() {
-        // bench() 路径：per_sec=0, burst=0 → 必须返回 None
+        // bench 路径：per_sec=0, burst=0 → 必须返回 None
 
         let result = resolve_governor_config(0, 0);
 
@@ -8675,7 +8675,7 @@ mod tests {
 
     // ====================================================================
 
-    // 使用 GovernanceServer::bench() 构建无认证、无限速的路由，
+    // 使用 GovernanceServer::bench 构建无认证、无限速的路由，
 
     // 通过 tower::ServiceExt::oneshot 发送请求并检查响应。
 
@@ -8721,7 +8721,7 @@ mod tests {
 
         let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
 
-        // UV-079 ①: SessionApi 接线 workspace_db(close_session 生产会话保护 +
+        // ①: SessionApi 接线 workspace_db(close_session 生产会话保护 +
         // reaper 保活/自愈依赖);与 main.rs 生产装配时序一致
         let sessions = SessionApi::new(core_eval, 100).with_workspace_db(ws_db.clone());
 
@@ -8794,7 +8794,7 @@ mod tests {
 
     /// 构造测试用 Router（`allow_abort: true`，用于强制中止端点测试）
     ///
-    /// `bench()` 默认 `allow_abort: false`（双保险），abort 路由不会挂载，
+    /// `bench` 默认 `allow_abort: false`（双保险），abort 路由不会挂载，
     /// 因此单独构造启用 abort 的 Router。
     fn make_abort_router(state: &AppState) -> Router {
         GovernanceServer::new(
@@ -9413,9 +9413,9 @@ mod tests {
         assert_eq!(json["sessions"][0].as_u64(), Some(session_id));
     }
 
-    // --- UV-079 ①: reaper 生产会话保活 + 失忆自愈 + 删除保护 ---
+    // --- ①: reaper 生产会话保活 + 失忆自愈 + 删除保护 ---
 
-    /// UV-079 ①a: reap_once 保活——生产会话被 touch,非生产会话 TTL 到期被回收。
+    /// ①a: reap_once 保活——生产会话被 touch,非生产会话 TTL 到期被回收。
     /// 内含对照组: 两会话同时创建同时到期,仅生产会话存活 ⇒ 存活来自保活而非 TTL 未到。
     #[tokio::test]
     async fn test_uv079_reap_once_keeps_production_session_alive() {
@@ -9451,8 +9451,8 @@ mod tests {
         assert!(sessions.lock().await.get_session(other_id).is_none());
     }
 
-    /// UV-079 ①a: reap_once 自愈——幻影引用(current_session_id 指向不存在的
-    /// 会话,UV-079 原始形态)被检测并重建,版本/哈希保留。
+    /// ①a: reap_once 自愈——幻影引用(current_session_id 指向不存在的
+    /// 会话,原始形态)被检测并重建,版本/哈希保留。
     #[tokio::test]
     async fn test_uv079_reap_once_recovers_phantom_production_reference() {
         let (state, _) = make_test_state();
@@ -9480,7 +9480,7 @@ mod tests {
         assert!(sessions.lock().await.get_session(new_id as u64).is_some());
     }
 
-    /// UV-079 ①b: DELETE 生产会话被 409 拒绝且会话存活;普通会话删除不受影响。
+    /// ①b: DELETE 生产会话被 409 拒绝且会话存活;普通会话删除不受影响。
     #[tokio::test]
     async fn test_uv079_close_production_session_rejected_409() {
         let (state, _) = make_test_state();
@@ -9672,7 +9672,7 @@ mod tests {
         assert!(json.is_object());
     }
 
-    // --- UV-018:平台认证事件报表 ---
+    // --- :平台认证事件报表 ---
 
     #[tokio::test]
     async fn test_platform_events_empty_oneshot() {
@@ -10169,7 +10169,7 @@ mod tests {
         (state, ws_db)
     }
 
-    /// UV-020:演示登录开关 — 默认开(体验包语义),with_demo_auth(false) 可关闭,
+    /// :演示登录开关 — 默认开(体验包语义),with_demo_auth(false) 可关闭,
     /// 且 DemoAuthFlag 经 FromRef 提取与 AppState 字段一致(status 端点下发语义)。
     #[tokio::test]
     async fn test_demo_auth_flag_default_on_and_builder_off() {
@@ -10233,7 +10233,7 @@ mod tests {
             }],
             data_dependencies: None,
             tests: BundleTests {
-                // UV-080 B2: pass 必带可追溯标记(篡改用例在哈希层先拒,此处形状合规)
+                // B2: pass 必带可追溯标记(篡改用例在哈希层先拒,此处形状合规)
                 subset: vec!["human:itest".into()],
                 fixtures: vec![],
                 verdict: TestVerdict::Pass,
@@ -10356,7 +10356,7 @@ mod tests {
             }],
             data_dependencies: None,
             tests: BundleTests {
-                // UV-080 B2: pass 必带可追溯标记(执行域 import 侧校验);
+                // B2: pass 必带可追溯标记(执行域 import 侧校验);
                 // 测试意图=合法可导入知识包,人工背书形态
                 subset: vec!["human:q12-itest".into()],
                 fixtures: vec![],
@@ -10375,7 +10375,7 @@ mod tests {
     }
 
     /// Q12 W6-1：knowledge bundle 导入端到端——落盘 knowledge_dir（物理隔离）
-    /// → KnowledgeStore 导入后即刻可读（W2 导入刷新 + W3 直读）
+    /// → KnowledgeStore 导入后即刻可读（导入刷新 + W3 直读）
     /// → TCB 合并集负向断言（数据文件不出现在规则合并集）。
     #[tokio::test]
     async fn test_knowledge_bundle_import_land_load_direct_read_oneshot() {
@@ -10512,10 +10512,10 @@ mod tests {
     }
 
     // ====================================================================
-    // UV-080 B2: 测试证据引用校验（执行域 import 侧——入执行域的口）
+    // B2: 测试证据引用校验（执行域 import 侧——入执行域的口）
     // ====================================================================
 
-    /// UV-080 B2-形状: verdict=pass 但 subset 为空(零证据 pass)→ 显式拒绝,
+    /// B2-形状: verdict=pass 但 subset 为空(零证据 pass)→ 显式拒绝,
     /// 封死绕过治理域手写伪造直 POST import 的路径。
     #[tokio::test]
     async fn test_uv080_import_rejects_pass_without_traceable_subset() {
@@ -10564,7 +10564,7 @@ mod tests {
         );
     }
 
-    /// UV-080 B2-引用: sandbox:<id> 引用本机不存在的沙盒(伪造/跨环境)→ 显式拒绝。
+    /// B2-引用: sandbox:<id> 引用本机不存在的沙盒(伪造/跨环境)→ 显式拒绝。
     /// resolver 环境与 test_knowledge_import_refresh 同构(schema URI 命中),
     /// 另接线 in-memory workspace_db(沙盒表为空)。
     #[tokio::test]
@@ -10617,7 +10617,7 @@ mod tests {
         );
     }
 
-    /// UV-080 B2-正路径: human:<actor> 显式人工背书 → 放行(无需存在性校验,
+    /// B2-正路径: human:<actor> 显式人工背书 → 放行(无需存在性校验,
     /// 标记即显式降级声明)。
     #[tokio::test]
     async fn test_uv080_import_allows_human_endorsement() {
@@ -10642,7 +10642,7 @@ mod tests {
             rules_dir.clone(),
         );
 
-        // q12_knowledge_bundle 的 subset 已是 human 背书形态(UV-080 适配)
+        // q12_knowledge_bundle 的 subset 已是 human 背书形态
         let bundle = q12_knowledge_bundle(
             "bundle-uv080-human",
             "ds-uv080-human",
@@ -10657,7 +10657,7 @@ mod tests {
         assert_eq!(result.entry_count, 1);
     }
 
-    /// UV-080 B2-真实沙盒引用: closed 沙盒 + PASS 报告(failed=0)→ 放行;
+    /// B2-真实沙盒引用: closed 沙盒 + PASS 报告(failed=0)→ 放行;
     /// FAIL 报告(failed>0)→ 拒收(fail 报告不得作 pass 证据)。
     /// 在 in-memory db 造真实沙盒记录 + 磁盘报告文件(与 close_sandbox 落盘
     /// 同构:report_<facts basename>.json 于 SANDBOX_REPORT_DIR)。

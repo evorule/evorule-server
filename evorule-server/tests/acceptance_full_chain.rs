@@ -272,7 +272,7 @@ async fn acceptance_governance_to_execution_full_chain() {
     let llm = spawn_mock_evo_agent().await;
     let (app, store) = build_gov(tmp.path(), &llm);
 
-    // ---------- 阶段 0：平台层引导（B1 双层租户） ----------
+    // ---------- 阶段 0：平台层引导（双层租户） ----------
     let (st, body) = send(
         &app,
         "POST",
@@ -344,7 +344,7 @@ async fn acceptance_governance_to_execution_full_chain() {
     let approver = login(app.clone(), "approver-b").await;
     let admin_b = login(app.clone(), "admin-b").await;
 
-    // ---------- 阶段 0b：双层租户隔离（B1 验收断言） ----------
+    // ---------- 阶段 0b：双层租户隔离（验收断言） ----------
     // org-a 侧注册一个 viewer，稍后验证其看不到 org-b 的 private 数据集
     {
         let (st, body) = send(
@@ -579,7 +579,7 @@ async fn acceptance_governance_to_execution_full_chain() {
         "{trimmed}"
     );
 
-    // 查询表达式（B3：domain 段筛选）
+    // 查询表达式（domain 段筛选）
     let (st, found) = send(
         &app,
         "GET",
@@ -591,8 +591,8 @@ async fn acceptance_governance_to_execution_full_chain() {
     assert_eq!(st, axum::http::StatusCode::OK, "查询: {found}");
     assert_eq!(found["items"].as_array().unwrap().len(), 1, "{found}");
 
-    // 带闸门一证据导出（T0 决策：执行侧导入要求 verdict=Pass，不默认 Pass；
-    // UV-080 双闸：pass 必带可追溯标记——本链未起沙盒，显式人工背书形态）
+    // 带闸门一证据导出（决策：执行侧导入要求 verdict=Pass，不默认 Pass；
+    // 双闸：pass 必带可追溯标记——本链未起沙盒，显式人工背书形态）
     let (st, bundle) = send(
         &app,
         "POST",
@@ -705,8 +705,8 @@ async fn acceptance_credential_scan_blocks_publish() {
         "POST",
         "/v1/datasets",
         Some(&root),
-        // law_ref:通过 UV-051 前置校验(auto_by_effective_date 缺省模式需生效基准),
-        // 让发布链抵达凭据扫描断言点(UV-077:此前 fixture 缺锚被前置校验先拦,
+        // law_ref:通过 前置校验(auto_by_effective_date 缺省模式需生效基准),
+        // 让发布链抵达凭据扫描断言点(:此前 fixture 缺锚被前置校验先拦,
         // 断言"凭据扫描拦截"永不成立)
         Some(json!({
             "dataset_id": "ds-cred",

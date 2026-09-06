@@ -1,4 +1,4 @@
-# 三层绑定执行侧闭环端到端验收脚本（B2，14 号实施计划）
+# 三层绑定执行侧闭环端到端验收脚本（，14 号实施计划）
 #
 # 验收链路：治理侧声明（data_dependencies）→ 条目绑定（data_source_binding）
 #   → 执行侧 service_registry 绑定 → 规则 io_request 真实 HTTP 命中。

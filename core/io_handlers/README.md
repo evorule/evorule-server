@@ -30,25 +30,25 @@
 |------|------|------|------|
 | `db_handler` | 34KB | `sqlx` (SQLite) | 数据库 I/O，支持语句白名单（`StatementWhitelist`）防止 SQL 注入 |
 | `http_handler` | 28KB | `reqwest` | HTTP 请求 I/O，支持 GET/POST/PUT/PATCH/DELETE/HEAD |
-| `memory_handler` | 11KB | `tokio::fs` | 文件系统键值存储 I/O，key 长度限制 ≤ 255 字节（N6） |
-| `service_registry` | 20KB | `serde_json` | 服务注册中心，从 `service_registry.json` 加载服务配置，校验 URL scheme（N2） |
+| `memory_handler` | 11KB | `tokio::fs` | 文件系统键值存储 I/O，key 长度限制 ≤ 255 字节 |
+| `service_registry` | 20KB | `serde_json` | 服务注册中心，从 `service_registry.json` 加载服务配置，校验 URL scheme |
 
 ---
 
 ## 安全特性
 
-### SSRF 防护（B1）
-- `HttpHandler::build_client()` 加 `.redirect(reqwest::redirect::Policy::none())`
+### SSRF 防护
+- `HttpHandler::build_client` 加 `.redirect(reqwest::redirect::Policy::none)`
 - 禁用 HTTP 重定向跟随，防止 SSRF 绕过（公网 URL → 302 → 169.254.169.254 云元数据）
 - 3xx 响应作为 Err 返回上层，由调用方决定处理方式
 
 ### Loopback 防护
 - 默认禁止访问 loopback 地址（127.0.0.1 / [::1]）
 - `--allow-loopback` CLI 参数可启用（生产环境永远不要启用）
-- `HttpHandler::new_dev_allow_loopback()` 仅供开发使用
+- `HttpHandler::new_dev_allow_loopback` 仅供开发使用
 
-### URL Scheme 校验（N2）
-- `ServiceRegistryHandler::parse_service_entry()` 校验 scheme 为 http/https
+### URL Scheme 校验
+- `ServiceRegistryHandler::parse_service_entry` 校验 scheme 为 http/https
 - 拒绝 `file:///`、`data://` 等危险 scheme
 
 ### SQL 注入防护
@@ -56,8 +56,8 @@
 - `StatementWhitelist` 白名单机制，只允许预定义的 SQL 语句执行
 - `WhitelistedDbHandler` 包装器强制白名单校验
 
-### Key 长度限制（N6）
-- `MemoryHandler::execute()` 检查 key ≤ 255 字节
+### Key 长度限制
+- `MemoryHandler::execute` 检查 key ≤ 255 字节
 - 防止超长 key 触发 OS 文件名错误
 
 ---

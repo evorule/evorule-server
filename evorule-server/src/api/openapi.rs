@@ -8,7 +8,7 @@
 //! （openapi-typescript），杜绝手写契约文档与代码漂移。
 //!
 //! - server.rs 端点在此聚合（[ApiDoc]）
-//! - workspace 端点由 `evorule_workspace::api::workspace_openapi()` 独立聚合，
+//! - workspace 端点由 `evorule_workspace::api::workspace_openapi` 独立聚合，
 //!   在 [merged_openapi] 中运行时合并
 //! - Swagger UI（`/api/docs`）仅通过 `--openapi-ui` 显式启用，默认关闭
 
@@ -18,7 +18,7 @@ use utoipa::OpenApi;
 /// evorule-server 端点聚合（server.rs 全部 handler）
 ///
 /// workspace 端点不在此列出——由 [merged_openapi] 运行时合并
-/// `evorule_workspace::api::workspace_openapi()`。
+/// `evorule_workspace::api::workspace_openapi`。
 #[derive(OpenApi)]
 #[openapi(
     paths(
@@ -81,23 +81,23 @@ use utoipa::OpenApi;
         crate::api::server::validate_rules_handler,
         crate::api::server::reload_rules_handler,
         crate::api::server::get_rules,
-        // bundles 组（T2 快照包导入 / T4 激活报告）
+        // bundles 组（快照包导入 / T4 激活报告）
         crate::api::bundles::import_bundle_handler,
         crate::api::bundles::import_bundle_dry_run_handler,
         crate::api::bundles::active_bundles_handler,
         crate::api::bundles::list_bundle_imports_handler,
-        // knowledge 组（Q12 段2 P1 执行侧数据面）
+        // knowledge 组（段2 P1 执行侧数据面）
         crate::api::knowledge::knowledge_datasets_handler,
         crate::api::knowledge::knowledge_entries_handler,
         crate::api::knowledge::knowledge_entry_handler,
-        // services / metrics 组（C5 能力对账 / Prometheus 抓取，UV-068 补注册）
+        // services / metrics 组（C5 能力对账 / Prometheus 抓取，补注册）
         crate::api::server::list_services_handler,
         crate::api::server::metrics_handler,
-        // audit 档案与平台事件组（UV-016 / UV-018，注解已有，UV-068 补注册）
+        // audit 档案与平台事件组
         crate::api::server::platform_events_handler,
         crate::api::server::archive_sessions,
         crate::api::server::archive_session_audit,
-        // platform-auth 组（UV-017 平台授权，15 端点，UV-068 补注册）
+        // platform-auth 组
         crate::api::platform_auth::bootstrap,
         crate::api::platform_auth::login,
         crate::api::platform_auth::logout,
@@ -113,7 +113,7 @@ use utoipa::OpenApi;
         crate::api::platform_auth::create_role,
         crate::api::platform_auth::update_role,
         crate::api::platform_auth::delete_role,
-        // permissions 组（A-流 权限系统，9 端点，UV-068 补注册）
+        // permissions 组（A-流 权限系统，9 端点，补注册）
         crate::api::permissions::list_permissions,
         crate::api::permissions::create_permission,
         crate::api::permissions::get_permission,
@@ -123,13 +123,13 @@ use utoipa::OpenApi;
         crate::api::permissions::review_permission,
         crate::api::permissions::permissions_version,
         crate::api::permissions::evaluate_permission,
-        // marketplace 组（UV-084 W4 / UV-064 模板市场实化，4 端点；UV-087 补编辑 5 端点）
+        // marketplace 组
         crate::api::marketplace::list_templates,
         crate::api::marketplace::upload_template,
         crate::api::marketplace::update_template_handler,
         crate::api::marketplace::download_template,
         crate::api::marketplace::delete_template_handler,
-        // export 组（UV-084 W6 / UV-066 服务端 PDF 纯 Rust 文本型）
+        // export 组
         crate::api::pdf_export::pdf_export_handler,
         // openapi 元数据
         crate::api::openapi::openapi_json,
@@ -189,14 +189,14 @@ use utoipa::OpenApi;
         crate::api::bundles::ImportResponse,
         crate::api::bundles::ActiveBundlesResponse,
         crate::api::bundles::ActiveBundleInfo,
-        // knowledge 组（Q12 段2 P1 执行侧数据面）
+        // knowledge 组（段2 P1 执行侧数据面）
         crate::api::knowledge::KnowledgeDatasetsResponse,
         crate::api::knowledge::KnowledgeEntriesResponse,
         crate::knowledge_store::KnowledgeDatasetSummary,
         crate::knowledge_store::KnowledgeEntryRecord,
         // services 组（C5 能力对账）
         crate::api::server::BoundServiceInfo,
-        // platform-auth 组请求体（UV-017）
+        // platform-auth 组请求体
         crate::api::platform_auth::CredentialsReq,
         crate::api::platform_auth::BootstrapReq,
         crate::api::platform_auth::ChangePasswordReq,
@@ -255,18 +255,18 @@ pub async fn openapi_json() -> Result<Json<serde_json::Value>, axum::http::Statu
 mod tests {
     use super::*;
 
-    /// UV-068 契约测试：openapi.json 必须覆盖全部已注册路由（防再漂移）。
+    /// 契约测试：openapi.json 必须覆盖全部已注册路由（防再漂移）。
     ///
     /// 端点清单与路由注册面同步维护：
-    /// - server.rs `build_router()` 的全部 `.route(...)` 调用
+    /// - server.rs `build_router` 的全部 `.route(...)` 调用
     ///   （public_routes / protected_routes / metrics_router / 条件挂载的 abort——
     ///   abort 路由默认不注册但文档恒注册，故同样纳入清单）
-    /// - `platform_auth_router()`（platform_auth.rs，挂入 public_routes）
-    /// - `permissions_router()`（permissions.rs，挂入 protected_routes）
+    /// - `platform_auth_router`（platform_auth.rs，挂入 public_routes）
+    /// - `permissions_router`（permissions.rs，挂入 protected_routes）
     /// - workspace 端点族抽查（完整清单以 evorule-workspace 的
-    ///   `workspace_openapi()` 为准，此处按族抽代表路径）
+    ///   `workspace_openapi` 为准，此处按族抽代表路径）
     ///
-    /// 新增 `.route()` 的同步纪律：补 `#[utoipa::path]` 注解 → 在 [ApiDoc]
+    /// 新增 `.route` 的同步纪律：补 `#[utoipa::path]` 注解 → 在 [ApiDoc]
     /// `paths(...)` 注册 → 在本清单追加路径；缺一步本测试变红。
     #[test]
     fn test_openapi_covers_all_registered_paths() {
@@ -281,7 +281,7 @@ mod tests {
             "/api/rules/validate",
             "/api/openapi.json",
             "/api/services",
-            // ===== platform_auth_router（UV-017，挂入 public_routes） =====
+            // ===== platform_auth_router =====
             "/api/platform/auth/bootstrap",
             "/api/platform/auth/login",
             "/api/platform/auth/logout",

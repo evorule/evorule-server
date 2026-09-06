@@ -1,7 +1,7 @@
 {
   "$schema": "https://gitee.com/evorule/evorule-server/raw/main/plugins/schema/official_native_services.schema.json",
   "$id": "https://gitee.com/evorule/evorule-server/plugins/indicator-services/official_native_services.json",
-  "title": "indicator-services 官方原生服务声明（UV-029 声明文件化；UV-037 第三个插件）",
+  "title": "indicator-services 官方原生服务声明（声明文件化；第三个插件）",
   "version": "1.0.0",
   "plugin_id": "indicator-services",
   "description": "确定性金融技术指标原生服务（Python 参考实现语义逐位对齐的 Rust 重写）",

@@ -25,7 +25,7 @@ use tracing::info;
 /// 合成 IO 响应器
 ///
 /// 监听 sandbox session 的 io_request,根据 io_type 返回合成响应。
-/// P0 全合成数据 (Q2 决策),不接生产 IO。
+/// P0 全合成数据 （决策）,不接生产 IO。
 pub struct MockIoResponder {
     session_id: u64,
     running: Arc<AtomicBool>,

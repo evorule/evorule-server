@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 4 个确定性指标服务实现（UV-037 MVP:sma/ema/macd/rsi）。
+//! 4 个确定性指标服务实现。
 //!
 //! 语义基准 = `规则引擎+数据处理器/indicator_calculator.py`(pandas 3.0.5):
-//! - SMA:`rolling(N).mean()` — 前 N-1 位 warmup → [`JsonValue::Null`];
+//! - SMA:`rolling(N).mean` — 前 N-1 位 warmup → [`JsonValue::Null`];
 //! - EMA:`ewm(span=N, adjust=False)` — 递推 `y = (1-α)·y + α·x`,α = 2/(N+1),
 //!   经实算验证与 pandas 内部实现**逐位一致**(`y += α(x-y)` 形态不匹配,勿改);
 //! - MACD:EMA(fast) − EMA(slow),Signal = EMA(signal_period)(对 MACD 序列),
@@ -106,7 +106,7 @@ fn values_out(values: &[Option<f64>]) -> JsonValue {
 
 /// SMA(窗口 N):前 N-1 位 None。
 ///
-/// 求和算法与 pandas `rolling(N).mean()` 逐位对齐(3000 组随机序列实证一致):
+/// 求和算法与 pandas `rolling(N).mean` 逐位对齐(3000 组随机序列实证一致):
 /// - 滚动窗口 Kahan 补偿求和,add/remove 各持独立持久补偿,先删后加;
 /// - 产物修正:窗口全同值 → 精确返回该值;全正/全负符号修正(-0.0 按 signbit 计);
 /// - 复刻自 pandas `_libs/window/aggregations.pyx` 的
@@ -405,7 +405,7 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
-    // ===== SMA 黄金值(pandas rolling(5).mean(),前 4 位 null) =====
+    // ===== SMA 黄金值(pandas rolling(5).mean,前 4 位 null) =====
 
     #[test]
     fn test_sma_golden_pandas_bitwise() {

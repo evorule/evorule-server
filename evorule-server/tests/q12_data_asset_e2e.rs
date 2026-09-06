@@ -195,7 +195,7 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
     assert_eq!(entries[0].status, Some(LifecycleStatus::Active));
 
     let tests = BundleTests {
-        // UV-080 B2: pass 必带可追溯标记(执行域 import 侧校验);
+        // B2: pass 必带可追溯标记(执行域 import 侧校验);
         // 本链未起沙盒,显式人工背书形态
         subset: vec!["human:q12-e2e".into()],
         fixtures: vec![],
@@ -260,7 +260,7 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         "数据包不得落入 rules_dir（TCB 加载路径物理隔离）"
     );
 
-    // ================= KnowledgeStore 直读命中（W3 消费接口） =================
+    // ================= KnowledgeStore 直读命中（消费接口） =================
     // 模拟 rpsm 原生服务：按 (dataset_id, entry_id) 取场景 payload，零转译直读
     let store_snap = sessions.knowledge_store();
     let rec = store_snap

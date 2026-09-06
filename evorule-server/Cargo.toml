@@ -23,10 +23,10 @@ evorule-tcb = { version = "0.4.1" }
 evorule-reactor = { version = "0.4.1", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
 evorule-governance = { version = "0.4.1", features = ["persistence"] }
-# 审计档案链哈希重算（UV-016；与 evorule-reactor 同一 blake3 真相源）
+# 审计档案链哈希重算
 blake3 = "1"
 
-# 平台用户口令哈希（UV-017 D3: Argon2id）; OsRng 亦用于会话 token 生成
+# 平台用户口令哈希; OsRng 亦用于会话 token 生成
 argon2 = { version = "0.5", features = ["std"] }
 
 # I/O handler(H5: 应用层,从 evorule-governance 迁出; 新位置: core/io_handlers)
@@ -38,16 +38,16 @@ evorule-workspace = { path = "../core/workspace" }
 # Schema 门禁（线1 防御层）：/api/rules/validate 提交校验的权威基准
 evorule-rule-schema = { path = "../core/rule_schema" }
 
-# 快照包共享校验（T2：36 号 集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘）
+# 快照包共享校验（36 号 集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘）
 evorule-bundle = { version = "0.3.0" }
 
 # Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
 evorule-demo-services = { path = "../plugins/demo-services" }
 
-# UV-035: 确定性物理仿真原生插件（第二个进程内插件,泛化验证载体）
+# : 确定性物理仿真原生插件（第二个进程内插件,泛化验证载体）
 evorule-physics-services = { path = "../plugins/physics-services" }
 
-# UV-037: 确定性金融技术指标原生插件（第三个进程内插件,Python 重写移植模式载体）
+# : 确定性金融技术指标原生插件（第三个进程内插件,Python 重写移植模式载体）
 evorule-indicator-services = { path = "../plugins/indicator-services" }
 
 # 插件机制公共件（trait/声明项/过滤路由器上提归一,main.rs PLUGIN_DEFS 直引声明表挂载）
@@ -63,7 +63,7 @@ tokio = { version = "1", features = [
     "signal",
 ] }
 
-# HTTP API(直接使用 axum 类型;multipart 供模板市场上传 UV-084 W4)
+# HTTP API(直接使用 axum 类型;multipart 供模板市场上传 W4)
 axum = { version = "0.8", features = ["multipart"] }
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "limit", "fs"] }
@@ -111,7 +111,7 @@ subsetter = "0.2.6"
 [dev-dependencies]
 # H6: benchmarks 迁移到应用层后需要的依赖
 # bench_determinism/long_session/throughput 通过 HTTP 调用 evorule-server 进行压测
-# UV-100: rustls TLS——Linux musl 静态发版构建不依赖系统 OpenSSL
+# : rustls TLS——Linux musl 静态发版构建不依赖系统 OpenSSL
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # bench_determinism 计算 payload hash (审计⑥ C3: 统一走 evorule-hash)
 evorule-hash = "0.1.3"
@@ -123,7 +123,7 @@ tower = { version = "0.5", features = ["util"] }
 # → export_knowledge → 执行侧 import_bundle → KnowledgeStore 直读全链。
 # 仅 dev 依赖，不进生产依赖图；evorule-bundle/evorule-hash 经 workspace patch
 # 收敛到同一本地源，治理侧与执行侧校验口径同源。
-# CI 兼容（UV-100）：三仓集成测试（acceptance_full_chain/binding_e2e/
+# CI 兼容：三仓集成测试（acceptance_full_chain/binding_e2e/
 # q12_data_asset_e2e）依赖兄弟仓 evorule-rule，CI 检出布局无此仓 →
 # 原写法 path="../../evorule-rule" 使 workspace manifest 加载必挂（fmt/clippy/
 # build/test 连锁红）。改为 git 依赖锁 rev（CI 可独立 resolve）+ feature 门控

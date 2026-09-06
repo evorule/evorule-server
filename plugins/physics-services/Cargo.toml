@@ -6,7 +6,7 @@ name = "evorule-physics-services"
 version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
-description = "确定性物理仿真原生服务 —— vendored rpsm-core 内核,以 IoHandler 形式挂载到 evorule-server IoDispatcher(UV-035 第二个原生插件 crate 泛化验证)"
+description = "确定性物理仿真原生服务 —— vendored rpsm-core 内核,以 IoHandler 形式挂载到 evorule-server IoDispatcher(第二个原生插件 crate 泛化验证)"
 repository = "https://gitee.com/evorule/evorule-server"
 publish = false
 

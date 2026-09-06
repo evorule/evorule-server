@@ -165,7 +165,7 @@ async fn create_test_dispatcher(temp_dir: &std::path::Path) -> IoDispatcher {
 
 /// 收集事件直到 Stable 或 Error，返回 (errors, stable_version)
 ///
-/// CR-20260901-001：Stable 事实不再内嵌 final_snapshot（O(n²) 修复），
+///：Stable 事实不再内嵌 final_snapshot（O(n²) 修复），
 /// 达到 Stable 的判定改为返回其 version（调用方仅判 is_some）。
 async fn collect_until_stable(
     rx: &mut evorule_reactor::EventReceiver,
@@ -372,7 +372,7 @@ async fn test_reactor_continues_after_error() {
     );
     assert!(snapshot2.is_some(), "第二阶段应达到 Stable");
 
-    // 验证 increment 生效（CR-20260901-001: Stable 不再内嵌快照,经 FactsLog 获取）
+    // 验证 increment 生效（: Stable 不再内嵌快照,经 FactsLog 获取）
     let (payload, _queue, _version) = facts_log.snapshot();
     if let Some(y_val) = payload.get("y").and_then(|v| v.as_i64()) {
         assert_eq!(y_val, 42, "increment y=42 应生效");
@@ -423,7 +423,7 @@ async fn test_reactor_continues_after_io_timeout() {
     );
     assert!(snapshot2.is_some(), "第二阶段应达到 Stable");
 
-    // 验证 increment 生效（CR-20260901-001: Stable 不再内嵌快照,经 FactsLog 获取）
+    // 验证 increment 生效（: Stable 不再内嵌快照,经 FactsLog 获取）
     let (payload, _queue, _version) = facts_log.snapshot();
     if let Some(z_val) = payload.get("z").and_then(|v| v.as_i64()) {
         assert_eq!(z_val, 99, "increment z=99 应生效");

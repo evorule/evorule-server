@@ -102,7 +102,7 @@ fn main() -> ExitCode {
             }
         };
 
-        // 先剥离 #[cfg(test)] mod tests { ... } 体，使测试内的 .unwrap()/expect() 不误报
+        // 先剥离 #[cfg(test)] mod tests { ... } 体，使测试内的 .unwrap/expect 不误报
         let content = strip_test_mod(&raw);
 
         for (label, needle) in FORBIDDEN {
@@ -172,7 +172,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 ///
 /// **限制**：不剥离 `#[cfg(test)] fn` / `#[cfg(test)] impl` 等非 mod 项；
 /// 这类项内部的 panic-prone 构造仍会被扫描（当前 io_handlers 中唯一的
-/// `#[cfg(test)] fn new_for_tests()` 内部无 unwrap，不受影响）。
+/// `#[cfg(test)] fn new_for_tests` 内部无 unwrap，不受影响）。
 fn strip_test_mod(src: &str) -> String {
     let bytes = src.as_bytes();
     let mut out = String::with_capacity(src.len());
@@ -272,7 +272,7 @@ fn skip_to_mod_tests(src: &str) -> Option<usize> {
 /// - 其余（`'ident`）→ 生命周期/标签。
 ///
 /// 合法源码不存在 `'ab'`（多字符字面量非法），故该判别不会误判。
-/// 不判别的后果（Q12 实测教训）：`fn f() -> &'static str {` 的 `'static` 进入
+/// 不判别的后果（实测教训）：`fn f -> &'static str {` 的 `'static` 进入
 /// 字符态后吞掉直到下一个 `'` 之间的所有 `{}`，令 match_brace 永不闭合、
 /// tests 模块整体不被剥离，门禁对全文件测试代码全量误报。
 fn char_lit_starts(bytes: &[u8], i: usize) -> bool {
@@ -484,7 +484,7 @@ fn match_brace(src: &str, open_idx: usize) -> Option<usize> {
             } else {
                 // 生命周期/标签（`<'a>` / `&'static str` / `'outer:`）：不进入字符态，
                 // 跳过标识符——否则字符态误吞后续 `{}` 致 match_brace 永不闭合、
-                // tests 模块整体不被剥离（Q12 实测：'static 令门禁全量误报）
+                // tests 模块整体不被剥离（实测：'static 令门禁全量误报）
                 i = skip_lifetime(bytes, i);
             }
             continue;
@@ -533,7 +533,7 @@ mod tests {
 }
 "#;
         let stripped = strip_test_mod(src);
-        // 测试模块体被剥离后，.unwrap( 只剩 prod() 中的 1 处
+        // 测试模块体被剥离后，.unwrap( 只剩 prod 中的 1 处
         assert_eq!(
             stripped.matches(".unwrap(").count(),
             1,

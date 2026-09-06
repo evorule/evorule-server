@@ -1,11 +1,11 @@
 # evorule-physics-services — 确定性物理仿真原生服务
 
-第二个进程内原生插件 crate（UV-035 泛化验证载体）：把 rpsm-demo 的确定性物理内核
+第二个进程内原生插件 crate：把 rpsm-demo 的确定性物理内核
 （vendored 快照）封装为 evorule-server 原生 `IoHandler` 服务，使
 `io_request(call_service/call_external, service_name=physics_*)` 在进程内确定性执行。
 
 > 与 `demo-services` 结构同构：声明式注册（`NATIVE_SERVICES`）+ 声明文件 SSOT
-> （`official_native_services.json`，UV-029 泛化）+ 插件清单启停（UV-030）。
+> （`official_native_services.json`，泛化）+ 插件清单启停。
 > 新增插件不再需要修改机制代码中的专属特判——这是本 crate 的验证目标。
 > 路由器机制件（trait / 声明项 / 过滤路由器）已上提 `core/plugin-kit` 公共 crate
 > 三插件归一，本 crate 为薄壳具名委托，行为逐字节等价。

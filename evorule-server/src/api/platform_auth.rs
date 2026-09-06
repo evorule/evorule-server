@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 平台用户体系与授权(UV-017 W1)
+//! 平台用户体系与授权
 //!
 //! **术语**:本模块是"平台授权"(谁能登录、能用 console 哪些功能)。
 //! 与既有 `/api/permissions`(规则运行时执行权限,治理域)是两套体系,前缀刻意分开:
@@ -22,7 +22,7 @@
 //! **会话 token**:不透明随机 256-bit hex,库存 blake3 哈希(不存明文)。
 //! 默认有效期 7 天,登出/停用用户即时吊销(追加 revoked 事实)。
 //!
-//! **认证检查边界(W2b)**:bootstrap/login/status 公开;me/logout/change-password
+//! **认证检查边界（)**:bootstrap/login/status 公开;me/logout/change-password
 //! 与平台管理端点在 handler 内自校验平台 token/权限点;业务 API 经
 //! [`unified_auth_middleware`](挂 protected_routes)统一认证(双凭据:
 //! 静态 token 或平台会话),401 统一 JSON 错误体。
@@ -74,7 +74,7 @@ pub const PLATFORM_ACTIONS: &[&str] = &[
     "approve_publish",
     "view_publish_queue",
     "view_test_report",
-    // 平台管理 3 点(UV-017 新增)
+    // 平台管理 3 点
     "manage_users",
     "manage_roles",
     "view_users",
@@ -552,7 +552,7 @@ pub struct ChangePasswordReq {
 }
 
 // ---------------------------------------------------------------------------
-// Handlers(W1:bootstrap / login / logout / me / change-password)
+// Handlers（bootstrap / login / logout / me / change-password)
 // ---------------------------------------------------------------------------
 
 /// 平台授权路由(bootstrap/login/status 公开;其余在 handler 内自校验平台 token)。
@@ -757,7 +757,7 @@ fn unauthorized_response() -> axum::response::Response {
 
 /// 业务 API 统一认证中间件(挂 protected_routes)。
 ///
-/// **双凭据语义**(UV-017 W2b,用户裁定:业务 API 覆盖,侧车凭据沿用静态 token):
+/// **双凭据语义**:
 ///
 /// 1. AuthConfig 未启用(开发模式)→ 放行,语义不变;
 /// 2. Bearer token 命中静态 user/service token → 放行并注入
@@ -768,7 +768,7 @@ fn unauthorized_response() -> axum::response::Response {
 ///
 /// 403 语义由端点层自理:平台管理端点在 handler 内校验权限点。
 ///
-/// (UV-100: 直返 `Response`——原 `Result<Response, Response>` 两分支都产出
+/// (: 直返 `Response`——原 `Result<Response, Response>` 两分支都产出
 /// Response,Err 包装无语义且触发 clippy result_large_err(Response ≥128 字节))
 pub async fn unified_auth_middleware(
     State((auth_config, shared)): State<(crate::auth::AuthConfig, SharedFactsLog)>,
@@ -846,7 +846,7 @@ async fn logout(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> Api
 }
 
 /// `GET /api/platform/auth/me` — 当前用户 + 最新权限矩阵。
-/// 前端以此刷新 can() 缓存(permissions_version 变化即授权有变更)。
+/// 前端以此刷新 can 缓存(permissions_version 变化即授权有变更)。
 #[utoipa::path(
     get,
     path = "/api/platform/auth/me",
@@ -941,7 +941,7 @@ async fn change_password(
 }
 
 // ---------------------------------------------------------------------------
-// 管理端点(W2:用户管理 / 角色管理 / 权限点注册表)
+// 管理端点（用户管理 / 角色管理 / 权限点注册表)
 // ---------------------------------------------------------------------------
 
 /// 认证 + 单权限点校验
@@ -1063,7 +1063,7 @@ fn ensure_other_active_admin(
 }
 
 /// `GET /api/platform/auth/status` — 公开:登录页判断是否需要 bootstrap 引导。
-/// UV-020:同时下发演示登录入口开关(demo_auth),登录页据此隐藏演示模式入口。
+/// :同时下发演示登录入口开关(demo_auth),登录页据此隐藏演示模式入口。
 #[utoipa::path(
     get,
     path = "/api/platform/auth/status",

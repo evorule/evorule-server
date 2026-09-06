@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 三个确定性物理服务实现（UV-035 MVP 服务面）。
+//! 三个确定性物理服务实现。
 //!
 //! # 入参约定
 //! - 浮点入参接受 `Integer` 或数字字符串(TCB 无 Float 变体);

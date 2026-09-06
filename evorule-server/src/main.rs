@@ -110,7 +110,7 @@ struct FileConfig {
 struct FileServerConfig {
     addr: Option<String>,
     max_rounds: Option<usize>,
-    /// UV-020:演示登录入口开关（缺省 true；生产部署建议 false）
+    /// :演示登录入口开关（缺省 true；生产部署建议 false）
     demo_auth: Option<bool>,
 }
 
@@ -137,7 +137,7 @@ struct FilePathsConfig {
     service_registry: Option<PathBuf>,
     /// SQL 语句模板白名单文件（可选，未设置则禁用 QUERY_DB）
     statement_whitelist: Option<PathBuf>,
-    /// 插件清单文件（UV-030，可选；未设置 = 原生插件全部启用，存量零迁移）
+    /// 插件清单文件
     plugins: Option<PathBuf>,
     /// Workspace 元数据库路径 (P10, 可选, 默认 ./data/workspace.db)
     workspace_db: Option<PathBuf>,
@@ -229,7 +229,7 @@ struct Cli {
     #[arg(long, env = "EVORULE_SERVICE_TOKEN")]
     service_token: Option<String>,
 
-    /// 宪法文件路径（server_eval.json，不可热重载；UV-044 更名）
+    /// 宪法文件路径（server_eval.json，不可热重载；更名）
     #[arg(long, env = "EVORULE_CORE_EVAL")]
     core_eval: Option<PathBuf>,
 
@@ -309,7 +309,7 @@ struct Cli {
     #[arg(long, env = "EVORULE_STATEMENT_WHITELIST")]
     statement_whitelist: Option<PathBuf>,
 
-    /// 插件清单文件（UV-030；可选，未设置 = 原生插件全部启用）
+    /// 插件清单文件
     ///
     /// 例 ./plugin_manifest.json：
     /// { "plugins": { "demo-services": { "enabled": true, "services": ["config_persist"] } } }
@@ -360,7 +360,7 @@ struct Cli {
     #[arg(long, env = "EVORULE_WEB_DIR")]
     web_dir: Option<PathBuf>,
 
-    /// 演示登录入口开关（UV-020）：经 /api/platform/auth/status 公开下发，
+    /// 演示登录入口开关：经 /api/platform/auth/status 公开下发，
     /// 登录页据此隐藏「演示模式（预置角色一键登录）」入口。
     /// 体验包默认开；生产部署建议 `--demo-auth false`（或 env EVORULE_DEMO_AUTH=false / 配置文件 server.demo_auth）。
     /// 支持 `--demo-auth`（=true）与 `--demo-auth false` 两种写法。
@@ -373,7 +373,7 @@ struct Cli {
     )]
     demo_auth: Option<bool>,
 
-    /// 服务端 PDF 导出的中文字体显式指定（UV-084 W6）：TTF/OTF/TTC 路径。
+    /// 服务端 PDF 导出的中文字体显式指定：TTF/OTF/TTC 路径。
     /// 缺省时自动探测系统字体（Windows: msyh/simhei/simsun；Linux: Noto Sans CJK/
     /// 文泉驿）；探测不到时 PDF 导出显式报错（fail-fast，不生成缺字 PDF）。
     #[arg(long, env = "EVORULE_PDF_FONT")]
@@ -414,7 +414,7 @@ struct ResolvedConfig {
     service_registry: Option<PathBuf>,
     /// SQL 模板白名单文件（未设置则 QUERY_DB 全部拒绝）
     statement_whitelist: Option<PathBuf>,
-    /// 插件清单文件（UV-030；None = 原生插件全部启用）
+    /// 插件清单文件
     plugins: Option<PathBuf>,
     /// CORS 白名单；若 CLI 指定了 "*" 则为全放行模式（仅限开发）
     allowed_origins: Vec<String>,
@@ -428,7 +428,7 @@ struct ResolvedConfig {
     allow_abort: bool,
     /// 静态前端目录（--web-dir）；None = 不托管静态文件
     web_dir: Option<PathBuf>,
-    /// UV-020:演示登录入口开关（默认 true；CLI > env > file > default）
+    /// :演示登录入口开关（默认 true；CLI > env > file > default）
     demo_auth: bool,
     /// Workspace 元数据库路径 (P10, 默认 ./data/workspace.db)
     workspace_db: PathBuf,
@@ -454,7 +454,7 @@ impl ResolvedConfig {
             core_eval: cli
                 .core_eval
                 .or(file.paths.core_eval)
-                // 默认指向本仓 resources/(UV-044:v0.4.1 起 server 份宪法业务规则集
+                // 默认指向本仓 resources/(:v0.4.1 起 server 份宪法业务规则集
                 // 更名为 server_eval.json,与 evorule 仓宪法原则 core_eval.json 区分)
                 .unwrap_or_else(|| PathBuf::from("./resources/server_eval.json")),
             rules_dir: cli
@@ -489,9 +489,9 @@ impl ResolvedConfig {
             auto_verify_interval: cli.auto_verify_interval.unwrap_or(1),
             // 速率限制：默认持续速率 200 req/s（burst=200;period 换算见
             // resolve_governor_config 注释）。
-            // UV-032 实测修正(2026-09-01):此前误传 per_sec=1,经 resolve_governor_config
+            // 实测修正(2026-09-01):此前误传 per_sec=1,经 resolve_governor_config
             // 换算实为每秒回补 1 个令牌,合法多用户流量被持续 429。
-            // --no-rate-limit 设为 0 → build_router() 完全跳过 GovernorLayer（真正禁用限速）
+            // --no-rate-limit 设为 0 → build_router 完全跳过 GovernorLayer（真正禁用限速）
             rate_limit_per_sec: if cli.no_rate_limit { 0 } else { 200 },
             service_registry: cli.service_registry.or(file.paths.service_registry),
             statement_whitelist: cli.statement_whitelist.or(file.paths.statement_whitelist),
@@ -506,7 +506,7 @@ impl ResolvedConfig {
             allow_abort: cli.allow_abort,
             // 静态前端目录（默认 None，不托管静态文件）
             web_dir: cli.web_dir,
-            // UV-020:演示登录入口开关（CLI > env > file > 默认 true）
+            // :演示登录入口开关（CLI > env > file > 默认 true）
             demo_auth: cli.demo_auth.or(file.server.demo_auth).unwrap_or(true),
             // P10: workspace 元数据库路径 (独立于业务 db_path)
             workspace_db: cli
@@ -518,7 +518,7 @@ impl ResolvedConfig {
     }
 }
 
-// ===== UV-030 插件清单(UV-035 泛化:插件注册表,机制代码零插件特判) =====
+// ===== 插件清单 =====
 
 /// 单个插件的挂载决定(部署期事实,启动后不可变)
 #[derive(Debug, Clone, PartialEq)]
@@ -549,7 +549,7 @@ fn default_true() -> bool {
     true
 }
 
-/// 进程内插件登记项(UV-035 泛化;插件抽象上提后路由机制件归一至 plugin-kit,
+/// 进程内插件登记项(泛化;插件抽象上提后路由机制件归一至 plugin-kit,
 /// 登记表直引各插件声明表):新增进程内插件 = 在 [`PLUGIN_DEFS`] 追加一项
 /// (id + 声明表指针),清单解析/挂载链/健康节机制代码零改动。
 struct PluginDef {
@@ -682,8 +682,8 @@ fn load_statement_whitelist(path: Option<&std::path::Path>) -> Result<StatementW
 
 /// 确保目录存在
 fn ensure_dir(path: &PathBuf) -> Result<(), String> {
-    // M4 修复: 旧代码直接用 path.exists() 和 create_dir_all(path),
-    // 但当 path 为空路径(如 db_path 是 "evorule.db" 时 parent() 返回 Some(""))
+    // M4 修复: 旧代码直接用 path.exists 和 create_dir_all(path),
+    // 但当 path 为空路径(如 db_path 是 "evorule.db" 时 parent 返回 Some(""))
     // 时,create_dir_all("") 在某些平台会返回错误。
     // 现在检查 path 是否为空,空路径视为当前目录,无需创建。
     if path.as_os_str().is_empty() {
@@ -927,7 +927,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pdf_font = cli.pdf_font.clone();
     let cfg = ResolvedConfig::resolve(cli, file_config);
 
-    // UV-084 W6：服务端 PDF 字体覆盖（--pdf-font；缺省=自动探测系统字体）
+    // W6：服务端 PDF 字体覆盖（--pdf-font；缺省=自动探测系统字体）
     evorule_server::api::pdf_export::set_font_override(pdf_font);
 
     // 1. 初始化日志（支持 JSON 结构化日志，支持文件持久化）
@@ -988,7 +988,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "已禁用（纯内存模式）".to_string()
         }
     );
-    // UV-019 持久化防呆：未配 WAL 时共享事实（平台用户/角色/认证事件/治理事实）与会话
+    // 持久化防呆：未配 WAL 时共享事实（平台用户/角色/认证事件/治理事实）与会话
     // 审计链均纯内存，重启即全部丢失。必须显著警示（丢数据风险 + 配置方法），
     // 不允许静默降级——与共享事实恢复失败拒绝启动（AUDIT-A1）同一防呆口径。
     if cfg.wal_dir.is_none() {
@@ -1009,7 +1009,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "已禁用".to_string()
         }
     );
-    // UV-020:演示登录入口状态回显（经 auth/status 下发给登录页）
+    // :演示登录入口状态回显（经 auth/status 下发给登录页）
     info!(
         "演示登录: {}",
         if cfg.demo_auth {
@@ -1066,7 +1066,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => ServiceRegistry::empty(),
     };
     let reg_count = registry.len();
-    // 服务绑定核对集（T6）：注册表服务名注入 SessionApi，与原生叶子能力并集
+    // 服务绑定核对集：注册表服务名注入 SessionApi，与原生叶子能力并集
     let registry_names = registry.service_names();
     if reg_count == 0 {
         warn!(
@@ -1090,7 +1090,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         HttpHandler::new()
     });
     let svc_handler = Arc::new(ServiceRegistryHandler::new(registry.clone(), http.clone()));
-    // UV-030/UV-035: 插件清单决定各插件挂载形态（缺省全启,存量零迁移）。
+    // /: 插件清单决定各插件挂载形态（缺省全启,存量零迁移）。
     // 校验失败 → 启动 fail-fast（错误含自诊断指引）。
     let plugin_mounts = load_plugin_mounts(cfg.plugins.as_ref())?;
     // 按登记表声明序构建回落链:各插件路由原生优先,未命中回落链尾(HTTP 注册表)。
@@ -1153,7 +1153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let call_handler: Arc<dyn evorule_reactor::IoHandler> = chain_tail;
     let memory = Arc::new(MemoryHandler::new(cfg.memory_dir.clone()));
     let db_wrapped = WhitelistedDbHandler::new(db, statement_whitelist);
-    // UV-030/UV-035: 注入插件健康快照 → /api/health 的 plugins 节(启动后不可变)。
+    // /: 注入插件健康快照 → /api/health 的 plugins 节(启动后不可变)。
     // 按登记表逐插件如实呈现运行时挂载事实,键序 = 插件登记声明序。
     evorule_server::api::server::set_plugin_health(serde_json::Value::Object(plugin_health));
     let dispatcher = IoDispatcher::builder()
@@ -1309,7 +1309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // T5: 把 workspace 元数据库注入 SessionApi，使 bundle 导入时写入审计溯源（bundle_imports 表，
     // 管理元数据墙钟旁路，不参与 fact/哈希/审计验证链）。须在 workspace_db 创建后、AppState 组装前注入。
     let session_api = session_api.with_workspace_db(workspace_db.clone());
-    // UV-079 ①: reaper 启动移到 workspace_db 注入之后——生产会话保活 + 失忆自愈
+    // ①: reaper 启动移到 workspace_db 注入之后——生产会话保活 + 失忆自愈
     // 重建依赖该接线(原时序在注入前启动,reaper 拿不到 production_state)。
     session_api.start_reaper();
     let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(session_api.clone());
@@ -1355,13 +1355,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.workspace_db.display()
     );
 
-    // UV-070: 全新实例引导初始化(启动期,幂等)。
+    // : 全新实例引导初始化(启动期,幂等)。
     // 死锁链(修复前):沙盒 fork 需 production_state.current_session_id →
     // 生产会话仅由发布流(rolling_session)初始化 → 发布闸门一又要求已完成
     // 的沙盒报告 → 全新实例三环互锁,"建规则→沙盒验证→发布"主链不可达
     // (分发包首启同样命中;单测因预置 update_production_state 绕过而掩盖)。
     // 修复:current_session_id=NULL(从未初始化)时自动创建初始生产会话
-    // (空规则集,仅宪法 core_eval),沙盒可 fork、闸门一保持刚性(T0 不动)。
+    // (空规则集,仅宪法 core_eval),沙盒可 fork、闸门一保持刚性（不动）。
     // 初始化不构成发布:ruleset_version 保持 0,hash 置空串,operator 标记
     // system:bootstrap 可追溯。已有生产会话的实例不受影响(幂等跳过)。
     //
@@ -1372,7 +1372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 规则集状态经 rules_dir/production_state 持久,重建不改版本语义)。
     let prod_state = workspace_db
         .get_production_state()
-        .map_err(|e| format!("UV-070 启动期读取 production_state 失败: {e}"))?;
+        .map_err(|e| format!("启动期读取 production_state 失败: {e}"))?;
     let need_bootstrap = match prod_state.current_session_id {
         None => true,
         Some(sid) => {
@@ -1380,7 +1380,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !alive {
                 warn!(
                     stale_session_id = sid,
-                    "UV-070: 生产会话已失忆(server 重启后 SessionManager 为内存态),将重建"
+                    ": 生产会话已失忆(server 重启后 SessionManager 为内存态),将重建"
                 );
             }
             !alive
@@ -1390,7 +1390,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let init_session_id = session_ops
             .create_session()
             .await
-            .map_err(|e| format!("UV-070 初始生产会话创建失败: {e}"))?;
+            .map_err(|e| format!("初始生产会话创建失败: {e}"))?;
         workspace_db
             .update_production_state(
                 init_session_id as i64,
@@ -1400,15 +1400,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 prod_state.ruleset_hash.as_deref().unwrap_or(""),
                 "system:bootstrap",
             )
-            .map_err(|e| format!("UV-070 production_state 写入失败: {e}"))?;
+            .map_err(|e| format!("production_state 写入失败: {e}"))?;
         info!(
             init_session_id,
-            "UV-070: 引导初始化 — 已创建初始生产会话(空规则集),沙盒/发布链解锁"
+            ": 引导初始化 — 已创建初始生产会话(空规则集),沙盒/发布链解锁"
         );
     } else {
         info!(
             current_session_id = prod_state.current_session_id,
-            "UV-070: 已有生产会话,跳过引导初始化(幂等)"
+            ": 已有生产会话,跳过引导初始化(幂等)"
         );
     }
 
@@ -1423,7 +1423,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace_state,
         Arc::new(InputSanitizer::with_default_rules()),
     )
-    // UV-020:演示登录入口开关注入（经 auth/status 公开下发）
+    // :演示登录入口开关注入（经 auth/status 公开下发）
     .with_demo_auth(cfg.demo_auth);
 
     info!(
@@ -1461,7 +1461,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if is_non_loopback {
                 error!(
                     "🛑 拒绝启动：服务器绑定到非 loopback 地址 {} 但未设置认证 token。\n\
-                     这是 fail-closed 安全策略（B3 修复）。\n\
+                     这是 fail-closed 安全策略（修复）。\n\
                      生产环境必须设置 --auth-token 或 EVORULE_AUTH_TOKEN 环境变量。\n\
                      本地开发请绑定到 loopback 地址（如 --addr 127.0.0.1:18080）。",
                     cfg.addr
@@ -1563,7 +1563,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 9. 启动服务器（带优雅退出）
     // 使用 into_make_service_with_connect_info 注入客户端 IP，
     // 以支持 GovernorLayer（速率限制）按 IP 限流
-    // UV-056:bind 失败必须双通道可见 —— ①error! 级日志落 --log-file 文件
+    // :bind 失败必须双通道可见 —— ①error! 级日志落 --log-file 文件
     // （此前 `?` 直接传播,日志文件止于启动 info 流无 ERROR 行）;②格式化错误
     // 消息返回 main（stderr 打印,分发包 bat 以 2>> 收集 stderr 后用户可查）。
     let bind_addr = &cfg.addr;
@@ -1773,7 +1773,7 @@ mod tests {
     use clap::Parser;
     use tempfile::TempDir;
 
-    // ============ UV-030/UV-035 插件清单加载测试 ============
+    // ============ /插件清单加载测试 ============
 
     fn write_manifest(dir: &TempDir, content: &str) -> PathBuf {
         let p = dir.path().join("plugin_manifest.json");
@@ -1832,7 +1832,7 @@ mod tests {
 
     #[test]
     fn test_plugin_mount_multi_plugin() {
-        // UV-035 双插件:子集与停用并存,互不影响;未提及插件缺省全启(存量零迁移)
+        // 双插件:子集与停用并存,互不影响;未提及插件缺省全启(存量零迁移)
         let dir = TempDir::new().unwrap();
         let p = write_manifest(
             &dir,
@@ -2043,7 +2043,7 @@ mod tests {
         assert_eq!(cfg.auto_verify_interval, 1);
         assert_eq!(
             cfg.rate_limit_per_sec, 200,
-            "默认限速应为 200 req/s(UV-032 修正)"
+            "默认限速应为 200 req/s(修正)"
         );
     }
 

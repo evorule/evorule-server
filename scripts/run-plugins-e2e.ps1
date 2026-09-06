@@ -1,5 +1,5 @@
-# 插件清单端到端验收脚本（后端插件清单化，15 号实施计划 W4；UV-035 泛化至双插件；
-# UV-037 泛化至三插件）
+# 插件清单端到端验收脚本（后端插件清单化，15 号实施计划 W4；泛化至双插件；
+# 泛化至三插件）
 #
 # 验收链路：plugin_manifest.json（--plugins）→ 启动期 fail-fast 校验 →
 #   挂载语义（全启/子集/停用）→ /api/health plugins 节如实呈现。
@@ -9,7 +9,7 @@
 #      （with_enabled 过滤/拒绝语义 + 原生服务实现）
 #   2. main.rs 清单解析单测（三级配置/缺省全启/未知插件 id/空集）
 #   3. tests/plugins_e2e.rs 组件级 E2E（子集命中/未启用如实报错/声明序确定性
-#      + UV-035 双插件链 + UV-037 三插件链：原生命中/穿透回落/链序正确性）
+#      + 双插件链 + 三插件链：原生命中/穿透回落/链序正确性）
 #   4. 真实二进制五场景：
 #      A 缺省启动（无清单）→ health 显示 demo 7 + physics 3 + indicator 4 服务（三插件全启）
 #      B 三插件子集清单    → health 仅显示各插件启用子集
@@ -47,7 +47,7 @@ cargo test -p evorule-server --bin evorule-server plugin_
 if ($LASTEXITCODE -ne 0) { $failures++; Write-Host "[FAIL] 清单解析单测未通过" -ForegroundColor Red }
 else { Write-Host "[OK] 清单解析单测通过" -ForegroundColor Green }
 
-Write-Host "=== [3/5] 组件级端到端（tests/plugins_e2e.rs，含 UV-035 双插件链 + UV-037 三插件链）===" -ForegroundColor Cyan
+Write-Host "=== [3/5] 组件级端到端（tests/plugins_e2e.rs，含 双插件链 + 三插件链）===" -ForegroundColor Cyan
 cargo test -p evorule-server --test plugins_e2e
 if ($LASTEXITCODE -ne 0) { $failures++; Write-Host "[FAIL] plugins_e2e 未通过" -ForegroundColor Red }
 else { Write-Host "[OK] plugins_e2e 通过" -ForegroundColor Green }

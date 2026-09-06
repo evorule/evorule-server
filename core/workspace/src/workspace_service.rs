@@ -200,7 +200,7 @@ impl WorkspaceService {
     /// 2. 如果指定 rule_id:
     ///    a. 校验 rule 存在且状态为 Active
     ///    b. 解析 rule_version_id (指定则用指定的,否则用 current_version_id)
-    /// 3. 调用 session_ops.create_session() 获取 session_id
+    /// 3. 调用 session_ops.create_session 获取 session_id
     /// 4. 在 db 中记录 session
     /// 5. 如果有 rule_version_id,创建 binding
     pub async fn create_session(
@@ -317,7 +317,7 @@ impl WorkspaceService {
     ///
     /// 流程:
     /// 1. 从 db 查询 session,校验存在且未关闭
-    /// 2. 调用 session_ops.close_session() 关闭底层会话
+    /// 2. 调用 session_ops.close_session 关闭底层会话
     /// 3. 在 db 中标记 session 关闭
     /// 4. 关闭所有相关 binding
     pub async fn close_session(&self, session_id: u64) -> WorkspaceResult<SessionRecord> {
@@ -366,7 +366,7 @@ impl WorkspaceService {
         Ok(())
     }
 
-    /// 记录一次 bundle 导入溯源 (T5)
+    /// 记录一次 bundle 导入溯源 
     ///
     /// 委托 db 层写入 `bundle_imports`；`imported_at` 由 db 层以墙钟生成 (管理元数据, 旁路)。
     #[allow(clippy::too_many_arguments)]

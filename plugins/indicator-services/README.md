@@ -1,12 +1,12 @@
 # evorule-indicator-services — 确定性金融技术指标原生服务
 
-第三个进程内原生插件 crate（UV-037 泛化验证载体）：把 Python/pandas 参考实现
+第三个进程内原生插件 crate：把 Python/pandas 参考实现
 （源：`规则引擎+数据处理器/indicator_calculator.py`）的指标语义**重写**为
 evorule-server 原生 `IoHandler` 服务，使
 `io_request(call_service/call_external, service_name=indicator_*)` 在进程内确定性执行。
 
 > 与 `demo-services` / `physics-services` 结构同构：声明式注册（`NATIVE_SERVICES`）+
-> 声明文件 SSOT（`official_native_services.json`，UV-029 泛化）+ 插件清单启停（UV-030）。
+> 声明文件 SSOT（`official_native_services.json`，泛化）+ 插件清单启停。
 > 本 crate 验证**第二种集成模式**——非 vendored 快照复制，而是「Python 参考实现
 > 语义逐位对齐的 Rust 重写」，且新插件全链仅需追加式登记、机制代码零改动。
 > 路由器机制件（trait / 声明项 / 过滤路由器）已上提 `core/plugin-kit` 公共 crate

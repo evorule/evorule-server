@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 服务端 PDF 导出 —— `POST /api/export/pdf`（UV-084 W6 / UV-066 实化）
+//! 服务端 PDF 导出 —— `POST /api/export/pdf`
 //!
 //! **纯 Rust 文本型路线**（pdf-writer + ttf-parser + subsetter，typst 同源生态，
 //! 零系统依赖，不违反分发包零依赖承诺）：
@@ -327,7 +327,7 @@ fn wrap_text(text: &str, metrics: &GlyphMetrics, size: f32, max_w: f32) -> Vec<S
     for c in text.chars() {
         // 缺字字符不能在此丢弃（估宽占位保留）——否则下游 check_missing_glyphs
         // 检查布局产物时永远看不到它，fail-fast 链路被布局阶段静默截断
-        // （2026-09-05 UV-084 W6 实测发现：U+E000 在雅黑有字形测试反而暴露此 bug）
+        // （2026-09-05 W6 实测发现：U+E000 在雅黑有字形测试反而暴露此 bug）
         let cw = metrics.char_width(c, size).unwrap_or(size * 0.6);
         if c == '\n' {
             lines.push(std::mem::take(&mut line));
@@ -350,7 +350,7 @@ fn wrap_text(text: &str, metrics: &GlyphMetrics, size: f32, max_w: f32) -> Vec<S
             last_space = None;
         }
         if c == ' ' {
-            // 字节索引（不是 chars().count()）：下游 line[idx..]/truncate(idx) 按字节
+            // 字节索引（不是 chars.count）：下游 line[idx..]/truncate(idx) 按字节
             // 解释；空格是单字节 ASCII，字节索引必落在字符边界。之前用字符数导致
             // 中英混排 + 空格断行时切进多字节字符内部 → panic（2026-09-05 W6 实测
             // 5 条中文 fact 即触发，单测短文本未覆盖此路径）
@@ -941,7 +941,7 @@ fn err(status: StatusCode, message: impl Into<String>) -> (StatusCode, Json<Valu
     )
 }
 
-/// `POST /api/export/pdf` → 服务端渲染 PDF（UV-084 W6）
+/// `POST /api/export/pdf` → 服务端渲染 PDF
 ///
 /// - 200：`application/pdf` 二进制
 /// - 400：请求体非法 / 缺 content_type / 字体缺请求字符（带指引）

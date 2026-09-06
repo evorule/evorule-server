@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 快照包导入端点（T2 · 36 号 集成契约 / 44 号 bundles）
+//! 快照包导入端点（· 36 号 集成契约 / 44 号 bundles）
 //!
 //! - `POST /api/bundles/import`：6 项硬校验 + 逐条 Schema 门禁 + 原子落盘 + 触发 reload；
 //! - `POST /api/bundles/import/dry-run`：只跑校验链，不落盘不 reload。
@@ -50,7 +50,7 @@ pub struct ImportResponse {
     pub missing_services: Vec<String>,
 }
 
-/// 当前激活 bundle 信息（T4，来自 `bundle_manifest.json` 的精简视图）
+/// 当前激活 bundle 信息（，来自 `bundle_manifest.json` 的精简视图）
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ActiveBundleInfo {
     pub bundle_id: String,
@@ -170,7 +170,7 @@ pub async fn import_bundle_dry_run_handler(
     })))
 }
 
-/// GET /api/bundles/active —— 报告当前激活的 bundle（T4 版本语义）
+/// GET /api/bundles/active —— 报告当前激活的 bundle（版本语义）
 ///
 /// 遍历 `rules/bundles/*/bundle_manifest.json` 返回各 dataset 当前激活快照
 /// （bundle_id/dataset_id/source_version/selection_mode/resolved_version/effective_from/
@@ -207,7 +207,7 @@ pub struct BundleImportsResponse {
     pub count: usize,
 }
 
-/// GET /api/bundles/imports —— 查询 bundle 导入溯源历史（T5）
+/// GET /api/bundles/imports —— 查询 bundle 导入溯源历史
 ///
 /// 读取 workspace 元数据库 `bundle_imports` 表（按导入时间倒序, `?limit=` 限制条数, 默认 100）。
 /// 记录为**管理元数据**（imported_at 墙钟旁路），不参与 fact / 内容哈希 / 审计验证链。
@@ -240,7 +240,7 @@ pub async fn list_bundle_imports_handler(
     Ok(Json(BundleImportsResponse { imports, count }))
 }
 
-/// `?limit=` 查询参数（T5）
+/// `?limit=` 查询参数
 #[derive(Debug, Deserialize)]
 pub struct ListBundleImportsQuery {
     #[serde(default)]
@@ -319,7 +319,7 @@ mod tests {
                 }],
             }),
             tests: BundleTests {
-                // UV-080 B2: pass 必带可追溯标记(执行域 import 侧校验);
+                // B2: pass 必带可追溯标记(执行域 import 侧校验);
                 // 测试意图=合法可导入包,人工背书形态
                 subset: vec!["human:test-user".into()],
                 fixtures: vec![],
@@ -362,7 +362,7 @@ mod tests {
         let core_eval_path = tmp.path().join("core_eval.json");
         std::fs::write(
             &core_eval_path,
-            // UV-030 修复(2026-09-01): SessionApi 启动 fail-fast 校验要求宪法
+            // 修复(2026-09-01): SessionApi 启动 fail-fast 校验要求宪法
             // 必含 call_external 指令规则（LLM 审计桥平台契约），fixture 同步补入
             r#"{"transform":[
                 {"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}},

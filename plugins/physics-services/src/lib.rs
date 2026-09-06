@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 确定性物理仿真原生服务（UV-035:第二个原生插件 crate 泛化验证）。
+//! 确定性物理仿真原生服务。
 //!
 //! # 定位
 //! - 把 rpsm-demo 的确定性物理内核(vendored 快照,见 [`kernel`] 模块头注)封装为
@@ -9,7 +9,7 @@
 //!   service_name=physics_*)` 在进程内确定性执行。
 //! - 独立 crate(`plugins/physics-services`),不修改核心 crate,仅经 `IoDispatcher` 挂载。
 //! - 本 crate 是插件机制泛化验证载体:与 `demo-services` 平行、结构同构,
-//!   证明「清单(UV-030)+ 声明 SSOT(UV-029)+ 健康节」对第二个插件成立。
+//!   证明「清单+ 声明 SSOT+ 健康节」对第二个插件成立。
 //!
 //! # 路由设计(与 demo-services 同构)
 //! - `PhysicsServiceRouter` 实现 [IoHandler],按 `params.service_name` 分发:
@@ -51,7 +51,7 @@ pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 ///
 /// 薄壳具名路由器:机制(new / with_enabled 三拒绝 / 声明序查找 / 回落 / split_params)
 /// 已上提 `evorule-plugin-kit`(行为逐字节等价),本插件仅自持声明表并保持具名 API。
-/// 挂载到 `IoType::call_service()` / `IoType::call_external()`。
+/// 挂载到 `IoType::call_service` / `IoType::call_external`。
 pub struct PhysicsServiceRouter(evorule_plugin_kit::NativeServiceRouter);
 
 impl PhysicsServiceRouter {
@@ -64,7 +64,7 @@ impl PhysicsServiceRouter {
         ))
     }
 
-    /// 部署期启用子集构造(UV-030 插件清单化;三拒绝语义与错误文案见 plugin-kit,逐字节不变)。
+    /// 部署期启用子集构造。
     pub fn with_enabled(fallback: Arc<dyn IoHandler>, enabled: &[&str]) -> Result<Self, String> {
         evorule_plugin_kit::NativeServiceRouter::with_enabled(NATIVE_SERVICES, fallback, enabled)
             .map(Self)
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_native_service_table_matches_declaration_file() -> Result<(), String> {
-        // 同步守卫(UV-029 声明文件化泛化):本插件声明文件 official_native_services.json 为 SSOT。
+        // 同步守卫:本插件声明文件 official_native_services.json 为 SSOT。
         // 本表(name/sensitive/description)与文件三字段+顺序全量比对——
         // 新增服务 = 改文件 + 本表追加 make 项,漂移即失败(不静默)。
         let raw = include_str!("../official_native_services.json");
@@ -238,7 +238,7 @@ mod tests {
         Ok(())
     }
 
-    // ===== UV-030 插件清单化:部署期启用子集 =====
+    // ===== 插件清单化:部署期启用子集 =====
 
     struct ErrHandler;
     #[async_trait]

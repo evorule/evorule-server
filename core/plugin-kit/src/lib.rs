@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 进程内原生插件机制公共件(插件 NativeService 抽象上提,UV-037 闭环后兑现
+//! 进程内原生插件机制公共件(插件 NativeService 抽象上提,闭环后兑现
 //! `plugins/indicator-services/src/lib.rs` 的跨插件抽象评估注记)。
 //!
 //! # 来源与等价性承诺(诚实声明)
@@ -14,7 +14,7 @@
 //!   `service_name` 解析、浮点字符串化等业务约定亦留各插件。
 //!
 //! # 使用方式(插件侧)
-//! - 插件导出 `&'static [NativeServiceDef]` 声明表(SSOT 模式同 UV-025/029/030):
+//! - 插件导出 `&'static [NativeServiceDef]` 声明表(SSOT 模式同 ):
 //!   新增原生能力 = 表追加一项 + 清单启用,宿主与插件机制零改动;
 //! - 插件以薄壳具名结构体委托本 crate 路由器(保持既有具名 API 与测试不变),
 //!   或直接使用 [`NativeServiceRouter`] / [`mount_router`]。
@@ -32,11 +32,11 @@ pub trait NativeService: Send + Sync {
     fn execute(&self, args: &JsonValue) -> IoResult;
 }
 
-/// 原生服务声明项(UV-025 声明式注册:新增原生能力 = 向插件声明表追加一项,
+/// 原生服务声明项(声明式注册:新增原生能力 = 向插件声明表追加一项,
 /// 路由器/能力对账/绑定核对零改动)。
 ///
 /// `name` 与治理侧服务目录种子对齐——共同事实源为各插件声明文件
-/// `official_native_services.json`(UV-029,SSOT),双侧守卫锁定漂移。
+/// `official_native_services.json`,双侧守卫锁定漂移。
 pub struct NativeServiceDef {
     /// 全局唯一服务名(`io_request` 的 `service_name`;跨插件唯一,治理侧聚合时锁定)
     pub name: &'static str,
@@ -50,11 +50,11 @@ pub struct NativeServiceDef {
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
 ///
-/// 挂载到 `IoType::call_service()` / `IoType::call_external()`。
+/// 挂载到 `IoType::call_service` / `IoType::call_external`。
 /// 声明表由调用方传入(`&'static [NativeServiceDef]`,各插件自持),
 /// 路由查找恒按声明序(与启用集传入顺序无关)。
 pub struct NativeServiceRouter {
-    /// 原生服务实例(UV-030:name+实例成对存放,支持部署期启用子集)
+    /// 原生服务实例
     instances: Vec<(&'static str, Arc<dyn NativeService>)>,
     /// 原生未命中时的 HTTP 回落（ServiceRegistryHandler，读 service_registry.json）
     fallback: Arc<dyn IoHandler>,
@@ -70,7 +70,7 @@ impl NativeServiceRouter {
         }
     }
 
-    /// 部署期启用子集构造(UV-030 插件清单化)。
+    /// 部署期启用子集构造。
     ///
     /// - `enabled` 为启用服务名集合（顺序无关,路由查找仍按声明表声明序）;
     /// - 未知名 / 重复名 / 空启用集 → fail-fast Err(含指引,不静默忽略);
@@ -146,7 +146,7 @@ impl IoHandler for NativeServiceRouter {
         let (service_name, args) = Self::split_params(params);
         let name = service_name.as_deref().unwrap_or("");
         // 声明表查找分发:新增原生服务 = 表加一项,此处零改动;
-        // UV-030:仅在本路由实例已启用的子集内查找(未启用 → 回落/如实报错)
+        // :仅在本路由实例已启用的子集内查找(未启用 → 回落/如实报错)
         match self.instances.iter().find(|(n, _)| *n == name) {
             Some((_, svc)) => svc.execute(&args),
             _ => self.fallback.execute(params).await,
@@ -160,7 +160,7 @@ impl IoHandler for NativeServiceRouter {
 /// - `None` = 全量启用(缺省,存量零迁移);
 /// - `Some(&[])` 之外的切片 = 子集启用(三拒绝校验同 [`NativeServiceRouter::with_enabled`])。
 ///
-/// `Some(空集)` 在清单语义中对应 `enabled=false`(不挂载,见 UV-030 清单解析),
+/// `Some(空集)` 在清单语义中对应 `enabled=false`(不挂载,见 清单解析),
 /// 不会走到本函数;此处仍以三拒绝口径如实报错,不静默转全启。
 pub fn mount_router(
     defs: &'static [NativeServiceDef],

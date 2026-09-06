@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 模板市场 API —— `/api/marketplace/templates` 端点族（UV-084 W4 / UV-064 实化；UV-087 补编辑）
+//! 模板市场 API —— `/api/marketplace/templates` 端点族
 //!
 //! P09_IMPORT_EXPORT_INFRA_DESIGN.md §7.1 定义的 P1 契约（console marketplace.ts
 //! 4 处 P1 注释预留的接线路径）：
@@ -9,7 +9,7 @@
 //! - `POST /api/marketplace/templates`            → multipart 上传（meta JSON + content）
 //! - `GET  /api/marketplace/templates/{id}/download` → 下载内容（递增计数）
 //! - `DELETE /api/marketplace/templates/{id}`     → 删除（连同内容）
-//! - `PATCH /api/marketplace/templates/{id}`      → 编辑（UV-087：meta 必填 + content 可选替换）
+//! - `PATCH /api/marketplace/templates/{id}`      → 编辑
 //!
 //! 存储与 rules_dir **物理隔离**（同 knowledge_dir 派生法：`{rules 父目录}/marketplace/`）——
 //! TCB 扫描 rules_dir，用户上传内容绝不可入规则加载路径。布局：
@@ -155,7 +155,7 @@ fn store_template(
     Ok(meta)
 }
 
-/// 编辑模板（UV-087）：meta 整体替换（必填字段校验同上传）+ content 可选替换。
+/// 编辑模板：meta 整体替换（必填字段校验同上传）+ content 可选替换。
 ///
 /// 服务端权威字段纪律（与 store_template 同口径）：
 /// - 保留原值不采信客户端：`id` / `source` / `download_url` / `download_count` / `created_at`
@@ -313,7 +313,7 @@ fn bump_download_count(marketplace_dir: &std::path::Path, id: &str) {
 
 /// 当前时间 ISO8601（无 chrono 依赖，UNIX 时间秒近似；created_at 仅排序/展示用）
 fn chrono_now_iso() -> String {
-    // 与 console `new Date().toISOString()` 可比较的 UTC 形态
+    // 与 console `new Date.toISOString` 可比较的 UTC 形态
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -433,7 +433,7 @@ async fn upload_template(
     ))
 }
 
-/// `PATCH /api/marketplace/templates/{id}` → 编辑模板（UV-087）
+/// `PATCH /api/marketplace/templates/{id}` → 编辑模板
 ///
 /// multipart：meta（JSON，必填，普通字段整体替换）+ content（可选，提供则替换并重算
 /// content_hash，缺省=保留原内容）。服务端权威字段（id/source/download_url/
@@ -781,7 +781,7 @@ mod tests {
         assert!(minute < 60, "分钟越界: {s}");
     }
 
-    // ---------- UV-087 编辑（PATCH）----------
+    // ---------- 编辑（PATCH）----------
 
     #[test]
     fn update_meta_and_content_roundtrip() {

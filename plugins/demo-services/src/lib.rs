@@ -58,7 +58,7 @@ pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 ///
 /// 薄壳具名路由器:机制(new / with_enabled 三拒绝 / 声明序查找 / 回落 / split_params)
 /// 已上提 `evorule-plugin-kit`(行为逐字节等价),本插件仅自持声明表并保持具名 API。
-/// 挂载到 `IoType::call_service()` / `IoType::call_external()`。
+/// 挂载到 `IoType::call_service` / `IoType::call_external`。
 pub struct DemoServiceRouter(evorule_plugin_kit::NativeServiceRouter);
 
 impl DemoServiceRouter {
@@ -71,7 +71,7 @@ impl DemoServiceRouter {
         ))
     }
 
-    /// 部署期启用子集构造（UV-030 插件清单化;三拒绝语义与错误文案见 plugin-kit,逐字节不变）。
+    /// 部署期启用子集构造。
     pub fn with_enabled(fallback: Arc<dyn IoHandler>, enabled: &[&str]) -> Result<Self, String> {
         evorule_plugin_kit::NativeServiceRouter::with_enabled(NATIVE_SERVICES, fallback, enabled)
             .map(Self)
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_native_service_table_matches_declaration_file() -> Result<(), String> {
-        // 同步守卫(UV-029 声明文件化):声明文件 official_native_services.json 为 SSOT。
+        // 同步守卫:声明文件 official_native_services.json 为 SSOT。
         // 本表(name/sensitive/description)与文件三字段+顺序全量比对——
         // 新增服务 = 改文件 + 本表追加 make 项,漂移即失败(不静默)。
         // 治理侧经同步脚本消费同一文件(嵌入副本),不再硬编码种子。
@@ -333,7 +333,7 @@ mod tests {
         Ok(())
     }
 
-    // ===== UV-030 插件清单化:部署期启用子集 =====
+    // ===== 插件清单化:部署期启用子集 =====
 
     struct ErrHandler;
     #[async_trait]

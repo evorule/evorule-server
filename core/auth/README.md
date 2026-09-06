@@ -25,8 +25,8 @@
 
 ## 安全特性
 
-- **恒定时间比较**（N1）：使用 `subtle::ConstantTimeEq` 防止时序攻击
-- **空 token 过滤**（N1）：`AuthConfig::new()` 过滤空字符串 token，防止 `ct_eq("", "")` 返回 true 的空 token 通过认证
+- **恒定时间比较**：使用 `subtle::ConstantTimeEq` 防止时序攻击
+- **空 token 过滤**：`AuthConfig::new` 过滤空字符串 token，防止 `ct_eq("", "")` 返回 true 的空 token 通过认证
 - **速率限制**：可配置的请求速率限制，防止暴力破解
 - **token 生成**：使用 `rand` crate 生成加密安全的随机 token
 

@@ -12,7 +12,7 @@
 //!   构造 DatasetBundle + BundleImporter 校验 → 原子落盘 rules_dir → 滚动 session 热重载
 //! - 紧急回滚 (用旧规则集快照 + 新版本号, 版本号只增不减)
 //!
-//! # 三级权限 (Q3 决策)
+//! # 三级权限 （决策）
 //! | 角色 | 提交 | 审批 | 回滚 |
 //! |------|------|------|------|
 //! | Doctor | ❌ | ❌ | ❌ |
@@ -348,7 +348,7 @@ impl PublishService {
     /// 执行发布 (发布链闭环 + 滚动 session 热重载)
     ///
     /// 获取全局发布锁 → 审计⑥ 批 B (C1+C5) 发布链闭环:
-    /// 1. 闸门一证据检查 (T0 决策: 未验证不得默认 Pass)
+    /// 1. 闸门一证据检查 （决策: 未验证不得默认 Pass）
     /// 2. 逐条 Schema 门禁 (与外部导入通道 import_bundle 第 7 项同级硬失败)
     /// 3. 构造规范 DatasetBundle + BundleImporter::validate (6 项硬校验)
     /// 4. 原子落盘 rules_dir (C5, 补 H4 缺失的写盘)
@@ -386,8 +386,8 @@ impl PublishService {
         let prod_state = self.db.get_production_state()?;
         let new_version = prod_state.ruleset_version + 1;
 
-        // 1. 闸门一证据检查 (T0 决策: 未跑真实沙箱验证的发布不得默认 Pass)
-        // UV-083: 升级为与 UV-080 B2(import 侧)同口径——存在性 + closed + 报告一致性,
+        // 1. 闸门一证据检查 （决策: 未跑真实沙箱验证的发布不得默认 Pass）
+        // : 升级为与 B2(import 侧)同口径——存在性 + closed + 报告一致性,
         // 一律 fail-closed。旧实现仅查会话存在性(is_some),FAIL 报告/未关闭沙盒均可
         // 过闸门,且 build_publish_bundle 的 verdict 硬编码 Pass——假 pass 证据落盘。
         let sandbox_verdict_pass = match item.test_report_sandbox_id {
@@ -668,7 +668,7 @@ fn build_publish_bundle(
         entries,
         data_dependencies: None,
         tests: BundleTests {
-            // UV-083: 证据如实携带——闸门一已验证沙盒 closed + 报告 failed==0,
+            // : 证据如实携带——闸门一已验证沙盒 closed + 报告 failed==0,
             // subset 携带 sandbox:<id> 可追溯标记(旧实现硬编码空 subset + Pass,
             // 属假证据形态;verdict 现为闸门一验证后的派生值,非无条件 Pass)
             subset: item
@@ -819,7 +819,7 @@ mod tests {
 
     /// 测试辅助: 创建已关闭 (closed) 的沙盒会话, 提供闸门一证据
     fn make_sandbox_evidence(db: &WorkspaceDb, ws_id: &str) -> i64 {
-        // UV-083: 闸门一升级后须 closed + PASS 报告文件——报告名加原子序号
+        // : 闸门一升级后须 closed + PASS 报告文件——报告名加原子序号
         // 防并行测试写同名文件互相覆盖;export_path basename 与报告文件名对应
         // (与 close_sandbox/generate_test_report 落盘口径一致)
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1303,7 +1303,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_requires_sandbox_evidence() {
-        // 审计⑥ 批 B C1: 闸门一证据检查 (T0 决策: 未验证不得默认 Pass) —
+        // 审计⑥ 批 B C1: 闸门一证据检查 （决策: 未验证不得默认 Pass） —
         // 未关联沙盒测试的发布必须被拒绝, 不落盘不生效, 队列保持 pending 可重试。
         let (publish_svc, db, rule_svc_handle, ws_id, _ops, tmp) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
@@ -1346,7 +1346,7 @@ mod tests {
         assert!(!tmp.path().join("rules/bundles").exists());
     }
 
-    /// UV-083 测试辅助: 创建已关闭沙盒, 可选写入指定内容的报告文件
+    /// 测试辅助: 创建已关闭沙盒, 可选写入指定内容的报告文件
     ///
     /// `report_json = None` → 不写报告文件 (模拟报告缺失);
     /// 报告名含进程 ID + 原子序号: 进程内序号防并行测试同名覆盖,
@@ -1373,7 +1373,7 @@ mod tests {
         sid
     }
 
-    /// UV-083 测试辅助: 携带指定沙盒证据提交发布并审批通过, 断言被闸门一拒绝
+    /// 测试辅助: 携带指定沙盒证据提交发布并审批通过, 断言被闸门一拒绝
     ///
     /// 同时断言 fail-closed 副作用: 队列保持 pending 可重试、版本不推进。
     async fn expect_gate_one_rejection(
@@ -1429,7 +1429,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_rejects_running_sandbox() {
-        // UV-083: 未关闭沙盒 (running, 测试未完成) 不得作为发布证据
+        // : 未关闭沙盒 (running, 测试未完成) 不得作为发布证据
         let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let sid = db
             .insert_sandbox_session(None, &ws_id, 100, None, 1, "head-1")
@@ -1447,7 +1447,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_rejects_fail_report() {
-        // UV-083: FAIL 报告 (有失败用例) 不得作为发布证据
+        // : FAIL 报告 (有失败用例) 不得作为发布证据
         let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let sid = make_closed_sandbox(
             &db,
@@ -1460,7 +1460,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_rejects_missing_report_file() {
-        // UV-083: 已关闭但报告文件缺失 (被清理/UV-072 修复前历史沙盒) → fail-closed 拒发布
+        // : 已关闭但报告文件缺失 (被清理/修复前历史沙盒) → fail-closed 拒发布
         let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let sid = make_closed_sandbox(&db, &ws_id, None);
         expect_gate_one_rejection(
@@ -1476,7 +1476,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_rejects_malformed_report() {
-        // UV-083: 报告损坏 (非法 JSON) / 结构异常 (缺 summary.failed 字段) → fail-closed 拒发布
+        // : 报告损坏 (非法 JSON) / 结构异常 (缺 summary.failed 字段) → fail-closed 拒发布
         let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let corrupted = make_closed_sandbox(&db, &ws_id, Some("not-a-json{{{"));
         expect_gate_one_rejection(
@@ -1502,7 +1502,7 @@ mod tests {
 
     #[test]
     fn test_build_publish_bundle_carries_sandbox_evidence() {
-        // UV-083: 发布 bundle 证据如实携带——tests.subset 含 sandbox:<id> 可追溯标记,
+        // : 发布 bundle 证据如实携带——tests.subset 含 sandbox:<id> 可追溯标记,
         // verdict 为闸门一验证后的派生 Pass (旧实现硬编码空 subset + 无条件 Pass, 属假证据形态)。
         // 注: 落盘的 bundle_manifest.json 为 BundleManifest 结构, 不含 tests 字段;
         // tests 证据在 DatasetBundle 内存形态中由 BundleImporter 校验链消费。

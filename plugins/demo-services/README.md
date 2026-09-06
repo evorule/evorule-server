@@ -83,13 +83,13 @@ use evorule_demo_services::DemoServiceRouter;
 use evorule_io_handlers::ServiceRegistryHandler;
 
 // 全量挂载：复合路由，原生优先，HTTP 回落
-let router = DemoServiceRouter::new(svc_handler.clone());
+let router = DemoServiceRouter::new(svc_handler.clone);
 
-// 子集挂载（UV-033 插件清单化）：仅启用清单声明的服务
-let router = DemoServiceRouter::with_enabled(svc_handler.clone(), &["config_persist"])?;
+// 子集挂载：仅启用清单声明的服务
+let router = DemoServiceRouter::with_enabled(svc_handler.clone, &["config_persist"])?;
 
 // 挂载到 IoDispatcher
-dispatcher.register(IoType::call_service(), router);
+dispatcher.register(IoType::call_service, router);
 ```
 
 ---

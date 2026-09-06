@@ -34,14 +34,14 @@
 
 ## 主要功能
 
-- `get_metrics_text()` — 获取 Prometheus 文本格式指标
+- `get_metrics_text` — 获取 Prometheus 文本格式指标
 - `get_session_metrics(session_id)` — 获取指定 session 的指标
-- `get_server_metrics()` — 获取服务级指标
-- `build_router()` — 构建 `/metrics` 端点路由
+- `get_server_metrics` — 获取服务级指标
+- `build_router` — 构建 `/metrics` 端点路由
 
 ## 安全特性
 
-- **指标基数防护**（N3）：`normalize_path_for_metrics` 把数字段归一化为 `{id}`，防止 Prometheus 基数爆炸
+- **指标基数防护**：`normalize_path_for_metrics` 把数字段归一化为 `{id}`，防止 Prometheus 基数爆炸
 - **/metrics 可选认证**（S2）：`--metrics-auth` / `EVORULE_METRICS_AUTH` CLI 参数控制是否需要认证，默认关闭（Prometheus scraper 通常不带 token）
 
 ## 相关文档

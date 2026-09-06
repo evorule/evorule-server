@@ -61,7 +61,7 @@ pub fn load_rules(dir: &Path) -> Result<Vec<Value>, String> {
     Ok(rules)
 }
 
-/// 递归收集 `.json` 文件路径（T3）：子目录展开，排除 `bundle_manifest.json`；
+/// 递归收集 `.json` 文件路径：子目录展开，排除 `bundle_manifest.json`；
 /// 跳过隐藏目录（`.` 前缀，T4：`.tmp/.bak/.stale` 等临时/备份目录不参与加载）。
 fn collect_json_files_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
