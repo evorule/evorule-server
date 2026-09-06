@@ -1,15 +1,19 @@
 # Release workflow for EvoRule Server
 #
 # 触发: 推送 v* tag
-# 产物: 双平台二进制 (GitHub Release 附件)
-#   - Linux   x86_64 (ubuntu-latest, 静态 musl)
-#   - Windows x86_64 (windows-latest)
+# 产物: 双平台零依赖分发包 (GitHub Release 附件 + gitee 主仓回传)
+#   - evorule-server-v{VER}-win64.zip    (server.exe + rule-serve.exe + web + rules + 启动脚本 + 中文说明)
+#   - evorule-server-v{VER}-linux64.tar.gz (同构 linux 包)
+#   - sha256-checks.txt
 #
 # 设计说明:
 # - 与 evorule 仓同构: gitee 是主仓/发布主入口, github 是镜像(承担双平台
 #   构建并经 Gitee OpenAPI 回传附件, 幂等创建 Release)
+# - 方案 A(UV-100): rule-serve.exe 来自 evorule-rule 独立发版 Release
+#   (RULE_SERVE_VERSION 锁定配套版本), web 静态与业务场景规则来自
+#   console-cloud 镜像仓(CONSOLE_CLOUD_REF)现场构建, 两仓解耦
 # - TLS 后端为 rustls(UV-100), musl 静态构建无系统 OpenSSL 依赖
-# - tag 格式: v0.4.1 等
+# - bat/说明模板在仓内 dist/ 目录(可审阅可版本化), 打包直拷
 name: Release
 
 on:
@@ -19,10 +23,15 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # 分发包内 rule-serve 二进制的配套版本(evorule-rule Release tag)。
+  # 升级时改这一处;发布前用 sha256-checks.txt 校验下载完整性。
+  RULE_SERVE_VERSION: v0.3.1
+  # web 静态 + 业务场景规则来源(console-cloud github 镜像 ref)
+  CONSOLE_CLOUD_REF: main
 
 jobs:
   # ==========================================================================
-  # 1. 双平台矩阵构建
+  # 1. 双平台矩阵构建 (server 二进制)
   # ==========================================================================
   build:
     name: build (${{ matrix.name }})
@@ -59,8 +68,10 @@ jobs:
       - name: 构建 server 二进制
         run: cargo build -p evorule-server --release --target ${{ matrix.target }} --bin evorule-server
 
+      # sanity check 不做输出重定向: windows runner 默认 pwsh 不认 >/dev/null,
+      # 且 --help 正常退出码为 0,输出到控制台无害(此处只为证明"编译过且能起")
       - name: binary sanity check (防"编译过但起不来"被当成成功)
-        run: target/${{ matrix.target }}/release/evorule-server${{ matrix.ext }} --help >/dev/null
+        run: target/${{ matrix.target }}/release/evorule-server${{ matrix.ext }} --help
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -69,79 +80,201 @@ jobs:
           path: target/${{ matrix.target }}/release/evorule-server${{ matrix.ext }}
 
   # ==========================================================================
-  # 2. 汇总发布 (GitHub Release)
+  # 2. 拉取配套资产 (方案 A 两仓解耦)
+  #    a) rule-serve 双平台二进制 ← evorule-rule Release(RULE_SERVE_VERSION)
+  #       用其 sha256-checks.txt 做完整性校验,再跑 --help sanity
+  #    b) web 静态产物 ← console-cloud 镜像仓 vite build
+  #    c) 业务场景规则 ← console-cloud assets/evorule-rules/
+  # ==========================================================================
+  fetch-assets:
+    name: fetch-bundle-assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载 rule-serve 双平台二进制 (evorule-rule ${{ env.RULE_SERVE_VERSION }})
+        run: |
+          mkdir -p rule-serve && cd rule-serve
+          BASE="https://github.com/evorule/evorule-rule/releases/download/${{ env.RULE_SERVE_VERSION }}"
+          curl --retry 3 --retry-delay 5 --retry-connrefused -fsSL \
+            -o sha256-checks.txt "${BASE}/sha256-checks.txt"
+          curl --retry 3 --retry-delay 5 --retry-connrefused -fsSL \
+            -o evorule-rule-serve-linux-x86_64 "${BASE}/evorule-rule-serve-linux-x86_64"
+          curl --retry 3 --retry-delay 5 --retry-connrefused -fsSL \
+            -o evorule-rule-serve-windows-x86_64.exe "${BASE}/evorule-rule-serve-windows-x86_64.exe"
+          # 完整性校验: 只取 rule-serve 两行做 sha256sum -c (cli 行无关本包)
+          grep -E 'evorule-rule-serve-(linux-x86_64|windows-x86_64\.exe)$' sha256-checks.txt | sha256sum -c -
+          chmod +x evorule-rule-serve-linux-x86_64
+
+      - name: rule-serve sanity check
+        run: ./rule-serve/evorule-rule-serve-linux-x86_64 --help
+
+      - name: 检出 console-cloud 镜像
+        run: |
+          git clone --depth 1 --branch ${{ env.CONSOLE_CLOUD_REF }} \
+            https://github.com/evorule/evorule-console-cloud.git console-cloud
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: console-cloud/package-lock.json
+
+      - name: 构建 web 静态产物 (adapter-static)
+        run: |
+          cd console-cloud
+          npm ci
+          npm run build
+          test -f build/index.html
+
+      - name: 归集资产到单一根 (避免 artifact 相对路径歧义)
+        run: |
+          set -e
+          mkdir -p assets-out/web assets-out/rules
+          cp rule-serve/evorule-rule-serve-linux-x86_64 assets-out/
+          cp rule-serve/evorule-rule-serve-windows-x86_64.exe assets-out/
+          cp -r console-cloud/build/* assets-out/web/
+          cp console-cloud/assets/evorule-rules/*.json assets-out/rules/
+          ls -laR assets-out | head -40
+
+      - name: 上传资产 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-assets
+          path: assets-out/
+
+  # ==========================================================================
+  # 3. 组装双平台零依赖分发包
+  #    win64: zip (含 start-evorule.bat)  linux64: tar.gz (含 start-evorule.sh)
+  #    包结构对齐体验版 v0.2.0 形态 + UV-044 更名(server_eval.json)
+  # ==========================================================================
+  bundle:
+    name: bundle
+    needs: [build, fetch-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 组装 win64 包
+        run: |
+          set -e
+          VER="${GITHUB_REF_NAME#v}"
+          PKG="evorule-server-${VER}-win64"
+          mkdir -p "${PKG}/resources"
+          cp artifacts/evorule-server-windows-x86_64/evorule-server.exe "${PKG}/"
+          cp artifacts/bundle-assets/evorule-rule-serve-windows-x86_64.exe "${PKG}/"
+          cp -r artifacts/bundle-assets/web "${PKG}/web"
+          mkdir -p "${PKG}/rules"
+          cp artifacts/bundle-assets/rules/*.json "${PKG}/rules/"
+          cp rules/10_role13_demo.json "${PKG}/rules/"
+          cp resources/server_eval.json "${PKG}/resources/"
+          cp service_registry.json "${PKG}/"
+          # bat 模板按 .gitattributes 钉 CRLF 检出,直拷即兼容记事本/cmd
+          cp dist/start-evorule.bat "${PKG}/"
+          cp dist/README-STARTUP.txt "${PKG}/"
+          # 包内完整性清单
+          cd "${PKG}"
+          sha256sum evorule-server.exe evorule-rule-serve-windows-x86_64.exe > sha256-checks.txt
+          cd ..
+          zip -qr "${PKG}.zip" "${PKG}"
+          ls -la "${PKG}.zip"
+
+      - name: 组装 linux64 包
+        run: |
+          set -e
+          VER="${GITHUB_REF_NAME#v}"
+          PKG="evorule-server-${VER}-linux64"
+          mkdir -p "${PKG}/resources"
+          cp artifacts/evorule-server-linux-x86_64/evorule-server "${PKG}/"
+          cp artifacts/bundle-assets/rule-serve/evorule-rule-serve-linux-x86_64 "${PKG}/"
+          chmod +x "${PKG}/evorule-server" "${PKG}/evorule-rule-serve"
+          cp -r artifacts/bundle-assets/build "${PKG}/web"
+          mkdir -p "${PKG}/rules"
+          cp artifacts/bundle-assets/*.json "${PKG}/rules/"
+          cp rules/10_role13_demo.json "${PKG}/rules/"
+          cp resources/server_eval.json "${PKG}/resources/"
+          cp service_registry.json "${PKG}/"
+          cp dist/start-evorule.sh "${PKG}/"
+          cp dist/README-STARTUP.txt "${PKG}/"
+          cd "${PKG}"
+          sha256sum evorule-server evorule-rule-serve > sha256-checks.txt
+          cd ..
+          tar -czf "${PKG}.tar.gz" "${PKG}"
+          ls -la "${PKG}.tar.gz"
+
+      # 汇总清单: 两个包文件自身的 sha256(供下载方校验包完整性)
+      - name: 生成包级 sha256 清单
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          cd .
+          sha256sum "evorule-server-${VER}-win64.zip" "evorule-server-${VER}-linux64.tar.gz" > sha256-checks.txt
+          cat sha256-checks.txt
+
+      - name: 上传分发包 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-packages
+          path: |
+            evorule-server-*-win64.zip
+            evorule-server-*-linux64.tar.gz
+            sha256-checks.txt
+
+  # ==========================================================================
+  # 4. GitHub Release
   # ==========================================================================
   release:
     name: release
-    needs: [build]
+    needs: [bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: 下载所有二进制
+      - name: 下载分发包
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          merge-multiple: true
+          name: dist-packages
+          path: release-assets
 
-      # merge-multiple=true 时 artifacts/ 内是构建产物本体(evorule-server / evorule-server.exe),
-      # 不是 artifact 名 —— 校验后重命名补平台后缀,发布资产名即平台名
-      - name: 校验产物并补平台后缀
-        run: |
-          ls -la artifacts/
-          test -f artifacts/evorule-server
-          test -f artifacts/evorule-server.exe
-          mv artifacts/evorule-server artifacts/evorule-server-linux-x86_64
-          mv artifacts/evorule-server.exe artifacts/evorule-server-windows-x86_64.exe
-          ls -la artifacts/
-
-      - name: 创建 Release 并附加二进制
+      - name: 创建 Release 并附加分发包
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/evorule-server-linux-x86_64
-            artifacts/evorule-server-windows-x86_64.exe
+            release-assets/evorule-server-*-win64.zip
+            release-assets/evorule-server-*-linux64.tar.gz
+            release-assets/sha256-checks.txt
+          body: |
+            EvoRule Server ${{ github.ref_name }} 零依赖分发包。
+
+            - `evorule-server-*-win64.zip` — Windows 10/11 64 位:解压后双击 start-evorule.bat
+            - `evorule-server-*-linux64.tar.gz` — Linux x86_64:解压后运行 start-evorule.sh
+            - `sha256-checks.txt` — 分发包完整性校验
+
+            无需 Node/Rust/数据库;中文说明见包内 README-STARTUP.txt。
+            rule-serve 治理服务二进制来自 [evorule-rule](${{ env.RULE_SERVE_VERSION }} 配套版本)。
           generate_release_notes: true
 
   # ==========================================================================
-  # 3. 双平台产物附加到 Gitee Release (gitee 是主仓/发布主入口)
-  #    与 evorule 仓同构: Gitee Go 云端 agent 对当前账号不可用(agents not
-  #    available,资源侧问题登记台账 UV-098),双平台二进制均由本侧构建并经
-  #    Gitee OpenAPI 附加到 gitee Release;agent 就绪后可切回原生构建
-  #    (脚本见 .workflow/release.yml)。
+  # 5. 分发包附加到 Gitee Release (gitee 是主仓/发布主入口)
+  #    与 evorule / evorule-rule 仓同构: Gitee Go 云端 agent 对当前账号
+  #    不可用(agents not available,登记台账 UV-098),产物由本侧构建并经
+  #    Gitee OpenAPI 附加;agent 就绪后可切回原生构建(.workflow/release.yml)。
   #    幂等: gitee release 不存在则创建,存在则复用。
   #    需在 github 仓库 Settings → Secrets and variables → Actions 配置 GITEE_TOKEN
   #    (Gitee 个人令牌,勾选 releases + projects 权限)
   # ==========================================================================
   attach-gitee:
     name: attach-all-to-gitee
-    needs: [build]
+    needs: [bundle]
     runs-on: ubuntu-latest
     steps:
-      - name: 下载 Linux 构建产物
+      - name: 下载分发包
         uses: actions/download-artifact@v4
         with:
-          name: evorule-server-linux-x86_64
-          path: gitee-assets/linux
-
-      - name: 下载 Windows 构建产物
-        uses: actions/download-artifact@v4
-        with:
-          name: evorule-server-windows-x86_64
-          path: gitee-assets/windows
-
-      - name: 补平台后缀并计算 sha256
-        run: |
-          mv gitee-assets/linux/evorule-server gitee-assets/evorule-server-linux-x86_64
-          mv gitee-assets/windows/evorule-server.exe gitee-assets/evorule-server-windows-x86_64.exe
-          cd gitee-assets
-          sha256sum evorule-server-linux-x86_64 evorule-server-windows-x86_64.exe > sha256-checks.txt
-          sha256sum evorule-server-linux-x86_64 > evorule-server-linux-x86_64.sha256
-          sha256sum evorule-server-windows-x86_64.exe > evorule-server-windows-x86_64.exe.sha256
-          cat sha256-checks.txt
-          ls -la
+          name: dist-packages
+          path: gitee-assets
 
       - name: 附加到 Gitee Release
         env:
@@ -164,7 +297,7 @@ jobs:
               "https://gitee.com/api/v5/repos/${REPO}/releases" \
               -H "Content-Type: application/json" \
               -H "Authorization: token ${GITEE_TOKEN}" \
-              -d "{\"tag_name\":\"${TAG}\",\"name\":\"EvoRule Server ${TAG}\",\"body\":\"EvoRule Server ${TAG} — 详见 CHANGELOG.md\",\"target_commitish\":\"main\"}" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"EvoRule Server ${TAG}\",\"body\":\"EvoRule Server ${TAG} 零依赖分发包 — 详见 CHANGELOG.md\",\"target_commitish\":\"main\"}" \
               || echo "")
             RELEASE_ID=$(echo "${RELEASE_RESP}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || echo "")
           fi
@@ -175,7 +308,7 @@ jobs:
           echo "gitee Release id: ${RELEASE_ID}"
 
           cd gitee-assets
-          for f in evorule-server-linux-x86_64 evorule-server-linux-x86_64.sha256 evorule-server-windows-x86_64.exe evorule-server-windows-x86_64.exe.sha256; do
+          for f in $(ls evorule-server-*-win64.zip evorule-server-*-linux64.tar.gz sha256-checks.txt); do
             echo "上传 ${f} ..."
             curl --retry 3 --retry-delay 5 --retry-connrefused -fsS -X POST \
               "https://gitee.com/api/v5/repos/${REPO}/releases/${RELEASE_ID}/attach_files" \

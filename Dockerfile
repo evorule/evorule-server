@@ -32,111 +32,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# ===== 第 1 层: 复制所有 Cargo.toml + Cargo.lock(利用层缓存) =====
-# workspace 顶层
-COPY Cargo.toml Cargo.lock ./
+# ===== 全量源码复制 =====
+# 旧版采用 dummy 源文件预编译技巧(manifest 层 + dummy src 预编译依赖层),
+# 存在三重缺陷,已废弃:
+#   1. `cargo build || true` 静默吞错(违反 fail-fast 原则,历史债务清剿红线);
+#   2. CI 每次全新 runner 无 docker 层缓存,预编译层每次全量白编,时长翻倍;
+#   3. dummy 与真实 features 漂移时预编译失败或 mtime 误判 fresh
+#      (touch 补丁即为此而生),脆弱难维护。
+# 现简化为 COPY . . 单次真实构建:CI 一次编译(~10-15min)在 job 限额内;
+# 本地开发依赖缓存由宿主 cargo target/ 增量承担,不依赖 docker 层缓存。
+COPY . .
 
-# evorule-server (主 bin)
-COPY evorule-server/Cargo.toml ./evorule-server/
-
-# core/* lib
-COPY core/auth/Cargo.toml ./core/auth/
-COPY core/debug_control/Cargo.toml ./core/debug_control/
-COPY core/hot_reload/Cargo.toml ./core/hot_reload/
-COPY core/io_handlers/Cargo.toml ./core/io_handlers/
-COPY core/metrics/Cargo.toml ./core/metrics/
-COPY core/rule_schema/Cargo.toml ./core/rule_schema/
-COPY core/rule_tools/Cargo.toml ./core/rule_tools/
-COPY core/semantic_invariants/Cargo.toml ./core/semantic_invariants/
-COPY core/time_machine/Cargo.toml ./core/time_machine/
-COPY core/workspace/Cargo.toml ./core/workspace/
-
-# plugins/* lib
-COPY plugins/demo-services/Cargo.toml ./plugins/demo-services/
-COPY plugins/physics-services/Cargo.toml ./plugins/physics-services/
-COPY plugins/indicator-services/Cargo.toml ./plugins/indicator-services/
-COPY core/plugin-kit/Cargo.toml ./core/plugin-kit/
-
-# ===== 第 2 层: 创建 dummy 源文件预编译依赖 =====
-# evorule-server (bin)
-RUN mkdir -p evorule-server/src && \
-    echo "fn main() {}" > evorule-server/src/main.rs
-
-# core/* lib
-RUN mkdir -p \
-        core/auth/src \
-        core/debug_control/src \
-        core/hot_reload/src \
-        core/io_handlers/src \
-        core/metrics/src \
-        core/rule_schema/src \
-        core/rule_tools/src \
-        core/semantic_invariants/src \
-        core/time_machine/src \
-        core/workspace/src \
-        core/plugin-kit/src \
-        plugins/demo-services/src \
-        plugins/physics-services/src \
-        plugins/indicator-services/src && \
-    for c in auth debug_control hot_reload io_handlers metrics rule_schema rule_tools semantic_invariants time_machine workspace plugin-kit; do \
-        echo "pub fn _dummy() {}" > core/$c/src/lib.rs; \
-    done && \
-    echo "pub fn _dummy() {}" > plugins/demo-services/src/lib.rs && \
-    echo "pub fn _dummy() {}" > plugins/physics-services/src/lib.rs && \
-    echo "pub fn _dummy() {}" > plugins/indicator-services/src/lib.rs
-
-# ===== 第 3 层: 预编译依赖(失败不阻断,因 dummy 与真实 features 可能不一致) =====
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
-    cargo build --release --bin evorule-server || true
-
-# ===== 第 4 层: 复制真实源码 =====
-# 先清掉 dummy 文件
-RUN rm -rf evorule-server/src \
-           core/auth/src \
-           core/debug_control/src \
-           core/hot_reload/src \
-           core/io_handlers/src \
-           core/metrics/src \
-           core/rule_schema/src \
-           core/rule_tools/src \
-           core/semantic_invariants/src \
-           core/time_machine/src \
-           core/workspace/src \
-           core/plugin-kit/src \
-           plugins/demo-services/src \
-           plugins/physics-services/src \
-           plugins/indicator-services/src
-
-# 复制真实源码
-COPY evorule-server/src/ ./evorule-server/src/
-COPY core/auth/src/ ./core/auth/src/
-COPY core/debug_control/src/ ./core/debug_control/src/
-COPY core/hot_reload/src/ ./core/hot_reload/src/
-COPY core/io_handlers/src/ ./core/io_handlers/src/
-COPY core/metrics/src/ ./core/metrics/src/
-COPY core/rule_schema/ ./core/rule_schema/
-COPY core/rule_tools/src/ ./core/rule_tools/src/
-COPY core/semantic_invariants/src/ ./core/semantic_invariants/src/
-COPY core/time_machine/src/ ./core/time_machine/src/
-COPY core/workspace/src/ ./core/workspace/src/
-COPY core/plugin-kit/src/ ./core/plugin-kit/src/
-COPY plugins/demo-services/src/ ./plugins/demo-services/src/
-COPY plugins/demo-services/official_native_services.json ./plugins/demo-services/official_native_services.json
-COPY plugins/physics-services/src/ ./plugins/physics-services/src/
-COPY plugins/physics-services/official_native_services.json ./plugins/physics-services/official_native_services.json
-COPY plugins/indicator-services/src/ ./plugins/indicator-services/src/
-COPY plugins/indicator-services/official_native_services.json ./plugins/indicator-services/official_native_services.json
-
-# ===== 第 5 层: 真实构建 =====
-# 注意: dummy 预编译(target cache mount 共享)会缓存本地 crate 的 dummy rlib,
-# 真实源码覆盖后 cargo 可能误判 fresh 复用旧产物(如 io_handlers 缺 ServiceMeta)。
-# 根因: docker COPY 保留源文件 mtime(早于 dummy 创建时间), cargo 据此误判未变化。
-# 修复: 构建前 touch 所有 .rs, 强制 cargo 重新编译本地 crate(依赖仍走缓存)。
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
-    find /build -name '*.rs' -exec touch {} + && \
-    cargo build --release --bin evorule-server && \
+RUN cargo build --release --bin evorule-server && \
     cp /build/target/release/evorule-server /usr/local/bin/evorule-server
 
 # ===== 阶段 2: 运行时 =====

@@ -7,3 +7,9 @@
 # 变更按需人工评估合入(UV-043 职责模型)。
 # UV-044:本仓文件更名为 server_eval.json,与核心仓宪法原则 core_eval.json 区分
 resources/server_eval.json text eol=lf
+
+# 分发包模板(UV-100):bat/说明面向 Windows 用户,钉 CRLF 记事本兼容;
+# sh 面向 Linux,钉 LF。CI 打包按检出内容直拷,不做二次转换。
+dist/start-evorule.bat text eol=crlf
+dist/README-STARTUP.txt text eol=crlf
+dist/start-evorule.sh text eol=lf

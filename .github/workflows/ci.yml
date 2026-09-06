@@ -159,9 +159,11 @@ jobs:
 
       - name: Smoke test (image can start)
         run: |
+          # 不覆盖 EVORULE_ADDR:必须绑容器内 0.0.0.0 端口映射才通
+          #(旧命令误设 127.0.0.1 → 容器内 loopback 拒外部连接 → smoke 确定性失败)
           docker run --rm -d -p 18080:18080 --name evorule-smoke \
-            -e EVORULE_ADDR=127.0.0.1:18080 \
             evorule-server:ci-${{ github.sha }}
-          sleep 5
-          curl -sf http://127.0.0.1:18080/api/health || (docker logs evorule-smoke; exit 1)
+          # retry-connrefused 覆盖"服务初始化未完成监听"窗口
+          curl -sf --retry 10 --retry-delay 2 --retry-connrefused \
+            http://127.0.0.1:18080/api/health || (docker logs evorule-smoke; exit 1)
           docker stop evorule-smoke || true
