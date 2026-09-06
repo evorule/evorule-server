@@ -325,6 +325,44 @@ def check_agent_identity_leak(docs: List[Path], root: Path) -> List[Tuple[Path, 
 
 
 # ---------------------------------------------------------------------------
+# R-内部编号零泄露（INC-001 双轨可追溯隔离）：L1 公开文档禁止出现内部任务编号系列
+# 基调：内部编号属于内部体系，公开面只写功能语义"翻译"，不写编号"引用"（增量零容忍）。
+# ---------------------------------------------------------------------------
+
+INTERNAL_ID_PATTERNS = [
+    re.compile(r'\bUV-\d+'),                        # 优化台账编号
+    re.compile(r'\bCR-\d+-\d+'),                    # 变更请求编号
+    re.compile(r'（[BTQNMW]\d+[a-z]?[）:：]'),      # 全角括号内编号（B3）/（T0：
+    re.compile(r'\([BTQNMW]\d+[a-z]?\)'),           # 半角括号纯编号 (T14)
+]
+
+
+def check_internal_ids(docs: List[Path], root: Path) -> List[Tuple[Path, int, str, str]]:
+    """返回 [(path, lineno, pattern, snippet)]
+    规则:
+      - 废弃文档(顶部 [已废弃] 横幅)跳过
+      - 审计/威胁模型文档跳过(版本绑定历史快照,与既有惯例一致)
+    """
+    violations: List[Tuple[Path, int, str, str]] = []
+    for doc in docs:
+        try:
+            lines = doc.read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if '[已废弃]' in '\n'.join(lines[:50]):
+            continue
+        if re.search(r'AUDIT|THREAT_MODEL', doc.name):
+            continue
+        for i, line in enumerate(lines, 1):
+            for pat in INTERNAL_ID_PATTERNS:
+                m = pat.search(line)
+                if m:
+                    violations.append((doc, i, pat.pattern, line.strip()))
+                    break
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # R-交叉引用完整性：L1 文档中的 md 链接（指向仓内非 http）必须存在
 # ---------------------------------------------------------------------------
 
@@ -471,6 +509,7 @@ def collect_all(root: Path, skip_git: bool) -> Dict[str, Any]:
         'l1_mentions_l2l3': [],
         'sibling_mention_l1': [],
         'agent_identity_leak_l1': [],
+        'internal_id_l1': [],
         'cross_ref_l1': [],
         'docs_index_exist': [],
     }
@@ -508,6 +547,12 @@ def collect_all(root: Path, skip_git: bool) -> Dict[str, Any]:
             'file': str(p.relative_to(root)),
             'line': ln, 'pattern': pat, 'snippet': snip,
         })
+    # R-内部编号零泄露（INC-001）
+    for (p, ln, pat, snip) in check_internal_ids(docs, root):
+        result['internal_id_l1'].append({
+            'file': str(p.relative_to(root)),
+            'line': ln, 'pattern': pat, 'snippet': snip,
+        })
     # 交叉引用
     for (p, ln, raw, tgt) in check_cross_refs(docs, root):
         result['cross_ref_l1'].append({
@@ -529,7 +574,7 @@ def any_violation(r: Dict[str, Any]) -> bool:
     if not gs.get('ok', True):
         return True
     for k in ('private_leak_l1', 'l1_mentions_l2l3', 'sibling_mention_l1',
-              'agent_identity_leak_l1', 'cross_ref_l1', 'docs_index_exist'):
+              'agent_identity_leak_l1', 'internal_id_l1', 'cross_ref_l1', 'docs_index_exist'):
         if r.get(k):
             return True
     return False
@@ -575,6 +620,13 @@ def print_human(r: Dict[str, Any]):
         print('✓ L1 公开文档未泄露 AI agent 身份(agent 产品概念除外)')
     else:
         for v in r['agent_identity_leak_l1']:
+            print(f"   ✗ {v['file']}:{v['line']}  pattern={v['pattern']}  {v['snippet']}", file=sys.stderr)
+
+    hr('R-内部编号零泄露（INC-001 双轨隔离）')
+    if not r['internal_id_l1']:
+        print('✓ L1 公开文档未出现内部任务编号(UV-/CR-/B/Q/T/N/M/W 括号系列)')
+    else:
+        for v in r['internal_id_l1']:
             print(f"   ✗ {v['file']}:{v['line']}  pattern={v['pattern']}  {v['snippet']}", file=sys.stderr)
 
     hr('L1 交叉引用完整性')

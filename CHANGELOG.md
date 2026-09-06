@@ -100,7 +100,7 @@
 - **测试夹具属地化** — `integration_test.rs` / `fault_recovery_test.rs` / `session_integration_test.rs` 不再跨仓读取 `evorule/evorule-tcb/core_eval.json`,统一改读本仓 `resources/core_eval.json`;机制层验证所需的 call_service 等指令规则以内联应用剧本形态附加(属地原则:运行宪法由消费方自持)
 - **自写 blake3 全部收口 evorule-hash crate** — 因果链 API 暴露锚口径统一
 - **CORS 默认行为** — 未配置 `--allowed-origins` 时默认放行本机 loopback Origin（localhost/127.0.0.1/[::1] 任意端口），生产部署请显式配置白名单
-- **build.rs 门禁状态机生命周期撇号判别修复（CR-20260830-001）** — char_lit_starts/skip_lifetime 判别分流消除 tests 模块剥离失效导致的门禁全量误报（与核心四仓同步）
+- **build.rs 门禁状态机生命周期撇号判别修复** — char_lit_starts/skip_lifetime 判别分流消除 tests 模块剥离失效导致的门禁全量误报（与核心四仓同步）
 - **`core/workspace` 补 `publish = false`** — 与其余 11 个 workspace 成员一致(依赖 path crate,保持闭包,不进 crates.io)
 - **README / NOTICE 许可证段落改双轨声明** — 指向新增双许可文件,明确代码(AGPL/双许可)、文档(CC-BY-4.0)、宪法(CC0-1.0)分层
 
