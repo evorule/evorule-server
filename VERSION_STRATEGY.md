@@ -25,7 +25,7 @@ MAJOR.MINOR.PATCH
 - **MINOR**: 新功能(新 HTTP 路由、新 lib、新 feature flag)
 - **PATCH**: bug 修复、性能优化、文档更新
 
-**预发布标签**:`v0.4.2-alpha.1` / `v0.4.2-beta.1`(发布前测试)
+**预发布标签**:`v0.5.0-alpha.1` / `v0.5.0-beta.1`(发布前测试)
 
 ---
 
@@ -50,7 +50,7 @@ evorule-governance = { version = "0.1.1", features = ["persistence"] }
 ```
 
 **升级流程**:
-1. 核心引擎先发新版(`v0.4.2` → crates.io)
+1. 核心引擎先发新版(`v0.5.0` → crates.io)
 2. 等 1 天(让 crates.io 索引更新)
 3. 本仓改 `Cargo.toml` 的 `version = "0.1.1"`
 4. 跑 `cargo test --workspace`,通过后 commit + tag
@@ -105,7 +105,7 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 | v0.x.0 → v1.0.0 | 3-6 个月 | API 锁定 + 安全审计 + 文档完善 |
 | v1.0.0 之后 | 6-8 周/版本 | 正式 release,严格 semver |
 
-**当前阶段**:v0.4.2
+**当前阶段**:v0.5.0
 
 ---
 
@@ -114,7 +114,7 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 - `vX.Y.Z` —— 正式发布
 - `vX.Y.Z-alpha.N` —— 内部测试
 - `vX.Y.Z-beta.N` —— 公开测试
-- 不用 `v0.4.2-rc.1` 这种(我们没 RC 阶段)
+- 不用 `v0.5.0-rc.1` 这种(我们没 RC 阶段)
 
 ---
 
