@@ -81,6 +81,9 @@ use utoipa::OpenApi;
         crate::api::server::validate_rules_handler,
         crate::api::server::reload_rules_handler,
         crate::api::server::get_rules,
+        // rules 命中统计组
+        crate::api::server::hit_stats_handler,
+        crate::api::server::hit_stats_rule_handler,
         // bundles 组（快照包导入 / T4 激活报告）
         crate::api::bundles::import_bundle_handler,
         crate::api::bundles::import_bundle_dry_run_handler,
@@ -344,6 +347,8 @@ mod tests {
             "/api/sessions/{id}/audit/auto_verify",
             "/api/rules/reload",
             "/api/rules",
+            "/api/rules/hit-stats",
+            "/api/rules/hit-stats/{rule_key}",
             "/api/bundles/import",
             "/api/bundles/import/dry-run",
             "/api/bundles/active",

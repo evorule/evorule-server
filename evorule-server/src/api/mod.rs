@@ -11,6 +11,7 @@
 
 pub mod audit_archive;
 pub mod bundles;
+pub mod hit_stats;
 pub mod knowledge;
 pub mod marketplace;
 pub mod openapi;

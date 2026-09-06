@@ -282,6 +282,10 @@ pub struct SessionApi {
     /// 审计档案：wal_dir 下历史会话 WAL 的只读重建缓存。
     /// 与活跃会话 API 物理隔离（独立 /api/audit-archive 前缀），全程无 WAL 写路径。
     archive_cache: Arc<std::sync::Mutex<audit_archive::ArchiveCache>>,
+
+    /// 规则命中统计聚合器：消费各会话/单反应器的 TransitionTrace，
+    /// 按 规则集版本×来源×下标 聚合；查询面 /api/rules/hit-stats 与 Prometheus 指标。
+    hit_stats: Arc<crate::api::hit_stats::HitStatsAggregator>,
 }
 
 impl SessionApi {
@@ -402,6 +406,13 @@ impl SessionApi {
     ) -> Self {
         let ce_cloned = core_eval.clone();
 
+        // 初始 layout（来源标签暂全记 "core_eval"，生产路径由 main.rs
+        // 经 `with_hit_stats` 注入含 rules_dir 文件级溯源的权威 layout；reload 后自动换版）
+        let initial_layout = crate::api::hit_stats::RulesetLayout::from_rules(
+            &ce_cloned,
+            vec!["core_eval".to_string(); ce_cloned.len()],
+        );
+
         let sessions = Arc::new(Mutex::new(
             session::SessionManager::with_limits_and_wal_and_auto_verify(
                 core_eval,
@@ -482,7 +493,44 @@ impl SessionApi {
             archive_cache: Arc::new(std::sync::Mutex::new(audit_archive::ArchiveCache::new(
                 wal_dir,
             ))),
+
+            // 命中统计聚合器（初始 layout 见构造器开头）
+            hit_stats: Arc::new(crate::api::hit_stats::HitStatsAggregator::new(
+                initial_layout,
+            )),
         }
+    }
+
+    /// 注入规则命中统计聚合器（builder 模式）
+    ///
+    /// 生产路径注入注册了 Prometheus registry 的聚合器（main.rs 构造），
+    /// 并注入含 rules_dir 文件级溯源的权威初始 layout。
+    pub fn with_hit_stats(
+        mut self,
+        hit_stats: Arc<crate::api::hit_stats::HitStatsAggregator>,
+    ) -> Self {
+        self.hit_stats = hit_stats;
+        self
+    }
+
+    /// 为指定会话 spawn hit-stats 事件记录任务
+    ///
+    /// 订阅会话 reactor 的 event 通道，消费 TransitionTrace 归因事实进聚合器。
+    /// 会话结束（通道关闭）任务自动退出。
+    fn spawn_hit_stats_recorder(&self, session_id: u64) {
+        let agg = self.hit_stats.clone();
+        let sessions = self.sessions.clone();
+        tokio::spawn(async move {
+            let rx = {
+                let sessions = sessions.lock().await;
+                sessions
+                    .get_session(session_id)
+                    .map(|s| s.event_tx.subscribe())
+            };
+            if let Some(rx) = rx {
+                crate::api::hit_stats::run_recorder(rx, (*agg).clone()).await;
+            }
+        });
     }
 
     /// 注入 I/O 分发器（builder 模式）
@@ -737,8 +785,8 @@ impl SessionApi {
     /// - `Err(String)`：读取/解析失败（失败时旧规则保持不变）
     ///
     pub async fn reload_from_disk(&self) -> Result<(usize, usize), String> {
-        let new_transforms =
-            Self::load_merged_transforms_from_fs(&self.core_eval_path, &self.rules_dir)?;
+        let (new_transforms, new_layout) =
+            Self::load_merged_with_layout(&self.core_eval_path, &self.rules_dir)?;
 
         let new_len = new_transforms.len();
 
@@ -770,6 +818,9 @@ impl SessionApi {
             *w = Arc::new(new_transforms);
         }
 
+        // 3. hit-stats 聚合器换版（新计数进新版本桶，旧版本切片保留）
+        self.hit_stats.adopt_layout(new_layout);
+
         tracing::info!(
             old_len = old_len_cache,
             new_len,
@@ -785,11 +836,33 @@ impl SessionApi {
 
         rules_dir: &std::path::Path,
     ) -> Result<Vec<JsonValue>, String> {
-        let mut tcb = Self::load_core_eval_transforms(core_eval_path)?;
+        Self::load_merged_with_layout(core_eval_path, rules_dir).map(|(rules, _)| rules)
+    }
 
-        tcb.extend(Self::load_rules_dir_transforms(rules_dir));
+    /// 合并加载并产出规则集 layout（单一权威装载点）
+    ///
+    /// 与 [`Self::load_merged_transforms_from_fs`] 同一次读取产出两件事：
+    /// 合并规则列表（引擎输入）+ [`RulesetLayout`]（下标→来源/指令类型解析 +
+    /// 规则集版本哈希）。避免双份装载逻辑漂移——hit-stats 的下标解析正确性
+    /// 依赖"layout 与引擎合并顺序一致"这一不变式。
+    pub fn load_merged_with_layout(
+        core_eval_path: &std::path::Path,
 
-        Ok(tcb)
+        rules_dir: &std::path::Path,
+    ) -> Result<(Vec<JsonValue>, crate::api::hit_stats::RulesetLayout), String> {
+        let mut rules = Self::load_core_eval_transforms(core_eval_path)?;
+
+        let mut sources = vec!["core_eval".to_string(); rules.len()];
+
+        let (extra, extra_sources) = Self::load_rules_dir_with_sources(rules_dir);
+
+        rules.extend(extra);
+
+        sources.extend(extra_sources);
+
+        let layout = crate::api::hit_stats::RulesetLayout::from_rules(&rules, sources);
+
+        Ok((rules, layout))
     }
 
     /// 加载 TCB 宪法 core_eval.json 的 transform 数组。
@@ -889,9 +962,15 @@ impl SessionApi {
     ///
     /// warn 日志并跳过该文件（fail-soft，保证热重载可用性）。
     ///
-    fn load_rules_dir_transforms(rules_dir: &std::path::Path) -> Vec<JsonValue> {
+    /// 带 per-rule 来源标签装载 rules_dir
+    ///
+    /// 来源标签 = 相对 rules_dir 的文件路径（`/` 归一化），与合并列表等长。
+    /// 目录不存在返回空（纯宪法规则集）。
+    fn load_rules_dir_with_sources(
+        rules_dir: &std::path::Path,
+    ) -> (Vec<JsonValue>, Vec<String>) {
         if !rules_dir.exists() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
 
         let mut paths: Vec<std::path::PathBuf> = Vec::new();
@@ -903,13 +982,22 @@ impl SessionApi {
 
         let mut out: Vec<JsonValue> = Vec::new();
 
+        let mut sources: Vec<String> = Vec::new();
+
         for p in paths {
             if let Some(extra) = Self::parse_rule_file(&p) {
+                // 来源标签 = 相对 rules_dir 的路径（/ 归一化，URL/标签安全）
+                let rel = p
+                    .strip_prefix(rules_dir)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                sources.extend(std::iter::repeat(rel).take(extra.len()));
                 out.extend(extra);
             }
         }
 
-        out
+        (out, sources)
     }
 
     /// 递归收集规则 .json 文件路径：跳过子目录的 manifest，其余按目录展开
@@ -1533,6 +1621,9 @@ impl evorule_workspace::SessionOps for SessionApi {
             Ok(id) => {
                 // 为新 session 的 reactor spawn IoSubscriber (复用 create_session handler 逻辑)
 
+                // spawn hit-stats 归因记录任务
+                self.spawn_hit_stats_recorder(id);
+
                 if let Some(ref dispatcher) = self.dispatcher {
                     let sessions = self.sessions.lock().await;
 
@@ -1581,7 +1672,12 @@ impl evorule_workspace::SessionOps for SessionApi {
         };
 
         match result {
-            Ok(id) => Ok(id),
+            Ok(id) => {
+                // spawn hit-stats 归因记录任务
+                self.spawn_hit_stats_recorder(id);
+
+                Ok(id)
+            }
 
             Err(evorule_governance::session::SessionError::NotFound { id }) => Err(
                 evorule_workspace::WorkspaceError::not_found("session", id.to_string()),
@@ -2965,6 +3061,39 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
 
             obj.insert("message".into(), serde_json::Value::String(message.clone()));
         }
+
+        // 规则命中归因轨迹（记录性事实，不推进版本；
+        // rule_hits 与该次转换的合并规则列表等长，按执行顺序）
+        Fact::TransitionTrace {
+            id,
+            cause,
+            rule_hits,
+        } => {
+            obj.insert(
+                "type".into(),
+                serde_json::Value::String("TransitionTrace".into()),
+            );
+
+            obj.insert("id".into(), serde_json::Value::Number(id.0.into()));
+
+            obj.insert("cause".into(), serde_json::Value::Number(cause.0.into()));
+
+            obj.insert(
+                "rule_hits".into(),
+                serde_json::Value::Array(
+                    rule_hits
+                        .iter()
+                        .map(|h| {
+                            serde_json::json!({
+                                "index": h.index,
+                                "instr_type": h.instr_type,
+                                "hit": h.hit,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
     }
 
     serde_json::Value::Object(obj).to_string()
@@ -3548,6 +3677,9 @@ async fn create_session(
         Ok(id) => {
             metrics.inc_sessions(); // 会话数 +1
 
+            // spawn hit-stats 归因记录任务
+            api.spawn_hit_stats_recorder(id);
+
             // 为新 session 的 reactor spawn IoSubscriber
 
             // 没有 IoSubscriber 时，session 的 IoRequest 会 60s 超时
@@ -3885,6 +4017,9 @@ async fn create_session_from_parent(
         Ok(id) => {
             metrics.inc_sessions();
 
+            // spawn hit-stats 归因记录任务
+            api.spawn_hit_stats_recorder(id);
+
             Ok(Json(serde_json::json!({
 
                 "session_id": id,
@@ -3986,6 +4121,9 @@ async fn create_session_fork(
     match result {
         Ok(id) => {
             metrics.inc_sessions();
+
+            // spawn hit-stats 归因记录任务
+            api.spawn_hit_stats_recorder(id);
 
             Ok(Json(serde_json::json!({
 
@@ -5377,6 +5515,28 @@ pub enum FactEnvelope {
         /// 错误描述
         message: String,
     },
+    /// 规则命中归因轨迹（记录性事实；不推进版本号）
+    TransitionTrace {
+        /// Fact ID
+        id: u64,
+        /// 版本号（FactsLog 中的版本；trace 不推进版本，与同次收敛事实相同）
+        version: u64,
+        /// 同次转换的 StateTransition / Error(ignored) 事实 ID
+        cause: u64,
+        /// 各规则命中归因（与合并规则列表等长，按执行顺序）
+        rule_hits: Vec<TraceHitDto>,
+    },
+}
+
+/// 单条规则命中归因
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TraceHitDto {
+    /// 规则在合并规则列表中的下标
+    pub index: u64,
+    /// 规则顶层指令类型（如 "branch"、"set"）
+    pub instr_type: String,
+    /// 是否结构命中
+    pub hit: bool,
 }
 
 /// 将 core `Fact` 转换为强类型信封（附加版本号，字段与 `Fact::to_json` 对齐）
@@ -5435,6 +5595,24 @@ fn fact_to_envelope(fact: &Fact, version: u64) -> FactEnvelope {
             id: id.0,
             version,
             message: message.clone(),
+        },
+        // 规则命中归因轨迹
+        Fact::TransitionTrace {
+            id,
+            cause,
+            rule_hits,
+        } => FactEnvelope::TransitionTrace {
+            id: id.0,
+            version,
+            cause: cause.0,
+            rule_hits: rule_hits
+                .iter()
+                .map(|h| TraceHitDto {
+                    index: h.index,
+                    instr_type: h.instr_type.clone(),
+                    hit: h.hit,
+                })
+                .collect(),
         },
     }
 }
@@ -7123,6 +7301,12 @@ impl GovernanceServer {
             // 未认证用户不应触发（DoS 风险 + rules_dir 可写时注入恶意规则）。
             .route("/api/rules/reload", post(reload_rules_handler))
             .route("/api/rules", get(get_rules))
+            // 规则命中统计查询面（聚合器数据，需认证）
+            .route("/api/rules/hit-stats", get(hit_stats_handler))
+            .route(
+                "/api/rules/hit-stats/{rule_key}",
+                get(hit_stats_rule_handler),
+            )
             // T2: 快照包导入端点（36 号 集成契约）——写 rules_dir 的运营操作，走受保护路由
             .route(
                 "/api/bundles/import",
@@ -7442,6 +7626,78 @@ async fn get_rules(State(api): State<SessionApi>) -> Result<Json<RulesResponse>,
 
         core_eval: core_eval_serde,
     }))
+}
+
+// =============================================================================
+// 规则命中统计查询面（/api/rules/hit-stats）
+// =============================================================================
+
+/// hit-stats 查询参数
+#[derive(Debug, serde::Deserialize, ToSchema)]
+pub struct HitStatsQuery {
+    /// 规则集版本（缺省 = 当前版本）
+    pub version: Option<String>,
+    /// 清单筛选：`all`（默认，命中清单+零命中清单）| `hit`（仅命中）| `zero`（仅零命中/死规则候选）
+    pub filter: Option<String>,
+}
+
+/// GET /api/rules/hit-stats —— 规则命中统计清单
+///
+/// 返回指定（或当前）规则集版本下各规则的结构命中计数与零命中清单。
+/// 数据源为 server 侧聚合器（消费引擎 TransitionTrace 归因事实），进程内存
+/// 存储：重启后计数归零，全量权威在审计链 WAL（可后续派生重建）。
+#[utoipa::path(
+    get,
+    path = "/api/rules/hit-stats",
+    tag = "rules",
+    params(
+        ("version" = String, Query, description = "规则集版本（缺省=当前版本）"),
+        ("filter" = String, Query, description = "筛选：all（默认）| hit | zero")
+    ),
+    responses(
+        (status = 200, description = "规则命中统计清单", body = crate::api::hit_stats::HitStatsResponse),
+        (status = 400, description = "filter 参数非法"),
+        (status = 404, description = "指定版本不存在（超出保留窗口）")
+    )
+)]
+pub async fn hit_stats_handler(
+    State(api): State<SessionApi>,
+    Query(params): Query<HitStatsQuery>,
+) -> Result<Json<crate::api::hit_stats::HitStatsResponse>, StatusCode> {
+    let filter = crate::api::hit_stats::HitFilter::parse(params.filter.as_deref())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    api.hit_stats
+        .snapshot(params.version.as_deref(), filter)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+/// GET /api/rules/hit-stats/{rule_key} —— 单规则跨版本命中切片
+///
+/// `rule_key` 形如 `{index}@{source}`：`index` 为合并规则列表下标，`source`
+/// 为 URL 编码的来源标签（宪法规则集为 `core_eval`，业务规则为 rules_dir
+/// 相对文件路径）。例：`0@core_eval`、
+/// `2@rules%2Fbundles%2Fexpenses.json`。
+#[utoipa::path(
+    get,
+    path = "/api/rules/hit-stats/{rule_key}",
+    tag = "rules",
+    params(("rule_key" = String, Path, description = "规则键：{index}@{source}")),
+    responses(
+        (status = 200, description = "单规则跨版本命中切片（无统计的已知版本计 0）", body = crate::api::hit_stats::RuleSeriesResponse),
+        (status = 400, description = "rule_key 格式非法（需 {index}@{source}）")
+    )
+)]
+pub async fn hit_stats_rule_handler(
+    State(api): State<SessionApi>,
+    Path(rule_key): Path<String>,
+) -> Result<Json<crate::api::hit_stats::RuleSeriesResponse>, StatusCode> {
+    let (index_raw, source) = rule_key.split_once('@').ok_or(StatusCode::BAD_REQUEST)?;
+    let index: u64 = index_raw.trim().parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+    if source.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Json(api.hit_stats.rule_series(source, index)))
 }
 
 /// 执行侧已绑定服务信息（C5：`GET /api/services` 能力对账）

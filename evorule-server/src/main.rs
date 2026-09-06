@@ -56,7 +56,6 @@ use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
-use evorule_server::metrics_impl::shared_prometheus_metrics;
 use tracing::{error, info, warn};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
@@ -1088,12 +1087,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. 加载规则（TCB 宪法 core_eval.json + rules_dir 业务规则合并）
     // cfg.rules_dir 之前被解析但从未消费，现在真正合并。
-    // 复用 SessionApi::load_merged_transforms_from_fs（统一一份合并逻辑，避免双份代码漂移）
+    // 复用 SessionApi::load_merged_with_layout（统一一份合并逻辑，避免双份代码漂移）；
+    // 同时产出规则集 layout（下标→来源/指令类型解析 + 版本哈希），供命中统计聚合器使用。
     let step_start = Instant::now();
-    let core_eval = SessionApi::load_merged_transforms_from_fs(&cfg.core_eval, &cfg.rules_dir)?;
+    let (core_eval, ruleset_layout) =
+        SessionApi::load_merged_with_layout(&cfg.core_eval, &cfg.rules_dir)?;
     info!(
-        "已加载 {} 条 transform 规则（耗时: {}ms）",
+        "已加载 {} 条 transform 规则（ruleset_version={}，耗时: {}ms）",
         core_eval.len(),
+        ruleset_layout.ruleset_version,
         step_start.elapsed().as_millis()
     );
 
@@ -1245,8 +1247,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4.5 创建 Prometheus 指标共享引用 + IoSubscriber（带 metrics）
     // Prometheus 指标通过 IoSubscriber 注入到 I/O 调度路径
-    let metrics: SharedMetrics =
-        shared_prometheus_metrics().map_err(|e| format!("Prometheus 指标初始化失败: {}", e))?;
+    // hit-stats 聚合器注册自身指标（evorule_rule_hits_total /
+    // evorule_rules_zero_hits）到同一 registry；注册失败 fail-fast 拒绝启动。
+    let prometheus_metrics = evorule_server::metrics_impl::shared_prometheus_metrics()
+        .map_err(|e| format!("Prometheus 指标初始化失败: {}", e))?;
+    let metrics: SharedMetrics = prometheus_metrics.clone();
+    let hit_stats = Arc::new(
+        evorule_server::api::hit_stats::HitStatsAggregator::with_registry(
+            ruleset_layout,
+            prometheus_metrics.registry(),
+        )
+        .map_err(|e| format!("hit-stats 指标注册失败: {}", e))?,
+    );
     let subscriber = IoSubscriber::new(dispatcher)
         .with_metrics(metrics.clone())
         .with_skip(Arc::new(evorule_server::api::server::is_llm_audit_request));
@@ -1289,6 +1301,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // 单反应器路径的命中归因记录（与多会话共享同一聚合器）
+    let hit_rx = event_tx.subscribe();
+    let hit_agg = hit_stats.clone();
+    tokio::spawn(async move {
+        evorule_server::api::hit_stats::run_recorder(hit_rx, (*hit_agg).clone()).await;
+    });
+
     // 7. spawn 日志清理任务（定期清理过期和超大日志文件）
     if let Some(log_file) = &cfg.log_file {
         if let Some(log_dir) = log_file.parent() {
@@ -1324,6 +1343,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dispatcher(session_dispatcher)
     .with_bound_services(registry_names)
+    // 注入命中统计聚合器（注册了 Prometheus 指标、含权威初始 layout）
+    .with_hit_stats(hit_stats)
     // C5/C6：注册表显式绑定元数据（version/description）注入，供 /api/services 能力对账
     // 与 sensitive 服务绑定核对使用（02 方案服务契约三层闭环 层3）。
     .with_registry_services(registry.service_metadata());

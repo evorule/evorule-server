@@ -89,6 +89,11 @@ pub struct PrometheusMetrics {
 }
 
 impl PrometheusMetrics {
+    /// 只读访问内部 registry（hit-stats 聚合器自行注册指标用）
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
     /// 创建并注册所有指标
     // 多指标注册 + 错误处理, 拆函数需共享 registry 状态。详见 GATE_REFERENCE.md §六(豁免索引)
     #[allow(clippy::too_many_lines)]
