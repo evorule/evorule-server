@@ -29,7 +29,7 @@
 
 ### 🔄 变更
 
-- **分发包流水线方案 A 全链落地(UV-100,发版链)** — `release.yml` 从"本仓单平台构建"升级为"全自动双平台零依赖分发包":双平台构建(linux musl / windows msvc)→ 拉取配套资产(evorule-rule Release 下载 rule-serve 双平台二进制,`RULE_SERVE_VERSION=v0.3.1` 锚定 + sha256 完整性校验 + sanity;console-cloud 镜像现场构建 web 静态)→ 组装 win64 zip / linux64 tar.gz(含 rules + server_eval.json + 启动脚本 + 中文说明,包内 sha256 清单)→ GitHub Release + gitee 主仓幂等回传。两仓解耦,server 发版不再依赖本仓内 rule 源码
+- **分发包流水线方案 A 全链落地(UV-100,发版链)** — 发版流水线从"本仓单平台构建"升级为"全自动双平台零依赖分发包":双平台构建(linux musl / windows msvc)→ 拉取配套资产(rule-serve 双平台可执行文件来自 evorule-rule 发布物,`RULE_SERVE_VERSION` 锚定 rule-serve 0.3.1 + sha256 完整性校验 + sanity;web 静态由 console-cloud 现场构建)→ 组装 win64 zip / linux64 tar.gz(含 rules + server_eval.json + 启动脚本 + 中文说明,包内 sha256 清单)→ GitHub Release 与 gitee Release 同步发布。两仓解耦,server 发版不再需要携带 rule 源码
 - **sanity check 不做输出重定向(UV-100 发版链)** — windows runner 默认 pwsh 不认 `>/dev/null`;`--help` 正常退出码 0,输出到控制台无害(防"编译过但起不来"被静默当成成功的显式校验保留)
 
 ### 🐛 修复
