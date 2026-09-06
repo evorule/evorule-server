@@ -25,6 +25,21 @@
 
 ---
 
+## [0.5.0] - 2026-09-06
+
+### 🔒 安全
+
+- **接口认证显式豁免(⚠️ Breaking Change:回环默认行为变更)** — 绑定 loopback 且未设置 `--auth-token` 时,必须显式声明 `--insecure-serve`(或环境变量 `EVORULE_INSECURE_SERVE=1`)才允许无认证启动;未声明即拒绝启动(exit 1)并给三选一自诊断指引(设 token / 显式豁免 / 配置文件)。旧 0.4.x 回环+无 token 隐式进入无认证模式(仅 info 日志),漏配时全部受保护端点(含市场写接口、bundle 导入等)静默匿名可达。校验逻辑提取为 `validate_auth_policy` 并以四象限+边界单测覆盖(token 有无 × 地址回环性 × 显式声明,含 IPv6 回环与地址解析失败安全侧失败)。非 loopback 绑定维持既有 fail-closed 硬拒,本参数不提供豁免口子
+- **市场接口注释与实际认证语义对齐** — `/api/marketplace` 路由组注释更正:认证启用时经统一中间件 Bearer 双通道校验(静态 token / 平台会话 hash);显式豁免模式下含写接口在内匿名可达,不构成"受保护"承诺
+
+### 🧪 测试
+
+- 启动认证策略四象限单测:token 优先放行(地址无关)/ 非 loopback 无 token fail-closed(--insecure-serve 无豁免口子)/ loopback 未显式声明 fail-fast(含 IPv6 回环)/ loopback 显式声明放行;地址解析失败按安全侧失败拒绝
+
+### 📚 文档
+
+- 体验包启动脚本(bat/sh)补 `--insecure-serve` 显式声明与 SECURITY NOTE 扩展;README-STARTUP 补主服务认证说明(无认证模式语义、正式部署切换 --auth-token 指引)
+
 ## [0.4.2] - 2026-09-06
 
 ### 🔄 变更

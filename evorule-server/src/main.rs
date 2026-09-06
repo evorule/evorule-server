@@ -224,10 +224,20 @@ struct Cli {
     ///
     /// 与 `EVORULE_AUTH_TOKEN` 独立的 env/CLI（凭据分层）：user token 禁止写
     /// `shared.*.stable.llm.*` / `stable.system.*` 受保护域，service token 可写。
-    /// 仅在认证启用（设置了 auth_token）时生效；认证禁用（loopback 开发模式）
+    /// 仅在认证启用（设置了 auth_token）时生效；认证禁用（显式豁免模式）
     /// 时服务 token 被忽略且不注入身份。
     #[arg(long, env = "EVORULE_SERVICE_TOKEN")]
     service_token: Option<String>,
+
+    /// 显式豁免认证（仅限 loopback 绑定）：绑定回环地址且未设置 auth_token 时，
+    /// 必须显式声明本参数才允许无认证启动（显式豁免安全策略，UV-116）。
+    ///
+    /// 旧实现（0.4.x）：loopback + 无 token 隐式进入无认证模式（仅 info 日志），
+    /// 漏配时全部受保护端点静默匿名可达（市场写接口实测匿名可写坐实风险）。
+    /// 修复后：未声明即拒绝启动（fail-fast）+ 三选一自诊断指引。
+    /// 非 loopback 绑定不受本参数影响（fail-closed 硬拒不放松）。
+    #[arg(long, env = "EVORULE_INSECURE_SERVE")]
+    insecure_serve: bool,
 
     /// 宪法文件路径（server_eval.json，不可热重载；更名）
     #[arg(long, env = "EVORULE_CORE_EVAL")]
@@ -430,6 +440,8 @@ struct ResolvedConfig {
     web_dir: Option<PathBuf>,
     /// :演示登录入口开关（默认 true；CLI > env > file > default）
     demo_auth: bool,
+    /// 显式豁免认证（UV-116）：loopback+无 token 时须显式声明才允许无认证启动
+    insecure_serve: bool,
     /// Workspace 元数据库路径 (P10, 默认 ./data/workspace.db)
     workspace_db: PathBuf,
 }
@@ -450,6 +462,7 @@ impl ResolvedConfig {
                 .or(file.server.addr)
                 .unwrap_or_else(|| "0.0.0.0:18080".to_string()),
             auth_token: cli.auth_token.or(file.auth.token),
+            insecure_serve: cli.insecure_serve,
             service_token: cli.service_token.or(file.auth.service_token),
             core_eval: cli
                 .core_eval
@@ -911,6 +924,51 @@ async fn log_cleanup_task(log_dir: PathBuf, max_days: u32, max_size_mb: u64) {
     }
 }
 
+/// 启动期认证策略校验（UV-116 显式豁免安全策略）。
+///
+/// 无 auth_token 时按"绑定地址 × 显式声明"二维判定：
+/// - 非 loopback（含地址解析失败，安全侧失败）：一律 fail-closed 拒绝
+///   （既有 B3 策略，本参数不提供豁免口子）；
+/// - loopback：须显式声明 `--insecure-serve` 才允许无认证启动，否则 fail-fast
+///   并给三选一自诊断指引（旧 0.4.x 在此隐式放行，漏配即静默裸奔——市场写
+///   接口匿名可写实测坐实）。
+///
+/// 返回 Err(拒绝原因) = 拒绝启动；Ok(()) = 按当前配置放行。
+fn validate_auth_policy(
+    auth_token: Option<&str>,
+    insecure_serve: bool,
+    addr: &str,
+) -> Result<(), String> {
+    if auth_token.is_some() {
+        return Ok(());
+    }
+    // H3 修复（保留）：SocketAddr 解析判断 loopback，覆盖 IPv4/IPv6；
+    // 解析失败视为非 loopback（安全侧失败）。
+    let is_non_loopback = addr
+        .parse::<std::net::SocketAddr>()
+        .map(|socket| !socket.ip().is_loopback())
+        .unwrap_or(true);
+    if is_non_loopback {
+        return Err(format!(
+            "🛑 拒绝启动：服务器绑定到非 loopback 地址 {addr} 但未设置认证 token。\n\
+             这是 fail-closed 安全策略，不受 --insecure-serve 影响。\n\
+             生产环境必须设置 --auth-token 或 EVORULE_AUTH_TOKEN 环境变量；\n\
+             本地开发请绑定到 loopback 地址（如 --addr 127.0.0.1:18080）。"
+        ));
+    }
+    if !insecure_serve {
+        return Err(
+            "🛑 拒绝启动：绑定 loopback 且未设置认证 token，且未显式声明 --insecure-serve。\n\
+             无认证模式必须显式声明（显式豁免安全策略，防漏配静默裸奔）。三选一：\n  \
+             1) 设置 --auth-token <token> 或 EVORULE_AUTH_TOKEN（正式部署，推荐）；\n  \
+             2) 显式加 --insecure-serve 声明接受无认证（仅限本机回环开发/体验包演示场景）；\n  \
+             3) 配置文件 auth.token 提供凭据。"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 // 主函数集成所有子命令 + 启动流程, 268 行是当前架构必要。详见 GATE_REFERENCE.md §六(豁免索引)
 #[allow(clippy::too_many_lines)]
@@ -942,6 +1000,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("规则目录: {}", cfg.rules_dir.display());
     info!("数据库: {}", cfg.db_path.display());
     info!("Memory 目录: {}", cfg.memory_dir.display());
+    // 1.5 认证策略早期预检（UV-116）：在 WAL/DB/会话等资源初始化之前 fail-fast，
+    // 拒绝发生在毫秒级、零资源占用；step 8 构建处保留同一校验（防御纵深，届时必过）。
+    if let Err(reason) =
+        validate_auth_policy(cfg.auth_token.as_deref(), cfg.insecure_serve, &cfg.addr)
+    {
+        eprintln!("{reason}");
+        error!("{reason}");
+        std::process::exit(1);
+    }
     info!("日志格式: {}", cfg.log_format);
     info!(
         "日志输出: {}",
@@ -958,9 +1025,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "认证: {}",
         if cfg.auth_token.is_some() {
-            "已启用"
+            "已启用（Bearer 静态 token + 平台会话双通道）"
         } else {
-            "已禁用（开发模式）"
+            "已禁用（显式豁免 --insecure-serve，仅限本机回环）"
         }
     );
 
@@ -1441,34 +1508,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => {
             if cfg.service_token.is_some() {
-                warn!("EVORULE_SERVICE_TOKEN 已设置但认证未启用（无 auth_token，loopback 开发模式），服务 token 被忽略");
-            }
-            // B3 修复（fail-closed 安全策略）：无 token + 非 loopback 地址时拒绝启动。
-            //
-            // 旧实现仅 warn 不阻止启动，公网部署时若用户漏看日志，所有 session
-            // 数据完全暴露。改为 fail-closed：非 loopback + 无 token → error + exit(1)。
-            //
-            // loopback 地址（127.0.0.1 / [::1]）仍允许无认证启动，供本地开发使用。
-            // 地址解析失败也视为非 loopback（安全侧失败）。
-            //
-            // H3 修复（保留）：用 std::net::SocketAddr 解析判断 loopback，
-            // 覆盖 IPv4/IPv6 所有情况（旧代码用字符串前缀匹配漏掉 IPv6）。
-            let is_non_loopback = cfg
-                .addr
-                .parse::<std::net::SocketAddr>()
-                .map(|socket| !socket.ip().is_loopback())
-                .unwrap_or(true); // 解析失败视为非 loopback(安全侧失败)
-            if is_non_loopback {
-                error!(
-                    "🛑 拒绝启动：服务器绑定到非 loopback 地址 {} 但未设置认证 token。\n\
-                     这是 fail-closed 安全策略（修复）。\n\
-                     生产环境必须设置 --auth-token 或 EVORULE_AUTH_TOKEN 环境变量。\n\
-                     本地开发请绑定到 loopback 地址（如 --addr 127.0.0.1:18080）。",
-                    cfg.addr
+                warn!(
+                    "EVORULE_SERVICE_TOKEN 已设置但认证未启用（无 auth_token），服务 token 被忽略"
                 );
+            }
+            // UV-116 修复（显式豁免安全策略）：无 token 时按"绑定地址 × 显式声明"
+            // 二维校验——非 loopback 一律 fail-closed（既有 B3 不放松）；loopback
+            // 须显式 --insecure-serve 声明豁免，否则拒绝启动（旧实现隐式放行）。
+            // 逻辑提取为 validate_auth_policy 以便四象限单测覆盖。
+            if let Err(reason) =
+                validate_auth_policy(cfg.auth_token.as_deref(), cfg.insecure_serve, &cfg.addr)
+            {
+                // 双通道输出:eprintln! 直写 stderr 不依赖 tracing subscriber
+                // 状态(实测 error! 在本路径可能静默丢失→exit 1 无任何解释,
+                // 违反"fail-fast+可自诊断"标准);error! 走日志文件留痕。
+                eprintln!("{reason}");
+                error!("{reason}");
                 std::process::exit(1);
-            } else {
-                info!("🔓 认证已禁用 (loopback 模式,仅适合开发)");
+            }
+            if cfg.auth_token.is_none() {
+                info!("🔓 无认证模式（显式豁免 --insecure-serve，仅限本机回环：所有受保护端点匿名可达，勿绑定非回环地址）");
             }
             AuthConfig::disabled()
         }
@@ -1772,6 +1831,49 @@ mod tests {
     use super::*;
     use clap::Parser;
     use tempfile::TempDir;
+
+    // ============ 启动期认证策略校验（UV-116 四象限 + 边界） ============
+
+    #[test]
+    fn auth_policy_token_provided_always_ok() {
+        // 有 token：loopback / 非 loopback 均放行（token 优先，地址无关）
+        assert!(validate_auth_policy(Some("secret"), false, "127.0.0.1:18080").is_ok());
+        assert!(validate_auth_policy(Some("secret"), false, "0.0.0.0:18080").is_ok());
+    }
+
+    #[test]
+    fn auth_policy_non_loopback_no_token_fails_closed() {
+        // 既有 B3 策略：非 loopback + 无 token 一律拒绝，--insecure-serve 不提供豁免口子
+        let err = validate_auth_policy(None, false, "0.0.0.0:18080").unwrap_err();
+        assert!(err.contains("非 loopback"));
+        let err = validate_auth_policy(None, true, "192.168.1.10:18080").unwrap_err();
+        assert!(err.contains("fail-closed"));
+    }
+
+    #[test]
+    fn auth_policy_loopback_without_declaration_fails_fast() {
+        // UV-116 核心行为：loopback + 无 token + 未显式声明 → 拒绝启动（旧实现隐式放行）
+        let err = validate_auth_policy(None, false, "127.0.0.1:18080").unwrap_err();
+        assert!(err.contains("--insecure-serve"));
+        assert!(err.contains("三选一")); // 自诊断指引完整性
+                                         // IPv6 回环同样适用
+        let err = validate_auth_policy(None, false, "[::1]:18080").unwrap_err();
+        assert!(err.contains("--insecure-serve"));
+    }
+
+    #[test]
+    fn auth_policy_loopback_explicit_declaration_ok() {
+        // loopback + 无 token + 显式声明 → 放行（显式降级，诚实语义）
+        assert!(validate_auth_policy(None, true, "127.0.0.1:18080").is_ok());
+        assert!(validate_auth_policy(None, true, "[::1]:18080").is_ok());
+    }
+
+    #[test]
+    fn auth_policy_unparseable_addr_treated_as_non_loopback() {
+        // 地址解析失败 → 安全侧失败（视为非 loopback）→ 拒绝
+        let err = validate_auth_policy(None, true, "not-an-addr").unwrap_err();
+        assert!(err.contains("fail-closed") || err.contains("非 loopback"));
+    }
 
     // ============ /插件清单加载测试 ============
 

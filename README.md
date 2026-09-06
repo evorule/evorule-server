@@ -16,9 +16,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.4.2-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.5.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.4.2-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.5.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -35,9 +35,11 @@
 
 ---
 
-> ## ✅ v0.4.2 — 稳定发布 (2026-09-06)
+> ## ✅ v0.5.0 — 稳定发布 (2026-09-06)
 >
 > 本仓库**独立 release**,不绑其他仓的发布节奏;版本号只与本仓 [CHANGELOG](CHANGELOG.md) 对应。
+>
+> **0.5.0**:🔒 接口认证显式豁免(⚠️ 回环默认行为变更)——loopback + 无 token 时必须显式声明 `--insecure-serve`(或 `EVORULE_INSECURE_SERVE=1`)才允许无认证启动,否则拒绝启动并给三选一自诊断指引;旧 0.4.x 的回环隐式无认证豁免取消(非 loopback 的 fail-closed 硬拒不放松)。体验包启动脚本/文档同步显式声明,行为不变、声明显式化。市场接口注释与实际认证语义对齐。
 >
 > **0.4.2**:发版链补全——方案 A 全自动分发包流水线(双平台零依赖包:server.exe + rule-serve 0.3.1 配套 + web 静态 + 规则 + 启动脚本 + 中文说明,gitee/github 双 Release 自动回传);Docker 镜像 smoke 修复(fail-closed 安全防护与镜像默认配置冲突定因,smoke 显式传临时 token)。server 运行时行为零变更。
 >
@@ -457,8 +459,8 @@ evorule-server --plugins ./plugin_manifest.json
 ### Docker(推荐)
 
 ```bash
-docker build -t evorule-server:0.4.2 .
-docker run -d --name evorule-server -p 18080:18080 -v $(pwd)/data:/data -e EVORULE_AUTH_TOKEN=<your-secret> evorule-server:0.4.2
+docker build -t evorule-server:0.5.0 .
+docker run -d --name evorule-server -p 18080:18080 -v $(pwd)/data:/data -e EVORULE_AUTH_TOKEN=<your-secret> evorule-server:0.5.0
 ```
 
 ### 二进制
