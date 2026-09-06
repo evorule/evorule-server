@@ -91,6 +91,7 @@
 │  ├── api/pdf_export    服务端 PDF 导出(中文字体子集嵌入)       │
 │  ├── api/knowledge     执行侧数据资产只读通道                  │
 │  ├── api/openapi       OpenAPI 单一真相源                      │
+│  ├── api/hit_stats     规则命中统计聚合器 + 查询面             │
 │  ├── core/io_handlers     DB / HTTP / Memory 适配器           │
 │  ├── core/auth            Bearer + 速率限制 + 恒定时间比较    │
 │  ├── core/metrics         Prometheus 指标(7 个核心 metric)    │
@@ -291,7 +292,38 @@ curl -X POST http://localhost:18080/api/platform/auth/login \
 | `/api/bundles/imports` | GET | 导入历史 |
 | `/api/rules` | GET | 当前规则集 |
 | `/api/rules/validate` | POST | 规则校验 |
-| `/api/rules/reload` | POST | 热重载 |
+| /api/rules/reload | POST | 热重载 |
+| `/api/rules/hit-stats` | GET | 规则命中统计清单(`filter=all/hit/zero`,`version` 指定版本) |
+| `/api/rules/hit-stats/{rule_key}` | GET | 单规则跨版本命中切片(`rule_key`=`{index}@{source}`) |
+ule_key={index}@{source}) |
+
+### 规则命中统计
+
+运行时命中信号:聚合器消费审计链的命中归因事实,按 `规则集版本 × 来源 × 规则下标` 聚合。
+
+- 存储为进程内存态,**重启后计数归零**;审计链 WAL 是全量权威源
+- 规则集内容或来源任一变化即产生新版本号,reload 后历史版本切片保留(上限 8 个)
+- **零命中清单**(`filter=zero`)即死规则候选——静默通过规则清剿的数据源
+
+Prometheus 指标(`/metrics`):
+
+| 指标 | 类型 | 标签 | 含义 |
+| --- | --- | --- | --- |
+| `evorule_rule_hits_total` | counter | `rule`(下标) / `source`(`core_eval` 或相对路径) / `version` | 规则结构命中次数(直接指令执行成功 / branch 所选分支存在且非空 / io_request 产生信号) |
+| `evorule_rules_zero_hits` | gauge | — | 当前版本零命中规则数 |
+
+示例 PromQL:
+
+```promql
+# 活跃规则命中速率(按来源)
+rate(evorule_rule_hits_total[5m])
+# 当前版本死规则数(零命中 gauge)
+evorule_rules_zero_hits
+```
+
+> 注:从未命中的规则在 `evorule_rule_hits_total` 中**没有时间序列**(counter 仅在命中时创建),完整死规则清单走查询端点 `filter=zero`。
+
+容量口径:审计链每命令 +1 条命中归因事实(记录性,不推进版本号),单条常态 <1KB;WAL 轮换沿用 `--wal-max-size-mb`。
 
 ### 数据与服务
 
