@@ -171,5 +171,15 @@ jobs:
             evorule-server:ci-${{ github.sha }}
           # retry-connrefused 覆盖"服务初始化未完成监听"窗口
           curl -sf --retry 10 --retry-delay 2 --retry-connrefused \
-            http://127.0.0.1:18080/api/health || (docker logs evorule-smoke; exit 1)
+            http://127.0.0.1:18080/api/health || {
+            echo "=== SMOKE FAILED: container state ==="
+            docker ps -a --filter name=evorule-smoke
+            echo "=== SMOKE FAILED: port mapping ==="
+            docker port evorule-smoke || true
+            echo "=== SMOKE FAILED: curl verbose ==="
+            curl -v --max-time 5 http://127.0.0.1:18080/api/health || true
+            echo "=== SMOKE FAILED: container logs ==="
+            docker logs evorule-smoke || true
+            exit 1
+          }
           docker stop evorule-smoke || true
