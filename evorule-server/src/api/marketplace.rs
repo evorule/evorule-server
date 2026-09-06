@@ -36,7 +36,13 @@ use crate::api::server::{AppState, MarketplaceDir};
 /// 单模板上传内容上限（模板为规则/数据集/表单定义，10MB 已远超需要；防滥用）
 const MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024;
 
-/// 构造 `/api/marketplace` 的路由（挂入受认证保护路由组）
+/// 构造 `/api/marketplace` 的路由（挂入统一认证中间件覆盖的路由组）
+///
+/// 认证语义（注释修正，与实际行为对齐）：
+/// - 认证启用（设置了 auth_token）：本组端点经统一中间件校验 Bearer
+///   （静态 token / 平台会话 hash 双通道），匿名请求 401；
+/// - 显式豁免（`--insecure-serve`）：无认证，本组端点（含写接口）匿名可达——
+///   仅限本机回环体验/开发场景，启动日志显式声明，不构成"受保护"承诺。
 pub fn marketplace_router() -> Router<AppState> {
     Router::new()
         .route(
