@@ -101,7 +101,7 @@ evorule-server/
 ├── rules/                 # 规则包目录
 │   └── bundles/           # 规则包示例 (bundle-ds-yuanze-01-v3 等)
 ├── resources/
-│   └── server_eval.json   # EvoRule 宪法·server 业务规则集(CC0-1.0;v0.4.1 前旧名 core_eval.json)
+│   └── server_eval.json   # EvoRule 宪法·server 业务规则集(CC0-1.0;0.4.1 前旧名 core_eval.json)
 └── docs/                  # 开发文档
 ```
 

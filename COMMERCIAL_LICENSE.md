@@ -183,7 +183,7 @@ EvoRule Project(以下简称"许可方")授予您(以下简称"被许可方")**�
 - EvoRule Server 的所有**知识产权**归 EvoRule Project 所有
 - 本协议**不转让**任何知识产权,仅授予使用权
 - 被许可方对**基于 EvoRule Server 开发的衍生作品**拥有所有权
-- `docs/` 下文档采用 CC-BY-4.0,`resources/server_eval.json`(宪法·server 业务规则集,v0.4.1 前旧名 `core_eval.json`)采用 CC0 1.0,不在本协议范围内
+- `docs/` 下文档采用 CC-BY-4.0,`resources/server_eval.json`(宪法·server 业务规则集,0.4.1 前旧名 `core_eval.json`)采用 CC0 1.0,不在本协议范围内
 
 ---
 

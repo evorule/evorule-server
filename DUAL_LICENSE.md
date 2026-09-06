@@ -110,7 +110,7 @@ EvoRule Server 的**代码 / 文档 / 宪法**采用**不同协议**:
 |---|---|---|
 | EvoRule Server 代码(Rust) | AGPL-3.0-or-later / 商业许可 | copyleft,保护当前实现 |
 | **`docs/` 下文档** | **CC-BY-4.0** | 文档自由引用,须署名 |
-| **`resources/server_eval.json`(宪法·server 业务规则集)** | **CC0 1.0 公共领域** | 解释器规范(基础最小集源自核心仓,独立演进;v0.4.1 前旧名 `core_eval.json`),任何人都可自由实现 |
+| **`resources/server_eval.json`(宪法·server 业务规则集)** | **CC0 1.0 公共领域** | 解释器规范(基础最小集源自核心仓,独立演进;0.4.1 前旧名 `core_eval.json`) |
 
 ---
 

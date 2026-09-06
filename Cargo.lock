@@ -496,7 +496,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-auth"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "chrono",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-debug-control"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "clap",
@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-demo-services"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "evorule-io-handlers",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-hot-reload"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "clap",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-indicator-services"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-io-handlers"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "evorule-reactor",
@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-metrics"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "clap",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-physics-services"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "blake3",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-plugin-kit"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "evorule-reactor",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "base64",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule-schema"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "jsonschema",
  "once_cell",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule-tools"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "clap",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-semantic-invariants"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "clap",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-server"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "argon2",
  "async-stream",
@@ -1133,7 +1133,7 @@ checksum = "94695dc52d2f6578d7006706125bcdb44181560664b806f4c92508be061c95ba"
 
 [[package]]
 name = "evorule-time-machine"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "clap",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-workspace"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -2618,7 +2618,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4264,7 +4264,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

@@ -16,9 +16,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.4.1-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.4.2-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.4.1-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.4.2-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -35,9 +35,11 @@
 
 ---
 
-> ## ✅ v0.4.1 — 稳定发布 (2026-09-02)
+> ## ✅ v0.4.2 — 稳定发布 (2026-09-06)
 >
 > 本仓库**独立 release**,不绑其他仓的发布节奏;版本号只与本仓 [CHANGELOG](CHANGELOG.md) 对应。
+>
+> **0.4.2**:发版链补全(UV-100)——方案 A 全自动分发包流水线(双平台零依赖包:server.exe + rule-serve 0.3.1 配套 + web 静态 + 规则 + 启动脚本 + 中文说明,gitee/github 双 Release 自动回传);Docker 镜像 smoke 修复(B3 fail-closed 防护与镜像默认配置冲突定因,smoke 显式传临时 token)。server 运行时行为零变更。
 >
 > **0.4.1**:核心引擎依赖 0.4.0 → 0.4.1;`GET /api/sessions/:id/diff` 版本不可达由"空 diff"改为 `400 BAD_REQUEST`;宪法文件更名 `core_eval.json` → `server_eval.json`(启动期旧名兼容检测,不静默回退)。
 >
@@ -455,8 +457,8 @@ evorule-server --plugins ./plugin_manifest.json
 ### Docker(推荐)
 
 ```bash
-docker build -t evorule-server:0.4.1 .
-docker run -d --name evorule-server -p 18080:18080 -v $(pwd)/data:/data evorule-server:0.4.1
+docker build -t evorule-server:0.4.2 .
+docker run -d --name evorule-server -p 18080:18080 -v $(pwd)/data:/data -e EVORULE_AUTH_TOKEN=<your-secret> evorule-server:0.4.2
 ```
 
 ### 二进制
@@ -528,7 +530,7 @@ EvoRule Server 采用 **AGPL + 商业授权双轨许可**(与[核心仓](https:/
 
 - **代码(本仓所有 Rust 代码)**:AGPL-3.0-or-later(见 [LICENSE](LICENSE));闭源商业/白标场景提供**商业许可**,详见 [DUAL_LICENSE.md](DUAL_LICENSE.md) / [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md);政府/学术界/非营利可申请免费豁免,见 [FREE_COMMERCIAL_LICENSE.md](FREE_COMMERCIAL_LICENSE.md)
 - **文档**:`docs/` 下文档以 CC-BY-4.0 发布,本 README 顶部为 AGPL 头部
-- **宪法(server 业务规则集)**:`resources/server_eval.json` 采用 CC0 1.0 公共领域(v0.4.1 前旧名 `core_eval.json`;与核心仓宪法原则职责不同、独立演进)
+- **宪法(server 业务规则集)**:`resources/server_eval.json` 采用 CC0 1.0 公共领域(0.4.1 前旧名 `core_eval.json`;与核心仓宪法原则职责不同、独立演进)
 
 ---
 
