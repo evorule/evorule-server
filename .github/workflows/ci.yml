@@ -159,9 +159,15 @@ jobs:
 
       - name: Smoke test (image can start)
         run: |
-          # 不覆盖 EVORULE_ADDR:必须绑容器内 0.0.0.0 端口映射才通
-          #(旧命令误设 127.0.0.1 → 容器内 loopback 拒外部连接 → smoke 确定性失败)
-          docker run --rm -d -p 18080:18080 --name evorule-smoke \
+          # B3 fail-closed(UV-100 定因):绑定 0.0.0.0 且无 auth token 时 server
+          # 按 main.rs 拒绝启动(exit 1)——这是安全防护正确工作,镜像默认配置
+          # 违反了它。smoke 属"镜像能起"验证,显式传临时 token 通过防护;
+          # /api/health 在 public_routes 无需认证,探测不必携带。
+          # 不覆盖 EVORULE_ADDR(镜像默认 0.0.0.0:18080,容器内绑 loopback
+          # 会使端口映射确定性失败)。
+          docker run --rm -d -p 18080:18080 \
+            -e EVORULE_AUTH_TOKEN=smoke-only-token \
+            --name evorule-smoke \
             evorule-server:ci-${{ github.sha }}
           # retry-connrefused 覆盖"服务初始化未完成监听"窗口
           curl -sf --retry 10 --retry-delay 2 --retry-connrefused \

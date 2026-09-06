@@ -76,6 +76,11 @@ VOLUME ["/data"]
 EXPOSE 18080
 
 # 默认启动配置
+# ⚠️ B3 fail-closed:绑定 0.0.0.0 且未设 EVORULE_AUTH_TOKEN 时,server 将拒绝
+# 启动(exit 1,含自诊断指引)——生产部署必须传 token:
+#   docker run -p 18080:18080 -e EVORULE_AUTH_TOKEN=<your-secret> ...
+# 仅本地开发可改绑 loopback 免认证: -e EVORULE_ADDR=127.0.0.1:18080(容器内
+# loopback 无法端口映射,不适用于 docker run -p 场景)
 ENV EVORULE_ADDR=0.0.0.0:18080
 ENV EVORULE_CORE_EVAL=/etc/evorule/server_eval.json
 ENV EVORULE_DB_PATH=/data/evorule.db
