@@ -159,8 +159,8 @@ jobs:
 
       - name: Smoke test (image can start)
         run: |
-          # B3 fail-closed(UV-100 定因):绑定 0.0.0.0 且无 auth token 时 server
-          # 按 main.rs 拒绝启动(exit 1)——这是安全防护正确工作,镜像默认配置
+          # fail-closed 防护:绑定 0.0.0.0 且无 auth token 时 server
+          # 拒绝启动(exit 1)——这是安全防护正确工作,镜像默认配置
           # 违反了它。smoke 属"镜像能起"验证,显式传临时 token 通过防护;
           # /api/health 在 public_routes 无需认证,探测不必携带。
           # 不覆盖 EVORULE_ADDR(镜像默认 0.0.0.0:18080,容器内绑 loopback

@@ -62,7 +62,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制二进制
 COPY --from=builder /usr/local/bin/evorule-server /usr/local/bin/evorule-server
 
-# 复制 CC0 资源 (本仓自带 server_eval.json;UV-044 更名,旧名 core_eval.json)
+# 复制 CC0 资源 (本仓自带 server_eval.json;旧名 core_eval.json 保留兼容检测)
 COPY resources/server_eval.json /etc/evorule/server_eval.json
 
 # 创建非 root 用户(安全: 容器逃逸时不获得 root 权限)

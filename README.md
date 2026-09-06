@@ -39,7 +39,7 @@
 >
 > 本仓库**独立 release**,不绑其他仓的发布节奏;版本号只与本仓 [CHANGELOG](CHANGELOG.md) 对应。
 >
-> **0.4.2**:发版链补全(UV-100)——方案 A 全自动分发包流水线(双平台零依赖包:server.exe + rule-serve 0.3.1 配套 + web 静态 + 规则 + 启动脚本 + 中文说明,gitee/github 双 Release 自动回传);Docker 镜像 smoke 修复(B3 fail-closed 防护与镜像默认配置冲突定因,smoke 显式传临时 token)。server 运行时行为零变更。
+> **0.4.2**:发版链补全——方案 A 全自动分发包流水线(双平台零依赖包:server.exe + rule-serve 0.3.1 配套 + web 静态 + 规则 + 启动脚本 + 中文说明,gitee/github 双 Release 自动回传);Docker 镜像 smoke 修复(fail-closed 安全防护与镜像默认配置冲突定因,smoke 显式传临时 token)。server 运行时行为零变更。
 >
 > **0.4.1**:核心引擎依赖 0.4.0 → 0.4.1;`GET /api/sessions/:id/diff` 版本不可达由"空 diff"改为 `400 BAD_REQUEST`;宪法文件更名 `core_eval.json` → `server_eval.json`(启动期旧名兼容检测,不静默回退)。
 >

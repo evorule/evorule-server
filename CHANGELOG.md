@@ -29,12 +29,12 @@
 
 ### 🔄 变更
 
-- **分发包流水线方案 A 全链落地(UV-100,发版链)** — 发版流水线从"本仓单平台构建"升级为"全自动双平台零依赖分发包":双平台构建(linux musl / windows msvc)→ 拉取配套资产(rule-serve 双平台可执行文件来自 evorule-rule 发布物,`RULE_SERVE_VERSION` 锚定 rule-serve 0.3.1 + sha256 完整性校验 + sanity;web 静态由 console-cloud 现场构建)→ 组装 win64 zip / linux64 tar.gz(含 rules + server_eval.json + 启动脚本 + 中文说明,包内 sha256 清单)→ GitHub Release 与 gitee Release 同步发布。两仓解耦,server 发版不再需要携带 rule 源码
-- **sanity check 不做输出重定向(UV-100 发版链)** — windows runner 默认 pwsh 不认 `>/dev/null`;`--help` 正常退出码 0,输出到控制台无害(防"编译过但起不来"被静默当成成功的显式校验保留)
+- **分发包流水线方案 A 全链落地(发版链)** — 发版流水线从"本仓单平台构建"升级为"全自动双平台零依赖分发包":双平台构建(linux musl / windows msvc)→ 拉取配套资产(rule-serve 双平台可执行文件来自 evorule-rule 发布物,`RULE_SERVE_VERSION` 锚定 rule-serve 0.3.1 + sha256 完整性校验 + sanity;web 静态由 console-cloud 现场构建)→ 组装 win64 zip / linux64 tar.gz(含 rules + server_eval.json + 启动脚本 + 中文说明,包内 sha256 清单)→ GitHub Release 与 gitee Release 同步发布。两仓解耦,server 发版不再需要携带 rule 源码
+- **sanity check 不做输出重定向(发版链)** — windows runner 默认 pwsh 不认 `>/dev/null`;`--help` 正常退出码 0,输出到控制台无害(防"编译过但起不来"被静默当成成功的显式校验保留)
 
 ### 🐛 修复
 
-- **Docker 镜像 smoke test 定因修复(UV-100)** — 镜像默认 `EVORULE_ADDR=0.0.0.0:18080` 且无 `EVORULE_AUTH_TOKEN`,触发 main.rs B3 修复的 fail-closed 检查(非 loopback + 无 token 拒绝启动 exit 1),容器启动即退出,smoke 健康检查必败——**安全防护正确工作,是镜像默认配置违反了它**。smoke 显式传临时 token(`/api/health` 在 public_routes 无需认证);Dockerfile ENV 区补自诊断注释(生产必须传 token,容器场景 loopback 免认证不可用于 `-p` 端口映射)
+- **Docker 镜像 smoke test 定因修复** — 镜像默认 `EVORULE_ADDR=0.0.0.0:18080` 且无 `EVORULE_AUTH_TOKEN`,触发启动期 fail-closed 安全检查(非 loopback + 无 token 拒绝启动 exit 1),容器启动即退出,smoke 健康检查必败——**安全防护正确工作,是镜像默认配置违反了它**。smoke 显式传临时 token(`/api/health` 在 public_routes 无需认证);Dockerfile ENV 区补自诊断注释(生产必须传 token,容器场景 loopback 免认证不可用于 `-p` 端口映射)
 
 ### 🧪 测试
 
