@@ -165,7 +165,7 @@ jobs:
           PKG="evorule-server-${VER}-win64"
           mkdir -p "${PKG}/resources"
           cp artifacts/evorule-server-windows-x86_64/evorule-server.exe "${PKG}/"
-          cp artifacts/bundle-assets/evorule-rule-serve-windows-x86_64.exe "${PKG}/"
+          cp artifacts/bundle-assets/evorule-rule-serve-windows-x86_64.exe "${PKG}/evorule-rule-serve.exe"
           cp -r artifacts/bundle-assets/web "${PKG}/web"
           mkdir -p "${PKG}/rules"
           cp artifacts/bundle-assets/rules/*.json "${PKG}/rules/"
@@ -177,7 +177,7 @@ jobs:
           cp dist/README-STARTUP.txt "${PKG}/"
           # 包内完整性清单
           cd "${PKG}"
-          sha256sum evorule-server.exe evorule-rule-serve-windows-x86_64.exe > sha256-checks.txt
+          sha256sum evorule-server.exe evorule-rule-serve.exe > sha256-checks.txt
           cd ..
           zip -qr "${PKG}.zip" "${PKG}"
           ls -la "${PKG}.zip"
@@ -189,7 +189,7 @@ jobs:
           PKG="evorule-server-${VER}-linux64"
           mkdir -p "${PKG}/resources"
           cp artifacts/evorule-server-linux-x86_64/evorule-server "${PKG}/"
-          cp artifacts/bundle-assets/evorule-rule-serve-linux-x86_64 "${PKG}/"
+          cp artifacts/bundle-assets/evorule-rule-serve-linux-x86_64 "${PKG}/evorule-rule-serve"
           chmod +x "${PKG}/evorule-server" "${PKG}/evorule-rule-serve"
           cp -r artifacts/bundle-assets/web "${PKG}/web"
           mkdir -p "${PKG}/rules"
