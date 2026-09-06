@@ -2041,10 +2041,7 @@ mod tests {
         assert!(!cfg.auto_verify);
         assert_eq!(cfg.auto_verify_threshold, 1000);
         assert_eq!(cfg.auto_verify_interval, 1);
-        assert_eq!(
-            cfg.rate_limit_per_sec, 200,
-            "默认限速应为 200 req/s(修正)"
-        );
+        assert_eq!(cfg.rate_limit_per_sec, 200, "默认限速应为 200 req/s(修正)");
     }
 
     #[test]

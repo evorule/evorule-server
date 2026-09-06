@@ -366,7 +366,7 @@ impl WorkspaceService {
         Ok(())
     }
 
-    /// 记录一次 bundle 导入溯源 
+    /// 记录一次 bundle 导入溯源
     ///
     /// 委托 db 层写入 `bundle_imports`；`imported_at` 由 db 层以墙钟生成 (管理元数据, 旁路)。
     #[allow(clippy::too_many_arguments)]

@@ -1021,7 +1021,7 @@ impl SessionApi {
     /// human:<actor> 无需存在性校验(显式降级声明,人无表可查)。
     /// 跨环境信任(报告哈希/随包携带)登记为后续项——当前拒收符合
     /// "不让未经验证的信息通过"(40 号 §6.1 阶段一)。
-    /// 
+    ///
     fn validate_test_evidence(&self, bundle: &evorule_bundle::DatasetBundle) -> Result<(), String> {
         if bundle.tests.verdict != evorule_bundle::TestVerdict::Pass {
             return Ok(()); // 非 pass 无要求
@@ -1113,7 +1113,7 @@ impl SessionApi {
     /// unknown service_name"（35 号 三层绑定：执行侧 service_registry 绑定）。
     /// 核对集 = 原生叶子能力 + service_registry.json（`with_bound_services` 注入）。
     /// C6（02 方案层 3）：sensitive=true 的服务必须**注册表显式绑定**。
-    /// 
+    ///
     fn validate_service_bindings(
         &self,
         bundle: &evorule_bundle::DatasetBundle,
@@ -1363,7 +1363,7 @@ fn production_session_id(
 }
 
 /// 生产会话保活:仍存活则刷新 last_activity(TTL 检查随后不会命中)。
-/// 
+///
 async fn keepalive_production_session(
     sessions: &Arc<Mutex<session::SessionManager>>,
     prod_id: Option<u64>,
@@ -1377,7 +1377,7 @@ async fn keepalive_production_session(
 }
 
 /// 自愈重建第二步:切换 production_state 会话引用(保留 ruleset_version/hash)。
-/// 
+///
 fn switch_production_reference(
     workspace_db: &Arc<evorule_workspace::WorkspaceDb>,
     pid: u64,
@@ -1418,7 +1418,7 @@ fn switch_production_reference(
 /// 生产会话自愈重建:失忆(被 reap_finished 回收/reactor 异常退出)时报警 + 重建。
 /// 与 启动期重建同构:保留 ruleset_version/hash,operator=system:reaper-recovery,
 /// 语义为"替换会话引用"而非发布。
-/// 
+///
 async fn recover_production_session(
     recovery_api: &SessionApi,
     workspace_db: &Arc<evorule_workspace::WorkspaceDb>,
@@ -1437,7 +1437,7 @@ async fn recover_production_session(
         session_id = pid,
         ": 生产会话失忆(reaper 回收/reactor 异常退出),触发运行期自愈重建"
     );
-    // SessionOps::create_session 会为新会话 spawn IoSubscriber(与 
+    // SessionOps::create_session 会为新会话 spawn IoSubscriber(与
     // 启动期重建同一条链)
     let new_id = match evorule_workspace::SessionOps::create_session(recovery_api).await {
         Ok(new_id) => new_id,
@@ -1466,7 +1466,7 @@ async fn recover_production_session(
 /// 2. **回收**: `reap_all`(此时生产会话 last_activity 刚刷新,TTL 检查不会
 ///    命中;`reap_finished` 仍可回收 reactor 已退出的生产会话——那正是需要
 ///    自愈的场景)。
-/// 3. **自愈**: 回收后检测生产会话存活,失忆则 error 报警 + 重建(与 
+/// 3. **自愈**: 回收后检测生产会话存活,失忆则 error 报警 + 重建(与
 ///    启动期重建同构:保留 ruleset_version/hash,operator=system:reaper-recovery,
 ///    语义为"替换会话引用"而非发布)。旧会话 WAL 留痕仍在磁盘(audit_archive
 ///    可重建),内存 auditor 已随回收丢失——error 级报警供追溯(报警面纪律:
@@ -1474,7 +1474,7 @@ async fn recover_production_session(
 ///
 /// `workspace_db` 为 None(单测/无元数据接线)时退化为纯回收,无保护无自愈。
 /// 返回 (finished, expired) 细分(后台 reaper 记总数,手动 reap 端点报细分)。
-/// 
+///
 async fn reap_once(
     sessions: &Arc<Mutex<session::SessionManager>>,
     workspace_db: Option<&Arc<evorule_workspace::WorkspaceDb>>,
