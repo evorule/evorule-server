@@ -4,20 +4,20 @@
   "id": "org.evorule.core.eval",
   "rule_id": "core.eval",
   "version": "0.4.2",
-  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（T8,2026-08-27），应用可参照 app.evoagent.agent v0.4.0 范式；UV-030 修复(2026-09-01):HTTP 会话为平台消费面无法自持剧本,补回 call_external/call_service 会话桥接指令规则(v0.4.1)；v0.4.2:call_service 桥接规则触发域补 exists(params.service_name) 门禁——命令显式携带 service_name 才走宪法单发桥接,不携带时交由 bundle 落地规则硬编码路由(v0.4.1 缺该门禁致既有 bundle 工作流命令因必选路径解析失败而 Error,acceptance/binding e2e 回归发现)",
+  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（2026-08-27），应用可参照 app.evoagent.agent v0.4.0 范式；桥接规则修复(2026-09-01):HTTP 会话为平台消费面无法自持剧本,补回 call_external/call_service 会话桥接指令规则(v0.4.1)；v0.4.2:call_service 桥接规则触发域补 exists(params.service_name) 门禁——命令显式携带 service_name 才走宪法单发桥接,不携带时交由 bundle 落地规则硬编码路由(v0.4.1 缺该门禁致既有 bundle 工作流命令因必选路径解析失败而 Error,acceptance/binding e2e 回归发现)",
   "metadata": {
     "author": "evorule-core",
     "license": "CC0-1.0 Universal (Public Domain)",
     "public_domain_notice": "本文件(core_eval.json,即 EvoRule 宪法)以 CC0 1.0 公共领域奉献。任何人都可以自由使用、修改、再分发,无需保留版权声明。EvoRule 代码本身采用 AGPL-3.0-or-later,但本解释器规范是公共领域 —— 任何人都可以实现兼容的 EvoRule 引擎。",
     "spdx_license_id": "CC0-1.0",
     "provenance": {
-      "note": "v0.3.1 及此前版本含 ReAct 循环规则(call_external/call_service 剧本),2026-08-27 经 T8 专项迁出至消费方;机制层(6 元指令/9 指令类型/has_fields 等域函数)始终属于语言规范,不受本次迁出影响;2026-09-01 UV-030 修复:LLM 审计桥(audited-llm.ts)以 call_external 命令为平台契约,会话反应器 IoRequest 完全由宪法规则驱动,最小集缺该规则时命令被 all([]) 兜底静默 no-op(无 IoRequest 无 Error 事实,违反拒绝静默通过原则),故补回两条指令规则(单发桥接;ReAct init 规则仍属消费方剧本)"
+      "note": "v0.3.1 及此前版本含 ReAct 循环规则(call_external/call_service 剧本),2026-08-27 经专项迁出至消费方;机制层(6 元指令/9 指令类型/has_fields 等域函数)始终属于语言规范,不受本次迁出影响;2026-09-01 桥接规则修复:LLM 审计桥(audited-llm.ts)以 call_external 命令为平台契约,会话反应器 IoRequest 完全由宪法规则驱动,最小集缺该规则时命令被 all([]) 兜底静默 no-op(无 IoRequest 无 Error 事实,违反拒绝静默通过原则),故补回两条指令规则(单发桥接;ReAct init 规则仍属消费方剧本)"
     },
     "sections": [
       "1. 原子计算指令: increment, decrement, set",
       "2. 控制流指令: sequence, conditional, while_loop",
       "3. 默认处理: all([]) 兜底规则",
-      "4. 会话桥接指令: call_external, call_service(UV-030 修复 2026-09-01,单发桥接;ReAct 循环剧本仍由消费方自持)"
+      "4. 会话桥接指令: call_external, call_service(修复 2026-09-01,单发桥接;ReAct 循环剧本仍由消费方自持)"
     ],
     "constraints": [
       "每条 transform 规则中最多包含一个 io_request 元指令",
@@ -28,8 +28,8 @@
       "I/O 结果按类型隔离: __io_results__.{io_type}；消费后以 JSON null 清除（exists 将 null 视为不存在）",
       "v0.3.1: set 的 attr 引用 payload 内以 __ 开头的字段时必须写显式前缀（如 __exec__.payload.__io_results__.call_external），否则会被误判为状态根路径",
       "本版撤销兼容说明: query_db/http_get/save_memory 不再是内置指令类型（宪法未定义对应 transform 规则，提交会触发显式警告——TCB 层检测到 noop 效果返回 TransitionResult::Ignored，反应器产生 Error 事实）；需要这些能力的应用在其自有 rule_set 中定义 call_service 类规则",
-      "本版 call_external 参数: 仅使用 messages（LLM 消息历史数组）与 tools（可选工具描述）；prompt/system 不再作为指令参数（live handler 可直接从 messages 透传）。v0.4.0 注: 最小集曾不定义 call_external 规则致 LLM 审计桥静默失效(UV-030 缺陷),v0.4.1 补回;server 启动 fail-fast 校验 call_external 规则存在。ReAct 循环应用仍可自带完整剧本（范式见 app.evoagent.agent）",
-      "v0.4.2 call_service 桥接语义: 宪法单发桥接仅接管命令显式携带 params.service_name 的 call_service(io_request 必选路径解析失败即 Error 为 TCB M4 审计决策,不可静默);命令不携带 service_name 时宪法规则不触发,由 bundle 落地规则以硬编码服务名路由——两条通路并存,bundle 规则自有触发域不受影响",
+      "本版 call_external 参数: 仅使用 messages（LLM 消息历史数组）与 tools（可选工具描述）；prompt/system 不再作为指令参数（live handler 可直接从 messages 透传）。v0.4.0 注: 最小集曾不定义 call_external 规则致 LLM 审计桥静默失效(该缺陷),v0.4.1 补回;server 启动 fail-fast 校验 call_external 规则存在。ReAct 循环应用仍可自带完整剧本（范式见 app.evoagent.agent）",
+      "v0.4.2 call_service 桥接语义: 宪法单发桥接仅接管命令显式携带 params.service_name 的 call_service(io_request 必选路径解析失败即 Error 为 TCB 审计决策,不可静默);命令不携带 service_name 时宪法规则不触发,由 bundle 落地规则以硬编码服务名路由——两条通路并存,bundle 规则自有触发域不受影响",
       "语义澄清: 业务 set 指令为纯覆盖语义——宪法规则硬编码元指令 operation=set，指令 params 中的 operation 字段（如 add/sub）被忽略；算术更新必须使用 increment（add）/decrement（sub）指令。误用 set+add 做循环体累加会导致计数器每轮被覆盖回常量、while_loop 条件永真（差分测试回归教训）"
     ]
   },
