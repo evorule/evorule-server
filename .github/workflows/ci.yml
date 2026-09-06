@@ -169,11 +169,23 @@ jobs:
             -e EVORULE_AUTH_TOKEN=smoke-only-token \
             --name evorule-smoke \
             evorule-server:ci-${{ github.sha }}
-          # retry-connrefused 覆盖"服务初始化未完成监听"窗口
-          curl -sf --retry 10 --retry-delay 2 --retry-connrefused \
-            http://127.0.0.1:18080/api/health || {
+          # 显式循环探测(不用 curl --retry:其重试语义不覆盖全部瞬时错误,
+          # 曾出现主 curl 重试用尽失败而数秒后诊断 curl 即成功的误报形态);
+          # 60s 窗口,成功须含 success:true(强校验,非仅 200)。
+          SMOKE_OK=0
+          for i in $(seq 1 30); do
+            body=$(curl -sf --max-time 3 http://127.0.0.1:18080/api/health 2>/dev/null || true)
+            if [ -n "$body" ] && echo "$body" | grep -q '"success":true'; then
+              SMOKE_OK=1
+              echo "=== SMOKE PASSED (attempt $i) ==="
+              echo "$body"
+              break
+            fi
+            sleep 2
+          done
+          if [ "$SMOKE_OK" != "1" ]; then
             echo "=== SMOKE FAILED: container state ==="
-            docker ps -a --filter name=evorule-smoke
+            docker ps -a --filter name=evorule-smoke || true
             echo "=== SMOKE FAILED: port mapping ==="
             docker port evorule-smoke || true
             echo "=== SMOKE FAILED: curl verbose ==="
@@ -181,5 +193,5 @@ jobs:
             echo "=== SMOKE FAILED: container logs ==="
             docker logs evorule-smoke || true
             exit 1
-          }
+          fi
           docker stop evorule-smoke || true
