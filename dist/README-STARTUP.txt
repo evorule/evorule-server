@@ -1,4 +1,4 @@
-evorule 体验版(单机一键启动) v0.4.1
+evorule 体验版(单机一键启动) v0.5.0
 ====================================
 
 环境要求
@@ -66,6 +66,32 @@ server 内置的原生服务(进程内确定性执行,不需要联网、
 内置服务还包括 rule_sandbox(规则沙箱)等;服务声明见
 service_registry.json,可自行扩展为真实 HTTP 服务端点。
 
+插件看门狗(可选)
+----------------
+外部插件(如 finance-config)是独立进程,主服务不负责拉起;
+若希望插件进程崩溃后自动恢复,可启用部署侧看门狗:
+
+1. 编辑 plugins-watchdog.json,在 plugins 中登记要守护的插件,
+   例如(启用 finance-config):
+   "plugins": {
+     "finance-config": {
+       "command": "plugins\\finance-config\\evorule-finance-config-plugin.exe",
+       "args": ["--port", "9110", "--data", "plugins\\finance-config\\data"],
+       "env": { "FINANCE_PLUGIN_ADMIN_TOKEN": "换成你的管理token" }
+     }
+   }
+2. 双击 start-watchdog.bat(最小化窗口运行)
+3. 看门狗周期读取主服务 /api/health 的插件存活状态:
+   - 插件离线连续超过阈值(缺省 3 个周期)才自动拉起(防抖)
+   - 每小时自动拉起次数有上限(缺省 5 次),超限后停止拉起并在
+     日志中输出 ESCALATION 升级告警,需要人工介入
+   - 未实现 /health 探针的插件如实跳过,不误动作
+4. 日志见 data\watchdog.log;关闭看门狗:关闭最小化的
+   "evorule-watchdog" 窗口
+
+不启用看门狗完全不影响主服务运行;Linux 部署可用 systemd
+(Restart=always)或容器编排的自动重启策略达到同等效果。
+
 数据与隐私
 ----------
 - 一切都在本机运行:服务只监听 127.0.0.1(仅本机可访问)
@@ -80,7 +106,10 @@ service_registry.json,可自行扩展为真实 HTTP 服务端点。
 --------
 - start-evorule.bat        一键启动脚本(Windows)
 - start-evorule.sh         一键启动脚本(Linux 版包内)
-- evorule-server.exe       主服务(evorule-server v0.4.1,运行时 :18080)
+- start-watchdog.bat       插件看门狗启动脚本(可选,Windows 版包内)
+- watchdog-plugins.ps1     看门狗主体(读 /api/health,离线自动拉起插件)
+- plugins-watchdog.json    看门狗配置(缺省不守护任何插件,按需登记)
+- evorule-server.exe       主服务(evorule-server v0.5.0,运行时 :18080)
 - evorule-rule-serve.exe   治理服务(evorule-rule v0.3.1,规则资产库 :18081)
 - web\                     前端页面(evorule-console-cloud)
 - rules\                   运行规则集(业务场景演示规则)

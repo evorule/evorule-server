@@ -1,0 +1,8 @@
+{
+  "health_url": "http://127.0.0.1:18080/api/health",
+  "interval_secs": 10,
+  "offline_threshold": 3,
+  "max_restarts_per_hour": 5,
+  "fetch_timeout_secs": 5,
+  "plugins": {}
+}

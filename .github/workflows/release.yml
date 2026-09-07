@@ -175,6 +175,10 @@ jobs:
           # bat 模板按 .gitattributes 钉 CRLF 检出,直拷即兼容记事本/cmd
           cp dist/start-evorule.bat "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
+          # deployment-side plugin watchdog (optional; windows package only)
+          cp dist/start-watchdog.bat "${PKG}/"
+          cp dist/watchdog-plugins.ps1 "${PKG}/"
+          cp dist/plugins-watchdog.json "${PKG}/"
           # 包内完整性清单
           cd "${PKG}"
           sha256sum evorule-server.exe evorule-rule-serve.exe > sha256-checks.txt

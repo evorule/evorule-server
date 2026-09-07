@@ -238,6 +238,54 @@ POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留�
 
 ---
 
+## 十、部署侧看门狗（插件进程自动恢复，可选）
+
+> 定位：server **不 spawn 不守护**插件进程（§二），插件进程的拉起与守护属部署侧职责。分发包内置部署侧看门狗资产（Windows 版包），实现"offline 报警 → 自动拉起 → online 关警"闭环；不启用不影响任何功能。
+
+### 10.1 资产与形态
+
+| 文件 | 说明 |
+|------|------|
+| `start-watchdog.bat` | 启动壳（最小化窗口跑 PowerShell；纯 ASCII） |
+| `watchdog-plugins.ps1` | 看门狗主体（周期读 `/api/health`，离线自动拉起） |
+| `plugins-watchdog.json` | 守护配置（缺省空表 = 不守护任何插件，按需登记） |
+
+配置示例（守护 finance-config）：
+
+```jsonc
+{
+  "health_url": "http://127.0.0.1:18080/api/health",
+  "interval_secs": 10,            // 探测周期
+  "offline_threshold": 3,         // 连续 N 个周期 offline 才拉起（防抖）
+  "max_restarts_per_hour": 5,     // 每插件每小时自动拉起上限
+  "plugins": {
+    "finance-config": {
+      "command": "plugins\\finance-config\\evorule-finance-config-plugin.exe",
+      "args": ["--port", "9110", "--data", "plugins\\finance-config\\data"],
+      "working_dir": ".",
+      "env": { "FINANCE_PLUGIN_ADMIN_TOKEN": "与 server 侧同值的管理 token" }
+    }
+  }
+}
+```
+
+### 10.2 行为语义
+
+- **只对真正离线动作**：`status == "offline"`（连接失败/超时/非 2xx）才计入；`no_probe`（未实现 `/health`，404/405）与未挂载插件**如实跳过、不误动作**；
+- **防抖**：连续 `offline_threshold` 个周期 offline 才执行拉起，单次探测抖动不动作；
+- **升级（系统独占路径）**：每插件每小时拉起次数达 `max_restarts_per_hour` 后停止拉起，日志输出 `ESCALATION` 升级告警，等人工介入；插件重新被观测到 `online` 后闩锁自动解除（人工修复场景）；
+- **留痕分工**：拉起动作写 `data\watchdog.log`（部署侧）；`plugin_offline`/`plugin_online` 报警与关警事件在 server 审计面全量（`/api/audit/platform-events` 可查）——部署侧日志与审计面各司其职，不重复建设。
+
+### 10.3 非 Windows 部署形态
+
+Linux/容器部署无 PowerShell 依赖时，用编排层等价物达到同样效果：
+
+- **systemd**：插件进程做成 unit，`Restart=always` + `RestartSec`；
+- **容器编排**：插件容器 `restart: always/unless-stopped`（Docker Compose / Kubernetes 同理）；
+- 两者的"拉起次数上限/升级告警"由编排层健康检查（healthcheck + max 失败策略）或外部告警承接，语义与 §10.2 对齐。
+
+---
+
 ## 相关文档
 
 - [INTEGRATION_GUIDE §八 插件清单](INTEGRATION_GUIDE.md#八插件清单部署期启用裁剪) — 挂载清单与回落语义
