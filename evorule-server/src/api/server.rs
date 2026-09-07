@@ -10781,6 +10781,58 @@ mod tests {
         assert_eq!(json["events"].as_array().unwrap().len(), 2);
     }
 
+    // append_platform_event 真实写入路径的 kind 契约:path 第二段必须携带 kind
+    // (探活报警 plugin_offline/plugin_online 经此通道;kind 缺段时过滤恒空,报警失聪)
+    #[tokio::test]
+    async fn test_platform_events_kind_via_append_platform_event() {
+        let (state, _) = make_test_state();
+        let shared = SharedFactsLog::from_ref(&state);
+
+        crate::api::platform_auth::append_platform_event(
+            &shared,
+            "plugin_offline",
+            serde_json::json!({ "plugin_id": "finance-config", "base_url": "http://127.0.0.1:9110", "error": "connect refused" }),
+        );
+        crate::api::platform_auth::append_platform_event(
+            &shared,
+            "login_failed",
+            serde_json::json!({ "username": "alice" }),
+        );
+
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "GET",
+            "/api/audit/platform-events?kind=plugin_offline",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["total"], 1);
+        let ev = &json["events"][0];
+        assert_eq!(ev["kind"], "plugin_offline");
+        assert_eq!(ev["detail"]["plugin_id"], "finance-config");
+        assert!(ev["ts_ms"].is_u64());
+
+        // 全量可见且 kind 正确解析(非数字串畸形降级)
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "GET",
+            "/api/audit/platform-events",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["total"], 2);
+        let kinds: Vec<&str> = json["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"plugin_offline"));
+        assert!(kinds.contains(&"login_failed"));
+    }
+
     // --- 规则校验端点（通过路由，含中间件链） ---
 
     #[tokio::test]

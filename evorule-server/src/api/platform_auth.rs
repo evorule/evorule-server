@@ -460,7 +460,10 @@ fn session_fact_path(token_hash: &str) -> String {
 fn append_auth_event(shared: &SharedFactsLog, kind: &str, detail: serde_json::Value) {
     let mut suffix = String::new();
     let _ = generate_token().map(|(_, h)| suffix = h.chars().take(16).collect());
-    let path = format!("{FACT_PREFIX}event.{}.{}", now_ms(), suffix);
+    // kind 必须进 path 第二段(platform.event.{kind}.{ms}{suffix}):
+    // platform-events 报表按 path 段解析 kind 并做过滤,单测契约即此形态;
+    // 旧存量(无 kind 段)由报表侧畸形降级容忍(kind 显示为时间戳数字串)。
+    let path = format!("{FACT_PREFIX}event.{}.{}.{}", kind, now_ms(), suffix);
     let value = serde_json::json!({ "kind": kind, "detail": detail });
     if let Err(e) = append_fact(shared, &path, value) {
         tracing::warn!("认证事件入链失败(kind={kind}): {}", e.message());
