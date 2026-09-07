@@ -1705,7 +1705,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace_db = Arc::new(workspace_db);
     // T5: 把 workspace 元数据库注入 SessionApi，使 bundle 导入时写入审计溯源（bundle_imports 表，
     // 管理元数据墙钟旁路，不参与 fact/哈希/审计验证链）。须在 workspace_db 创建后、AppState 组装前注入。
-    let session_api = session_api.with_workspace_db(workspace_db.clone());
+    let mut session_api = session_api.with_workspace_db(workspace_db.clone());
+    // 插件审批代理装配:external 插件 id → 管理面端点(base_url + env admin token)。
+    // token env 约定 EVORULE_PLUGIN_ADMIN_TOKEN__<ID 大写下划线>,部署侧同一 token 值
+    // 同时配给插件进程与 server 两侧(密钥零落盘);未配置 → None(代理 503 fail-fast,
+    // 插件管理面直连端口不受影响);启动期仅呈现配置与否,不呈现值。
+    {
+        let mut plugin_admins: std::collections::BTreeMap<
+            String,
+            evorule_server::api::server::PluginAdminEndpoint,
+        > = std::collections::BTreeMap::new();
+        for ext in &external_mounted {
+            let env_name = evorule_server::api::server::plugin_admin_token_env(&ext.id);
+            let admin_token = std::env::var(&env_name).ok().filter(|v| !v.is_empty());
+            match &admin_token {
+                Some(_) => info!(
+                    "插件审批代理: {} admin token 已配置（env: {}）",
+                    ext.id, env_name
+                ),
+                None => warn!(
+                    "插件审批代理: {} admin token 未配置（env: {}）— 审批代理对该插件将 503（插件管理面直连端口不受影响）",
+                    ext.id, env_name
+                ),
+            }
+            plugin_admins.insert(
+                ext.id.clone(),
+                evorule_server::api::server::PluginAdminEndpoint {
+                    base_url: ext.base_url.clone(),
+                    admin_token,
+                },
+            );
+        }
+        session_api = session_api.with_plugin_admins(plugin_admins);
+    }
     // ①: reaper 启动移到 workspace_db 注入之后——生产会话保活 + 失忆自愈
     // 重建依赖该接线(原时序在注入前启动,reaper 拿不到 production_state)。
     session_api.start_reaper();

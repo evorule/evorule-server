@@ -762,6 +762,15 @@ fn unauthorized_response() -> axum::response::Response {
         .into_response()
 }
 
+/// 平台登录身份扩展(统一认证中间件注入,代理审批 approver 强制取此值——
+/// 不信任请求体自报操作者,封堵伪造审批人路径)。
+///
+/// 值语义:`<username>`(平台会话)/`static-user`(静态 user token,无个人身份)/
+/// 未注入(认证关闭或 service 凭据)——审批代理端点对未注入形态按
+/// "anonymous"(认证关闭)或 403(service 凭据,审批=人工动作)自理。
+#[derive(Debug, Clone)]
+pub struct AuthedActor(pub String);
+
 /// 业务 API 统一认证中间件(挂 protected_routes)。
 ///
 /// **双凭据语义**:
@@ -794,6 +803,14 @@ pub async fn unified_auth_middleware(
         .to_string();
     if !raw.is_empty() && auth_config.validate(&raw) {
         let identity = auth_config.identity(&raw);
+        // 登录身份注入:平台用户凭据无个人身份(静态 token),记固定标识;
+        // service 凭据不注入 AuthedActor(审批等人工端点在 handler 层 403 拒绝)
+        match identity {
+            crate::auth::CallerIdentity::User => {
+                req.extensions_mut().insert(AuthedActor("static-user".to_string()));
+            }
+            crate::auth::CallerIdentity::Service => {}
+        }
         req.extensions_mut().insert(identity);
         return next.run(req).await;
     }

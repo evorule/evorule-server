@@ -321,9 +321,41 @@ pub struct SessionApi {
     /// 与活跃会话 API 物理隔离（独立 /api/audit-archive 前缀），全程无 WAL 写路径。
     archive_cache: Arc<std::sync::Mutex<audit_archive::ArchiveCache>>,
 
+    /// external 插件管理面端点表（插件审批代理转发目标,键=插件 id）
+    ///
+    /// main.rs 启动期从 external 挂载结果派生（base_url）+ env 读取 admin token
+    /// （EVORULE_PLUGIN_ADMIN_TOKEN__<ID 大写下划线>;未配置 → admin_token=None,
+    /// 代理端点 503 fail-fast,与插件管理面自身语义一致）。默认空表=无 external
+    /// 插件,代理端点一律 404。
+    plugin_admins: Arc<std::collections::BTreeMap<String, PluginAdminEndpoint>>,
+
     /// 规则命中统计聚合器：消费各会话/单反应器的 TransitionTrace，
     /// 按 规则集版本×来源×下标 聚合；查询面 /api/rules/hit-stats 与 Prometheus 指标。
     hit_stats: Arc<crate::api::hit_stats::HitStatsAggregator>,
+}
+
+/// external 插件管理面端点(审批代理转发目标 + server 侧持有的 admin token)
+///
+/// token 由部署侧 env 同时配给插件进程与 server 两侧(密钥零落盘);
+/// server 不落盘不打印(启动期仅 info! 呈现配置与否,不呈现值)。
+#[derive(Debug, Clone)]
+pub struct PluginAdminEndpoint {
+    /// 插件进程根地址(管理面 = {base_url}/admin/...)
+    pub base_url: String,
+    /// server 侧持有的该插件 admin token(None=未配置,代理 503 fail-fast)
+    pub admin_token: Option<String>,
+}
+
+/// 插件 id → server 侧 admin token 环境变量名(纯函数,单测锁定映射)
+///
+/// 约定 `EVORULE_PLUGIN_ADMIN_TOKEN__<ID 大写,非字母数字折叠为下划线>`:
+/// "finance-config" → "EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG"。
+pub fn plugin_admin_token_env(id: &str) -> String {
+    let folded: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect();
+    format!("EVORULE_PLUGIN_ADMIN_TOKEN__{folded}")
 }
 
 impl SessionApi {
@@ -550,6 +582,9 @@ impl SessionApi {
                 wal_dir,
             ))),
 
+            // external 插件管理面端点表(默认空=无 external 插件;main.rs 生产注入)
+            plugin_admins: Arc::new(std::collections::BTreeMap::new()),
+
             // 命中统计聚合器（初始 layout 见构造器开头）
             hit_stats: Arc::new(crate::api::hit_stats::HitStatsAggregator::new(
                 initial_layout,
@@ -654,6 +689,18 @@ impl SessionApi {
     pub fn with_workspace_db(mut self, workspace_db: Arc<evorule_workspace::WorkspaceDb>) -> Self {
         self.workspace_db = Some(workspace_db);
 
+        self
+    }
+
+    /// 注入 external 插件管理面端点表（builder 模式，插件审批代理）
+    ///
+    /// main.rs 启动期从 external 挂载结果 + env（EVORULE_PLUGIN_ADMIN_TOKEN__<ID>）
+    /// 派生注入；代理端点据此转发（base_url）并附 Bearer token。
+    pub fn with_plugin_admins(
+        mut self,
+        admins: std::collections::BTreeMap<String, PluginAdminEndpoint>,
+    ) -> Self {
+        self.plugin_admins = Arc::new(admins);
         self
     }
 
@@ -7355,6 +7402,20 @@ impl GovernanceServer {
                 "/api/services/{name}/invoke",
                 post(invoke_service_handler),
             )
+            // 插件审批代理:external 插件管理面的 server 侧统一入口(平台认证保护,
+            // approver 强制注入登录身份)——console 插件审批面的后端通道
+            .route(
+                "/api/plugins/{id}/admin/proposals",
+                get(plugin_admin_list_proposals),
+            )
+            .route(
+                "/api/plugins/{id}/admin/proposals/{pid}/approve",
+                post(plugin_admin_approve),
+            )
+            .route(
+                "/api/plugins/{id}/admin/proposals/{pid}/reject",
+                post(plugin_admin_reject),
+            )
             .route("/api/payload", post(update_payload))
             .route("/api/state", get(get_state))
             .route("/api/audit", get(get_audit))
@@ -7985,6 +8046,209 @@ pub async fn invoke_service_handler(
             Json(serde_json::json!({ "error": e })),
         )),
     }
+}
+
+// ===== 插件审批代理（external 插件管理面的 server 侧统一入口）=====
+
+/// 审批代理转发超时（审批为写路径须插件落库,略宽于探活的 3s）
+const PLUGIN_PROXY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 代理错误 JSON 快捷构造
+fn proxy_err(status: StatusCode, msg: String) -> (StatusCode, Json<serde_json::Value>) {
+    (status, Json(serde_json::json!({ "error": msg })))
+}
+
+/// approver 强制注入判定（纯逻辑,单测锁定）:
+/// - 平台会话/静态 user token → AuthedActor 注入值（username / "static-user"）;
+/// - 认证关闭（开发模式,无任何 Extension）→ "anonymous";
+/// - **不信任请求体自报操作者**——body 中 approver 一律被覆盖（防伪造审批人）。
+fn resolve_approver(actor: Option<Extension<crate::api::platform_auth::AuthedActor>>) -> String {
+    match actor {
+        Some(Extension(a)) => a.0,
+        None => "anonymous".to_string(),
+    }
+}
+
+/// 插件审批代理转发核心:目标 = {base_url}/admin/{path_tail},附 server 侧持有的
+/// Bearer admin token,响应状态码与 JSON body 原样透传。
+///
+/// fail-fast 语义（与插件管理面自身一致）:
+/// - 插件 id 不在端点表（未知/非 external）→ 404;
+/// - server 侧未配置该插件 admin token → 503（不静默裸奔）;
+/// - 上游不可达/非 JSON 响应 → 502（错误摘要透传）。
+async fn proxy_plugin_admin(
+    api: &SessionApi,
+    id: &str,
+    path_tail: &str,
+    method: reqwest::Method,
+    body: Option<serde_json::Value>,
+) -> Result<(StatusCode, serde_json::Value), (StatusCode, Json<serde_json::Value>)> {
+    let Some(ep) = api.plugin_admins.get(id) else {
+        return Err(proxy_err(
+            StatusCode::NOT_FOUND,
+            format!("unknown plugin: {id}（仅 external 插件有管理面代理;合法 id 见 GET /api/health plugins 节 external=true 条目）"),
+        ));
+    };
+    let Some(token) = ep.admin_token.as_deref() else {
+        return Err(proxy_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "插件 {id} 的 admin token 未配置（env: {}）— 代理拒绝转发（fail-fast,不静默）",
+                plugin_admin_token_env(id)
+            ),
+        ));
+    };
+    let url = format!("{}/admin/{path_tail}", ep.base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(PLUGIN_PROXY_TIMEOUT)
+        .build()
+        .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, format!("HTTP client 构建失败: {e}")))?;
+    let mut req = client
+        .request(method, &url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Source", "evorule-server");
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let resp = req.send().await.map_err(|e| {
+        let summary = if e.is_timeout() {
+            "上游超时(5s)".to_string()
+        } else if e.is_connect() {
+            "上游连接失败(插件进程未监听/端口不可达)".to_string()
+        } else {
+            format!("上游请求失败: {e}")
+        };
+        proxy_err(StatusCode::BAD_GATEWAY, format!("插件管理面转发失败: {summary}"))
+    })?;
+    let status = StatusCode::from_u16(resp.status().as_u16())
+        .map_err(|e| proxy_err(StatusCode::BAD_GATEWAY, format!("上游状态码非法: {e}")))?;
+    let text = resp.text().await.map_err(|e| {
+        proxy_err(StatusCode::BAD_GATEWAY, format!("上游响应读取失败: {e}"))
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|_| {
+        serde_json::json!({ "error": "上游响应非 JSON", "raw": text })
+    });
+    Ok((status, value))
+}
+
+/// GET /api/plugins/{id}/admin/proposals —— 代理插件待批提案列表（只读）
+#[utoipa::path(
+    get,
+    path = "/api/plugins/{id}/admin/proposals",
+    tag = "plugins",
+    params(("id" = String, Path, description = "external 插件 id")),
+    responses(
+        (status = 200, description = "插件待批提案列表（插件自持管理面响应原样透传）", body = serde_json::Value),
+        (status = 404, description = "未知/非 external 插件"),
+        (status = 502, description = "插件管理面不可达"),
+        (status = 503, description = "server 侧未配置该插件 admin token")
+    )
+)]
+pub async fn plugin_admin_list_proposals(
+    State(api): State<SessionApi>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    let (status, value) =
+        proxy_plugin_admin(&api, &id, "proposals", reqwest::Method::GET, None).await?;
+    Ok((status, Json(value)))
+}
+
+/// POST /api/plugins/{id}/admin/proposals/{pid}/approve —— 代理审批通过
+///
+/// approver 强制注入:取平台登录身份（AuthedActor）覆盖 body 自报值;
+/// 认证动作经插件自持审计（AuditEntry）留痕,审计归属不变。
+#[utoipa::path(
+    post,
+    path = "/api/plugins/{id}/admin/proposals/{pid}/approve",
+    tag = "plugins",
+    params(
+        ("id" = String, Path, description = "external 插件 id"),
+        ("pid" = String, Path, description = "提案 id")
+    ),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "提案已批准并落库（插件自持审计留痕）", body = serde_json::Value),
+        (status = 403, description = "service 凭据禁止人工审批动作"),
+        (status = 404, description = "未知/非 external 插件或提案不存在"),
+        (status = 502, description = "插件管理面不可达"),
+        (status = 503, description = "server 侧未配置该插件 admin token")
+    )
+)]
+pub async fn plugin_admin_approve(
+    State(api): State<SessionApi>,
+    Path((id, pid)): Path<(String, String)>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+    identity: Option<Extension<CallerIdentity>>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    // 审批 = 人工治理动作,service 自动化凭据拒绝(人类在场语义)
+    if matches!(identity, Some(Extension(CallerIdentity::Service))) {
+        return Err(proxy_err(
+            StatusCode::FORBIDDEN,
+            "service 凭据禁止执行人工审批动作".to_string(),
+        ));
+    }
+    let mut body = serde_json::json!({});
+    if let serde_json::Value::Object(m) = &mut body {
+        m.insert("approver".into(), serde_json::json!(resolve_approver(actor)));
+    }
+    let (status, value) = proxy_plugin_admin(
+        &api,
+        &id,
+        &format!("proposals/{pid}/approve"),
+        reqwest::Method::POST,
+        Some(body),
+    )
+    .await?;
+    Ok((status, Json(value)))
+}
+
+/// POST /api/plugins/{id}/admin/proposals/{pid}/reject —— 代理审批拒绝
+///
+/// approver 强制注入同 approve;reason 保留前端自报值（拒绝理由属操作内容,
+/// 非操作者身份,不存在伪造身份面）。
+#[utoipa::path(
+    post,
+    path = "/api/plugins/{id}/admin/proposals/{pid}/reject",
+    tag = "plugins",
+    params(
+        ("id" = String, Path, description = "external 插件 id"),
+        ("pid" = String, Path, description = "提案 id")
+    ),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "提案已拒绝（插件自持审计留痕）", body = serde_json::Value),
+        (status = 403, description = "service 凭据禁止人工审批动作"),
+        (status = 404, description = "未知/非 external 插件或提案不存在"),
+        (status = 502, description = "插件管理面不可达"),
+        (status = 503, description = "server 侧未配置该插件 admin token")
+    )
+)]
+pub async fn plugin_admin_reject(
+    State(api): State<SessionApi>,
+    Path((id, pid)): Path<(String, String)>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+    identity: Option<Extension<CallerIdentity>>,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    if matches!(identity, Some(Extension(CallerIdentity::Service))) {
+        return Err(proxy_err(
+            StatusCode::FORBIDDEN,
+            "service 凭据禁止执行人工审批动作".to_string(),
+        ));
+    }
+    let mut body = body.map(|Json(v)| v).unwrap_or_else(|| serde_json::json!({}));
+    if let serde_json::Value::Object(m) = &mut body {
+        m.insert("approver".into(), serde_json::json!(resolve_approver(actor)));
+    }
+    let (status, value) = proxy_plugin_admin(
+        &api,
+        &id,
+        &format!("proposals/{pid}/reject"),
+        reqwest::Method::POST,
+        Some(body),
+    )
+    .await?;
+    Ok((status, Json(value)))
 }
 
 /// 校验结果响应（与 core ValidationResult 字段一致）
@@ -9198,6 +9462,91 @@ mod tests {
     ///
     /// - 孤儿任务在 `#[tokio::test]` 运行时 drop 时被自动取消
     ///
+    /// 服务对账同名去重：registry 回落绑定与 native/plugin 源同名时，
+    /// 对账清单必须只保留 native/plugin 条目（带 sensitive/parameters/plugin
+    /// 全元数据），消费方按名索引不再有命中缺元数据条目的形态；仅 registry
+    /// 绑定的服务不受去重影响，照常列出。
+    /// 插件审批代理 env 名映射（id → EVORULE_PLUGIN_ADMIN_TOKEN__<ID 大写,非字母数字→_>）
+    #[test]
+    fn test_plugin_admin_token_env_mapping() {
+        assert_eq!(
+            plugin_admin_token_env("finance-config"),
+            "EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG"
+        );
+        assert_eq!(
+            plugin_admin_token_env("my_plugin.2"),
+            "EVORULE_PLUGIN_ADMIN_TOKEN__MY_PLUGIN_2"
+        );
+        assert_eq!(
+            plugin_admin_token_env("a"),
+            "EVORULE_PLUGIN_ADMIN_TOKEN__A"
+        );
+    }
+
+    /// approver 强制注入:AuthedActor 存在取注入值,缺失（认证关闭）记 anonymous;
+    /// 请求体自报 approver 由代理端点无条件覆盖（防伪造操作者,handler 内 m.insert 语义）。
+    #[test]
+    fn test_resolve_approver() {
+        assert_eq!(
+            resolve_approver(Some(Extension(crate::api::platform_auth::AuthedActor(
+                "admin".to_string()
+            )))),
+            "admin"
+        );
+        assert_eq!(
+            resolve_approver(Some(Extension(crate::api::platform_auth::AuthedActor(
+                "static-user".to_string()
+            )))),
+            "static-user"
+        );
+        assert_eq!(resolve_approver(None), "anonymous");
+    }
+
+    /// 代理 fail-fast:未知/非 external 插件 → 404（不转发）
+    #[tokio::test]
+    async fn test_plugin_admin_proxy_unknown_plugin_404() {
+        let core_eval = vec![JsonValue::Object(std::collections::BTreeMap::new())];
+        let sessions = SessionApi::new(core_eval, 10);
+        let r = proxy_plugin_admin(
+            &sessions,
+            "ghost",
+            "proposals",
+            reqwest::Method::GET,
+            None,
+        )
+        .await;
+        let (status, body) = r.unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.0.to_string().contains("unknown plugin"));
+    }
+
+    /// 代理 fail-fast:server 侧 token 未配置 → 503（附 env 名指引,不静默转发）
+    #[tokio::test]
+    async fn test_plugin_admin_proxy_token_missing_503() {
+        let core_eval = vec![JsonValue::Object(std::collections::BTreeMap::new())];
+        let mut admins = std::collections::BTreeMap::new();
+        admins.insert(
+            "finance-config".to_string(),
+            PluginAdminEndpoint {
+                base_url: "http://127.0.0.1:9".to_string(),
+                admin_token: None,
+            },
+        );
+        let sessions = SessionApi::new(core_eval, 10).with_plugin_admins(admins);
+        let r = proxy_plugin_admin(
+            &sessions,
+            "finance-config",
+            "proposals",
+            reqwest::Method::GET,
+            None,
+        )
+        .await;
+        let (status, body) = r.unwrap_err();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let msg = body.0.to_string();
+        assert!(msg.contains("EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG"));
+    }
+
     /// 服务对账同名去重：registry 回落绑定与 native/plugin 源同名时，
     /// 对账清单必须只保留 native/plugin 条目（带 sensitive/parameters/plugin
     /// 全元数据），消费方按名索引不再有命中缺元数据条目的形态；仅 registry
