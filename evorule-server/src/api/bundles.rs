@@ -668,6 +668,138 @@ mod tests {
         assert_eq!(payroll.description.as_deref(), Some("payroll service"));
     }
 
+    /// 测试用服务链：echo 服务名（验证 invoke 直调复用链的接线语义，不依赖真实插件）
+    #[derive(Default)]
+    struct TestEchoChain;
+
+    #[async_trait::async_trait]
+    impl evorule_reactor::IoHandler for TestEchoChain {
+        async fn execute(
+            &self,
+            _params: &evorule_tcb::JsonValue,
+        ) -> evorule_reactor::IoResult {
+            Ok(evorule_tcb::JsonValue::String("echo".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn list_services_native_injection_overrides_and_attaches_plugin() {
+        // 对账泛化：with_native_services 替换 demo 兜底清单，逐服务携带 plugin
+        // 归属/描述/敏感标记；registry 条目 plugin=None sensitive=false
+        let tmp = tempfile::tempdir().unwrap();
+        let infos = vec![
+            crate::api::server::BoundServiceInfo {
+                name: "physics_simulate".into(),
+                source: "native".into(),
+                version: Some("1.0.0".into()),
+                description: Some("确定性物理仿真推进".into()),
+                plugin: Some("physics-services".into()),
+                sensitive: false,
+            },
+            crate::api::server::BoundServiceInfo {
+                name: "finance_config_set".into(),
+                source: "native".into(),
+                version: Some("1.0.0".into()),
+                description: Some("财务配置键写入".into()),
+                plugin: Some("finance-config".into()),
+                sensitive: true,
+            },
+        ];
+        let metas = vec![evorule_io_handlers::ServiceMeta {
+            name: "payroll_svc".into(),
+            version: None,
+            description: None,
+        }];
+        let api = test_api(&tmp)
+            .with_native_services(infos)
+            .with_registry_services(metas);
+        let out = crate::api::server::list_services_handler(axum::extract::State(api)).await;
+
+        let natives: Vec<&crate::api::server::BoundServiceInfo> =
+            out.iter().filter(|b| b.source == "native").collect();
+        assert_eq!(natives.len(), 2, "注入清单应整体替换 demo 兜底");
+        assert!(!natives.iter().any(|b| b.name == "inverse_kinematics_solver"));
+        let physics = out.iter().find(|b| b.name == "physics_simulate").unwrap();
+        assert_eq!(physics.plugin.as_deref(), Some("physics-services"));
+        assert_eq!(physics.description.as_deref(), Some("确定性物理仿真推进"));
+        assert!(!physics.sensitive);
+        let finance = out.iter().find(|b| b.name == "finance_config_set").unwrap();
+        assert_eq!(finance.plugin.as_deref(), Some("finance-config"));
+        assert!(finance.sensitive, "声明表 sensitive 标记应透传对账清单");
+        let payroll = out.iter().find(|b| b.name == "payroll_svc").unwrap();
+        assert!(payroll.plugin.is_none() && !payroll.sensitive);
+    }
+
+    #[tokio::test]
+    async fn invoke_service_executes_via_chain_with_guards() {
+        // invoke 直调守卫语义：非敏感 200 走链执行；敏感 403；未知 404；无链 503
+        let tmp = tempfile::tempdir().unwrap();
+        let infos = vec![
+            crate::api::server::BoundServiceInfo {
+                name: "physics_simulate".into(),
+                source: "native".into(),
+                version: None,
+                description: None,
+                plugin: Some("physics-services".into()),
+                sensitive: false,
+            },
+            crate::api::server::BoundServiceInfo {
+                name: "finance_config_set".into(),
+                source: "native".into(),
+                version: None,
+                description: None,
+                plugin: Some("finance-config".into()),
+                sensitive: true,
+            },
+        ];
+        let api = test_api(&tmp)
+            .with_native_services(infos)
+            .with_service_chain(std::sync::Arc::new(TestEchoChain));
+
+        // ① 非敏感服务 → 复用链执行，200 返回链结果
+        let ok = crate::api::server::invoke_service_handler(
+            axum::extract::State(api.clone()),
+            axum::extract::Path("physics_simulate".to_string()),
+            axum::Json(serde_json::json!({ "steps": 10 })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok.0, serde_json::json!("echo"));
+
+        // ② 敏感服务 → 403（直调=静默绕审批，禁止）
+        let (status, body) = crate::api::server::invoke_service_handler(
+            axum::extract::State(api.clone()),
+            axum::extract::Path("finance_config_set".to_string()),
+            axum::Json(serde_json::json!({})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+        assert!(body.0.to_string().contains("禁止"), "403 文案应指明直调禁止");
+
+        // ③ 未知服务 → 404（附合法名指引）
+        let (status, body) = crate::api::server::invoke_service_handler(
+            axum::extract::State(api.clone()),
+            axum::extract::Path("no_such_service".to_string()),
+            axum::Json(serde_json::json!({})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert!(body.0.to_string().contains("unknown service"));
+
+        // ④ 未装配服务链 → 503（服务名须在 bare api 的 demo 兜底清单内）
+        let bare = test_api(&tmp);
+        let (status, _) = crate::api::server::invoke_service_handler(
+            axum::extract::State(bare),
+            axum::extract::Path("config_persist".to_string()),
+            axum::Json(serde_json::json!({})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     #[tokio::test]
     async fn single_activation_replaces_old_bundle_by_dataset() {
         let tmp = tempfile::tempdir().unwrap();

@@ -577,6 +577,23 @@ fn plugin_service_names(def: &PluginDef) -> Vec<&'static str> {
     evorule_plugin_kit::NativeServiceRouter::native_service_names(def.defs)
 }
 
+/// 该插件进程内服务能力清单(声明序;/api/services native 对账与 invoke 敏感判定用)。
+fn plugin_service_infos(
+    def: &PluginDef,
+) -> Vec<evorule_server::api::server::BoundServiceInfo> {
+    def.defs
+        .iter()
+        .map(|s| evorule_server::api::server::BoundServiceInfo {
+            name: s.name.to_string(),
+            source: "native".to_string(),
+            version: Some("1.0.0".to_string()),
+            description: Some(s.description.to_string()),
+            plugin: Some(def.id.to_string()),
+            sensitive: s.sensitive,
+        })
+        .collect()
+}
+
 /// 进程内插件登记表(声明序即挂载序与回落链序)。
 const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
@@ -1171,6 +1188,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 逆序包裹——链条头 = 第一个已挂载插件;全停用时链条头 = 直连 svc_handler。
     let mut chain_tail: Arc<dyn evorule_reactor::IoHandler> = svc_handler.clone();
     let mut plugin_health = serde_json::Map::new();
+    // /api/services native 对账清单:按 manifest 实际挂载状态收集(Off 不入清单,
+    // Subset 仅启用子集)——对账清单 = 真实可路由服务,与回落链同一事实来源。
+    let mut native_service_infos = Vec::new();
     for (id, mount) in plugin_mounts.iter().rev() {
         let Some(def) = PLUGIN_DEFS.iter().find(|d| d.id == *id) else {
             continue; // 清单解析已锁定 id ∈ PLUGIN_DEFS,此分支不可达,防御性跳过
@@ -1195,6 +1215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id.to_string(),
                     serde_json::json!({ "enabled": true, "services": plugin_service_names(def) }),
                 );
+                native_service_infos.extend(plugin_service_infos(def));
                 chain_tail = evorule_plugin_kit::mount_router(def.defs, chain_tail, None)
                     .map_err(|e| format!("插件清单校验失败: {}", e))?;
             }
@@ -1220,10 +1241,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id.to_string(),
                     serde_json::json!({ "enabled": true, "services": enabled_ordered }),
                 );
+                native_service_infos.extend(
+                    plugin_service_infos(def)
+                        .into_iter()
+                        .filter(|i| refs.contains(&i.name.as_str())),
+                );
                 chain_tail = router;
             }
         }
     }
+    // 逆序循环收集 = 登记声明序的倒序,reverse 恢复声明序(对账清单与登记表同序)。
+    native_service_infos.reverse();
     let call_handler: Arc<dyn evorule_reactor::IoHandler> = chain_tail;
     let memory = Arc::new(MemoryHandler::new(cfg.memory_dir.clone()));
     let db_wrapped = WhitelistedDbHandler::new(db, statement_whitelist);
@@ -1233,7 +1261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dispatcher = IoDispatcher::builder()
         .register(IoType::call_external(), call_handler.clone())
         .register(IoType::http_get(), http.clone())
-        .register(IoType::call_service(), call_handler)
+        .register(IoType::call_service(), call_handler.clone())
         .register(IoType::query_db(), Arc::new(db_wrapped))
         .register(IoType::save_memory(), memory)
         .build();
@@ -1354,7 +1382,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_hit_stats(hit_stats)
     // C5/C6：注册表显式绑定元数据（version/description）注入，供 /api/services 能力对账
     // 与 sensitive 服务绑定核对使用（02 方案服务契约三层闭环 层3）。
-    .with_registry_services(registry.service_metadata());
+    .with_registry_services(registry.service_metadata())
+    // 插件对账泛化:/api/services native 清单 = manifest 实际挂载的全插件服务
+    // (含 plugin 归属/描述/敏感标记);invoke 直调复用同一回落链,无第二执行路径。
+    .with_native_services(native_service_infos)
+    .with_service_chain(call_handler.clone());
 
     // 创建 readiness flag（优雅退出时设为 false）
     let readiness: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));

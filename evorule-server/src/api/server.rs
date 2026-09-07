@@ -296,6 +296,18 @@ pub struct SessionApi {
     /// 运行时 unknown service_name"）。`with_bound_services` 按并集语义追加。
     bound_services: Arc<HashSet<String>>,
 
+    /// 插件进程内服务能力清单（C5 能力对账的 native 来源）
+    ///
+    /// main.rs 从 PLUGIN_DEFS 声明表派生注入（含 plugin 归属/描述/敏感标记）。
+    /// 默认 = demo-services 派生（二进制硬依赖的最小兜底，保持既有测试兼容），
+    /// 生产路径由 `with_native_services` 覆盖为全插件清单。
+    native_services: Arc<Vec<BoundServiceInfo>>,
+
+    /// 插件服务回落链（插件路由 → registry HTTP 回落），`POST /api/services/{name}/invoke`
+    /// 直调复用此链（与 io_request 同一实现，无第二执行路径）。
+    /// None（未装配）时 invoke 返回 503。
+    service_chain: Option<Arc<dyn evorule_reactor::IoHandler>>,
+
     /// 注册表（service_registry.json）显式绑定的服务元数据（C5/C6）
     ///
     /// - C5：`GET /api/services` 能力对账的来源 `registry` 条目（带 version/description）；
@@ -506,6 +518,23 @@ impl SessionApi {
             workspace_db: None,
 
             // 默认绑定 = 原生叶子能力（Phase 1 demo-services 是二进制硬依赖，始终可路由）
+            // 默认 native 清单 = demo 派生兜底（生产路径 main.rs 经 with_native_services 覆盖为全插件）
+            native_services: Arc::new(
+                DemoServiceRouter::native_service_names()
+                    .iter()
+                    .map(|name| BoundServiceInfo {
+                        name: (*name).to_string(),
+                        source: "native".to_string(),
+                        version: Some("1.0.0".to_string()),
+                        description: None,
+                        plugin: Some("demo-services".to_string()),
+                        sensitive: false,
+                    })
+                    .collect(),
+            ),
+
+            service_chain: None,
+
             bound_services: Arc::new(
                 DemoServiceRouter::native_service_names()
                     .iter()
@@ -593,6 +622,28 @@ impl SessionApi {
         v.extend(metas);
         v.sort_by(|a, b| a.name.cmp(&b.name));
         self.registry_services = Arc::new(v);
+        self
+    }
+
+    /// 注入插件进程内服务能力清单（builder 模式，插件对账泛化）
+    ///
+    /// main.rs 从 PLUGIN_DEFS 声明表派生（含 plugin 归属/描述/敏感标记）。
+    /// **替换语义**：覆盖默认 demo 兜底清单；同时 `bound_services` 并集追加
+    /// 全部 native 名（import_bundle 敏感服务核对随生产清单泛化）。
+    pub fn with_native_services(mut self, infos: Vec<BoundServiceInfo>) -> Self {
+        let mut set = (*self.bound_services).clone();
+        set.extend(infos.iter().map(|i| i.name.clone()));
+        self.bound_services = Arc::new(set);
+        self.native_services = Arc::new(infos);
+        self
+    }
+
+    /// 注入插件服务回落链（builder 模式，invoke 直调用）
+    ///
+    /// 与 io_request 同一处理器链（插件路由 → registry HTTP 回落），
+    /// 保证直调与会话调用无第二执行路径。
+    pub fn with_service_chain(mut self, chain: Arc<dyn evorule_reactor::IoHandler>) -> Self {
+        self.service_chain = Some(chain);
         self
     }
 
@@ -7229,6 +7280,12 @@ impl GovernanceServer {
         let protected_routes = Router::new()
             // 单反应器模式路由（向后兼容）
             .route("/api/command", post(submit_command))
+            // 服务直调：与 io_request 同一处理器链，属状态变更执行面——
+            // 必须受认证保护；敏感服务另有 403 守卫（须走会话审计链）。
+            .route(
+                "/api/services/{name}/invoke",
+                post(invoke_service_handler),
+            )
             .route("/api/payload", post(update_payload))
             .route("/api/state", get(get_state))
             .route("/api/audit", get(get_audit))
@@ -7730,18 +7787,25 @@ pub async fn hit_stats_rule_handler(
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BoundServiceInfo {
     pub name: String,
-    /// `native`（内嵌 demo-services 叶子能力）| `registry`（service_registry.json 显式绑定）
+    /// `native`（内嵌插件进程内服务）| `registry`（service_registry.json 显式绑定）
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 归属插件 id（如 "demo-services"/"physics-services"）；registry 条目无归属，为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    /// 敏感服务标记（插件声明表派生）：true 时禁止 REST 直调（invoke 403），必须走会话审计链
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sensitive: bool,
 }
 
 /// GET /api/services —— 执行侧已绑定服务能力对账（C5）
 ///
-/// 返回执行侧可路由服务全集：原生叶子能力（`native`，version=1.0.0）+
-/// service_registry.json（`registry`，带配置的 version/description）。
+/// 返回执行侧可路由服务全集：插件进程内服务（`native`，main.rs 从 PLUGIN_DEFS
+/// 派生注入，含 per-plugin 归属与声明表 description）+ service_registry.json
+/// （`registry`，带配置的 version/description）。
 /// 供场景包导入前的服务需求预检（02 方案 §3.5）与治理侧服务目录
 /// （`GET /v1/services`）做服务需求核对。
 #[utoipa::path(
@@ -7753,24 +7817,88 @@ pub struct BoundServiceInfo {
     )
 )]
 pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<BoundServiceInfo>> {
-    let mut out: Vec<BoundServiceInfo> = DemoServiceRouter::native_service_names()
-        .iter()
-        .map(|name| BoundServiceInfo {
-            name: (*name).to_string(),
-            source: "native".to_string(),
-            version: Some("1.0.0".to_string()),
-            description: None,
-        })
-        .collect();
+    let mut out: Vec<BoundServiceInfo> = api.native_services.as_ref().clone();
     for meta in api.registry_services.iter() {
         out.push(BoundServiceInfo {
             name: meta.name.clone(),
             source: "registry".to_string(),
             version: meta.version.clone(),
             description: meta.description.clone(),
+            plugin: None,
+            sensitive: false,
         });
     }
     Json(out)
+}
+
+/// POST /api/services/{name}/invoke —— 插件服务直调（服务消费契约）
+///
+/// 与 io_request **同一处理器链**（插件路由原生优先 → registry HTTP 回落），
+/// 无第二执行路径。请求 body = 服务 `args`（JSON 对象）。
+///
+/// 治理语义（fail-fast）：
+/// - 未知服务 → 404（附合法名指引）；
+/// - native 且 sensitive=true → 403 —— 直调敏感服务=静默绕过会话审批链，
+///   禁止（静默通过禁止）；敏感服务必须经会话 call_service 指令走审计与审批；
+/// - 未装配服务链 → 503。
+#[utoipa::path(
+    post,
+    path = "/api/services/{name}/invoke",
+    tag = "services",
+    params(("name" = String, Path, description = "服务名（GET /api/services 对账清单内）")),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "服务执行结果", body = serde_json::Value),
+        (status = 403, description = "敏感服务禁止直调（走会话审计链）"),
+        (status = 404, description = "服务不在对账清单"),
+        (status = 502, description = "服务执行失败（错误透传）"),
+        (status = 503, description = "服务链未装配")
+    )
+)]
+pub async fn invoke_service_handler(
+    State(api): State<SessionApi>,
+    Path(name): Path<String>,
+    Json(args): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let sensitive_native = api
+        .native_services
+        .iter()
+        .find(|i| i.name == name)
+        .map(|i| i.sensitive);
+    let known = sensitive_native.is_some()
+        || api.registry_services.iter().any(|m| m.name == name);
+    if !known {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("unknown service: {name}（合法名见 GET /api/services 对账清单）")
+            })),
+        ));
+    }
+    if sensitive_native == Some(true) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": format!(
+                    "sensitive service {name} 禁止 REST 直调：必须经会话 call_service 指令走审计与审批链"
+                )
+            })),
+        ));
+    }
+    let Some(chain) = api.service_chain.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "service chain 未装配（需 main.rs with_service_chain 注入）" })),
+        ));
+    };
+    let params = serde_to_tcb(serde_json::json!({ "service_name": name, "args": args }));
+    match chain.execute(&params).await {
+        Ok(result) => Ok(Json(tcb_to_serde(&result))),
+        Err(e) => Err((
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": e })),
+        )),
+    }
 }
 
 /// 校验结果响应（与 core ValidationResult 字段一致）

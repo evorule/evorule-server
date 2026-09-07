@@ -95,6 +95,7 @@ use utoipa::OpenApi;
         crate::api::knowledge::knowledge_entry_handler,
         // services / metrics 组（C5 能力对账 / Prometheus 抓取，补注册）
         crate::api::server::list_services_handler,
+        crate::api::server::invoke_service_handler,
         crate::api::server::metrics_handler,
         // audit 档案与平台事件组
         crate::api::server::platform_events_handler,
