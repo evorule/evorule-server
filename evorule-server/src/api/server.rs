@@ -78,6 +78,32 @@ pub fn is_llm_audit_request(io_type: &IoType, params: &JsonValue) -> bool {
         && params.get("name").is_none()
 }
 
+/// 消费方本地工具形态判定（2026-09-07）
+///
+/// `call_service` 且带 `tool_name` 且无 `service_name`/`name` —— 此类 IoRequest
+/// **不由 server 内置 IoSubscriber 自动应答**，留给外部订阅者（evo-agent 等）
+/// 本地执行工具后回写 io_response。
+///
+/// 背景：call_service 有两种互斥的参数形状——
+/// - `service_name`/`name`：平台 HTTP 路由形态（ServiceRegistryHandler 执行）；
+/// - `tool_name`：消费方本地工具形态（evo-agent 宪法 collect 生成，agent 本地
+///   执行工具）。后者对内置订阅者而言是"未知服务"，若抢先应答
+///   `missing required param: service_name` 错误 IoResponse，反应器即消费该
+///   request，外部执行者随后回写的真实工具结果会被按 stale 拒绝
+///   （"IoResponse for unknown/stale request_id"），工具循环断链。
+///   与 `is_llm_audit_request` 防御的 call_external 形态完全同构。
+pub fn is_agent_tool_request(io_type: &IoType, params: &JsonValue) -> bool {
+    io_type.as_str() == "call_service"
+        && params.get("tool_name").is_some()
+        && params.get("service_name").is_none()
+        && params.get("name").is_none()
+}
+
+/// 内置 IoSubscriber 的合并 skip 谓词：任一外部执行者形态命中即跳过自动应答
+pub fn is_external_executor_request(io_type: &IoType, params: &JsonValue) -> bool {
+    is_llm_audit_request(io_type, params) || is_agent_tool_request(io_type, params)
+}
+
 /// 就绪标志（优雅退出时设为 false，readiness 端点返回 503）
 pub type ReadinessFlag = Arc<AtomicBool>;
 
@@ -1633,7 +1659,7 @@ impl evorule_workspace::SessionOps for SessionApi {
                         let command_tx = session.command_tx.clone();
 
                         let subscriber = IoSubscriber::new(dispatcher.clone())
-                            .with_skip(Arc::new(is_llm_audit_request));
+                            .with_skip(Arc::new(is_external_executor_request));
 
                         tokio::spawn(async move {
                             if let Err(e) = subscriber.run(event_rx, command_tx).await {
@@ -3694,7 +3720,7 @@ async fn create_session(
 
                     let subscriber = IoSubscriber::new(dispatcher.clone())
                         .with_metrics(metrics.clone())
-                        .with_skip(Arc::new(is_llm_audit_request));
+                        .with_skip(Arc::new(is_external_executor_request));
 
                     tokio::spawn(async move {
                         if let Err(e) = subscriber.run(event_rx, command_tx).await {
@@ -9209,6 +9235,72 @@ mod tests {
         assert!(!is_llm_audit_request(
             &IoType::call_service(),
             &serde_to_tcb(audit.clone())
+        ));
+    }
+
+    // --- 消费方本地工具形态判定（IoSubscriber 跳过谓词） ---
+
+    #[test]
+    fn test_is_agent_tool_request_shape() {
+        // 工具形态：call_service + tool_name + 无 service_name/name → 跳过自动应答
+        let tool = serde_json::json!({
+            "tool_name": "file_write",
+            "args": { "path": "workspace/expenses_2026.json", "content": "45.50" }
+        });
+        assert!(is_agent_tool_request(
+            &IoType::call_service(),
+            &serde_to_tcb(tool.clone())
+        ));
+        // 合并谓词同样命中
+        assert!(is_external_executor_request(
+            &IoType::call_service(),
+            &serde_to_tcb(tool)
+        ));
+
+        // 平台 HTTP 路由形态（有 service_name）→ 不跳过，内置订阅者照常分发
+        let service = serde_json::json!({
+            "service_name": "payroll_svc",
+            "args": {}
+        });
+        assert!(!is_agent_tool_request(
+            &IoType::call_service(),
+            &serde_to_tcb(service.clone())
+        ));
+        assert!(!is_external_executor_request(
+            &IoType::call_service(),
+            &serde_to_tcb(service)
+        ));
+
+        // name 别名形态 → 不跳过（平台路由别名归 ServiceRegistryHandler）
+        let named = serde_json::json!({ "name": "svc", "args": {} });
+        assert!(!is_agent_tool_request(
+            &IoType::call_service(),
+            &serde_to_tcb(named)
+        ));
+
+        // 无 tool_name 的 call_service → 不跳过
+        let bare = serde_json::json!({ "args": {} });
+        assert!(!is_agent_tool_request(
+            &IoType::call_service(),
+            &serde_to_tcb(bare)
+        ));
+
+        // 其他 io_type 携带 tool_name → 两谓词均不命中（tool_name 仅在 call_service 上表意）
+        let wrong_type = serde_json::json!({ "tool_name": "file_write", "args": {} });
+        assert!(!is_agent_tool_request(
+            &IoType::call_external(),
+            &serde_to_tcb(wrong_type.clone())
+        ));
+        assert!(!is_external_executor_request(
+            &IoType::call_external(),
+            &serde_to_tcb(wrong_type)
+        ));
+        // call_external + messages 仍由 LLM 审计谓词接管（合并谓词回归）
+        let with_messages =
+            serde_json::json!({ "model": "m", "messages": [{"role": "user", "content": "hi"}] });
+        assert!(is_external_executor_request(
+            &IoType::call_external(),
+            &serde_to_tcb(with_messages)
         ));
     }
 

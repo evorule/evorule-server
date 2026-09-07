@@ -1261,7 +1261,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let subscriber = IoSubscriber::new(dispatcher)
         .with_metrics(metrics.clone())
-        .with_skip(Arc::new(evorule_server::api::server::is_llm_audit_request));
+        .with_skip(Arc::new(
+            evorule_server::api::server::is_external_executor_request,
+        ));
 
     // 5. 创建单反应器（GovernanceApi 向后兼容路由用）
     // 单反应器模式也启用 WAL 持久化（与多会话一样，保证重启后可回放审计链）
