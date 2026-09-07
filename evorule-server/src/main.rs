@@ -51,6 +51,7 @@ use evorule_io_handlers::{
 };
 // Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
 use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
+use evorule_finance_config::NATIVE_SERVICES as FINANCE_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
@@ -589,6 +590,10 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "indicator-services",
         defs: INDICATOR_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "finance-config",
+        defs: FINANCE_NATIVE_SERVICES,
     },
 ];
 

@@ -870,6 +870,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-finance-config"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "evorule-governance"
 version = "0.4.2"
 dependencies = [
@@ -1087,6 +1101,7 @@ dependencies = [
  "clap",
  "evorule-bundle",
  "evorule-demo-services",
+ "evorule-finance-config",
  "evorule-governance",
  "evorule-hash",
  "evorule-indicator-services",

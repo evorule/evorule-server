@@ -16,6 +16,7 @@ members = [
     "plugins/demo-services",
     "plugins/physics-services",
     "plugins/indicator-services",
+    "plugins/finance-config",
 ]
 
 [workspace.package]

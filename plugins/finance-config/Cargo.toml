@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-finance-config"
+version.workspace = true
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "finance-config: 财务域配置键读写原生插件 —— 规则/领域 schema 经 config:<key> 引用科目/限额/审批人/税率等动态配置"
+repository = "https://gitee.com/evorule/evorule-server"
+publish = false
+
+[dependencies]
+evorule-tcb = { version = "0.4.0" }
+evorule-reactor = { version = "0.4.0" }
+evorule-plugin-kit = { path = "../../core/plugin-kit" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
