@@ -596,9 +596,7 @@ fn plugin_service_names(def: &PluginDef) -> Vec<&'static str> {
 }
 
 /// 该插件进程内服务能力清单(声明序;/api/services native 对账与 invoke 敏感判定用)。
-fn plugin_service_infos(
-    def: &PluginDef,
-) -> Vec<evorule_server::api::server::BoundServiceInfo> {
+fn plugin_service_infos(def: &PluginDef) -> Vec<evorule_server::api::server::BoundServiceInfo> {
     def.defs
         .iter()
         .map(|s| evorule_server::api::server::BoundServiceInfo {
@@ -778,9 +776,8 @@ fn load_external_plugins(
             e
         )
     })?;
-    let manifest: PluginManifestFile = serde_json::from_str(&content).map_err(|e| {
-        format!("插件清单 JSON 非法 {}: {}", p.display(), e)
-    })?;
+    let manifest: PluginManifestFile = serde_json::from_str(&content)
+        .map_err(|e| format!("插件清单 JSON 非法 {}: {}", p.display(), e))?;
     // plugin.json 相对路径基准 = 清单文件所在目录（清单自包含语义：
     // manifest 与插件包整体相对关系固定，挪动/换机部署不破装载）
     let manifest_base = p
@@ -789,8 +786,7 @@ fn load_external_plugins(
         .unwrap_or_default();
     // 服务名占用核对集 = 进程内插件声明表全集（含停用插件——Off 的进程内服务名
     // 会直连 HTTP 注册表回落，外部包占用同名会造成挂载态静默切换路由，禁止）
-    let mut taken: std::collections::BTreeSet<String> =
-        builtin_names.iter().cloned().collect();
+    let mut taken: std::collections::BTreeSet<String> = builtin_names.iter().cloned().collect();
     let mut out = Vec::new();
     for (id, entry) in &manifest.plugins {
         let Some(rel) = entry.manifest.as_ref() else {
@@ -1382,11 +1378,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .flat_map(|d| plugin_service_names(d).into_iter().map(String::from))
         .collect();
-    let external_mounted = load_external_plugins(
-        cfg.plugins.as_ref(),
-        &mut registry,
-        &builtin_service_names,
-    )?;
+    let external_mounted =
+        load_external_plugins(cfg.plugins.as_ref(), &mut registry, &builtin_service_names)?;
 
     let reg_count = registry.len();
     // 服务绑定核对集：注册表服务名（含外部插件包派生条目）注入 SessionApi，
@@ -1541,21 +1534,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 5. 创建单反应器（GovernanceApi 向后兼容路由用）
     // 单反应器模式也启用 WAL 持久化（与多会话一样，保证重启后可回放审计链）
+    // AUDIT-B1 修复（2026-09-08）：文件已存在时走 recover（append 续链），
+    // 不再用 create 模式截断——旧实现每次重启清空单反应器审计链，
+    // 与"保证重启后可回放"承诺直接矛盾（实测 2621B → 0B）。
+    // 恢复失败 fail-closed 拒绝启动（与 shared_facts 的 AUDIT-A1 同款口径）。
     let mut reactor_builder = Reactor::builder(core_eval.clone()).max_rounds(cfg.max_rounds);
     if let Some(wal_dir) = &cfg.wal_dir {
         let single_wal = wal_dir.join("governance_single_reactor.wal");
-        match FactsLog::with_wal_and_fsync(&single_wal, cfg.wal_fsync) {
+        let wal_exists = single_wal.exists();
+        let opened = if wal_exists {
+            // 已有审计链：append 续链（绝不 truncate）
+            FactsLog::recover_with_fsync(&single_wal, cfg.wal_fsync)
+        } else {
+            // 首次启动：create 新链
+            FactsLog::with_wal_and_fsync(&single_wal, cfg.wal_fsync)
+        };
+        match opened {
             Ok(fl) => {
                 reactor_builder = reactor_builder.facts_log(fl);
                 info!(
-                    "单反应器 WAL 已启用：{}（fsync={}, max_wal_size_bytes={}）",
+                    "单反应器 WAL 已启用：{}（fsync={}, max_wal_size_bytes={}, 模式={}）",
                     single_wal.display(),
                     cfg.wal_fsync,
                     cfg.max_wal_size_bytes,
+                    if wal_exists {
+                        "recover/append"
+                    } else {
+                        "create"
+                    },
                 );
             }
             Err(e) => {
-                warn!("单反应器 WAL 创建失败，退化为纯内存模式：{}", e);
+                error!(
+                    "单反应器 WAL 恢复失败，拒绝启动（请检查磁盘/权限，或备份后清理该 WAL）：{}",
+                    e
+                );
+                return Err(format!("单反应器 WAL 恢复失败: {e}").into());
             }
         }
     }
@@ -2236,8 +2250,8 @@ mod tests {
                 r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let out = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap();
+            let out =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].id, "finance-config");
             assert_eq!(
@@ -2251,7 +2265,11 @@ mod tests {
             assert_eq!(e.timeout_ms, Some(5000));
             assert_eq!(e.version.as_deref(), Some("0.1.0"));
             // 对账信息：plugin 来源 / sensitive / parameters 透传
-            let get_info = out[0].infos.iter().find(|i| i.name == "finance_config_get").unwrap();
+            let get_info = out[0]
+                .infos
+                .iter()
+                .find(|i| i.name == "finance_config_get")
+                .unwrap();
             assert_eq!(get_info.source, "plugin");
             assert_eq!(get_info.plugin.as_deref(), Some("finance-config"));
             assert!(!get_info.sensitive);
@@ -2263,7 +2281,12 @@ mod tests {
                 1
             );
             assert!(
-                out[0].infos.iter().find(|i| i.name == "finance_config_set").unwrap().sensitive,
+                out[0]
+                    .infos
+                    .iter()
+                    .find(|i| i.name == "finance_config_set")
+                    .unwrap()
+                    .sensitive,
                 "sensitive 标记应透传对账清单"
             );
             let _ = pj;
@@ -2279,9 +2302,8 @@ mod tests {
                 r#"{"plugins":{"other-id":{"enabled":true,"manifest":"plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                    .unwrap_err();
+            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap_err();
             assert!(err.contains("id 漂移"), "{err}");
         }
 
@@ -2301,9 +2323,8 @@ mod tests {
                 r#"{"plugins":{"evil":{"enabled":true,"manifest":"plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                    .unwrap_err();
+            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap_err();
             assert!(err.contains("服务名冲突"), "{err}");
         }
 
@@ -2328,9 +2349,8 @@ mod tests {
                                "y":{"enabled":true,"manifest":"badurl.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                    .unwrap_err();
+            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap_err();
             assert!(err.contains("services 为空"), "{err}");
 
             write_file(
@@ -2354,8 +2374,8 @@ mod tests {
                                "demo-services":{"enabled":true}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let out = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap();
+            let out =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
             assert!(out.is_empty(), "enabled=false 的外部包不装载");
             assert!(registry.is_empty(), "不产生任何路由条目");
         }
@@ -2369,9 +2389,8 @@ mod tests {
                 r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"nope/plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                    .unwrap_err();
+            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap_err();
             assert!(err.contains("外部插件清单读取失败"), "{err}");
         }
 
