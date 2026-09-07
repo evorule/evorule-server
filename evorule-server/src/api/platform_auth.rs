@@ -55,10 +55,10 @@ const SESSION_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 // 权限点注册表
 // ---------------------------------------------------------------------------
 
-/// 全部权限点(15 = 业务 12 点 + 平台管理 3 点)。
+/// 全部权限点(16 = 业务 12 点 + 平台管理 4 点)。
 ///
 /// 业务 12 点与 console-cloud `permission-matrix.ts` 保持同名(种子迁移);
-/// 平台管理 3 点是本专项新增。权限点代码内置注册,不允许运行时增删
+/// 平台管理 4 点是本专项新增。权限点代码内置注册,不允许运行时增删
 /// (避免语义漂移;角色→权限点的关联存事实)。
 pub const PLATFORM_ACTIONS: &[&str] = &[
     // 业务 12 点(P08 §5.1 种子)
@@ -74,10 +74,12 @@ pub const PLATFORM_ACTIONS: &[&str] = &[
     "approve_publish",
     "view_publish_queue",
     "view_test_report",
-    // 平台管理 3 点
+    // 平台管理 4 点
     "manage_users",
     "manage_roles",
     "view_users",
+    // 58 号专项 W2:应用级凭据管理(签发/列表/吊销)
+    "manage_apps",
 ];
 
 /// 内置角色(对齐多租户设计 4 角色):不可删除;administrator 不可改权限集
@@ -100,6 +102,7 @@ pub const BUILTIN_ROLES: &[(&str, &[&str])] = &[
             "manage_users",
             "manage_roles",
             "view_users",
+            "manage_apps",
         ],
     ),
     (
@@ -162,6 +165,20 @@ pub struct StoredSession {
     pub revoked: bool,
 }
 
+/// 应用级凭据(事实回放后的当前状态;58 号专项 W2)
+///
+/// 库中只存 key 哈希(`blake3:` 前缀,evorule-hash 纪律),明文仅签发时
+/// 一次性返回;吊销即时生效(状态位回放判定,无缓存延迟)。
+#[derive(Debug, Clone)]
+pub struct PlatformApp {
+    pub app_id: String,
+    /// `blake3:<64hex>`(evorule-hash::prefixed(digest(key)) 存储字段纪律)
+    pub key_hash: String,
+    pub status: String, // ACTIVE | REVOKED
+    pub description: String,
+    pub created_at_ms: u64,
+}
+
 /// 平台状态快照(version 单调递增,前端据此感知授权变更)
 #[derive(Debug, Default)]
 pub struct PlatformSnapshot {
@@ -169,6 +186,7 @@ pub struct PlatformSnapshot {
     pub users: BTreeMap<String, PlatformUser>,
     pub roles: BTreeMap<String, PlatformRole>,
     pub sessions: BTreeMap<String, StoredSession>,
+    pub apps: BTreeMap<String, PlatformApp>,
 }
 
 impl PlatformSnapshot {
@@ -258,6 +276,17 @@ impl PlatformSnapshot {
                     };
                     snap.sessions.insert(name.to_string(), s);
                 }
+                "app" => {
+                    let a = PlatformApp {
+                        app_id: name.to_string(),
+                        key_hash: jstr(v, "key_hash"),
+                        status: jstr(v, "status"),
+                        description: jstr(v, "description"),
+                        created_at_ms: v.get("created_at_ms").and_then(|n| n.as_i64()).unwrap_or(0)
+                            as u64,
+                    };
+                    snap.apps.insert(name.to_string(), a);
+                }
                 _ => {}
             }
         }
@@ -292,6 +321,27 @@ impl PlatformSnapshot {
             .unwrap_or_default();
         Ok((u.username.clone(), perms))
     }
+
+    /// 58 号 W2:校验应用凭据哈希(已含 `blake3:` 前缀的存储形态)。
+    ///
+    /// 快照按 app_id 键存储,key_hash 为值字段 → 线性扫描比对
+    /// (应用数量级为个位~十位,MVP 可接受;命中且 ACTIVE → Ok(app_id);
+    /// 不存在 → Err(Unknown)、已吊销 → Err(Revoked)。中间件对二者
+    /// 统一 401 fail-fast,区分原因仅供审计事件如实留痕,不改响应语义)。
+    pub fn validate_app_key(&self, key_hash: &str) -> Result<String, AppKeyReject> {
+        let mut found: Option<&PlatformApp> = None;
+        for a in self.apps.values() {
+            if a.key_hash == key_hash {
+                found = Some(a);
+                break;
+            }
+        }
+        let a = found.ok_or(AppKeyReject::Unknown)?;
+        if a.status != "ACTIVE" {
+            return Err(AppKeyReject::Revoked);
+        }
+        Ok(a.app_id.clone())
+    }
 }
 
 /// 事实 JSON 取字符串字段(缺省空串)
@@ -300,6 +350,15 @@ fn jstr(v: &JsonValue, key: &str) -> String {
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// 应用凭据校验失败原因(仅用于审计事件如实留痕,不影响 401 响应语义)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppKeyReject {
+    /// 哈希未命中任何应用凭据
+    Unknown,
+    /// 命中但该应用已吊销
+    Revoked,
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +515,19 @@ fn session_fact_path(token_hash: &str) -> String {
     format!("{FACT_PREFIX}session.{token_hash}")
 }
 
+fn app_fact_path(app_id: &str) -> String {
+    format!("{FACT_PREFIX}app.{app_id}")
+}
+
+/// 58 号 W2:应用凭据哈希(存储字段纪律,族 B)。
+///
+/// 只准 evorule-hash(禁自写 blake3):`prefixed(digest(key))` =
+/// `blake3:<64hex>` 自描述前缀,与治理层 bundle/entry 存储形态同源;
+/// 会话 token 库存哈希为无前缀 64-hex(会话锚纪律),两者不混用。
+fn app_key_hash(key: &str) -> String {
+    evorule_hash::prefixed(&evorule_hash::digest(key.as_bytes()))
+}
+
 /// 认证事件入链(append-only,唯一 path 由 时间戳+随机后缀 保证)
 fn append_auth_event(shared: &SharedFactsLog, kind: &str, detail: serde_json::Value) {
     let mut suffix = String::new();
@@ -506,24 +578,60 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
 /// 首启 seed:内置 4 角色无任何 role 事实时写入(幂等:按事实回放判定)。
 /// 在每个平台端点入口调用;并发首次调用可能重复追加同值事实,
 /// last-write-wins 回放下结果一致,无害。
+///
+/// 58 号 W2 增补 administrator 权限集自愈:权限点注册表随专项演进
+/// (如新增 manage_apps),存量部署的 administrator 角色事实是旧权限集
+/// 快照,不会再走空库 seed → 缺新点导致管理端点 403。administrator
+/// 权限集代码内置且不可改(update_role 禁改),回填规范集是安全的;
+/// 其余内置角色权限集允许运营修改,不做自愈。
 pub fn ensure_seed(shared: &SharedFactsLog) -> Result<(), AuthError> {
     let snap = PlatformSnapshot::replay(shared)?;
-    if !snap.roles.is_empty() {
+    if snap.roles.is_empty() {
+        for (name, perms) in BUILTIN_ROLES {
+            append_fact(
+                shared,
+                &role_fact_path(name),
+                serde_json::json!({
+                    "builtin": true,
+                    "status": "ACTIVE",
+                    "description": builtin_role_description(name),
+                    "permissions": perms,
+                }),
+            )?;
+        }
+        tracing::info!("平台授权:已 seed {} 个内置角色", BUILTIN_ROLES.len());
         return Ok(());
     }
-    for (name, perms) in BUILTIN_ROLES {
-        append_fact(
-            shared,
-            &role_fact_path(name),
-            serde_json::json!({
-                "builtin": true,
-                "status": "ACTIVE",
-                "description": builtin_role_description(name),
-                "permissions": perms,
-            }),
-        )?;
+    // administrator 权限集自愈(仅缺点时追加一次,回放后幂等)
+    const ADMIN: &str = "administrator";
+    let canonical = BUILTIN_ROLES
+        .iter()
+        .find(|(n, _)| *n == ADMIN)
+        .map(|(_, p)| *p)
+        .unwrap_or(&[]);
+    if let Some(admin) = snap.roles.get(ADMIN) {
+        let missing: Vec<&str> = canonical
+            .iter()
+            .copied()
+            .filter(|p| !admin.permissions.contains(&p.to_string()))
+            .collect();
+        if !missing.is_empty() {
+            append_fact(
+                shared,
+                &role_fact_path(ADMIN),
+                serde_json::json!({
+                    "builtin": true,
+                    "status": admin.status,
+                    "description": admin.description,
+                    "permissions": canonical,
+                }),
+            )?;
+            tracing::info!(
+                "平台授权:administrator 权限集自愈,补齐缺失权限点 {:?}(权限点注册表演进)",
+                missing
+            );
+        }
     }
-    tracing::info!("平台授权:已 seed {} 个内置角色", BUILTIN_ROLES.len());
     Ok(())
 }
 
@@ -561,6 +669,15 @@ pub struct ChangePasswordReq {
     pub new_password: String,
 }
 
+/// 58 号 W2:应用凭据签发请求(app_id 全局唯一,即使已吊销也不可复用——
+/// 归因连续性优先;需要换钥请换新 app_id 重新登记外部应用)
+#[derive(serde::Deserialize, ToSchema)]
+pub struct IssueAppReq {
+    pub app_id: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 // ---------------------------------------------------------------------------
 // Handlers（bootstrap / login / logout / me / change-password)
 // ---------------------------------------------------------------------------
@@ -586,6 +703,9 @@ pub fn platform_auth_router() -> Router<AppState> {
             "/api/platform/roles/{name}",
             patch(update_role).delete(delete_role),
         )
+        // 58 号 W2:应用级凭据管理面(签发/列表/吊销;manage_apps 权限点)
+        .route("/api/platform/apps", get(list_apps).post(issue_app))
+        .route("/api/platform/apps/{id}/revoke", post(revoke_app))
 }
 
 use crate::api::server::AppState;
@@ -776,14 +896,20 @@ pub struct AuthedActor(pub String);
 
 /// 业务 API 统一认证中间件(挂 protected_routes)。
 ///
-/// **双凭据语义**:
+/// **三凭据语义**(58 号 W2 扩展;判定顺序 静态 token → 平台会话 → app key):
 ///
 /// 1. AuthConfig 未启用(开发模式)→ 放行,语义不变;
 /// 2. Bearer token 命中静态 user/service token → 放行并注入
 ///    [`crate::auth::CallerIdentity`](evo-agent 侧车审计桥走此通道,即"白名单");
 /// 3. 否则按平台会话校验(库存 blake3 哈希)→ 命中注入 `CallerIdentity::User`
-///    (平台用户等同普通 user 凭据,不可写受保护域 `shared.*.stable.*`);
-/// 4. 全部未命中 → 401 + 统一 JSON 错误体(此前为空 body 的裸状态码)。
+///    与 `AuthedActor(username)`(平台用户等同普通 user 凭据,不可写受保护域
+///    `shared.*.stable.*`;审批代理 approver 取登录用户名);
+/// 4. 否则按应用凭据校验(evorule-hash `blake3:` 前缀哈希)→ 命中注入
+///    `CallerIdentity::App` 并落 app 归因事件(app_id/方法/路径/ts,可经
+///    `/api/audit/platform-events` 查询);不注入 `AuthedActor`(审批等
+///    人工动作端点在 handler 层拒绝,审批 = 人类在场);
+/// 5. 全部未命中 → 401 + 统一 JSON 错误体(fail-fast,族 H 不降级;
+///    拒绝原因入审计事件如实留痕)。
 ///
 /// 403 语义由端点层自理:平台管理端点在 handler 内校验权限点。
 ///
@@ -804,41 +930,84 @@ pub async fn unified_auth_middleware(
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("")
         .to_string();
+    // 通道一:静态 token(user/service 白名单)
     if !raw.is_empty() && auth_config.validate(&raw) {
         let identity = auth_config.identity(&raw);
         // 登录身份注入:平台用户凭据无个人身份(静态 token),记固定标识;
         // service 凭据不注入 AuthedActor(审批等人工端点在 handler 层 403 拒绝)
         match identity {
             crate::auth::CallerIdentity::User => {
-                req.extensions_mut().insert(AuthedActor("static-user".to_string()));
+                req.extensions_mut()
+                    .insert(AuthedActor("static-user".to_string()));
             }
-            crate::auth::CallerIdentity::Service => {}
+            crate::auth::CallerIdentity::Service | crate::auth::CallerIdentity::App => {}
         }
         req.extensions_mut().insert(identity);
         return next.run(req).await;
     }
-    // 平台会话凭据(非空才尝试;空 token 直接 401,与静态路径 N1 规则一致)
     if raw.is_empty() {
+        // 空 token 直接 401,与静态路径 N1 规则一致
         return unauthorized_response();
     }
+    let snap = match PlatformSnapshot::replay(&shared) {
+        Ok(snap) => snap,
+        Err(_) => return unauthorized_response(),
+    };
+    // 通道二:平台会话(库存无前缀 64-hex 哈希)
     let token_hash = Hasher::new()
         .update(raw.as_bytes())
         .finalize()
         .to_hex()
         .to_string();
-    let snap = match PlatformSnapshot::replay(&shared) {
-        Ok(snap) => snap,
-        Err(_) => return unauthorized_response(),
-    };
-    match snap.validate_session(&token_hash, now_ms()) {
-        Ok((username, _perms)) => {
-            req.extensions_mut()
-                .insert(crate::auth::CallerIdentity::User);
-            tracing::debug!(username = %username, "平台会话认证通过");
-            next.run(req).await
-        }
-        Err(_) => unauthorized_response(),
+    if let Ok((username, _perms)) = snap.validate_session(&token_hash, now_ms()) {
+        req.extensions_mut()
+            .insert(crate::auth::CallerIdentity::User);
+        // 58 号 W2 顺带修复:平台会话此前未注入 AuthedActor,审批代理
+        // approver 恒落 "anonymous"(57 号 W2 测试仅覆盖静态 token 通道)。
+        // 按 AuthedActor 契约补注入登录用户名。
+        req.extensions_mut().insert(AuthedActor(username.clone()));
+        tracing::debug!(username = %username, "平台会话认证通过");
+        return next.run(req).await;
     }
+    // 通道三:应用凭据(evorule-hash blake3: 前缀哈希)
+    let key_hash = app_key_hash(&raw);
+    match snap.validate_app_key(&key_hash) {
+        Ok(app_id) => {
+            req.extensions_mut()
+                .insert(crate::auth::CallerIdentity::App);
+            // 归因 fact:app_id/方法/路径/ts 入审计链(platform-events 报表可见)。
+            // invoke 直调同为 protected_routes 路由,自动覆盖同一归因路径。
+            append_platform_event(
+                &shared,
+                "app_invoke",
+                serde_json::json!({
+                    "app_id": app_id,
+                    "method": req.method().as_str(),
+                    "path": req.uri().path(),
+                    "ts": now_ms(),
+                }),
+            );
+            tracing::debug!(app_id = %app_id, "应用凭据认证通过");
+            return next.run(req).await;
+        }
+        Err(reject) => {
+            // 拒绝留痕仅限"已吊销凭据被使用"(真实安全信号:吊销后仍在访问);
+            // unknown 垃圾 token 不留痕——否则每个无效请求强制一次事实追加,
+            // 构成写放大 DoS 面(与会话通道对无效 token 静默 401 的语义一致)。
+            if matches!(reject, AppKeyReject::Revoked) {
+                append_platform_event(
+                    &shared,
+                    "app_key_rejected",
+                    serde_json::json!({
+                        "reason": "revoked",
+                        "path": req.uri().path(),
+                        "ts": now_ms(),
+                    }),
+                );
+            }
+        }
+    }
+    unauthorized_response()
 }
 
 /// `POST /api/platform/auth/logout` — 吊销当前会话(幂等)。
@@ -1592,6 +1761,151 @@ async fn delete_role(
 }
 
 // ---------------------------------------------------------------------------
+// 58 号 W2:应用级凭据管理(签发/列表/吊销;manage_apps 权限点)
+// ---------------------------------------------------------------------------
+
+/// `POST /api/platform/apps` — 签发应用凭据。
+///
+/// 生成 256-bit 随机 key(与会话 token 同强度),库中只存 evorule-hash
+/// `blake3:` 前缀哈希;**明文仅本响应返回一次**(遗失只能吊销重签)。
+/// app_id 全局唯一(含已吊销——归因连续性优先,不复用身份)。
+#[utoipa::path(
+    post,
+    path = "/api/platform/apps",
+    tag = "platform-auth",
+    request_body = IssueAppReq,
+    responses(
+        (status = 201, description = "已签发;key 明文仅此一次返回", body = serde_json::Value),
+        (status = 400, description = "app_id 非法(字母/数字/_-.,1-64 位)", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_apps 权限", body = serde_json::Value),
+        (status = 409, description = "app_id 已存在(含已吊销)", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
+async fn issue_app(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    Json(req): Json<IssueAppReq>,
+) -> ApiResult {
+    let (snap, caller) = require_permission(&shared, &headers, "manage_apps")?;
+    validate_name(&req.app_id, "app_id")?;
+    if snap.apps.contains_key(&req.app_id) {
+        return Err(err_json(AuthError::Conflict(format!(
+            "app_id 已存在: {}(含已吊销,身份不复用;如需换钥请更换 app_id)",
+            req.app_id
+        ))));
+    }
+    let (key, _) = generate_token()?;
+    let created_at_ms = now_ms();
+    append_fact(
+        &shared,
+        &app_fact_path(&req.app_id),
+        serde_json::json!({
+            "key_hash": app_key_hash(&key),
+            "status": "ACTIVE",
+            "description": req.description,
+            "created_at_ms": created_at_ms,
+        }),
+    )?;
+    append_auth_event(
+        &shared,
+        "app_issued",
+        serde_json::json!({ "app_id": req.app_id, "by": caller }),
+    );
+    tracing::info!("平台授权:应用凭据已签发 {}(by {caller})", req.app_id);
+    Ok(ok_json(
+        StatusCode::CREATED,
+        serde_json::json!({
+            "success": true,
+            "app_id": req.app_id,
+            "key": key,
+            "created_at_ms": created_at_ms,
+        }),
+    ))
+}
+
+/// `GET /api/platform/apps` — 应用凭据列表(只含哈希,不含明文)。
+#[utoipa::path(
+    get,
+    path = "/api/platform/apps",
+    tag = "platform-auth",
+    responses(
+        (status = 200, description = "应用凭据列表(key_hash 为 blake3: 前缀哈希)", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_apps 权限", body = serde_json::Value),
+        (status = 500, description = "事实回放失败", body = serde_json::Value)
+    )
+)]
+async fn list_apps(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
+    let (snap, _caller) = require_permission(&shared, &headers, "manage_apps")?;
+    let apps: Vec<serde_json::Value> = snap
+        .apps
+        .values()
+        .map(|a| {
+            serde_json::json!({
+                "app_id": a.app_id,
+                "key_hash": a.key_hash,
+                "status": a.status,
+                "description": a.description,
+                "created_at_ms": a.created_at_ms,
+            })
+        })
+        .collect();
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true, "apps": apps }),
+    ))
+}
+
+/// `POST /api/platform/apps/{id}/revoke` — 吊销应用凭据(即时生效,幂等)。
+///
+/// 吊销后该 app key 的下一请求即 401(每次请求按事实回放判定,无缓存延迟);
+/// 对已吊销应用重复吊销幂等成功。吊销使用事件入审计链(app_key_rejected)。
+#[utoipa::path(
+    post,
+    path = "/api/platform/apps/{id}/revoke",
+    tag = "platform-auth",
+    params(("id" = String, Path, description = "应用 id")),
+    responses(
+        (status = 200, description = "已吊销(重复吊销幂等成功)", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_apps 权限", body = serde_json::Value),
+        (status = 409, description = "应用不存在", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
+async fn revoke_app(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult {
+    let (snap, caller) = require_permission(&shared, &headers, "manage_apps")?;
+    let Some(app) = snap.apps.get(&id) else {
+        return Err(err_json(AuthError::Conflict(format!("应用不存在: {id}"))));
+    };
+    if app.status != "REVOKED" {
+        append_fact(
+            &shared,
+            &app_fact_path(&id),
+            serde_json::json!({
+                "key_hash": app.key_hash,
+                "status": "REVOKED",
+                "description": app.description,
+                "created_at_ms": app.created_at_ms,
+            }),
+        )?;
+        append_auth_event(
+            &shared,
+            "app_revoked",
+            serde_json::json!({ "app_id": id, "by": caller }),
+        );
+        tracing::info!("平台授权:应用凭据已吊销 {id}(by {caller})");
+    }
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({ "success": true, "app_id": id, "status": "REVOKED" }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -2053,6 +2367,390 @@ mod tests {
         // 4. 未知 token → 401
         let resp = send(app, Some("bogus-token".into())).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ------------------------- 58 号 W2:应用级凭据 -------------------------
+
+    /// 哈希前缀纪律(族 B):app_key_hash 只准 evorule-hash,`blake3:` 前缀,
+    /// 与黄金向量字节一致;与会话 token 的无前缀库存哈希形态区分。
+    #[test]
+    fn test_app_key_hash_prefix_discipline() {
+        let h = app_key_hash("some-app-key");
+        assert!(h.starts_with("blake3:"), "存储字段必须带 blake3: 前缀: {h}");
+        assert_eq!(h.len(), 7 + 64, "前缀 + 64-hex: {h}");
+        // 黄金向量对齐 evorule-hash::digest(锁定 blake3 原语)
+        let digest = evorule_hash::digest(b"some-app-key");
+        assert_eq!(h, format!("blake3:{digest}"));
+        assert_eq!(
+            evorule_hash::digest(b"evorule"),
+            "7758f03680f4593e860eb2fc5257cc78d78563d315debde26be7bdb82f18bed4",
+            "evorule-hash 黄金向量"
+        );
+        // 与会话 token 哈希形态(无前缀)不混用
+        let (_, session_hash) = generate_token().unwrap();
+        assert!(!session_hash.starts_with("blake3:"));
+    }
+
+    /// 快照回放 + validate_app_key:active 通过 / revoked 拒绝 / unknown 拒绝。
+    #[test]
+    fn test_app_replay_and_validate() {
+        let shared = shared_log();
+        let key_hash = app_key_hash("key-alpha");
+        append_fact(
+            &shared,
+            &app_fact_path("alpha"),
+            serde_json::json!({
+                "key_hash": key_hash,
+                "status": "ACTIVE",
+                "description": "测试应用",
+                "created_at_ms": 1234u64,
+            }),
+        )
+        .unwrap();
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        assert_eq!(snap.apps.len(), 1);
+        assert_eq!(snap.validate_app_key(&key_hash).unwrap(), "alpha");
+        assert_eq!(
+            snap.validate_app_key(&app_key_hash("key-beta")),
+            Err(AppKeyReject::Unknown)
+        );
+        // 吊销(last-write-wins)→ Revoked,且不影响其他字段
+        append_fact(
+            &shared,
+            &app_fact_path("alpha"),
+            serde_json::json!({
+                "key_hash": key_hash,
+                "status": "REVOKED",
+                "description": "测试应用",
+                "created_at_ms": 1234u64,
+            }),
+        )
+        .unwrap();
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        assert_eq!(snap.validate_app_key(&key_hash), Err(AppKeyReject::Revoked));
+    }
+
+    /// 管理端点全流程:签发(明文仅一次)→ 重复 409 → 非法 400 →
+    /// 列表只含哈希 → 吊销即时生效 → 幂等吊销 → 未知吊销 409 → viewer 403。
+    #[tokio::test]
+    async fn test_app_management_flow() {
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+        bootstrap(
+            State(shared.clone()),
+            Json(BootstrapReq {
+                username: "root".into(),
+                password: "admin-pass-123".into(),
+                display_name: String::new(),
+            }),
+        )
+        .await
+        .expect_ok();
+        let admin_h = auth_headers(&login_token(&shared, "root", "admin-pass-123").await);
+
+        // 签发成功:201,明文 key 仅此一次
+        let (_, Json(v)) = issue_app(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(IssueAppReq {
+                app_id: "evo-agent".into(),
+                description: "外部应用接入".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["success"], true);
+        let key = v["key"].as_str().unwrap().to_string();
+        assert_eq!(key.len(), 64);
+        assert_eq!(v["app_id"], "evo-agent");
+
+        // 重复 app_id → 409
+        assert_eq!(
+            issue_app(
+                State(shared.clone()),
+                admin_h.clone(),
+                Json(IssueAppReq {
+                    app_id: "evo-agent".into(),
+                    description: String::new(),
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::CONFLICT
+        );
+
+        // 非法 app_id → 400
+        assert_eq!(
+            issue_app(
+                State(shared.clone()),
+                admin_h.clone(),
+                Json(IssueAppReq {
+                    app_id: "bad id!".into(),
+                    description: String::new(),
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        // 列表:只含哈希,不含明文
+        let (_, Json(v)) = list_apps(State(shared.clone()), admin_h.clone())
+            .await
+            .unwrap();
+        let apps = v["apps"].as_array().unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0]["app_id"], "evo-agent");
+        assert_eq!(apps[0]["status"], "ACTIVE");
+        let key_hash = apps[0]["key_hash"].as_str().unwrap();
+        assert!(key_hash.starts_with("blake3:"));
+        assert!(!serde_json::to_string(&v).unwrap().contains(&key));
+
+        // 吊销 → 即时生效;重复吊销幂等成功
+        let (_, Json(v)) = revoke_app(
+            State(shared.clone()),
+            admin_h.clone(),
+            axum::extract::Path("evo-agent".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "REVOKED");
+        let (_, Json(v)) = revoke_app(
+            State(shared.clone()),
+            admin_h.clone(),
+            axum::extract::Path("evo-agent".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "REVOKED");
+
+        // 未知应用吊销 → 409
+        assert_eq!(
+            revoke_app(
+                State(shared.clone()),
+                admin_h.clone(),
+                axum::extract::Path("ghost".into()),
+            )
+            .await
+            .err_status(),
+            StatusCode::CONFLICT
+        );
+
+        // viewer 角色无 manage_apps → 403
+        create_user(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(CreateUserReq {
+                username: "carol".into(),
+                password: "carol-pass-123".into(),
+                display_name: String::new(),
+                email: String::new(),
+                department: String::new(),
+                role: "viewer".into(),
+            }),
+        )
+        .await
+        .expect_ok();
+        let carol_h = auth_headers(&login_token(&shared, "carol", "carol-pass-123").await);
+        assert_eq!(
+            list_apps(State(shared.clone()), carol_h).await.err_status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    /// ensure_seed administrator 自愈:存量部署旧权限集(缺 manage_apps)→
+    /// 调用后补齐规范集;其余内置角色不受影响。
+    #[tokio::test]
+    async fn test_ensure_seed_administrator_heal() {
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+        // 模拟存量部署:administrator 是旧权限集快照(仅 3 个点)
+        append_fact(
+            &shared,
+            &role_fact_path("administrator"),
+            serde_json::json!({
+                "builtin": true,
+                "status": "ACTIVE",
+                "description": "内置管理员(权限集不可修改)",
+                "permissions": ["view_monitor", "manage_users", "manage_roles"],
+            }),
+        )
+        .unwrap();
+        // 其余内置角色正常存在
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        assert_eq!(snap.roles.len(), 4);
+
+        ensure_seed(&shared).unwrap();
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        let admin = snap.roles.get("administrator").unwrap();
+        assert!(admin.permissions.contains(&"manage_apps".to_string()));
+        assert_eq!(admin.permissions.len(), PLATFORM_ACTIONS.len());
+        // 幂等:再次调用不追加(权限集已齐)
+        let v1 = shared.version();
+        ensure_seed(&shared).unwrap();
+        assert_eq!(shared.version(), v1);
+    }
+
+    /// 三通道判定矩阵 + app 归因事件 + AuthedActor 注入契约:
+    /// - 静态 token → 200,AuthedActor="static-user",身份 User;
+    /// - 平台会话 → 200,AuthedActor=登录用户名(58 号 W2 顺带修复),身份 User;
+    /// - app key → 200,无 AuthedActor,身份 App,落 app_invoke 归因事件;
+    /// - 已吊销 app key → 401 + app_key_rejected(revoked)事件;
+    /// - 未知 token → 401(无事件,写放大防护)。
+    #[tokio::test]
+    async fn test_unified_auth_middleware_app_key_channel() {
+        use axum::body::Body;
+        use axum::http::Request as HttpRequest;
+        use axum::middleware;
+        use tower::ServiceExt;
+
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+        bootstrap(
+            State(shared.clone()),
+            Json(BootstrapReq {
+                username: "root".into(),
+                password: "admin-pass-123".into(),
+                display_name: String::new(),
+            }),
+        )
+        .await
+        .expect_ok();
+        let admin_h = auth_headers(&login_token(&shared, "root", "admin-pass-123").await);
+        let platform_token = login_token(&shared, "root", "admin-pass-123").await;
+
+        // 签发两个应用凭据:一个保持 ACTIVE,一个随后吊销
+        let (_, Json(v)) = issue_app(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(IssueAppReq {
+                app_id: "evo-agent".into(),
+                description: String::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        let app_key = v["key"].as_str().unwrap().to_string();
+        let (_, Json(v)) = issue_app(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(IssueAppReq {
+                app_id: "revoked-app".into(),
+                description: String::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        let revoked_key = v["key"].as_str().unwrap().to_string();
+        revoke_app(
+            State(shared.clone()),
+            admin_h,
+            axum::extract::Path("revoked-app".into()),
+        )
+        .await
+        .expect_ok();
+
+        // 探针路由:回显注入的 AuthedActor 与 CallerIdentity
+        async fn probe(
+            actor: Option<axum::Extension<AuthedActor>>,
+            identity: Option<axum::Extension<crate::auth::CallerIdentity>>,
+        ) -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "actor": actor.map(|axum::Extension(a)| a.0),
+                "identity": match identity {
+                    Some(axum::Extension(crate::auth::CallerIdentity::User)) => "user",
+                    Some(axum::Extension(crate::auth::CallerIdentity::Service)) => "service",
+                    Some(axum::Extension(crate::auth::CallerIdentity::App)) => "app",
+                    None => "none",
+                },
+            }))
+        }
+        let auth_config = crate::auth::AuthConfig::new(vec!["static-user-token".into()], true)
+            .with_service_tokens(vec!["static-svc-token".into()]);
+        let app: Router =
+            Router::new()
+                .route("/api/ping", get(probe))
+                .layer(middleware::from_fn_with_state(
+                    (auth_config, shared.clone()),
+                    unified_auth_middleware,
+                ));
+
+        let send = |app: Router, token: Option<String>| {
+            let mut builder = HttpRequest::builder().uri("/api/ping");
+            if let Some(t) = token {
+                builder = builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {t}"));
+            }
+            app.oneshot(builder.body(Body::empty()).unwrap())
+        };
+        let body_of = |resp: axum::response::Response| async move {
+            let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        };
+
+        // 1. 静态 user token → 200,actor=static-user,identity=user
+        let resp = send(app.clone(), Some("static-user-token".into()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_of(resp).await;
+        assert_eq!(v["actor"], "static-user");
+        assert_eq!(v["identity"], "user");
+
+        // 2. 平台会话 → 200,actor=登录用户名,identity=user
+        let resp = send(app.clone(), Some(platform_token)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_of(resp).await;
+        assert_eq!(v["actor"], "root");
+        assert_eq!(v["identity"], "user");
+
+        // 3. app key → 200,无 actor,identity=app,归因事件入链
+        let resp = send(app.clone(), Some(app_key.clone())).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_of(resp).await;
+        assert!(v["actor"].is_null(), "app key 不注入 AuthedActor");
+        assert_eq!(v["identity"], "app");
+        let events = shared.facts_by_path_prefix("platform.event.app_invoke");
+        assert_eq!(events.len(), 1, "app_invoke 归因事件应恰好一条");
+        let detail = &events[0].value;
+        assert_eq!(
+            detail
+                .get("detail")
+                .and_then(|d| d.get("app_id"))
+                .and_then(|x| x.as_str()),
+            Some("evo-agent")
+        );
+
+        // 4. 已吊销 app key → 401 + app_key_rejected(revoked)事件
+        let resp = send(app.clone(), Some(revoked_key)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let events = shared.facts_by_path_prefix("platform.event.app_key_rejected");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0]
+                .value
+                .get("detail")
+                .and_then(|d| d.get("reason"))
+                .and_then(|x| x.as_str()),
+            Some("revoked")
+        );
+
+        // 5. 未知 token → 401,且无新增事件(unknown 不留痕,写放大防护)
+        let n_before = shared.facts_by_path_prefix("platform.event.").len();
+        let resp = send(app.clone(), Some("garbage-token".into()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            shared.facts_by_path_prefix("platform.event.").len(),
+            n_before
+        );
+
+        // 6. 静态 service token → 200,无 actor,identity=service(既有语义不变)
+        let resp = send(app, Some("static-svc-token".into())).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_of(resp).await;
+        assert!(v["actor"].is_null());
+        assert_eq!(v["identity"], "service");
     }
 
     #[test]

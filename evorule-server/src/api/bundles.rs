@@ -674,10 +674,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl evorule_reactor::IoHandler for TestEchoChain {
-        async fn execute(
-            &self,
-            _params: &evorule_tcb::JsonValue,
-        ) -> evorule_reactor::IoResult {
+        async fn execute(&self, _params: &evorule_tcb::JsonValue) -> evorule_reactor::IoResult {
             Ok(evorule_tcb::JsonValue::String("echo".into()))
         }
     }
@@ -720,7 +717,9 @@ mod tests {
         let natives: Vec<&crate::api::server::BoundServiceInfo> =
             out.iter().filter(|b| b.source == "native").collect();
         assert_eq!(natives.len(), 2, "注入清单应整体替换 demo 兜底");
-        assert!(!natives.iter().any(|b| b.name == "inverse_kinematics_solver"));
+        assert!(!natives
+            .iter()
+            .any(|b| b.name == "inverse_kinematics_solver"));
         let physics = out.iter().find(|b| b.name == "physics_simulate").unwrap();
         assert_eq!(physics.plugin.as_deref(), Some("physics-services"));
         assert_eq!(physics.description.as_deref(), Some("确定性物理仿真推进"));
@@ -779,7 +778,10 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
-        assert!(body.0.to_string().contains("禁止"), "403 文案应指明直调禁止");
+        assert!(
+            body.0.to_string().contains("禁止"),
+            "403 文案应指明直调禁止"
+        );
 
         // ③ 未知服务 → 404（附合法名指引）
         let (status, body) = crate::api::server::invoke_service_handler(

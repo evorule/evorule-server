@@ -41,12 +41,18 @@ pub struct AuthConfig {
 ///
 /// 由 [`AuthConfig::identity`] 按凭据归属判定；认证禁用时中间件不注入
 /// 身份，handler 侧按放行处理（开发模式语义不变）。
+///
+/// 58 号专项 W2：新增 [`CallerIdentity::App`]（应用级凭据，外部应用以
+/// 独立 app key 接入）。与 [`CallerIdentity::User`] 同受"受保护域仅
+/// service 可写"限制；审批等人工动作端点同样拒绝（审批 = 人类在场）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerIdentity {
     /// 普通 token（禁止写受保护域）
     User,
     /// 受信服务管道 token（evo-agent 等内部组件）
     Service,
+    /// 应用级凭据（外部应用独立 app key，请求按 app 归因入审计链）
+    App,
 }
 
 impl AuthConfig {

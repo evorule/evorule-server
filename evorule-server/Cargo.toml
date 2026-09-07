@@ -42,6 +42,9 @@ evorule-rule-schema = { path = "../core/rule_schema" }
 
 # 快照包共享校验（36 号 集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘）
 evorule-bundle = { version = "0.3.0" }
+# 58 号 W2 上移为生产依赖（自 dev-dependencies）：应用凭据 key_hash 必须
+# 统一走 evorule-hash（族 B 哈希纪律，禁自写 blake3），存储字段带 blake3: 前缀
+evorule-hash = "0.1.3"
 
 # Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
 evorule-demo-services = { path = "../plugins/demo-services" }
@@ -124,8 +127,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # H6: benchmarks 迁移到应用层后需要的依赖
 # bench_determinism/long_session/throughput 通过 HTTP 调用 evorule-server 进行压测
 # (reqwest 已上移至 [dependencies],dev 场景自动可用)
-# bench_determinism 计算 payload hash (审计⑥ C3: 统一走 evorule-hash)
-evorule-hash = "0.1.3"
+# (evorule-hash 已上移至 [dependencies],58 号 W2 应用凭据哈希,dev 场景自动可用)
 # 配置解析测试需要临时文件
 tempfile = "3"
 # handler oneshot 测试需要 ServiceExt::oneshot（util feature）

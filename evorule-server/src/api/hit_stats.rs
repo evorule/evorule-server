@@ -354,13 +354,10 @@ impl HitStatsAggregator {
             if instr_type == "unknown" {
                 instr_type = meta.instr_type.clone();
             }
-            let stat = inner
-                .stats
-                .get(&(
-                    layout.ruleset_version.clone(),
-                    source.to_string(),
-                    index,
-                ));
+            let stat =
+                inner
+                    .stats
+                    .get(&(layout.ruleset_version.clone(), source.to_string(), index));
             // 已知版本都进切片：有统计给计数，无统计记 0（零命中版本可见）
             series.push(VersionStatEntry {
                 ruleset_version: layout.ruleset_version.clone(),
@@ -383,11 +380,7 @@ impl HitStatsAggregator {
 
 /// 当前版本内零命中规则数（gauge/内部复用；持锁调用）
 fn count_zero_rules(inner: &Inner, version: &str) -> u64 {
-    let Some(layout) = inner
-        .layouts
-        .iter()
-        .find(|l| l.ruleset_version == version)
-    else {
+    let Some(layout) = inner.layouts.iter().find(|l| l.ruleset_version == version) else {
         return 0;
     };
     zero_rules_of(layout, &inner.stats, version).len() as u64
@@ -403,7 +396,9 @@ fn zero_rules_of(
         .rules
         .iter()
         .enumerate()
-        .filter(|(index, meta)| !stats.contains_key(&(version.to_string(), meta.source.clone(), *index as u64)))
+        .filter(|(index, meta)| {
+            !stats.contains_key(&(version.to_string(), meta.source.clone(), *index as u64))
+        })
         .map(|(index, meta)| ZeroHitEntry {
             source: meta.source.clone(),
             index: index as u64,
@@ -423,10 +418,7 @@ fn wall_now_ms() -> u64 {
 /// hit-stats 事件记录循环：订阅会话/单反应器 event 通道，消费 TransitionTrace
 ///
 /// 通道关闭（会话结束）自动退出；Lagged 时 warn 留痕（计数尽力而为，不承载审计责任）。
-pub async fn run_recorder(
-    mut rx: tokio::sync::broadcast::Receiver<Fact>,
-    agg: HitStatsAggregator,
-) {
+pub async fn run_recorder(mut rx: tokio::sync::broadcast::Receiver<Fact>, agg: HitStatsAggregator) {
     loop {
         match rx.recv().await {
             Ok(Fact::TransitionTrace { rule_hits, .. }) => agg.record_trace(&rule_hits),
@@ -603,8 +595,7 @@ mod tests {
         assert_eq!(e0.hit_count, 2);
         // 规则 1 未命中过 → 零命中清单
         assert!(snap.entries.iter().all(|e| e.index != 1));
-        let zero: Vec<&ZeroHitEntry> =
-            snap.zero_hits.iter().filter(|z| z.index == 1).collect();
+        let zero: Vec<&ZeroHitEntry> = snap.zero_hits.iter().filter(|z| z.index == 1).collect();
         assert_eq!(zero.len(), 1);
         // filter=zero 时 entries 为空；规则 2 在第一条 trace 中命中过 → 仅规则 1 零命中
         let snap_zero = agg.snapshot(None, HitFilter::Zero).unwrap();

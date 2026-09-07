@@ -18,9 +18,9 @@ use evorule_governance::shared_facts_log::SharedFactsLog;
 use tracing::{error, info};
 
 use super::platform_auth::append_platform_event;
-use super::server::{update_plugin_liveness, LivenessEntry};
 #[cfg(test)]
 use super::server::merge_liveness_into_plugins;
+use super::server::{update_plugin_liveness, LivenessEntry};
 
 /// 单插件探测超时
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -96,7 +96,10 @@ async fn probe_once(client: &reqwest::Client, base_url: &str) -> (ProbeStatus, O
             let err = if status == ProbeStatus::Online {
                 None
             } else {
-                Some(format!("HTTP {code}{}", if body_json { "" } else { "(响应非 JSON)" }))
+                Some(format!(
+                    "HTTP {code}{}",
+                    if body_json { "" } else { "(响应非 JSON)" }
+                ))
             };
             (status, err)
         }
@@ -115,13 +118,7 @@ async fn probe_once(client: &reqwest::Client, base_url: &str) -> (ProbeStatus, O
 
 /// 报警事件落链 + error!/info! 自诊断日志(报警 fact 与处置留痕全量,
 /// 人类面安静不等于无报警)
-fn emit_alert(
-    shared: &SharedFactsLog,
-    kind: &str,
-    id: &str,
-    base_url: &str,
-    err: Option<&str>,
-) {
+fn emit_alert(shared: &SharedFactsLog, kind: &str, id: &str, base_url: &str, err: Option<&str>) {
     let detail = serde_json::json!({
         "plugin_id": id,
         "base_url": base_url,
@@ -134,9 +131,9 @@ fn emit_alert(
              ② 检查端口/启动脚本; ③ 恢复后下轮探活自动记 plugin_online 关警）",
             err.unwrap_or("未知错误")
         ),
-        "plugin_online" => info!(
-            "插件恢复在线: {id}（{base_url}）— 系统关警（plugin_online 事件已入链留痕）"
-        ),
+        "plugin_online" => {
+            info!("插件恢复在线: {id}（{base_url}）— 系统关警（plugin_online 事件已入链留痕）")
+        }
         _ => {}
     }
 }
@@ -396,8 +393,7 @@ mod tests {
 
     #[test]
     fn test_merge_none_plugins_is_none() {
-        let merged =
-            merge_liveness_into_plugins(None, &std::collections::BTreeMap::new());
+        let merged = merge_liveness_into_plugins(None, &std::collections::BTreeMap::new());
         assert!(merged.is_none());
     }
 

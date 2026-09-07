@@ -246,6 +246,14 @@ pub struct SessionApi {
     /// 会话管理器
     sessions: Arc<Mutex<session::SessionManager>>,
 
+    /// WAL 目录（fork-from-archive 读归档链的来源；None = 纯内存模式，archive fork 404）
+    /// 消费方接线待后续批次：引擎侧原语已就绪（payload_from_wal_records 全链
+    /// 哈希校验重放 + create_session_from_initial_state 统一 fork 落点 +
+    /// SessionError::ArchiveCorrupted fail-closed），server 侧 fork-from-archive
+    /// handler（读归档 WAL → 重放 → 建链）随后接入。CI -D warnings 过渡豁免。
+    #[allow(dead_code)]
+    wal_dir: Option<std::path::PathBuf>,
+
     /// API 层 FactId 计数器（从 30000 起，避免与反应器自身 ID 冲突）
     next_id: Arc<std::sync::atomic::AtomicU64>,
 
@@ -353,7 +361,13 @@ pub struct PluginAdminEndpoint {
 pub fn plugin_admin_token_env(id: &str) -> String {
     let folded: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("EVORULE_PLUGIN_ADMIN_TOKEN__{folded}")
 }
@@ -526,6 +540,11 @@ impl SessionApi {
 
         Self {
             sessions: sessions.clone(),
+
+            // fork-from-archive：归档链源目录（与 SessionManager/archive_cache 同源）
+            // 58 号 W2 顺带修复：wal_dir 同时供本字段与 archive_cache 消费，
+            // 需 clone 一次否则双重 move 编译失败
+            wal_dir: wal_dir.clone(),
 
             next_id: Arc::new(std::sync::atomic::AtomicU64::new(30000)),
 
@@ -1091,9 +1110,7 @@ impl SessionApi {
     ///
     /// 来源标签 = 相对 rules_dir 的文件路径（`/` 归一化），与合并列表等长。
     /// 目录不存在返回空（纯宪法规则集）。
-    fn load_rules_dir_with_sources(
-        rules_dir: &std::path::Path,
-    ) -> (Vec<JsonValue>, Vec<String>) {
+    fn load_rules_dir_with_sources(rules_dir: &std::path::Path) -> (Vec<JsonValue>, Vec<String>) {
         if !rules_dir.exists() {
             return (Vec::new(), Vec::new());
         }
@@ -1117,7 +1134,7 @@ impl SessionApi {
                     .unwrap_or(&p)
                     .to_string_lossy()
                     .replace('\\', "/");
-                sources.extend(std::iter::repeat(rel).take(extra.len()));
+                sources.extend(std::iter::repeat_n(rel, extra.len()));
                 out.extend(extra);
             }
         }
@@ -2374,7 +2391,10 @@ pub fn merge_liveness_into_plugins(
         let Some(m) = node.as_object_mut() else {
             continue;
         };
-        m.insert("status".into(), serde_json::Value::String(entry.status.clone()));
+        m.insert(
+            "status".into(),
+            serde_json::Value::String(entry.status.clone()),
+        );
         m.insert("last_probe".into(), serde_json::json!(entry.last_probe_ts));
         if let Some(ok) = entry.last_ok_ts {
             m.insert("last_ok".into(), serde_json::json!(ok));
@@ -3583,10 +3603,14 @@ async fn update_payload(
     Json(req): Json<PayloadUpdateRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse>), StatusCode> {
     // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
-    // 身份由认证中间件注入：认证启用时必注入（User/Service）；identity 为 None
+    // 身份由认证中间件注入：认证启用时必注入（User/Service/App）；identity 为 None
     // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
+    // 58 号 W2：App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
     if requires_service_identity(&req.path)
-        && matches!(identity, Some(Extension(CallerIdentity::User)))
+        && matches!(
+            identity,
+            Some(Extension(CallerIdentity::User)) | Some(Extension(CallerIdentity::App))
+        )
     {
         tracing::warn!(path = %req.path, "update_payload 受保护域写入被拒绝（需 service 身份）");
         return Ok((
@@ -4253,6 +4277,17 @@ async fn create_session_from_parent(
 
             Err(StatusCode::SERVICE_UNAVAILABLE)
         }
+
+        // 归档链完整性失败等剩余变体 → 500（fail-closed，原因入 error 日志）。
+        // 本地开发经 .cargo/config.toml patch 到引擎工作区时，SessionError 含
+        // ArchiveCorrupted（归档校验失败拒绝 fork-from-archive）由此分支承接；
+        // 该分支对 crates.io 0.4.2（4 变体已被上方全覆盖）不可达，allow 豁免。
+        // 引擎 0.4.3 发布后应改为命名分支并移除本 allow。
+        #[allow(unreachable_patterns)]
+        Err(e) => {
+            tracing::error!(error = %e, "Session creation rejected (audit integrity)");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }
 
@@ -4357,6 +4392,15 @@ async fn create_session_fork(
             );
 
             Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
+
+        // 同 create_session：ArchiveCorrupted（本地引擎新变体，归档校验失败
+        // 拒绝 fork）等剩余变体 → 500 fail-closed；对 0.4.2 不可达，allow 豁免。
+        // 引擎 0.4.3 发布后改命名分支并移除本 allow。
+        #[allow(unreachable_patterns)]
+        Err(e) => {
+            tracing::error!(error = %e, "Session fork rejected (audit integrity)");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
 }
@@ -5268,10 +5312,14 @@ async fn session_payload(
     let id = api.next_id();
 
     // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
-    // 身份由认证中间件注入：认证启用时必注入（User/Service）；identity 为 None
+    // 身份由认证中间件注入：认证启用时必注入（User/Service/App）；identity 为 None
     // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
+    // 58 号 W2：App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
     if requires_service_identity(&req.path)
-        && matches!(identity, Some(Extension(CallerIdentity::User)))
+        && matches!(
+            identity,
+            Some(Extension(CallerIdentity::User)) | Some(Extension(CallerIdentity::App))
+        )
     {
         tracing::warn!(session_id, path = %req.path, "session_payload 受保护域写入被拒绝（需 service 身份）");
         return Ok((
@@ -7398,10 +7446,7 @@ impl GovernanceServer {
             .route("/api/command", post(submit_command))
             // 服务直调：与 io_request 同一处理器链，属状态变更执行面——
             // 必须受认证保护；敏感服务另有 403 守卫（须走会话审计链）。
-            .route(
-                "/api/services/{name}/invoke",
-                post(invoke_service_handler),
-            )
+            .route("/api/services/{name}/invoke", post(invoke_service_handler))
             // 插件审批代理:external 插件管理面的 server 侧统一入口(平台认证保护,
             // approver 强制注入登录身份)——console 插件审批面的后端通道
             .route(
@@ -7906,7 +7951,10 @@ pub async fn hit_stats_rule_handler(
     Path(rule_key): Path<String>,
 ) -> Result<Json<crate::api::hit_stats::RuleSeriesResponse>, StatusCode> {
     let (index_raw, source) = rule_key.split_once('@').ok_or(StatusCode::BAD_REQUEST)?;
-    let index: u64 = index_raw.trim().parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let index: u64 = index_raw
+        .trim()
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
     if source.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -7959,8 +8007,7 @@ pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<Bo
     // 对账清单出现双源重复条目——消费方（LLM 消费桥/服务目录）按名索引一旦命中
     // 缺元数据的 registry 条目，会发生敏感守卫降级与参数契约丢失。
     // 去重语义与 invoke 路由优先级一致（插件路由原生优先 → registry HTTP 回落）。
-    let known: std::collections::HashSet<String> =
-        out.iter().map(|s| s.name.clone()).collect();
+    let known: std::collections::HashSet<String> = out.iter().map(|s| s.name.clone()).collect();
     for meta in api.registry_services.iter() {
         if known.contains(&meta.name) {
             continue;
@@ -8012,8 +8059,7 @@ pub async fn invoke_service_handler(
         .iter()
         .find(|i| i.name == name)
         .map(|i| i.sensitive);
-    let known = sensitive_native.is_some()
-        || api.registry_services.iter().any(|m| m.name == name);
+    let known = sensitive_native.is_some() || api.registry_services.iter().any(|m| m.name == name);
     if !known {
         return Err((
             StatusCode::NOT_FOUND,
@@ -8035,7 +8081,9 @@ pub async fn invoke_service_handler(
     let Some(chain) = api.service_chain.as_ref() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "error": "service chain 未装配（需 main.rs with_service_chain 注入）" })),
+            Json(
+                serde_json::json!({ "error": "service chain 未装配（需 main.rs with_service_chain 注入）" }),
+            ),
         ));
     };
     let params = serde_to_tcb(serde_json::json!({ "service_name": name, "args": args }));
@@ -8102,7 +8150,12 @@ async fn proxy_plugin_admin(
     let client = reqwest::Client::builder()
         .timeout(PLUGIN_PROXY_TIMEOUT)
         .build()
-        .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, format!("HTTP client 构建失败: {e}")))?;
+        .map_err(|e| {
+            proxy_err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("HTTP client 构建失败: {e}"),
+            )
+        })?;
     let mut req = client
         .request(method, &url)
         .header("Authorization", format!("Bearer {token}"))
@@ -8118,16 +8171,19 @@ async fn proxy_plugin_admin(
         } else {
             format!("上游请求失败: {e}")
         };
-        proxy_err(StatusCode::BAD_GATEWAY, format!("插件管理面转发失败: {summary}"))
+        proxy_err(
+            StatusCode::BAD_GATEWAY,
+            format!("插件管理面转发失败: {summary}"),
+        )
     })?;
     let status = StatusCode::from_u16(resp.status().as_u16())
         .map_err(|e| proxy_err(StatusCode::BAD_GATEWAY, format!("上游状态码非法: {e}")))?;
-    let text = resp.text().await.map_err(|e| {
-        proxy_err(StatusCode::BAD_GATEWAY, format!("上游响应读取失败: {e}"))
-    })?;
-    let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|_| {
-        serde_json::json!({ "error": "上游响应非 JSON", "raw": text })
-    });
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| proxy_err(StatusCode::BAD_GATEWAY, format!("上游响应读取失败: {e}")))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|_| serde_json::json!({ "error": "上游响应非 JSON", "raw": text }));
     Ok((status, value))
 }
 
@@ -8180,8 +8236,12 @@ pub async fn plugin_admin_approve(
     actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
     identity: Option<Extension<CallerIdentity>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
-    // 审批 = 人工治理动作,service 自动化凭据拒绝(人类在场语义)
-    if matches!(identity, Some(Extension(CallerIdentity::Service))) {
+    // 审批 = 人工治理动作,自动化凭据(service/app key)拒绝(人类在场语义;
+    // 58 号 W2:app key 通道同理 403)
+    if matches!(
+        identity,
+        Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
+    ) {
         return Err(proxy_err(
             StatusCode::FORBIDDEN,
             "service 凭据禁止执行人工审批动作".to_string(),
@@ -8189,7 +8249,10 @@ pub async fn plugin_admin_approve(
     }
     let mut body = serde_json::json!({});
     if let serde_json::Value::Object(m) = &mut body {
-        m.insert("approver".into(), serde_json::json!(resolve_approver(actor)));
+        m.insert(
+            "approver".into(),
+            serde_json::json!(resolve_approver(actor)),
+        );
     }
     let (status, value) = proxy_plugin_admin(
         &api,
@@ -8230,15 +8293,25 @@ pub async fn plugin_admin_reject(
     identity: Option<Extension<CallerIdentity>>,
     body: Option<Json<serde_json::Value>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
-    if matches!(identity, Some(Extension(CallerIdentity::Service))) {
+    // 审批 = 人工治理动作,自动化凭据(service/app key)拒绝(人类在场语义;
+    // 58 号 W2:app key 通道同理 403)
+    if matches!(
+        identity,
+        Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
+    ) {
         return Err(proxy_err(
             StatusCode::FORBIDDEN,
             "service 凭据禁止执行人工审批动作".to_string(),
         ));
     }
-    let mut body = body.map(|Json(v)| v).unwrap_or_else(|| serde_json::json!({}));
+    let mut body = body
+        .map(|Json(v)| v)
+        .unwrap_or_else(|| serde_json::json!({}));
     if let serde_json::Value::Object(m) = &mut body {
-        m.insert("approver".into(), serde_json::json!(resolve_approver(actor)));
+        m.insert(
+            "approver".into(),
+            serde_json::json!(resolve_approver(actor)),
+        );
     }
     let (status, value) = proxy_plugin_admin(
         &api,
@@ -9477,10 +9550,7 @@ mod tests {
             plugin_admin_token_env("my_plugin.2"),
             "EVORULE_PLUGIN_ADMIN_TOKEN__MY_PLUGIN_2"
         );
-        assert_eq!(
-            plugin_admin_token_env("a"),
-            "EVORULE_PLUGIN_ADMIN_TOKEN__A"
-        );
+        assert_eq!(plugin_admin_token_env("a"), "EVORULE_PLUGIN_ADMIN_TOKEN__A");
     }
 
     /// approver 强制注入:AuthedActor 存在取注入值,缺失（认证关闭）记 anonymous;
@@ -9507,14 +9577,8 @@ mod tests {
     async fn test_plugin_admin_proxy_unknown_plugin_404() {
         let core_eval = vec![JsonValue::Object(std::collections::BTreeMap::new())];
         let sessions = SessionApi::new(core_eval, 10);
-        let r = proxy_plugin_admin(
-            &sessions,
-            "ghost",
-            "proposals",
-            reqwest::Method::GET,
-            None,
-        )
-        .await;
+        let r =
+            proxy_plugin_admin(&sessions, "ghost", "proposals", reqwest::Method::GET, None).await;
         let (status, body) = r.unwrap_err();
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body.0.to_string().contains("unknown plugin"));
@@ -9586,7 +9650,9 @@ mod tests {
                 },
             ]);
 
-        let list = list_services_handler(axum::extract::State(sessions)).await.0;
+        let list = list_services_handler(axum::extract::State(sessions))
+            .await
+            .0;
 
         let dupes = list
             .iter()
@@ -9606,7 +9672,10 @@ mod tests {
             .iter()
             .find(|s| s.name == "registry_only_service")
             .unwrap();
-        assert_eq!(only.source, "registry", "仅 registry 绑定的服务不被去重误伤");
+        assert_eq!(
+            only.source, "registry",
+            "仅 registry 绑定的服务不被去重误伤"
+        );
     }
     fn make_test_state() -> (AppState, ReadinessFlag) {
         let mut instr = std::collections::BTreeMap::new();
@@ -11096,6 +11165,128 @@ mod tests {
             oneshot_json_with_token(router, "POST", &uri, "service_token", Some(body)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["success"], true);
+    }
+
+    // --- 58 号 W2：应用级凭据（app key 通道端到端） ---
+
+    /// 在已启用认证的 router 上完成 bootstrap → login → 签发 app 凭据，
+    /// 返回 (router, app_key, platform_token)。
+    async fn issue_app_key_via_router(router: Router, app_id: &str) -> (Router, String, String) {
+        // bootstrap（公开路由）
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/bootstrap",
+            "",
+            Some(r#"{"username":"root","password":"admin-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        // login（公开路由）→ 平台会话 token
+        let (status, json) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            "",
+            Some(r#"{"username":"root","password":"admin-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let platform_token = json["token"].as_str().unwrap().to_string();
+        // 签发 app 凭据（handler 自校验 manage_apps）
+        let body = format!(r#"{{"app_id":"{app_id}","description":"e2e"}}"#);
+        let (status, json) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/platform/apps",
+            &platform_token,
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let key = json["key"].as_str().unwrap().to_string();
+        (router, key, platform_token)
+    }
+
+    /// app key 通道端到端：认证通过 → 受保护域 403（App 非 service）→
+    /// 审批代理 403（人类在场）→ 归因事件经 /api/shared/facts 可查 →
+    /// 吊销后 401 即时生效。
+    #[tokio::test]
+    async fn test_app_key_channel_end_to_end_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_authed_router(&state, "user_token", "service_token");
+        let (router, app_key, platform_token) = issue_app_key_via_router(router, "evo-agent").await;
+
+        // 1. app key 认证通过（读受保护路由 /api/state）
+        let (status, _) =
+            oneshot_json_with_token(router.clone(), "GET", "/api/state", &app_key, None).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // 2. app key 写受保护域 → 403（App 身份非受信服务管道）
+        let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}"#;
+        let (status, json) =
+            oneshot_json_with_token(router.clone(), "POST", "/api/payload", &app_key, Some(body))
+                .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["success"], false);
+
+        // 3. app key 审批代理 → 403（审批 = 人类在场）
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/plugins/finance-config/admin/proposals/p1/approve",
+            &app_key,
+            Some(r#"{}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // 4. 归因事件入链（经静态 token 查 /api/shared/facts）
+        let (status, json) = oneshot_json_with_token(
+            router.clone(),
+            "GET",
+            "/api/shared/facts?prefix=platform.event.app_invoke",
+            "user_token",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let raw = serde_json::to_string(&json).unwrap();
+        assert!(raw.contains("app_invoke"), "归因事件应可查: {raw}");
+        assert!(raw.contains("evo-agent"), "归因事件应含 app_id: {raw}");
+
+        // 5. 管理面：列表（含哈希）→ 吊销 → 即时 401
+        let (status, json) = oneshot_json_with_token(
+            router.clone(),
+            "GET",
+            "/api/platform/apps",
+            &platform_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let apps = json["apps"].as_array().unwrap();
+        assert_eq!(apps.len(), 1);
+        assert!(apps[0]["key_hash"].as_str().unwrap().starts_with("blake3:"));
+        assert!(
+            !serde_json::to_string(&json).unwrap().contains(&app_key),
+            "列表不得泄露明文 key"
+        );
+
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/platform/apps/evo-agent/revoke",
+            &platform_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) =
+            oneshot_json_with_token(router, "GET", "/api/state", &app_key, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "吊销须即时生效");
     }
 
     /// 认证禁用（loopback 开发模式）时不注入身份 → 受保护域按放行处理（语义不变）
