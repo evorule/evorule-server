@@ -529,6 +529,7 @@ impl SessionApi {
                         description: None,
                         plugin: Some("demo-services".to_string()),
                         sensitive: false,
+                        parameters: None,
                     })
                     .collect(),
             ),
@@ -7787,18 +7788,24 @@ pub async fn hit_stats_rule_handler(
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BoundServiceInfo {
     pub name: String,
-    /// `native`（内嵌插件进程内服务）| `registry`（service_registry.json 显式绑定）
+    /// `native`（宿主自带进程内模块）| `plugin`（外部插件包，plugin.json 声明）|
+    /// `registry`（service_registry.json 显式绑定）
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// 归属插件 id（如 "demo-services"/"physics-services"）；registry 条目无归属，为 None
+    /// 归属插件 id（如 "demo-services"/"physics-services"/"finance-config"）；registry 条目无归属，为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<String>,
-    /// 敏感服务标记（插件声明表派生）：true 时禁止 REST 直调（invoke 403），必须走会话审计链
+    /// 敏感服务标记（声明表/plugin.json 派生）：true 时禁止 REST 直调（invoke 403），必须走会话审计链
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sensitive: bool,
+    /// 参数契约（OpenAI function parameters 子集；外部插件包 plugin.json 声明）：
+    /// LLM 消费方据此生成动态工具 schema，可带参调用。
+    /// native/registry 来源缺省 None（无参数契约声明，消费方降级空 schema）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
 }
 
 /// GET /api/services —— 执行侧已绑定服务能力对账（C5）
@@ -7826,6 +7833,7 @@ pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<Bo
             description: meta.description.clone(),
             plugin: None,
             sensitive: false,
+            parameters: None,
         });
     }
     Json(out)

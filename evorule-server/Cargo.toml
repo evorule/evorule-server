@@ -52,8 +52,9 @@ evorule-physics-services = { path = "../plugins/physics-services" }
 # : 确定性金融技术指标原生插件（第三个进程内插件,Python 重写移植模式载体）
 evorule-indicator-services = { path = "../plugins/indicator-services" }
 
-# : 财务域配置键读写原生插件（提案-审批流,sensitive 服务走人审门）
-evorule-finance-config = { path = "../plugins/finance-config" }
+# finance-config 已拔出——重建为外部插件包
+# （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，
+#  路由经服务注册表 HTTP 回落，进程独立/数据自持）
 
 # 插件机制公共件（trait/声明项/过滤路由器上提归一,main.rs PLUGIN_DEFS 直引声明表挂载）
 evorule-plugin-kit = { path = "../core/plugin-kit" }

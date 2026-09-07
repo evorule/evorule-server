@@ -4,9 +4,12 @@
 //! 配置键存储层 —— JSON 文件 + RwLock + 原子 rename 写入。
 //!
 //! 设计:
-//! - 首期: JSON 文件 + Arc<RwLock<ConfigMap>>，整合包零依赖。
-//! - 升级路径: Store trait 已抽象，可切换到 WorkspaceDb，接口不变。
-//! - fail-fast: 文件损坏 / 版本不兼容 = 拒绝加载 + 自诊断指引（符 H 约束）。
+//! - 首期: JSON 文件 + Arc<RwLock<StoreFile>>，插件包零外部依赖。
+//! - 升级路径: Store trait 可切换到 WorkspaceDb，接口不变。
+//! - fail-fast: 文件损坏 / JSON 非法 = 拒绝加载 + 自诊断指引。
+//!
+//! 数据自持: 存储文件位于插件包自持数据目录（--data），随插件包装卸，
+//! 不寄生宿主进程 data 目录。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -138,6 +141,21 @@ impl ConfigStore {
             .unwrap_or_default()
     }
 
+    /// 待批提案列表（声明序；管理面查询用——审批人可见 key/new_value/reason/proposed_by）
+    pub fn pending_proposals(&self) -> Vec<Proposal> {
+        self.inner
+            .read()
+            .map_err(|e| e.to_string())
+            .map(|g| {
+                g.proposals
+                    .iter()
+                    .filter(|p| p.status == "pending")
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn create_proposal(
         &self,
         key: &str,
@@ -225,7 +243,8 @@ impl ConfigStore {
                 e
             )
         })?;
-        std::fs::remove_file(&self.path).ok(); fs::rename(&tmp, &self.path).map_err(|e| {
+        std::fs::remove_file(&self.path).ok();
+        fs::rename(&tmp, &self.path).map_err(|e| {
             format!(
                 "原子替换配置文件 {} 失败: {}（自诊断指引: 确认无其他进程独占此文件）",
                 self.path.display(),
@@ -369,5 +388,31 @@ mod tests {
         store.reject_proposal(&pid, "manager").unwrap();
 
         assert!(store.get("limits.travel.max_amount").is_none());
+    }
+
+    #[test]
+    fn test_pending_proposals_queryable_and_cleared_after_approval() {
+        // 待批提案可查询（审批人可见 key/new_value/reason/proposed_by）
+        let dir = temp_dir();
+        let path = dir.join("finance-config.json");
+        let store = ConfigStore::open(&path).unwrap();
+
+        let _pid = store
+            .create_proposal(
+                "limits.meal.per_day",
+                Value::from(120),
+                "餐补上调",
+                "user_002",
+            )
+            .unwrap();
+
+        let pending = store.pending_proposals();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].key, "limits.meal.per_day");
+        assert_eq!(pending[0].proposed_by, "user_002");
+        assert_eq!(pending[0].status, "pending");
+
+        store.approve_proposal(&pending[0].proposal_id, "finance_dir").unwrap();
+        assert!(store.pending_proposals().is_empty(), "批准后不再出现在待批列表");
     }
 }

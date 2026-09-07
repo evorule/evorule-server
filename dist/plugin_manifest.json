@@ -2,7 +2,7 @@
   "plugins": {
     "finance-config": {
       "enabled": true,
-      "services": ["finance_config_get", "finance_config_set"]
+      "manifest": "../plugins/finance-config/plugin.json"
     }
   }
 }

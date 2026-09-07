@@ -51,7 +51,6 @@ use evorule_io_handlers::{
 };
 // Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
 use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
-use evorule_finance_config::NATIVE_SERVICES as FINANCE_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
@@ -550,6 +549,12 @@ struct PluginManifestEntry {
     enabled: bool,
     #[serde(default)]
     services: Option<Vec<String>>,
+    /// 外部插件包清单路径（进程外插件包 plugin.json）：
+    /// 与进程内条目（services 子集形态）互斥——带 manifest 的条目由
+    /// [`load_external_plugins`] 处理（路由合入服务注册表 HTTP 回落管道），
+    /// 不进进程内挂载链。
+    #[serde(default)]
+    manifest: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -590,11 +595,15 @@ fn plugin_service_infos(
             description: Some(s.description.to_string()),
             plugin: Some(def.id.to_string()),
             sensitive: s.sensitive,
+            parameters: None,
         })
         .collect()
 }
 
 /// 进程内插件登记表(声明序即挂载序与回落链序)。
+/// 注：finance-config 已拔出——重建为外部插件包
+/// （plugins/finance-config/plugin.json，plugin_manifest.json 以
+/// {"enabled":true,"manifest":...} 形态登记，路由经注册表 HTTP 回落）。
 const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "demo-services",
@@ -607,10 +616,6 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "indicator-services",
         defs: INDICATOR_NATIVE_SERVICES,
-    },
-    PluginDef {
-        id: "finance-config",
-        defs: FINANCE_NATIVE_SERVICES,
     },
 ];
 
@@ -644,6 +649,11 @@ fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, Plugi
     })?;
     let mut mounts: Vec<(&'static str, PluginMount)> = Vec::new();
     for (id, entry) in &manifest.plugins {
+        if entry.manifest.is_some() {
+            // 外部插件包条目:由 load_external_plugins 处理(路由合入服务注册表
+            // HTTP 回落管道),不进进程内挂载链,故跳过进程内 id 校验。
+            continue;
+        }
         let def = PLUGIN_DEFS.iter().find(|d| d.id == *id).ok_or_else(|| {
             let ids = PLUGIN_DEFS
                 .iter()
@@ -653,7 +663,8 @@ fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, Plugi
             format!(
                 "插件清单含未知的进程内插件 id '{id}' — 当前可用: [{ids}]。\
                  自诊断指引: ① 进程外服务不走 plugin_manifest,请配置 service_registry.json; \
-                 ② 新增进程内插件需在 main.rs PLUGIN_DEFS 登记后才能进清单"
+                 ② 新增进程内插件需在 main.rs PLUGIN_DEFS 登记后才能进清单; \
+                 ③ 外部插件包(进程外)须以 {{\"enabled\":true,\"manifest\":\"路径/plugin.json\"}} 形态登记"
             )
         })?;
         if !entry.enabled {
@@ -676,6 +687,194 @@ fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, Plugi
         }
     }
     Ok(mounts)
+}
+
+// ============================================================================
+// 外部插件包机制——进程外插件包的装载/校验/派生
+// ============================================================================
+//
+// 形态：插件 = 目录（自持服务进程 + 自持数据目录 + plugin.json 清单），
+// 装入 = 清单登记一行 + 重启 server；拔出 = 删除登记行（或 enabled=false）。
+// 路由：plugin.json 声明的服务派生为 ServiceEntry 合入 ServiceRegistry
+//（与 registry 文件条目同管道 HTTP 回落，url = base_url + /services/{name}），
+// 审计链不变（io_request/io_response fact 仍由 server 反应器记录）。
+// 信任模型：与 service_registry.json 一致——运维显式登记即可信；
+// loopback 地址需 --allow-loopback（本地开发约定）。
+
+/// 外部插件包清单（plugin.json）——插件包 SSOT：进程外独立服务进程的声明文件
+/// （与进程内插件的 official_native_services.json 同位；区别：进程内=代码表
+/// include_str 守卫锁定，进程外=运行时派生路由与对账）。
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ExternalPluginManifest {
+    /// 插件包 id（须与 plugin_manifest.json 条目键一致，防漂移）
+    id: String,
+    /// 插件包版本（独立演进，与 server 版本无关）
+    version: String,
+    #[serde(default)]
+    description: Option<String>,
+    /// 服务进程根地址（路由 = base_url + /services/{name}；本地插件用
+    /// 127.0.0.1 需 server 侧 --allow-loopback）
+    base_url: String,
+    services: Vec<ExternalServiceDecl>,
+}
+
+/// 插件包内单个服务声明。
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ExternalServiceDecl {
+    /// 服务名（全局唯一：与进程内插件/服务注册表/其他外部包均不得冲突）
+    name: String,
+    /// 敏感标记：true 时 invoke 直调 403，必须经会话 call_service 走审计与审批链
+    #[serde(default)]
+    sensitive: bool,
+    #[serde(default)]
+    description: Option<String>,
+    /// 参数契约（OpenAI function parameters 子集）：对账清单透传，
+    /// LLM 消费方据此生成动态工具 schema，可带参真实调用
+    #[serde(default)]
+    parameters: Option<serde_json::Value>,
+}
+
+/// 已装载的外部插件包（健康节呈现 + 对账清单注入用）。
+#[derive(Debug)]
+struct ExternalPluginMounted {
+    id: String,
+    services: Vec<String>,
+    infos: Vec<evorule_server::api::server::BoundServiceInfo>,
+}
+
+/// 装载外部插件包：读各 plugin.json → 校验 → 派生路由条目合入服务注册表
+///（与 registry 文件条目同管道）→ 返回对账/健康呈现数据。
+///
+/// fail-fast（三拒绝扩展）：plugin.json 不可读 / JSON 非法 / id 漂移 / 空服务集 /
+/// base_url 非法 / 服务名冲突（进程内插件全集 ∪ 注册表 ∪ 已装载外部包）——
+/// 均启动报错附自诊断指引，不静默装载任何条目。
+fn load_external_plugins(
+    path: Option<&PathBuf>,
+    registry: &mut ServiceRegistry,
+    builtin_names: &[String],
+) -> Result<Vec<ExternalPluginMounted>, String> {
+    let Some(p) = path else {
+        return Ok(Vec::new()); // 未配置清单 → 外部插件不装载（显式安装语义，与进程内"缺省全启"相反）
+    };
+    let content = std::fs::read_to_string(p).map_err(|e| {
+        format!(
+            "读取插件清单失败 {}: {}（自诊断指引: ① 确认 --plugins 路径正确; \
+             ② 确认进程对该文件有读权限）",
+            p.display(),
+            e
+        )
+    })?;
+    let manifest: PluginManifestFile = serde_json::from_str(&content).map_err(|e| {
+        format!("插件清单 JSON 非法 {}: {}", p.display(), e)
+    })?;
+    // plugin.json 相对路径基准 = 清单文件所在目录（清单自包含语义：
+    // manifest 与插件包整体相对关系固定，挪动/换机部署不破装载）
+    let manifest_base = p
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    // 服务名占用核对集 = 进程内插件声明表全集（含停用插件——Off 的进程内服务名
+    // 会直连 HTTP 注册表回落，外部包占用同名会造成挂载态静默切换路由，禁止）
+    let mut taken: std::collections::BTreeSet<String> =
+        builtin_names.iter().cloned().collect();
+    let mut out = Vec::new();
+    for (id, entry) in &manifest.plugins {
+        let Some(rel) = entry.manifest.as_ref() else {
+            continue;
+        };
+        if !entry.enabled {
+            info!("外部插件包: {id} enabled=false — 不装载（call_service 直连 HTTP 注册表）");
+            continue;
+        }
+        let rel_path = std::path::PathBuf::from(rel);
+        let pj = if rel_path.is_absolute() {
+            rel_path
+        } else {
+            manifest_base.join(rel_path)
+        };
+        let raw = std::fs::read_to_string(&pj).map_err(|e| {
+            format!(
+                "外部插件清单读取失败 {}: {e}（自诊断指引: ① 路径相对插件清单所在目录; \
+                 ② plugin.json 是插件包 SSOT,不可读即拒绝装载）",
+                pj.display()
+            )
+        })?;
+        let m: ExternalPluginManifest = serde_json::from_str(&raw).map_err(|e| {
+            format!(
+                "外部插件清单 JSON 非法 {}: {e}（自诊断指引: id/version/base_url/services \
+                 为必填,服务声明含 name;合法形态见插件开发指南）",
+                pj.display()
+            )
+        })?;
+        if m.id != *id {
+            return Err(format!(
+                "外部插件包 id 漂移: 清单条目键 '{id}' 与 plugin.json 声明 id '{}' 不一致（{rel}）",
+                m.id
+            ));
+        }
+        if m.services.is_empty() {
+            return Err(format!(
+                "外部插件包 {id} services 为空 — 若要停用请直接 \"enabled\": false（{rel}）"
+            ));
+        }
+        if !m.base_url.starts_with("http://") && !m.base_url.starts_with("https://") {
+            return Err(format!(
+                "外部插件包 {id} base_url 非法: {}（仅支持 http/https;本地插件地址 \
+                 127.0.0.1 需 server 以 --allow-loopback 启动）",
+                m.base_url
+            ));
+        }
+        let mut declared = Vec::new();
+        let mut infos = Vec::new();
+        for s in &m.services {
+            if !taken.insert(s.name.clone()) {
+                return Err(format!(
+                    "外部插件包 {id} 服务名冲突: '{}' 已被进程内插件/服务注册表/其他外部包占用 — \
+                     服务名全局唯一,请改用不冲突的服务名",
+                    s.name
+                ));
+            }
+            let url = format!("{}/services/{}", m.base_url.trim_end_matches('/'), s.name);
+            let mut headers = std::collections::BTreeMap::new();
+            headers.insert("X-Source".to_string(), "evorule-server".to_string());
+            registry.insert(
+                s.name.clone(),
+                evorule_io_handlers::ServiceEntry {
+                    url,
+                    method: "POST".to_string(),
+                    headers,
+                    timeout_ms: Some(5000),
+                    version: Some(m.version.clone()),
+                    description: s.description.clone(),
+                },
+            );
+            declared.push(s.name.clone());
+            infos.push(evorule_server::api::server::BoundServiceInfo {
+                name: s.name.clone(),
+                source: "plugin".to_string(),
+                version: Some(m.version.clone()),
+                description: s.description.clone(),
+                plugin: Some(id.clone()),
+                sensitive: s.sensitive,
+                parameters: s.parameters.clone(),
+            });
+        }
+        info!(
+            "外部插件包: {id} 装载（{} 个服务: [{}]）{}",
+            declared.len(),
+            declared.join(", "),
+            m.description
+                .as_deref()
+                .map(|d| format!("— {d}"))
+                .unwrap_or_default()
+        );
+        out.push(ExternalPluginMounted {
+            id: id.clone(),
+            services: declared,
+            infos,
+        });
+    }
+    Ok(out)
 }
 
 /// 将 `serde_json::Value` 转换为 `evorule_tcb::JsonValue`
@@ -1151,13 +1350,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 加载 service_registry.json（call_service/call_external 的 service_name→URL 映射）
     let step_start = Instant::now();
-    let registry = match &cfg.service_registry {
+    let mut registry = match &cfg.service_registry {
         Some(path) => ServiceRegistry::load_from_file(path)
             .map_err(|e| format!("加载 service_registry 失败: {}", e))?,
         None => ServiceRegistry::empty(),
     };
+
+    // /: 插件清单决定各插件挂载形态（缺省全启,存量零迁移）。
+    // 校验失败 → 启动 fail-fast（错误含自诊断指引）。
+    // 提前到服务注册表构建之后（外部插件包派生路由条目须在 svc_handler
+    // 构建前合入注册表，且绑定核对集须含外部插件服务名）。
+    let plugin_mounts = load_plugin_mounts(cfg.plugins.as_ref())?;
+    // 外部插件包：plugin.json 派生路由合入服务注册表（与文件条目
+    // 同管道 HTTP 回落）；装载结果用于健康节与对账清单注入。
+    let builtin_service_names: Vec<String> = PLUGIN_DEFS
+        .iter()
+        .flat_map(|d| plugin_service_names(d).into_iter().map(String::from))
+        .collect();
+    let external_mounted = load_external_plugins(
+        cfg.plugins.as_ref(),
+        &mut registry,
+        &builtin_service_names,
+    )?;
+
     let reg_count = registry.len();
-    // 服务绑定核对集：注册表服务名注入 SessionApi，与原生叶子能力并集
+    // 服务绑定核对集：注册表服务名（含外部插件包派生条目）注入 SessionApi，
+    // 与原生叶子能力并集——sensitive 服务须显式绑定的预检语义自动覆盖外部插件
     let registry_names = registry.service_names();
     if reg_count == 0 {
         warn!(
@@ -1181,11 +1399,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         HttpHandler::new()
     });
     let svc_handler = Arc::new(ServiceRegistryHandler::new(registry.clone(), http.clone()));
-    // /: 插件清单决定各插件挂载形态（缺省全启,存量零迁移）。
-    // 校验失败 → 启动 fail-fast（错误含自诊断指引）。
-    let plugin_mounts = load_plugin_mounts(cfg.plugins.as_ref())?;
-    // 按登记表声明序构建回落链:各插件路由原生优先,未命中回落链尾(HTTP 注册表)。
-    // 逆序包裹——链条头 = 第一个已挂载插件;全停用时链条头 = 直连 svc_handler。
+    // 按登记表声明序构建回落链:各插件路由原生优先,未命中回落链尾(HTTP 注册表,
+    // 含外部插件包派生条目)。逆序包裹——链条头 = 第一个已挂载插件;
+    // 全停用时链条头 = 直连 svc_handler。
     let mut chain_tail: Arc<dyn evorule_reactor::IoHandler> = svc_handler.clone();
     let mut plugin_health = serde_json::Map::new();
     // /api/services native 对账清单:按 manifest 实际挂载状态收集(Off 不入清单,
@@ -1252,6 +1468,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 逆序循环收集 = 登记声明序的倒序,reverse 恢复声明序(对账清单与登记表同序)。
     native_service_infos.reverse();
+    // 外部插件包注入：健康节 + 对账清单。external 条目已合入服务
+    // 注册表（路由经 svc_handler HTTP 回落），此处仅补呈现与守卫数据——
+    // 对账清单含 external 条目后，invoke 敏感守卫自动覆盖（同一清单查找）。
+    for ext in &external_mounted {
+        plugin_health.insert(
+            ext.id.clone(),
+            serde_json::json!({ "enabled": true, "external": true, "services": ext.services }),
+        );
+        native_service_infos.extend(ext.infos.iter().cloned());
+    }
     let call_handler: Arc<dyn evorule_reactor::IoHandler> = chain_tail;
     let memory = Arc::new(MemoryHandler::new(cfg.memory_dir.clone()));
     let db_wrapped = WhitelistedDbHandler::new(db, statement_whitelist);
@@ -1891,6 +2117,195 @@ mod tests {
     use super::*;
     use clap::Parser;
     use tempfile::TempDir;
+
+    // ============ 外部插件包机制（装载/派生/三拒绝扩展） ============
+
+    mod external_plugins {
+        #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+        use super::*;
+
+        /// 进程内插件声明表全集（服务名占用核对集的测试基准）
+        fn builtin_names() -> Vec<String> {
+            PLUGIN_DEFS
+                .iter()
+                .flat_map(|d| plugin_service_names(d).into_iter().map(String::from))
+                .collect()
+        }
+
+        fn write_file(dir: &std::path::Path, name: &str, json: &str) -> PathBuf {
+            let p = dir.join(name);
+            std::fs::write(&p, json).unwrap();
+            p
+        }
+
+        const PLUGIN_JSON_OK: &str = r#"{
+            "id": "finance-config",
+            "version": "0.1.0",
+            "base_url": "http://127.0.0.1:9110",
+            "services": [
+                {"name": "finance_config_get", "sensitive": false,
+                 "description": "读",
+                 "parameters": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}},
+                {"name": "finance_config_set", "sensitive": true, "description": "写提案"}
+            ]
+        }"#;
+
+        #[test]
+        fn loads_derives_route_entry_and_service_info() {
+            let dir = TempDir::new().unwrap();
+            let pj = write_file(dir.path(), "plugin.json", PLUGIN_JSON_OK);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap();
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].id, "finance-config");
+            assert_eq!(
+                out[0].services,
+                vec!["finance_config_get", "finance_config_set"]
+            );
+            // 路由条目合入注册表（与 registry 文件条目同管道）
+            let e = registry.get("finance_config_get").unwrap();
+            assert_eq!(e.url, "http://127.0.0.1:9110/services/finance_config_get");
+            assert_eq!(e.method, "POST");
+            assert_eq!(e.timeout_ms, Some(5000));
+            assert_eq!(e.version.as_deref(), Some("0.1.0"));
+            // 对账信息：plugin 来源 / sensitive / parameters 透传
+            let get_info = out[0].infos.iter().find(|i| i.name == "finance_config_get").unwrap();
+            assert_eq!(get_info.source, "plugin");
+            assert_eq!(get_info.plugin.as_deref(), Some("finance-config"));
+            assert!(!get_info.sensitive);
+            assert_eq!(
+                get_info.parameters.as_ref().unwrap()["required"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(
+                out[0].infos.iter().find(|i| i.name == "finance_config_set").unwrap().sensitive,
+                "sensitive 标记应透传对账清单"
+            );
+            let _ = pj;
+        }
+
+        #[test]
+        fn rejects_id_drift_between_manifest_key_and_plugin_json() {
+            let dir = TempDir::new().unwrap();
+            write_file(dir.path(), "plugin.json", PLUGIN_JSON_OK);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"other-id":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                    .unwrap_err();
+            assert!(err.contains("id 漂移"), "{err}");
+        }
+
+        #[test]
+        fn rejects_name_conflict_with_builtin_services() {
+            let dir = TempDir::new().unwrap();
+            write_file(
+                dir.path(),
+                "plugin.json",
+                r#"{"id":"evil","version":"1.0","base_url":"http://127.0.0.1:1",
+                    "services":[{"name":"physics_simulate"}]}"#,
+            );
+            // 清单键与 plugin.json id 一致，但服务名撞内置声明表全集 → 拒绝
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"evil":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                    .unwrap_err();
+            assert!(err.contains("服务名冲突"), "{err}");
+        }
+
+        #[test]
+        fn rejects_empty_services_and_bad_base_url() {
+            let dir = TempDir::new().unwrap();
+            write_file(
+                dir.path(),
+                "empty.json",
+                r#"{"id":"x","version":"1.0","base_url":"http://127.0.0.1:1","services":[]}"#,
+            );
+            write_file(
+                dir.path(),
+                "badurl.json",
+                r#"{"id":"y","version":"1.0","base_url":"ftp://127.0.0.1:1",
+                    "services":[{"name":"svc_y"}]}"#,
+            );
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"x":{"enabled":true,"manifest":"empty.json"},
+                               "y":{"enabled":true,"manifest":"badurl.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                    .unwrap_err();
+            assert!(err.contains("services 为空"), "{err}");
+
+            write_file(
+                dir.path(),
+                "empty.json",
+                r#"{"id":"x","version":"1.0","base_url":"http://127.0.0.1:1","services":[{"name":"svc_x"}]}"#,
+            );
+            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap_err();
+            assert!(err.contains("base_url 非法"), "{err}");
+        }
+
+        #[test]
+        fn disabled_or_process_internal_entries_are_skipped() {
+            let dir = TempDir::new().unwrap();
+            write_file(dir.path(), "plugin.json", PLUGIN_JSON_OK);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":false,"manifest":"plugin.json"},
+                               "demo-services":{"enabled":true}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap();
+            assert!(out.is_empty(), "enabled=false 的外部包不装载");
+            assert!(registry.is_empty(), "不产生任何路由条目");
+        }
+
+        #[test]
+        fn rejects_missing_plugin_json_file() {
+            let dir = TempDir::new().unwrap();
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"nope/plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                    .unwrap_err();
+            assert!(err.contains("外部插件清单读取失败"), "{err}");
+        }
+
+        #[test]
+        fn no_manifest_path_means_no_external_plugins() {
+            let mut registry = ServiceRegistry::empty();
+            let out = load_external_plugins(None, &mut registry, &builtin_names()).unwrap();
+            assert!(out.is_empty());
+        }
+    }
 
     // ============ 启动期认证策略校验（UV-116 四象限 + 边界） ============
 

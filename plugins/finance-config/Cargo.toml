@@ -2,27 +2,33 @@
 # Copyright (C) 2026 EvoRule Project
 # This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 [package]
-name = "evorule-finance-config"
-version.workspace = true
+name = "evorule-finance-config-plugin"
+version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-description = "finance-config: 财务域配置键读写原生插件 —— 规则/领域 schema 经 config:<key> 引用科目/限额/审批人/税率等动态配置"
+description = "finance-config external plugin: 财务域配置键读写（外部插件包范本——自持服务进程/数据目录/管理面，可拔插，不经宿主编译）"
 repository = "https://gitee.com/evorule/evorule-server"
 publish = false
 
-[dependencies]
-evorule-tcb = { version = "0.4.0" }
-evorule-reactor = { version = "0.4.0" }
-evorule-plugin-kit = { path = "../../core/plugin-kit" }
+# 显式脱离任何上层 workspace（独立插件包：独立版本独立演进，随包装卸）
+[workspace]
 
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-
-async-trait = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
-[lints]
-workspace = true
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

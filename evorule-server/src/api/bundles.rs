@@ -695,6 +695,7 @@ mod tests {
                 description: Some("确定性物理仿真推进".into()),
                 plugin: Some("physics-services".into()),
                 sensitive: false,
+                parameters: None,
             },
             crate::api::server::BoundServiceInfo {
                 name: "finance_config_set".into(),
@@ -703,6 +704,7 @@ mod tests {
                 description: Some("财务配置键写入".into()),
                 plugin: Some("finance-config".into()),
                 sensitive: true,
+                parameters: None,
             },
         ];
         let metas = vec![evorule_io_handlers::ServiceMeta {
@@ -742,6 +744,7 @@ mod tests {
                 description: None,
                 plugin: Some("physics-services".into()),
                 sensitive: false,
+                parameters: None,
             },
             crate::api::server::BoundServiceInfo {
                 name: "finance_config_set".into(),
@@ -750,6 +753,7 @@ mod tests {
                 description: None,
                 plugin: Some("finance-config".into()),
                 sensitive: true,
+                parameters: None,
             },
         ];
         let api = test_api(&tmp)

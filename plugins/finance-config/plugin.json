@@ -1,0 +1,49 @@
+{
+  "id": "finance-config",
+  "version": "0.1.0",
+  "description": "财务域配置键读写（外部插件包范本：自持服务进程与数据目录，写入走提案-人审门）",
+  "base_url": "http://127.0.0.1:9110",
+  "services": [
+    {
+      "name": "finance_config_get",
+      "sensitive": false,
+      "description": "财务配置键读取（fail-fast，key 不存在返回显式错误与相近键建议）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "配置键，例: config:limits.travel.max_amount"
+          }
+        },
+        "required": ["key"]
+      }
+    },
+    {
+      "name": "finance_config_set",
+      "sensitive": true,
+      "description": "财务配置键写入（只创建提案不落库，需人审门确认后生效，走审计链）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "配置键，例: config:limits.travel.max_amount"
+          },
+          "new_value": {
+            "description": "新值（任意 JSON）"
+          },
+          "reason": {
+            "type": "string",
+            "description": "变更理由"
+          },
+          "proposed_by": {
+            "type": "string",
+            "description": "提案人"
+          }
+        },
+        "required": ["key", "new_value"]
+      }
+    }
+  ]
+}

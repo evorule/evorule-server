@@ -1,8 +1,0 @@
-{
-  "$comment": "finance-config 原生服务声明 SSOT。与执行侧 NATIVE_SERVICES 表双向守卫锁定漂移。顺序即路由查找序。",
-  "version": 1,
-  "services": [
-    { "name": "finance_config_get", "sensitive": false, "description": "财务配置键读取（fail-fast，key 不存在返回显式错误）" },
-    { "name": "finance_config_set", "sensitive": true, "description": "财务配置键写入（需人审门确认后落库，走审计链）" }
-  ]
-}

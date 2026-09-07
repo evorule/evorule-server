@@ -130,8 +130,7 @@ impl ServiceRegistry {
         Ok(Self { entries })
     }
 
-    /// 注册单个条目（程序式动态注册）
-    #[allow(dead_code)]
+    /// 注册单个条目（程序式动态注册；外部插件包派生条目合入用）
     pub fn insert(&mut self, name: String, entry: ServiceEntry) {
         self.entries.insert(name, entry);
     }
