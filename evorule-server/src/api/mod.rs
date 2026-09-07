@@ -18,6 +18,7 @@ pub mod openapi;
 pub mod pdf_export;
 pub mod permissions;
 pub mod platform_auth;
+pub mod plugin_probe;
 pub mod server;
 
 // H6: main.rs 直接从 `api::server::{...}` 导入所需类型,

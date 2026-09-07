@@ -114,11 +114,16 @@ pdf-writer = "0.15.0"
 ttf-parser = "0.25.1"
 subsetter = "0.2.6"
 
+# 插件探活任务生产依赖(原仅在 dev-dependencies 供 benchmarks 使用;探活目标 =
+# 部署侧自配的插件 base_url,属可信目标,不走 HttpHandler 的 SSRF 防护形态——
+# allow_loopback 关闭时本地插件地址会被拒,探活语义需要直连)
+# rustls TLS——Linux musl 静态发版构建不依赖系统 OpenSSL
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 [dev-dependencies]
 # H6: benchmarks 迁移到应用层后需要的依赖
 # bench_determinism/long_session/throughput 通过 HTTP 调用 evorule-server 进行压测
-# : rustls TLS——Linux musl 静态发版构建不依赖系统 OpenSSL
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# (reqwest 已上移至 [dependencies],dev 场景自动可用)
 # bench_determinism 计算 payload hash (审计⑥ C3: 统一走 evorule-hash)
 evorule-hash = "0.1.3"
 # 配置解析测试需要临时文件

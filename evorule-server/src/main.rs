@@ -327,6 +327,15 @@ struct Cli {
     #[arg(long, env = "EVORULE_PLUGINS")]
     plugins: Option<PathBuf>,
 
+    /// external 插件探活周期（秒；缺省 30；0 = 关闭探活）
+    ///
+    /// 探活 = 定期 GET {base_url}/health（超时 3s）：2xx 且 JSON 可解析 = online，
+    /// 404/405 = no_probe（插件未实现端点，不报警），其余 = offline。
+    /// 状态翻转即报：进入 offline 记 platform.event.plugin_offline（error! 自诊断），
+    /// 退出 offline 记 plugin_online（关警留痕）；/api/health external 插件节呈现存活状态。
+    #[arg(long, env = "EVORULE_PLUGIN_PROBE_INTERVAL")]
+    plugin_probe_interval: Option<u64>,
+
     /// CORS 允许的 Origin 列表（逗号分隔；空 = 放行本机 loopback Origin
     /// (localhost/127.0.0.1/[::1] 任意端口,开发友好);* 代表放行全部）
     ///
@@ -425,6 +434,8 @@ struct ResolvedConfig {
     statement_whitelist: Option<PathBuf>,
     /// 插件清单文件
     plugins: Option<PathBuf>,
+    /// external 插件探活周期（秒；0 = 关闭；缺省 30）
+    plugin_probe_interval: u64,
     /// CORS 白名单；若 CLI 指定了 "*" 则为全放行模式（仅限开发）
     allowed_origins: Vec<String>,
     /// 是否允许 HTTP handler 访问 loopback（仅本地开发）
@@ -508,6 +519,8 @@ impl ResolvedConfig {
             service_registry: cli.service_registry.or(file.paths.service_registry),
             statement_whitelist: cli.statement_whitelist.or(file.paths.statement_whitelist),
             plugins: cli.plugins.or(file.paths.plugins),
+            // external 插件探活周期（CLI/env > 缺省 30；0 = 关闭）
+            plugin_probe_interval: cli.plugin_probe_interval.unwrap_or(30),
             allowed_origins,
             allow_loopback: cli.allow_loopback,
             // S2：从 CLI/环境变量读取 metrics_auth 配置
@@ -734,10 +747,11 @@ struct ExternalServiceDecl {
     parameters: Option<serde_json::Value>,
 }
 
-/// 已装载的外部插件包（健康节呈现 + 对账清单注入用）。
+/// 已装载的外部插件包（健康节呈现 + 对账清单注入 + 探活目标派生用）。
 #[derive(Debug)]
 struct ExternalPluginMounted {
     id: String,
+    base_url: String,
     services: Vec<String>,
     infos: Vec<evorule_server::api::server::BoundServiceInfo>,
 }
@@ -870,6 +884,7 @@ fn load_external_plugins(
         );
         out.push(ExternalPluginMounted {
             id: id.clone(),
+            base_url: m.base_url.clone(),
             services: declared,
             infos,
         });
@@ -1644,6 +1659,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         SharedFactsLog::new()
     };
+
+    // 插件探活: external 插件运行时存活探测(状态翻转报警 + /api/health 存活呈现)。
+    // 周期 --plugin-probe-interval 缺省 30s,0 = 显式关闭;无 external 插件不 spawn。
+    // 报警事件走 platform.event.* → SharedFactsLog(console 平台事件报表自动可见)。
+    {
+        let probe_targets: Vec<evorule_server::api::plugin_probe::ProbeTarget> = external_mounted
+            .iter()
+            .map(|e| evorule_server::api::plugin_probe::ProbeTarget {
+                id: e.id.clone(),
+                base_url: e.base_url.clone(),
+            })
+            .collect();
+        if cfg.plugin_probe_interval == 0 {
+            info!("插件探活: --plugin-probe-interval=0 — 探活已关闭（插件离线不报警）");
+        } else if probe_targets.is_empty() {
+            info!("插件探活: 无 external 插件 — 探活任务不启动");
+        } else {
+            info!(
+                "插件探活任务已启动（{} 个 external 插件,周期 {}s,探测端点 {{base_url}}/health）",
+                probe_targets.len(),
+                cfg.plugin_probe_interval
+            );
+            evorule_server::api::plugin_probe::spawn_probe_task(
+                probe_targets,
+                Duration::from_secs(cfg.plugin_probe_interval),
+                shared_facts.clone(),
+            );
+        }
+    }
 
     // P10: 初始化 Workspace 元数据库 + 服务 (多租户工作空间 + 规则元数据管理)
     // workspace_db 独立于业务 db_path,存储 workspace/member/rule/session 元数据。

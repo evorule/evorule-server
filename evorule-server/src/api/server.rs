@@ -2279,6 +2279,66 @@ pub fn set_plugin_health(v: serde_json::Value) {
     let _ = PLUGIN_HEALTH.set(v);
 }
 
+/// 插件运行时存活状态快照（探活任务每轮更新；键=external 插件 id）。
+/// 与 PLUGIN_HEALTH（启动期挂载事实,OnceLock 不可变）分离——挂载事实与
+/// 运行时存活是两类语义,health handler 合并呈现于 external 插件节。
+static PLUGIN_LIVENESS: std::sync::RwLock<std::collections::BTreeMap<String, LivenessEntry>> =
+    std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+/// 单插件运行时存活状态（探活快照,/api/health external 插件节呈现）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LivenessEntry {
+    /// 存活状态:online(2xx 且 JSON 可解析)/offline(超时/连接失败/非 2xx)/
+    /// no_probe(/health 404/405,插件未实现探活端点——不报警)
+    pub status: String,
+    /// 最近一次探测时间(unix ms)
+    pub last_probe_ts: u64,
+    /// 最近一次在线时间(unix ms;从未在线则省略)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_ok_ts: Option<u64>,
+    /// 最近一次探测失败摘要(online 时省略)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// 探活任务每轮写入/更新插件存活状态(main 侧 plugin_probe 调用)
+pub fn update_plugin_liveness(id: &str, entry: LivenessEntry) {
+    if let Ok(mut map) = PLUGIN_LIVENESS.write() {
+        map.insert(id.to_string(), entry);
+    }
+}
+
+/// external 插件节合并运行时存活状态(纯函数,单测锁定):仅当 liveness 表
+/// 有该插件条目且插件节标记 external=true 时插入 status/last_probe/last_ok/
+/// last_error——探活任务未运行(空表)时响应与启动期快照逐字节一致(向后兼容)。
+pub fn merge_liveness_into_plugins(
+    plugins: Option<serde_json::Value>,
+    liveness: &std::collections::BTreeMap<String, LivenessEntry>,
+) -> Option<serde_json::Value> {
+    let mut plugins = plugins?;
+    let obj = plugins.as_object_mut()?;
+    for (id, entry) in liveness {
+        let Some(node) = obj.get_mut(id) else {
+            continue;
+        };
+        if node.get("external") != Some(&serde_json::Value::Bool(true)) {
+            continue; // 仅 external 插件有探活语义(native 随宿主生死)
+        }
+        let Some(m) = node.as_object_mut() else {
+            continue;
+        };
+        m.insert("status".into(), serde_json::Value::String(entry.status.clone()));
+        m.insert("last_probe".into(), serde_json::json!(entry.last_probe_ts));
+        if let Some(ok) = entry.last_ok_ts {
+            m.insert("last_ok".into(), serde_json::json!(ok));
+        }
+        if let Some(e) = &entry.last_error {
+            m.insert("last_error".into(), serde_json::Value::String(e.clone()));
+        }
+    }
+    Some(plugins)
+}
+
 /// `/api/health` 专用响应
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -3196,13 +3256,21 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
 )]
 
 async fn health() -> Json<HealthResponse> {
+    // external 插件节合并运行时存活状态(插件探活):探活任务在跑才呈现——
+    // liveness 空表时响应与启动期快照逐字节一致(向后兼容)。读锁短持即放。
+    let liveness = PLUGIN_LIVENESS.read().ok().map(|m| m.clone());
+    let plugins = PLUGIN_HEALTH.get().cloned();
+    let plugins = match liveness {
+        Some(map) if !map.is_empty() => merge_liveness_into_plugins(plugins, &map),
+        _ => plugins,
+    };
     Json(HealthResponse {
         success: true,
 
         message: "ok".to_string(),
 
         // :插件健康快照(未配置清单 → 省略该节)
-        plugins: PLUGIN_HEALTH.get().cloned(),
+        plugins,
     })
 }
 

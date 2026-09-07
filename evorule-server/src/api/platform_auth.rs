@@ -467,6 +467,13 @@ fn append_auth_event(shared: &SharedFactsLog, kind: &str, detail: serde_json::Va
     }
 }
 
+/// 平台事件通用写入口(插件探活报警等非认证子系统复用)。
+/// 与认证事件同管道:platform.event.{kind}.{unix_ms}{随机后缀} → SharedFactsLog
+/// prev_hash 链 → /api/audit/platform-events 报表自动可见。kind 不含点。
+pub fn append_platform_event(shared: &SharedFactsLog, kind: &str, detail: serde_json::Value) {
+    append_auth_event(shared, kind, detail)
+}
+
 /// serde_json::Value → evorule_tcb::JsonValue(与 server.rs/main.rs 一致)
 fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     match v {
