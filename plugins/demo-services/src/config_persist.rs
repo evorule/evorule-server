@@ -5,6 +5,12 @@
 //!
 //! 与 Python 基线一致：接收 `operation` 与 `rule`，返回 `{success, message, rule_type, persisted}`。
 //! mock 不实际修改运行时配置（真实实现走 evorule-server 热加载 API，属后续阶段）。
+//!
+//! **假成功语义声明（诚实契约，消费方必读）**：
+//! 响应中的 `success:true` 与 `persisted:true` 均为 mock 演练语义——`persisted:true`
+//! **不代表任何真实落库**（本服务无存储副作用），仅维持与 Python 基线的响应形状一致。
+//! 需要真实持久化的配置读写，请使用 finance-config 外部插件包
+//! （`finance_config_get` / `finance_config_set`，写路径经提案+审批门落库）。
 
 use evorule_tcb::JsonValue;
 

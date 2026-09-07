@@ -331,7 +331,7 @@ evorule_rules_zero_hits
 | --- | --- | --- |
 | `/api/knowledge` | GET | 数据集列表(执行侧只读通道) |
 | `/api/knowledge/{ds}/entries` ` /{entry_id}` | GET | 条目查询 |
-| `/api/services` | GET | 已绑定服务列表 |
+| `/api/services` | GET | 已绑定服务列表(native / plugin / registry 三来源,含参数契约) |
 | `/api/export/pdf` | POST | 服务端 PDF 导出(纯 Rust 文本型,中文字体子集嵌入;body 上限 32MB) |
 | `/api/marketplace/templates` | GET/POST | 模板市场:列表 / 上传 |
 | `/api/marketplace/templates/{id}` | GET/PATCH/DELETE | 模板详情 / 在线编辑 / 删除 |
@@ -429,13 +429,16 @@ evorule-server --config evorule.json
 
 ### 插件清单
 
-进程内原生插件(`plugins/` 下各 crate,如 `demo-services`、`physics-services`、`indicator-services`)支持**部署期启用/裁剪**:通过清单文件声明各插件启用集,改清单 + 重启即生效(不做运行时热启停——运行时热变更与确定性审计链的兼容性未论证)。
+插件支持**部署期启用/裁剪**:通过清单文件声明各插件启用集,改清单 + 重启即生效(不做运行时热启停——运行时热变更与确定性审计链的兼容性未论证)。清单支持两类条目:
+
+- **builtin 条目**——进程内原生插件(`plugins/` 下各 crate,如 `demo-services`、`physics-services`、`indicator-services`):`enabled` + 可选 `services` 子集;
+- **external 条目**——外部插件包(独立进程 + 自持数据 + `plugin.json` 清单,任意语言实现,装入/拔出零宿主代码改动):`enabled` + `manifest` 指向插件包清单;规范与开发指引见[《插件开发指南》](docs/PLUGIN_GUIDE.md)。
 
 ```bash
 evorule-server --plugins ./plugin_manifest.json
 ```
 
-清单文件形态(多插件,键 = 插件 id;`services` 省略 = 该插件全部服务启用;显式列出 = 子集启用;未列出的插件全启):
+清单文件形态(多插件,键 = 插件 id;builtin 条目 `services` 省略 = 该插件全部服务启用,显式列出 = 子集启用,未列出的插件全启;external 条目 `manifest` = 插件包 plugin.json 路径,相对清单文件所在目录解析):
 
 ```json
 {
@@ -452,6 +455,10 @@ evorule-server --plugins ./plugin_manifest.json
     "indicator-services": {
       "enabled": true,
       "services": ["indicator_sma", "indicator_ema", "indicator_macd", "indicator_rsi"]
+    },
+    "finance-config": {
+      "enabled": true,
+      "manifest": "plugins/finance-config/plugin.json"
     }
   }
 }
@@ -461,12 +468,13 @@ evorule-server --plugins ./plugin_manifest.json
 
 | 清单写法 | 行为 |
 |---|---|
-| 未配置 `--plugins`(缺省) | 全部原生插件/服务启用——存量部署零迁移 |
-| `enabled: true` + `services` 省略 | 该插件全部服务启用 |
+| 未配置 `--plugins`(缺省) | 全部原生插件/服务启用;外部插件包不装载(显式安装语义)——存量部署零迁移 |
+| `enabled: true` + `services` 省略 | 该插件全部服务启用(builtin) |
 | `enabled: true` + `services` 列出子集 | 仅启用列出的服务;未启用服务名回落 HTTP 注册表(`--service-registry`) |
+| `enabled: true` + `manifest` 指向 plugin.json | 装入外部插件包,声明服务派生为路由条目(与注册表条目同管道 HTTP 回落) |
 | `enabled: false` | 不挂载该插件,`call_service`/`call_external` 直连 HTTP 注册表 |
 
-校验为 **fail-fast**(启动期拒绝,不静默忽略):清单文件不可读、JSON 非法、未知插件 id、`services` 为空、服务名未注册/重复声明,均报错退出并附自诊断指引(合法服务名清单、修复路径)。
+校验为 **fail-fast**(启动期拒绝,不静默忽略):清单文件不可读、JSON 非法、未知插件 id、`services` 为空、服务名未注册/重复声明,均报错退出并附自诊断指引(合法服务名清单、修复路径)。external 条目另有三拒绝校验:plugin.json 不可读/JSON 非法/id 漂移/空服务集/base_url 非 http(s) 拒绝装载,服务名与内置/注册表/其他外部包冲突拒绝装载。
 
 **运行可见性**:`GET /api/health` 响应含 `plugins` 节,如实呈现启动期挂载事实——
 
@@ -477,12 +485,15 @@ evorule-server --plugins ./plugin_manifest.json
   "plugins": {
     "demo-services": { "enabled": true, "services": ["config_persist"] },
     "physics-services": { "enabled": true, "services": ["physics_energy"] },
-    "indicator-services": { "enabled": true, "services": ["indicator_sma"] }
+    "indicator-services": { "enabled": true, "services": ["indicator_sma"] },
+    "finance-config": { "enabled": true, "external": true, "services": ["finance_config_get", "finance_config_set"] }
   }
 }
 ```
 
-**新增原生插件/服务** = 新建(或在既有)插件 crate 的 `NATIVE_SERVICES` 声明表追加服务项 + 在 `src/main.rs` 的 `PLUGIN_DEFS` 登记表登记声明表指针(清单解析/挂载链/健康可见性机制代码零改动;路由器机制件由 [`core/plugin-kit`](core/plugin-kit) 公共 crate 提供,插件为薄壳具名委托)——部署方按需在清单中启用;详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)、[plugins/physics-services/README.md](plugins/physics-services/README.md)、[plugins/indicator-services/README.md](plugins/indicator-services/README.md)。进程外能力不走本清单,一律经 `--service-registry` 声明文件接入。
+**新增原生插件/服务** = 新建(或在既有)插件 crate 的 `NATIVE_SERVICES` 声明表追加服务项 + 在 `src/main.rs` 的 `PLUGIN_DEFS` 登记表登记声明表指针(清单解析/挂载链/健康可见性机制代码零改动;路由器机制件由 [`core/plugin-kit`](core/plugin-kit) 公共 crate 提供,插件为薄壳具名委托)——部署方按需在清单中启用;详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)、[plugins/physics-services/README.md](plugins/physics-services/README.md)、[plugins/indicator-services/README.md](plugins/indicator-services/README.md)。
+
+**新增外部插件包** = 实现独立 HTTP 服务进程 + 编写 plugin.json + 清单登记一行(零宿主代码改动、零重编,任意语言可实现);规范/调用契约/管理面/装卸操作详见[《插件开发指南》](docs/PLUGIN_GUIDE.md)。未打包为插件的既有 HTTP 服务经 `--service-registry` 声明文件直接绑定接入。
 
 ---
 

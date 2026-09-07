@@ -50,6 +50,7 @@
 | 文档 | 说明 |
 |:---|:---|
 | [docs/INTEGRATION_GUIDE.md](docs/INTEGRATION_GUIDE.md) | 集成指南 — 如何将 evorule-server 集成到应用中 |
+| [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) | 插件开发指南 — 外部插件包规范/调用契约/管理面/装卸操作 |
 | [docs/PITFALLS.md](docs/PITFALLS.md) | 已知坑 — 开发/部署中遇到的陷阱及解决方案 |
 | [docs/PITFALLS.json](docs/PITFALLS.json) | 已知坑(机器可读格式) — 供工具消费的结构化版本 |
 | [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md) | 发布流程 — 发布前就绪检查、打 tag、Docker 镜像构建、回滚流程 |

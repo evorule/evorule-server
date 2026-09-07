@@ -24,6 +24,8 @@
 - [三、审计链完整使用](#三审计链完整使用)
 - [四、规则编写实战要点](#四规则编写实战要点)
 - [五、本地开发环境搭建](#五本地开发环境搭建)
+- [六、规则包（Bundles）API (0.3.0 新增)](#六规则包bundlesapi-030-新增)
+- [七、权限（Permissions）API (0.3.0 新增)](#七权限permissionsapi-030-新增)
 - [八、插件清单（部署期启用/裁剪）](#八插件清单部署期启用裁剪)
 
 ---
@@ -681,7 +683,10 @@ DELETE /api/permissions/entries/{entry_id}
 
 ## 八、插件清单（部署期启用/裁剪）
 
-集成方/部署方可通过插件清单声明进程内原生插件的启用集（白标部署、最小化部署面场景），**改清单 + 重启即生效**：
+集成方/部署方可通过插件清单声明插件的启用集（白标部署、最小化部署面场景），**改清单 + 重启即生效**。清单支持两类条目：
+
+- **builtin 条目**：宿主自带进程内原生插件（demo/physics/indicator），`enabled` + 可选 `services` 子集；
+- **external 条目**：外部插件包（独立进程 + `plugin.json` 清单声明），`enabled` + `manifest` 指向插件包清单——装入/拔出零宿主代码改动，详见 [《插件开发指南》](PLUGIN_GUIDE.md)。
 
 ```bash
 # 全量启用（缺省，不传 --plugins 即可，存量零迁移）
@@ -691,16 +696,20 @@ evorule-server --addr 0.0.0.0:18080
 echo '{ "plugins": { "demo-services": { "enabled": true, "services": ["config_persist"] }, "physics-services": { "enabled": true, "services": ["physics_energy"] }, "indicator-services": { "enabled": true, "services": ["indicator_sma"] } } }' > plugin_manifest.json
 evorule-server --addr 0.0.0.0:18080 --plugins plugin_manifest.json
 
+# 装入外部插件包：external 条目登记 plugin.json 路径（与 builtin 条目共存）
+echo '{ "plugins": { "demo-services": { "enabled": true, "services": ["config_persist"] }, "finance-config": { "enabled": true, "manifest": "plugins/finance-config/plugin.json" } } }' > plugin_manifest.json
+evorule-server --addr 0.0.0.0:18080 --plugins plugin_manifest.json
+
 # 全部停用：call_service/call_external 直连 HTTP 注册表
 echo '{ "plugins": { "demo-services": { "enabled": false }, "physics-services": { "enabled": false }, "indicator-services": { "enabled": false } } }' > plugin_manifest.json
 ```
 
 要点：
 
-1. **校验 fail-fast**：未知名/重复名/空集/未知插件 id 均启动期报错退出（含合法服务名与自诊断指引），不静默忽略。
+1. **校验 fail-fast**：未知名/重复名/空集/未知插件 id 均启动期报错退出（含合法服务名与自诊断指引），不静默忽略；external 条目另有三拒绝校验（清单非法 JSON / 服务名与内置或注册表冲突 / 空服务集），启动即拦。
 2. **回落语义**：未启用的服务名沿插件挂载链（声明序）逐层回落，链尾直连 `--service-registry` HTTP 注册表，与进程外服务同路径——已发布规则不受裁剪影响，只是执行路径从原生变为 HTTP（如实报错 `unknown service_name` 当注册表也未配置时）。
-3. **可见性**：`GET /api/health` 的 `plugins` 节按插件 id 逐一呈现实际挂载服务名集，供运维探活/对账。
-4. **进程外能力不走本清单**：一律经 `service_registry.json` 声明接入（见 §1.3）。
+3. **可见性**：`GET /api/health` 的 `plugins` 节按插件 id 逐一呈现实际挂载服务名集（external 插件包附 `"external": true` 标记），供运维探活/对账。
+4. **进程外能力两通道**：外部插件包走本清单 external 条目（`plugin.json` 声明，见《插件开发指南》）；未打包为插件的独立服务经 `service_registry.json` 显式绑定接入（见 §1.3）。服务能力对账（`GET /api/services`）统一呈现 `native` / `plugin` / `registry` 三来源。
 
 完整语义与新增原生插件/服务指引见 [README「插件清单」](../README.md#插件清单)、[plugins/demo-services/README.md](../plugins/demo-services/README.md)、[plugins/physics-services/README.md](../plugins/physics-services/README.md) 与 [plugins/indicator-services/README.md](../plugins/indicator-services/README.md)。
 

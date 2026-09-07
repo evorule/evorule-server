@@ -38,7 +38,7 @@
 | `shadow_ik_solver` | `shadow_validate.rs` | 影子 IK 求解（新旧规则并行执行 + 结果对照） |
 | `sampling_service` | `sampling.rs` | 采样决策器（决定哪些规则需要影子验证） |
 | `rule_sandbox` | `rule_sandbox.rs` | 规则沙盒试运行（隔离执行 + 结果对比） |
-| `config_persist` | `config_persist.rs` | 配置持久化（热加载补丁 mock） |
+| `config_persist` | `config_persist.rs` | 配置持久化（热加载补丁 mock；`persisted:true` 为 mock 假成功语义，不代表真实落库，真实配置读写走 finance-config 外部插件包） |
 
 ---
 
