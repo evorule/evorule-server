@@ -206,9 +206,12 @@ Full routes (**84 paths** recorded in OpenAPI, plus workspace route families) at
 
 | Path | Method | Description |
 | --- | --- | --- |
-| `/api/health` | GET | Health check (response includes plugin mount facts) |
+| `/api/health` | GET | Health check (response includes plugin mount facts + external plugin liveness status) |
 | `/api/health/liveness` | GET | Liveness probe (always 200) |
 | `/api/health/readiness` | GET | Readiness probe (503 during shutdown) |
+| `/api/plugins/{id}/admin/proposals` | GET | Plugin approval proxy: list pending proposals (passthrough of plugin admin surface) |
+| `/api/plugins/{id}/admin/proposals/{pid}/approve` | POST | Plugin approval proxy: approve (approver force-injected from platform login identity) |
+| `/api/plugins/{id}/admin/proposals/{pid}/reject` | POST | Plugin approval proxy: reject (reason kept from caller) |
 | `/api/openapi.json` | GET | OpenAPI doc (single source of truth) |
 
 ### Session & Execution
@@ -411,6 +414,7 @@ Config loading priority: **CLI args > env vars (prefix `EVORULE_`) > JSON config
 | `EVORULE_ALLOW_ABORT` | `--allow-abort` | `false` | Enable force-abort session endpoint (`POST /api/sessions/{id}/abort`, default 404) |
 | `EVORULE_DEMO_AUTH` | `--demo-auth` | `false` | Demo login toggle (on by default in quick-start packages; production recommends off) |
 | `EVORULE_WEB_DIR` | `--web-dir` | (empty) | Static frontend hosting dir (SPA fallback index.html; unset = no hosting) |
+| `EVORULE_PLUGIN_ADMIN_TOKEN__<ID>` | — | (empty) | Per-external-plugin admin token for the approval proxy (uppercase-underscore id, e.g. `EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG`; unset = proxy returns 503 for that plugin) |
 
 ### JSON Config File
 
@@ -485,7 +489,7 @@ Semantic conventions:
 
 Validation is **fail-fast** (startup rejection, never silently ignored): unreadable manifest file, illegal JSON, unknown plugin id, empty `services`, unregistered/duplicate service names → error exit with self-diagnostic guidance (valid service name list, fix path). External entries also have 3 rejection checks: plugin.json unreadable/illegal JSON/id drift/empty service set/base_url non-http(s) refuses load; service name conflicts with builtin/registry/other external packages refuses load.
 
-**Runtime visibility**: `GET /api/health` response includes `plugins` node showing actual mount facts at startup —
+**Runtime visibility**: `GET /api/health` response includes `plugins` node showing actual mount facts at startup; external plugin nodes additionally carry runtime liveness status from the probe task (`status`: online / offline / no_probe, `last_probe`, `last_ok`, `last_error`) — a plugin going offline emits a `plugin_offline` alert event (recovery records `plugin_online` all-clear), probes with configurable period `--plugin-probe-interval` (default 30s, 0 = off); plugins without a `/health` endpoint report `no_probe` (presented as-is, no alert noise) —
 
 ```json
 {
@@ -495,7 +499,7 @@ Validation is **fail-fast** (startup rejection, never silently ignored): unreada
     "demo-services": { "enabled": true, "services": ["config_persist"] },
     "physics-services": { "enabled": true, "services": ["physics_energy"] },
     "indicator-services": { "enabled": true, "services": ["indicator_sma"] },
-    "finance-config": { "enabled": true, "external": true, "services": ["finance_config_get", "finance_config_set"] }
+    "finance-config": { "enabled": true, "external": true, "services": ["finance_config_get", "finance_config_set"], "status": "online", "last_probe": 1788804515000, "last_ok": 1788804515000 }
   }
 }
 ```
@@ -998,6 +1002,8 @@ evorule_rules_zero_hits
 | `EVORULE_ALLOW_ABORT`     | `--allow-abort`     | `false`                      | 启用强制中止会话端点(`POST /api/sessions/{id}/abort`, 默认 404) |
 | `EVORULE_DEMO_AUTH`       | `--demo-auth`       | `false`                      | 演示登录入口开关(体验包默认开;生产建议关) |
 | `EVORULE_WEB_DIR`         | `--web-dir`         | (空)                         | 静态前端托管目录(SPA 回退 index.html;不设则不托管) |
+| `EVORULE_PLUGIN_ADMIN_TOKEN__<ID>` | — | (空) | 各 external 插件的审批代理 admin token(id 大写下划线,如 `EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG`;未配置 = 该插件代理返回 503) |
+| `EVORULE_PLUGIN_PROBE_INTERVAL` | `--plugin-probe-interval` | `30` | external 插件探活周期秒数(0 = 关闭探活;离线/恢复报警由状态翻转驱动) |
 
 ### JSON 配置文件
 
@@ -1072,7 +1078,7 @@ evorule-server --plugins ./plugin_manifest.json
 
 校验为 **fail-fast**(启动期拒绝,不静默忽略):清单文件不可读、JSON 非法、未知插件 id、`services` 为空、服务名未注册/重复声明,均报错退出并附自诊断指引(合法服务名清单、修复路径)。external 条目另有三拒绝校验:plugin.json 不可读/JSON 非法/id 漂移/空服务集/base_url 非 http(s) 拒绝装载,服务名与内置/注册表/其他外部包冲突拒绝装载。
 
-**运行可见性**:`GET /api/health` 响应含 `plugins` 节,如实呈现启动期挂载事实——
+**运行可见性**:`GET /api/health` 响应含 `plugins` 节,如实呈现启动期挂载事实;external 插件节随探活任务附带运行时存活状态(`status`: online / offline / no_probe,`last_probe`、`last_ok`、`last_error`)——插件离线触发 `plugin_offline` 报警事件(恢复自动记 `plugin_online` 关警留痕),探活周期经 `--plugin-probe-interval` 配置(缺省 30s,0 = 关闭);插件未实现 `/health` 探针呈现 `no_probe`(如实呈现,不报警不告噪)——
 
 ```json
 {
@@ -1082,7 +1088,7 @@ evorule-server --plugins ./plugin_manifest.json
     "demo-services": { "enabled": true, "services": ["config_persist"] },
     "physics-services": { "enabled": true, "services": ["physics_energy"] },
     "indicator-services": { "enabled": true, "services": ["indicator_sma"] },
-    "finance-config": { "enabled": true, "external": true, "services": ["finance_config_get", "finance_config_set"] }
+    "finance-config": { "enabled": true, "external": true, "services": ["finance_config_get", "finance_config_set"], "status": "online", "last_probe": 1788804515000, "last_ok": 1788804515000 }
   }
 }
 ```

@@ -133,11 +133,19 @@ Body:    args 原样 JSON（调用方参数对象）
 超时:    server 侧 5000ms（派生路由条目固定值）
 ```
 
-契约与 registry 绑定、invoke 端点完全同构——`args` 序列化为 HTTP body，HTTP 响应即服务结果。**建议**同时实现存活探针：
+契约与 registry 绑定、invoke 端点完全同构——`args` 序列化为 HTTP body，HTTP 响应即服务结果。**推荐实现**存活探针（server 探活任务按周期探测，随 `/api/health` external 插件节呈现运行时存活状态）：
 
 ```
 GET /health   →  {"status": "ok", "plugin": "<id>", "version": "<version>"}
 ```
+
+探活结果三态：
+
+- **online** — 2xx 且响应体 JSON 可解析；
+- **offline** — 连接失败 / 超时 / 非 2xx（触发 `plugin_offline` 报警事件，恢复后自动记 `plugin_online` 关警留痕）；
+- **no_probe** — `/health` 返回 404/405（插件未实现探针）：**如实呈现、不报警不告噪**，文档引导补齐。
+
+探活周期经 `--plugin-probe-interval` 配置（缺省 30s，0 = 关闭探活）。
 
 ### 5.2 调用方如何到达你的服务（你无需关心，仅供理解）
 
@@ -169,6 +177,18 @@ POST /admin/proposals/{id}/reject        body: {"approver": "...", "reason": "..
 - 审批动作带操作者标识，入插件自持审计（AuditEntry）。
 
 **语义规范**：写路径 = "创建提案 → 人工审批 → 落库"两段式，服务调用本身**只创建提案不落库**（呼应治理哲学：静默处置允许，静默通过禁止）。
+
+**统一审批入口（server 审批代理）**：部署侧将同一 admin token 值同时注入插件进程与 server 两侧环境变量（server 侧命名 `EVORULE_PLUGIN_ADMIN_TOKEN__<ID 大写下划线>`，如 `EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG`；密钥零落盘），console 插件审批面即可经 server 代理完成审批，审批入口收敛为单通道：
+
+```
+GET  /api/plugins/{id}/admin/proposals                   待批提案列表（原样透传）
+POST /api/plugins/{id}/admin/proposals/{pid}/approve     批准（approver 由 server 强制注入登录身份）
+POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留前端值）
+```
+
+- approver 由 server 代理端覆盖为平台认证登录 actor，**不信任前端自报**（防伪造操作者）；审计归属不变（入插件自持审计）。
+- server 未配置该插件 token → 代理 503；插件 id 未知/非 external → 404；插件管理面不可达 → 502。
+- 代理为增量通道，插件管理面直连端口仍可用（运维兜底路径保留）。
 
 ---
 
@@ -210,7 +230,7 @@ POST /admin/proposals/{id}/reject        body: {"approver": "...", "reason": "..
 
 外部插件包与语言无关，满足以下即可：
 
-1. HTTP 服务：`POST /services/{name}`（body=args JSON，响应=结果 JSON），建议 `GET /health`；
+1. HTTP 服务：`POST /services/{name}`（body=args JSON，响应=结果 JSON），推荐 `GET /health` 存活探针（未实现 = no_probe，不报警；见 §5.1）；
 2. 声明：plugin.json 如实描述服务与参数契约；
 3. 数据自持：不读写宿主 data 目录；
 4. 涉审批：按 §六管理面规范（token 认证 + fail-fast）；
