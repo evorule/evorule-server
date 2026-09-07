@@ -7825,7 +7825,17 @@ pub struct BoundServiceInfo {
 )]
 pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<BoundServiceInfo>> {
     let mut out: Vec<BoundServiceInfo> = api.native_services.as_ref().clone();
+    // 同名去重：registry 仅是 HTTP 回落绑定，native/plugin 条目携带完整元数据
+    // （sensitive/parameters/plugin 归属）。同名时以 native/plugin 源为准，避免
+    // 对账清单出现双源重复条目——消费方（LLM 消费桥/服务目录）按名索引一旦命中
+    // 缺元数据的 registry 条目，会发生敏感守卫降级与参数契约丢失。
+    // 去重语义与 invoke 路由优先级一致（插件路由原生优先 → registry HTTP 回落）。
+    let known: std::collections::HashSet<String> =
+        out.iter().map(|s| s.name.clone()).collect();
     for meta in api.registry_services.iter() {
+        if known.contains(&meta.name) {
+            continue;
+        }
         out.push(BoundServiceInfo {
             name: meta.name.clone(),
             source: "registry".to_string(),
@@ -9120,6 +9130,67 @@ mod tests {
     ///
     /// - 孤儿任务在 `#[tokio::test]` 运行时 drop 时被自动取消
     ///
+    /// 服务对账同名去重：registry 回落绑定与 native/plugin 源同名时，
+    /// 对账清单必须只保留 native/plugin 条目（带 sensitive/parameters/plugin
+    /// 全元数据），消费方按名索引不再有命中缺元数据条目的形态；仅 registry
+    /// 绑定的服务不受去重影响，照常列出。
+    #[tokio::test]
+    async fn test_list_services_dedups_same_name_registry_entry() {
+        let mut instr = std::collections::BTreeMap::new();
+
+        instr.insert("type".to_string(), JsonValue::string("noop"));
+
+        let core_eval = vec![JsonValue::Object(instr)];
+
+        let sessions = SessionApi::new(core_eval, 100)
+            .with_native_services(vec![BoundServiceInfo {
+                name: "finance_config_get".to_string(),
+                source: "plugin".to_string(),
+                version: Some("0.5.0".to_string()),
+                description: Some("插件包声明条目（携带完整元数据）".to_string()),
+                plugin: Some("finance-config".to_string()),
+                sensitive: false,
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": { "key": { "type": "string" } },
+                    "required": ["key"]
+                })),
+            }])
+            .with_registry_services([
+                ServiceMeta {
+                    name: "finance_config_get".to_string(),
+                    version: None,
+                    description: Some("registry 同名回落绑定".to_string()),
+                },
+                ServiceMeta {
+                    name: "registry_only_service".to_string(),
+                    version: Some("1.0.0".to_string()),
+                    description: Some("仅 registry 绑定的服务".to_string()),
+                },
+            ]);
+
+        let list = list_services_handler(axum::extract::State(sessions)).await.0;
+
+        let dupes = list
+            .iter()
+            .filter(|s| s.name == "finance_config_get")
+            .count();
+        assert_eq!(dupes, 1, "同名服务在对账清单必须唯一");
+
+        let kept = list
+            .iter()
+            .find(|s| s.name == "finance_config_get")
+            .unwrap();
+        assert_eq!(kept.source, "plugin", "同名时必须保留 native/plugin 源");
+        assert_eq!(kept.plugin.as_deref(), Some("finance-config"));
+        assert!(kept.parameters.is_some(), "保留条目必须携带参数契约");
+
+        let only = list
+            .iter()
+            .find(|s| s.name == "registry_only_service")
+            .unwrap();
+        assert_eq!(only.source, "registry", "仅 registry 绑定的服务不被去重误伤");
+    }
     fn make_test_state() -> (AppState, ReadinessFlag) {
         let mut instr = std::collections::BTreeMap::new();
 
