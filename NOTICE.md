@@ -28,9 +28,9 @@
 | 你是 | 走哪条路 | 链接 |
 |---|---|---|
 | 个人 / 自由职业者 / 开源项目 | **AGPL**（免费） | [LICENSE](LICENSE) |
-| 年营收 < $10M 企业 / 政府 / 高校 / 非营利 | **FCL**（免费闭源豁免） | [FREE_COMMERCIAL_LICENSE.md](FREE_COMMERCIAL_LICENSE.md) |
+| 年营收 < ¥1 亿企业 / 政府 / 高校 / 非营利 | **FCL**（免费闭源豁免） | [FREE_COMMERCIAL_LICENSE.md](FREE_COMMERCIAL_LICENSE.md) |
 | 愿意开源修改版的任意实体 | **AGPL**（免费） | [LICENSE](LICENSE) |
-| 年营收 ≥ $10M 且不愿开源 | **商业许可**（付费） | [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) · <evorulelab@gmail.com> |
+| 年营收 ≥ ¥1 亿且不愿开源 | **商业许可**（付费） | [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) · <evorulelab@gmail.com> |
 
 > 完整决策指引见 [DUAL_LICENSE.md](DUAL_LICENSE.md)。
 

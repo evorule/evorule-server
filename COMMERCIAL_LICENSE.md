@@ -88,7 +88,7 @@ EvoRule Project（以下简称"许可方"）授予您（以下简称"被许可�
 - 具体价目单在签署时提供，**不公开于本摘要**；
 - 技术支持与实施服务**单独计价**。
 
-> 年营收 < $10M 的合格实体优先使用 [FCL](FREE_COMMERCIAL_LICENSE.md)（免费）；本商业许可主要面向**不符合 FCL 资格**的实体。
+> 年营收 < ¥1 亿的合格实体优先使用 [FCL](FREE_COMMERCIAL_LICENSE.md)（免费）；本商业许可主要面向**不符合 FCL 资格**的实体。
 
 **联系方式**: <evorulelab@gmail.com>（主题加 `[Commercial License]`）
 
