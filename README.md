@@ -1194,6 +1194,7 @@ EvoRule Server 采用 **AGPL + 商业授权双轨许可**(与[核心仓](https:/
 - **代码(本仓所有 Rust 代码)**:AGPL-3.0-or-later(见 [LICENSE](LICENSE));闭源商业/白标场景提供**商业许可**,详见 [DUAL_LICENSE.md](DUAL_LICENSE.md) / [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md);政府/学术界/非营利可申请免费豁免,见 [FREE_COMMERCIAL_LICENSE.md](FREE_COMMERCIAL_LICENSE.md)
 - **文档**:`docs/` 下文档以 CC-BY-4.0 发布,本 README 顶部为 AGPL 头部
 - **宪法(server 业务规则集)**:`resources/server_eval.json` 采用 CC0 1.0 公共领域(0.4.1 前旧名 `core_eval.json`;与核心仓宪法原则职责不同、独立演进)
+- **商业许可咨询**:evorulelab@gmail.com
 
 ---
 

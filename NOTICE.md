@@ -17,54 +17,50 @@
   SPDX-License-Identifier: AGPL-3.0-or-later
 -->
 
-# EvoRule Server — 声明
+# EvoRule — 声明
 
 **版权所有 (c) 2026 EvoRule Project**
 
-本项目（`evorule-server`）是 EvoRule 框架的官方 HTTP server 实现，包含：
-- `evorule-server` 独立二进制（axum HTTP + SSE + Session 管理）
-- 9 个 server 配套 crate（`core/auth`、`core/io_handlers`、`core/metrics`、`core/hot_reload`、`core/debug_control`、`core/semantic_invariants`、`core/time_machine`、`core/rule_tools`、`core/metrics`）
+本项目包含由 EvoRule Project 开发的软件。
 
-## 协议
+## 协议选择指引
+
+| 你是 | 走哪条路 | 链接 |
+|---|---|---|
+| 个人 / 自由职业者 / 开源项目 | **AGPL**（免费） | [LICENSE](LICENSE) |
+| 年营收 < $10M 企业 / 政府 / 高校 / 非营利 | **FCL**（免费闭源豁免） | [FREE_COMMERCIAL_LICENSE.md](FREE_COMMERCIAL_LICENSE.md) |
+| 愿意开源修改版的任意实体 | **AGPL**（免费） | [LICENSE](LICENSE) |
+| 年营收 ≥ $10M 且不愿开源 | **商业许可**（付费） | [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) · <evorulelab@gmail.com> |
+
+> 完整决策指引见 [DUAL_LICENSE.md](DUAL_LICENSE.md)。
+
+## 协议分离
 
 | 资产 | 协议 | 说明 |
 |---|---|---|
-| **本仓所有代码** | **AGPL-3.0-or-later / 商业许可(双轨)** | 详见 [LICENSE](LICENSE) 与 [DUAL_LICENSE.md](DUAL_LICENSE.md)/ [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md);开源采用 AGPL,闭源商业/白标需商业授权 |
-| **`docs/` 下文档** | **CC-BY-4.0** | 文档自由引用,须署名 |
-| **`resources/server_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法·server 业务规则集(解释器规范+会话桥接)——0.4.1 前旧名 `core_eval.json` | [核心仓](https://gitee.com/evorule/evorule)宪法原则职责不同、独立演进,任何人可自由使用 |
+| **代码** | AGPL-3.0-or-later | 详见 [LICENSE](LICENSE) |
+| **`core_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法（解释器规范）—— 任何人都可以自由实现兼容的 EvoRule 引擎，无需保留版权声明。官方文本：<https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt> ；仓内副本：[LICENSES/core_eval-CC0-1.0.txt](LICENSES/core_eval-CC0-1.0.txt) |
 
-## 依赖说明
+**协议分离的战略意义**：
 
-本仓依赖 evorule 核心三 crate（均为 AGPL-3.0-or-later）：
+- 代码（copyleft, AGPL-3.0）：保护 EvoRule 当前实现，阻止大厂"白嫖 fork 后卖闭源 SaaS"
+- 宪法（public domain, CC0-1.0）：鼓励广泛采用，任何人都可以基于宪法实现兼容引擎
+- 这把"标准"和"实现"分开，类似 HTTP 规范（W3C 公共）vs Apache HTTP Server（版权）
 
-| 依赖 | 来源 | 说明 |
-|---|---|---|
-| `evorule-tcb` | [核心仓](https://gitee.com/evorule/evorule) | TCB 基础层（JSON 状态机 / 路径解析 / 域评估） |
-| `evorule-reactor` | 同上 | 反应器层（主循环 / Fact 日志 / WAL） |
-| `evorule-governance` | 同上 | 治理层机制（会话管理 / 审计链 / IoDispatcher 框架） |
+## 设计原则
 
-本地开发通过 `path` 依赖引用核心仓 `../evorule/`；发布时通过 `crates.io` 拉取。
+EvoRule 的核心设计原则：
 
-## 第三方依赖
-
-主要第三方依赖（完整列表见 `Cargo.lock`）：
-
-| 依赖 | 协议 | 用途 |
-|---|---|---|
-| `axum` | MIT | HTTP 框架 |
-| `tokio` | MIT | 异步运行时 |
-| `reqwest` | MIT/Apache-2.0 | HTTP 客户端（HttpHandler / time_machine） |
-| `rusqlite` | MIT | SQLite 绑定（DbHandler） |
-| `notify` | CC0-1.0 | 文件系统监听（hot_reload） |
-| `tower` / `tower-governor` | MIT | 中间件 / 速率限制 |
-| `prometheus` | Apache-2.0 | 指标收集 |
-| `serde` / `serde_json` | MIT/Apache-2.0 | 序列化 |
-| `clap` | MIT/Apache-2.0 | CLI 参数解析 |
-| `tracing` | MIT | 结构化日志 |
+- 规则即数据（可读、可审计、可序列化）
+- 自解释引擎（解释器本身也是可被审计的规则）
+- 完全可追溯（每次状态变化留下因果链）
+- 零隐藏逻辑（解释器可读 + 可审计）
+- 不可变状态（基于不可变数据结构）
+- 确定性执行（相同输入 = 永远相同输出）
 
 ## 联系信息
 
-- **项目**: EvoRule Server — 官方 HTTP server 实现
+- **项目**: EvoRule — 反应式执行引擎
 - **作者**: EvoRule Project
 - **邮箱**: <evorulelab@gmail.com>
 - **组织**: [EvoRule Lab](https://gitee.com/evorule)
