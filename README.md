@@ -192,9 +192,9 @@ curl -X POST http://localhost:18080/api/platform/auth/login \
   -d '{"username":"admin","password":"<password>"}'
 ```
 
-Business APIs are protected by unified auth middleware, **dual-credential**: static Bearer token (`--auth-token`) OR platform session token — either works; unified 401 semantics. `bootstrap` / `login` / `auth/status` are public; all other platform endpoints require a platform token. Demo scenarios can enable `--demo-auth` (on by default in quick-start packages; production recommends off).
+Business APIs are protected by unified auth middleware, **triple-channel**: static Bearer token (`--auth-token`) OR platform session token OR app credential key (issued via `/api/platform/apps`, requests attributed by `app_id` in the audit chain) — any one works; unified 401 semantics. `bootstrap` / `login` / `auth/status` are public; all other platform endpoints require a platform token. Demo scenarios can enable `--demo-auth` (on by default in quick-start packages; production recommends off).
 
-Full routes (**84 paths** recorded in OpenAPI, plus workspace route families) at `GET /api/openapi.json`; Swagger UI requires `--openapi-ui` explicit enable (`GET /api/docs`).
+Full routes (**119 paths** recorded in OpenAPI, plus workspace route families) at `GET /api/openapi.json`; Swagger UI requires `--openapi-ui` explicit enable (`GET /api/docs`).
 
 ---
 
@@ -366,9 +366,11 @@ Two layers, usable separately or combined:
 | --- | --- | --- | --- |
 | Static token | `--auth-token <t>` | Bearer token | Single admin / inter-service calls |
 | Platform user system | bootstrap on first run | Platform session token | Multi-user / role / audit requirements |
+| App credentials | Issue via `/api/platform/apps` (manage_apps) | App key (Bearer) | External applications, attributed by `app_id` in audit chain |
 
-- **Dual credential**: once enabled, business APIs accept static token **OR** platform session token; unified 401 semantics
+- **Triple-channel auth**: once enabled, business APIs accept static token **OR** platform session token **OR** app key; unified 401 semantics
 - Trusted service pipe: `--service-token` (service identity, can write to protected domains `stable.llm` / `stable.system`)
+- App keys: plaintext shown once at issue time, server stores only the `blake3:` hash; revoke takes effect on the next request (idempotent), revocation logged to the audit chain
 - All auth events land in audit fact chain, queryable via `/api/audit/platform-events`
 - `/metrics` can independently require auth (`--metrics-auth`)
 
@@ -783,9 +785,9 @@ curl -X POST http://localhost:18080/api/platform/auth/login \
   -d '{"username":"admin","password":"<密码>"}'
 ```
 
-业务 API 由统一认证中间件保护,**双凭据**:静态 Bearer token(`--auth-token`)或平台会话 token 任一均可;统一 401 语义。`bootstrap` / `login` / `auth/status` 公开,其余平台端点需平台 token。演示场景可开 `--demo-auth`(体验包默认开,生产建议关闭)。
+业务 API 由统一认证中间件保护,**三通道认证**:静态 Bearer token(`--auth-token`)、平台会话 token 或应用凭据 key(经 `/api/platform/apps` 签发,请求按 `app_id` 归因入审计链)任一均可;统一 401 语义。`bootstrap` / `login` / `auth/status` 公开,其余平台端点需平台 token。演示场景可开 `--demo-auth`(体验包默认开,生产建议关闭)。
 
-完整路由(OpenAPI 收录 **84 条**,另有工作空间路由族)见 `GET /api/openapi.json`;Swagger UI 需 `--openapi-ui` 显式开启(`GET /api/docs`)。
+完整路由(OpenAPI 收录 **119 条**,另有工作空间路由族)见 `GET /api/openapi.json`;Swagger UI 需 `--openapi-ui` 显式开启(`GET /api/docs`)。
 
 ---
 
@@ -879,6 +881,7 @@ curl -X POST http://localhost:18080/api/platform/auth/login \
 | `/api/platform/users` `/users/{username}` | GET/POST/PATCH/DELETE | 用户管理 |
 | `/api/platform/roles` `/roles/{name}` | GET/POST/… | 角色管理 |
 | `/api/platform/permissions` | GET | 权限点注册表 |
+| `/api/platform/apps` `/apps/{id}/revoke` | GET/POST | 应用凭据管理(签发/列表/吊销,manage_apps) |
 
 ### 权限 / 规则包 / 规则
 
@@ -954,9 +957,11 @@ evorule_rules_zero_hits
 | --- | --- | --- | --- |
 | 静态 token | `--auth-token <t>` | Bearer token | 单管理员 / 服务间调用 |
 | 平台用户体系 | bootstrap 首启即启用 | 平台会话 token | 多用户 / 角色 / 审计需求 |
+| 应用凭据 | `/api/platform/apps` 签发(manage_apps) | 应用 key(Bearer) | 外部应用接入,请求按 app_id 归因审计 |
 
-- **双凭据**:启用后业务 API 接受静态 token **或** 平台会话 token;统一 401 语义
+- **三通道认证**:启用后业务 API 接受静态 token **或** 平台会话 token **或** 应用 key;统一 401 语义
 - 受信服务管道:`--service-token`(service 身份,可写受保护域 `stable.llm` / `stable.system`)
+- 应用 key:明文仅签发时返回一次,服务端只存 `blake3:` 哈希;吊销即时生效(下一请求即 401,幂等),吊销事件入审计链
 - 认证事件全部落审计事实链,可经 `/api/audit/platform-events` 报表查询
 - `/metrics` 可独立要求认证(`--metrics-auth`)
 
