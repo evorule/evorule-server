@@ -1124,7 +1124,7 @@ impl SessionApi {
         let mut sources: Vec<String> = Vec::new();
 
         for p in paths {
-            if let Some(extra) = Self::parse_rule_file(&p) {
+            if let Some(extra) = Self::parse_rule_file(&p, rules_dir) {
                 // 来源标签 = 相对 rules_dir 的路径（/ 归一化，URL/标签安全）
                 let rel = p
                     .strip_prefix(rules_dir)
@@ -1163,18 +1163,145 @@ impl SessionApi {
         }
     }
 
+    /// 三层规则清单（UV-145 W1：层级可观测，60 号方案 §2.1）
+    ///
+    /// 分层是**纯约定**（执行顺序由"core_eval 在前 + 完整路径字典序"保证，本函数不参与
+    /// 加载路径，只做只读扫描）：
+    /// - L1 宪法层：core_eval 文件（server_eval.json），仅用户特批可改
+    /// - L2 元规则层：rules_dir **根目录直置**的 `00_meta_*.json`，仅治理链晋升可写
+    ///   （子目录内 00_meta_ 前缀不算 L2——L3 补丁落点在 bundles/{id}/ 子目录，
+    ///   防伪造层级；且字典序保证根目录 00_meta_ 恒先于 bundles/ 执行）
+    /// - L3 业务层：其余全部（根目录存量文件 + bundles/ 子目录条目）
+    pub fn tier_inventory(
+        core_eval_path: &std::path::Path,
+        rules_dir: &std::path::Path,
+    ) -> Vec<RuleTierEntry> {
+        let mut tiers = Vec::new();
+
+        // L1 宪法层（单文件）
+        tiers.push(RuleTierEntry {
+            tier: "L1_core_eval".to_string(),
+            files: if core_eval_path.exists() { 1 } else { 0 },
+            paths: vec![core_eval_path.to_string_lossy().to_string()],
+        });
+
+        // L2/L3 分类：根目录直置 00_meta_ 前缀 = L2，其余（含子目录）= L3
+        let (mut l2, mut l3): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+        let mut all: Vec<std::path::PathBuf> = Vec::new();
+        Self::collect_json_files_recursive(rules_dir, &mut all);
+        for p in all {
+            let rel = p
+                .strip_prefix(rules_dir)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            // 清单只列「加载生效」的文件：未过层级门禁的不计入（拒载证据见加载日志 warn），
+            // 保证清单视图与 count（实际加载规则数）一致，运维不会被拒载文件误导
+            let passes_gate = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .map(|j| Self::tier_gate_reason(&p, rules_dir, &j).is_ok())
+                .unwrap_or(false);
+            if !passes_gate {
+                continue;
+            }
+            let is_root_meta = p.parent().map(|d| d == rules_dir).unwrap_or(false)
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("00_meta_"))
+                    .unwrap_or(false);
+            if is_root_meta {
+                l2.push(rel);
+            } else {
+                l3.push(rel);
+            }
+        }
+        l2.sort();
+        l3.sort();
+        tiers.push(RuleTierEntry {
+            tier: "L2_meta".to_string(),
+            files: l2.len(),
+            paths: l2,
+        });
+        tiers.push(RuleTierEntry {
+            tier: "L3_business".to_string(),
+            files: l3.len(),
+            paths: l3,
+        });
+        tiers
+    }
+
     /// 读取并解析单个业务规则文件，返回其 transform 数组。
     ///
     ///
     /// 文件读取/解析失败或格式不符时 warn 并返回 None（fail-soft，保证热重载可用性）。
     ///
-    fn parse_rule_file(p: &std::path::Path) -> Option<Vec<JsonValue>> {
+    fn parse_rule_file(p: &std::path::Path, rules_dir: &std::path::Path) -> Option<Vec<JsonValue>> {
         let json = Self::load_rule_doc(p)?;
+
+        // UV-145 W1：tier 层级门禁（正向+反向，见 passes_tier_gate 注释）
+        if !Self::passes_tier_gate(p, rules_dir, &json) {
+            return None;
+        }
+
         let arr = Self::extract_transform_array(p, &json)?;
         if !Self::passes_schema_gate(p, &arr) {
             return None;
         }
         Some(arr.into_iter().map(serde_to_tcb).collect())
+    }
+
+    /// 层级门禁判定核心（静默版，加载路径与 tier_inventory 清单共用单一权威实现）。
+    ///
+    /// - **正向**：rules_dir 根目录直置的 `00_meta_*.json`（L2 元规则层）必须声明
+    ///   `metadata.tier == "meta"`——防裸文件冒充元规则。
+    /// - **反向**：其余文件（根目录普通业务文件 / bundles/ 子目录条目）**禁止**声明
+    ///   `tier == "meta"`——防 LLM 补丁伪造层级。
+    ///
+    /// `Ok(())` = 通过；`Err(reason)` = 拒载原因。
+    fn tier_gate_reason(
+        p: &std::path::Path,
+        rules_dir: &std::path::Path,
+        json: &serde_json::Value,
+    ) -> Result<(), String> {
+        let tier = json
+            .get("metadata")
+            .and_then(|m| m.get("tier"))
+            .and_then(|t| t.as_str());
+        let is_root_meta_file = p.parent().map(|d| d == rules_dir).unwrap_or(false)
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("00_meta_"))
+                .unwrap_or(false);
+        match (is_root_meta_file, tier) {
+            (true, Some("meta")) => Ok(()),
+            (true, other) => Err(format!(
+                "元规则文件缺少 metadata.tier=\"meta\"（实际 {:?}）",
+                other
+            )),
+            (false, Some("meta")) => Err("非元规则文件携带 tier=\"meta\"（层级伪造）".to_string()),
+            (false, _) => Ok(()),
+        }
+    }
+
+    /// 加载路径的层级门禁包装：违规 warn + 拒载（fail-soft，与 schema 门禁同策略，
+    /// 保证热重载可用性）。静默判定见 [`Self::tier_gate_reason`]。
+    fn passes_tier_gate(
+        p: &std::path::Path,
+        rules_dir: &std::path::Path,
+        json: &serde_json::Value,
+    ) -> bool {
+        match Self::tier_gate_reason(p, rules_dir, json) {
+            Ok(()) => true,
+            Err(reason) => {
+                tracing::warn!(
+                    "规则文件 {} 未过层级门禁：{}，拒绝加载（UV-145）",
+                    p.display(),
+                    reason
+                );
+                false
+            }
+        }
     }
 
     /// 读取规则文件并解析为 JSON；失败时 warn 并返回 None
@@ -8083,6 +8210,20 @@ impl GovernanceServer {
 
 // ====================================================================
 
+/// 单层规则清单项（UV-145 W1：层级可观测，60 号方案 §2.1）
+#[derive(Debug, Serialize, ToSchema)]
+
+pub struct RuleTierEntry {
+    /// 层级标签：L1_core_eval=宪法层（仅用户特批可改）| L2_meta=元规则层（rules_dir 根目录 00_meta_*.json，仅治理链晋升可写）| L3_business=业务层（其余全部，LLM 补丁热加载落点）
+    pub tier: String,
+
+    /// 该层文件数
+    pub files: usize,
+
+    /// 文件路径列表（L1 为 core_eval 文件绝对路径；L2/L3 为相对 rules_dir 的 / 归一化路径）
+    pub paths: Vec<String>,
+}
+
 /// 当前生效规则响应
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -8093,6 +8234,9 @@ pub struct RulesResponse {
 
     /// 当前生效的 transform 规则列表（core_eval）
     pub core_eval: Vec<serde_json::Value>,
+
+    /// 三层规则清单（UV-145 W1：L1 宪法 / L2 元规则 / L3 业务；分层为纯约定，执行顺序由"core_eval 在前 + 完整路径字典序"保证）
+    pub tiers: Vec<RuleTierEntry>,
 }
 
 /// 获取当前生效的 core_eval 规则（GET /api/rules，014 合法 API #2）
@@ -8118,10 +8262,15 @@ async fn get_rules(State(api): State<SessionApi>) -> Result<Json<RulesResponse>,
 
     let core_eval_serde: Vec<serde_json::Value> = core_eval.iter().map(tcb_to_serde).collect();
 
+    // UV-145 W1：三层清单随响应返回（只读扫描，运维一眼核对层级是否被篡改）
+    let tiers = SessionApi::tier_inventory(&api.core_eval_path, &api.rules_dir);
+
     Ok(Json(RulesResponse {
         count: core_eval.len(),
 
         core_eval: core_eval_serde,
+
+        tiers,
     }))
 }
 
@@ -12376,7 +12525,7 @@ mod tests {
             "POST",
             &format!("/api/workspaces/{ws_id}/rules"),
             Some(
-                r#"{"name":"rule-e2e","content":"{\"transform\":[{\"type\":\"set\",\"params\":{\"attr\":\"payload.result\",\"operation\":\"set\",\"value\":\"ok\"}}]}","created_by":"head-1","description":null}"#,
+                r#"{"name":"rule-e2e","content":"{\"transform\":[{\"type\":\"set\",\"params\":{\"attr\":\"result\",\"operation\":\"set\",\"value\":\"ok\"}}]}","created_by":"head-1","description":null}"#,
             ),
         )
         .await;
@@ -12502,5 +12651,90 @@ mod tests {
                 .unwrap_or(false),
             "active bundle 的 content_hash 应为 blake3: 前缀: {json}"
         );
+    }
+
+    // ====================================================================
+    // UV-145 W1：tier 层级门禁单测（正向 / 反向 / 缺声明 / 子目录不算 L2）
+    // ====================================================================
+
+    /// 构造临时规则文件并返回 (文件路径, 解析后 JSON)
+    fn tier_gate_fixture(dir: &std::path::Path, rel: &str, body: &str) -> (std::path::PathBuf, serde_json::Value) {
+        let f = dir.join(rel);
+        if let Some(parent) = f.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&f, body).unwrap();
+        let json = serde_json::from_str::<serde_json::Value>(body).unwrap();
+        (f, json)
+    }
+
+    #[test]
+    fn test_tier_gate_root_meta_with_decl_passes() {
+        // 正向：根目录 00_meta_ 文件带 tier=meta → 放行
+        let dir = std::env::temp_dir().join("uv145_tier_gate_ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "00_meta_x.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
+        );
+        assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_root_meta_without_decl_rejected() {
+        // 缺声明：根目录 00_meta_ 文件无 tier → 拒载（防裸文件冒充元规则）
+        let dir = std::env::temp_dir().join("uv145_tier_gate_no_decl");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "00_meta_x.json",
+            r#"{"kind":"rule_set","metadata":{"title":"x"},"transform":[]}"#,
+        );
+        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_l3_with_meta_decl_rejected() {
+        // 反向：bundles/ 子目录条目带 tier=meta → 拒载（防 LLM 补丁伪造层级）
+        let dir = std::env::temp_dir().join("uv145_tier_gate_forged");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "bundles/b-001/entry_a.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
+        );
+        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_subdir_meta_prefix_not_l2() {
+        // 子目录内 00_meta_ 前缀不算 L2：带 tier=meta 同样按伪造拒载
+        let dir = std::env::temp_dir().join("uv145_tier_gate_subdir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "sub/00_meta_y.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
+        );
+        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_root_business_file_untouched() {
+        // 存量业务文件（根目录无前缀、无 tier 声明）→ 放行（兼容零影响）
+        let dir = std::env::temp_dir().join("uv145_tier_gate_biz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "biz_rules.json",
+            r#"{"kind":"rule_set","metadata":{"title":"biz"},"transform":[]}"#,
+        );
+        assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
