@@ -579,6 +579,38 @@ impl PublishStatus {
     }
 }
 
+/// 发布队列项类型 (UV-145 W3 元规则晋升通道)
+///
+/// - Normal: 普通业务规则发布 (走 DatasetBundle 落盘 rules_dir/bundles/)
+/// - MetaPromotion: 业务规则 → L2 元规则晋升 (转写产物原子落盘 rules_dir 根目录
+///   `00_meta_promoted_*.json`, 不推业务 ruleset 版本, 审计 event=meta_promoted)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublishKind {
+    /// 普通业务规则发布 (默认, 存量行为不变)
+    #[default]
+    Normal,
+    /// 元规则晋升 (L3 业务规则 → L2 元规则, 仅治理链审批可落盘)
+    MetaPromotion,
+}
+
+impl PublishKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::MetaPromotion => "meta_promotion",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "normal" => Some(Self::Normal),
+            "meta_promotion" => Some(Self::MetaPromotion),
+            _ => None,
+        }
+    }
+}
+
 /// 发布队列记录 (publish_queue 表)
 ///
 /// 三级权限审批工作流:
@@ -615,6 +647,13 @@ pub struct PublishQueueItem {
     pub status: PublishStatus,
     /// 发布说明
     pub description: Option<String>,
+    /// 队列项类型 (normal=普通发布 / meta_promotion=元规则晋升; UV-145 W3)
+    pub kind: PublishKind,
+    /// 转写后的元规则内容 (JSON 字符串, 仅 meta_promotion 时非空)
+    ///
+    /// 与 final_candidate_rules (业务规则原文, 溯源锚点) 分离存储:
+    /// 前者回答"晋升自什么", 后者回答"落盘什么"。
+    pub meta_rule_content: Option<String>,
 }
 
 // =============================================================================
@@ -869,7 +908,7 @@ pub struct CreateTestDatasetRequest {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SubmitPublishRequest {
     pub workspace_id: String,
-    /// 待发布的规则版本 ID 列表 (必须全部为 Candidate 状态)
+    /// 待发布的规则版本 ID 列表 (必须全部为 Candidate 状态; meta_promotion 时作为晋升溯源来源)
     pub rule_version_ids: Vec<String>,
     /// 附带的测试报告 sandbox_id (可选)
     #[serde(default)]
@@ -877,6 +916,16 @@ pub struct SubmitPublishRequest {
     /// 发布说明
     #[serde(default)]
     pub description: Option<String>,
+    /// 队列项类型 (缺省 normal; UV-145 W3 元规则晋升通道)
+    #[serde(default)]
+    pub kind: PublishKind,
+    /// 转写后的元规则内容 (JSON 字符串; 仅 kind=meta_promotion 时必填)
+    ///
+    /// 结构须含 metadata.tier="meta" + metadata.title + transform 数组,
+    /// promoted_by/promoted_at/promoted_from/zero_alarm_window 溯源字段由服务端
+    /// 审批链权威填充, 客户端提供的同名字段被覆盖 (防伪造溯源)。
+    #[serde(default)]
+    pub meta_rule_content: Option<String>,
 }
 
 /// 审批请求

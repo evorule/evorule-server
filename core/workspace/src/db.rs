@@ -21,15 +21,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::models::{
-    BundleImportRecord, MemberRole, ProductionAuditRecord, ProductionStateRecord, PublishQueueItem,
-    PublishStatus, RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord, RuleVersionState,
-    SandboxSession, SandboxStatus, SessionBindingState, SessionRecord, TestDatasetRecord,
-    VerdictContractRecord, VersionClockMapRecord, WorkspaceMemberRecord, WorkspaceRecord,
-    WorkspaceState,
+    BundleImportRecord, MemberRole, ProductionAuditRecord, ProductionStateRecord, PublishKind,
+    PublishQueueItem, PublishStatus, RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord,
+    RuleVersionState, SandboxSession, SandboxStatus, SessionBindingState, SessionRecord,
+    TestDatasetRecord, VerdictContractRecord, VersionClockMapRecord, WorkspaceMemberRecord,
+    WorkspaceRecord, WorkspaceState,
 };
 
 /// 当前 schema 版本
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 
 /// SQLite 数据库封装
 ///
@@ -96,6 +96,7 @@ impl WorkspaceDb {
         migrate_v2(&conn)?;
         migrate_v3(&conn)?;
         migrate_v4(&conn)?;
+        migrate_v5(&conn)?;
         Ok(())
     }
 
@@ -406,6 +407,23 @@ fn migrate_v4(conn: &Connection) -> WorkspaceResult<()> {
     )
     .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v4: {e}")))?;
     record_migration(conn, 4)
+}
+
+/// v5 迁移: 元规则晋升通道 (UV-145 W3, publish_queue 扩展)
+///
+/// - `kind`: 队列项类型 (normal / meta_promotion), 存量行默认 normal 零影响;
+/// - `meta_rule_content`: 转写后的元规则内容 (仅 meta_promotion 非空),
+///   与 final_candidate_rules (业务规则原文, 溯源锚点) 分离存储。
+fn migrate_v5(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        ALTER TABLE publish_queue ADD COLUMN kind TEXT NOT NULL DEFAULT 'normal';
+        ALTER TABLE publish_queue ADD COLUMN meta_rule_content TEXT;
+        CREATE INDEX IF NOT EXISTS idx_publish_queue_kind ON publish_queue(kind);
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v5: {e}")))?;
+    record_migration(conn, 5)
 }
 
 // =============================================================================
@@ -1730,14 +1748,16 @@ impl WorkspaceDb {
         test_report_sandbox_id: Option<i64>,
         submitted_by: &str,
         description: Option<&str>,
+        kind: PublishKind,
+        meta_rule_content: Option<&str>,
     ) -> WorkspaceResult<i64> {
         let conn = self.lock()?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO publish_queue
                 (workspace_id, final_candidate_rules, ruleset_hash, test_report_sandbox_id,
-                 submitted_by, submitted_at, status, description)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+                 submitted_by, submitted_at, status, description, kind, meta_rule_content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8, ?9)",
             params![
                 workspace_id,
                 final_candidate_rules,
@@ -1746,6 +1766,8 @@ impl WorkspaceDb {
                 submitted_by,
                 now,
                 description,
+                kind.as_str(),
+                meta_rule_content,
             ],
         )
         .map_err(WorkspaceError::from)?;
@@ -1760,7 +1782,8 @@ impl WorkspaceDb {
                 "SELECT id, workspace_id, final_candidate_rules, ruleset_hash,
                         test_report_sandbox_id, submitted_by, submitted_at,
                         reviewed_by, reviewed_at, review_comment,
-                        published_version, published_at, status, description
+                        published_version, published_at, status, description,
+                        kind, meta_rule_content
                  FROM publish_queue WHERE id = ?1",
                 params![id],
                 row_to_publish_queue,
@@ -1782,7 +1805,8 @@ impl WorkspaceDb {
                 "SELECT id, workspace_id, final_candidate_rules, ruleset_hash,
                         test_report_sandbox_id, submitted_by, submitted_at,
                         reviewed_by, reviewed_at, review_comment,
-                        published_version, published_at, status, description
+                        published_version, published_at, status, description,
+                        kind, meta_rule_content
                  FROM publish_queue
                  WHERE (?1 IS NULL OR status = ?1)
                  ORDER BY submitted_at ASC",
@@ -2296,9 +2320,12 @@ fn row_to_production_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Producti
 /// 4=test_report_sandbox_id 5=submitted_by 6=submitted_at
 /// 7=reviewed_by 8=reviewed_at 9=review_comment
 /// 10=published_version 11=published_at 12=status 13=description
+/// 14=kind 15=meta_rule_content (v5, UV-145 W3)
 fn row_to_publish_queue(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublishQueueItem> {
     let status_str: String = row.get(12)?;
     let status = PublishStatus::from_str(&status_str).unwrap_or(PublishStatus::Pending);
+    let kind_str: String = row.get(14)?;
+    let kind = PublishKind::from_str(&kind_str).unwrap_or_default();
     Ok(PublishQueueItem {
         id: row.get(0)?,
         workspace_id: row.get(1)?,
@@ -2314,6 +2341,8 @@ fn row_to_publish_queue(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublishQueu
         published_at: row.get::<_, Option<String>>(11)?.map(parse_dt),
         status,
         description: row.get(13)?,
+        kind,
+        meta_rule_content: row.get(15)?,
     })
 }
 

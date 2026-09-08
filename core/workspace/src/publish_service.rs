@@ -29,8 +29,8 @@ use tracing::info;
 use crate::db::WorkspaceDb;
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::models::{
-    ProductionAuditRecord, ProductionStateRecord, PublishQueueItem, PublishRole, PublishStatus,
-    ReviewPublishRequest, RollbackRequest, SubmitPublishRequest,
+    ProductionAuditRecord, ProductionStateRecord, PublishKind, PublishQueueItem, PublishRole,
+    PublishStatus, ReviewPublishRequest, RollbackRequest, SubmitPublishRequest,
 };
 use crate::rolling_session::RollingSessionService;
 
@@ -163,6 +163,39 @@ impl PublishService {
         // 4. 序列化规则集
         let final_candidate_rules = serde_json::to_string(&rules_json)?;
 
+        // UV-145 W3: 元规则晋升校验 (kind=meta_promotion 时转写产物前置校验,
+        // 防落盘后 loader 拒载的废文件入库; 与 loader tier_gate/schema 门禁同口径)
+        let meta_rule_content: Option<String> = match req.kind {
+            PublishKind::Normal => None,
+            PublishKind::MetaPromotion => {
+                let raw = req.meta_rule_content.as_deref().ok_or_else(|| {
+                    WorkspaceError::invalid_input(
+                        "kind=meta_promotion 要求 meta_rule_content (转写后的元规则 JSON)",
+                    )
+                })?;
+                validate_meta_rule_content(raw)?;
+                // 服务端权威预填晋升溯源: promoted_from 锚定来源规则版本,
+                // 审批落盘时再填 promoted_by/promoted_at/zero_alarm_window (防客户端伪造)
+                let mut meta: Value = serde_json::from_str(raw).map_err(|e| {
+                    WorkspaceError::internal(format!("reparse meta_rule_content failed: {e}"))
+                })?;
+                let promoted_from = rule_versions
+                    .iter()
+                    .map(|rv| format!("rule_version:{}", rv.id))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if let Some(obj) = meta.as_object_mut() {
+                    let md = obj
+                        .entry("metadata")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(md_obj) = md.as_object_mut() {
+                        md_obj.insert("promoted_from".to_string(), Value::String(promoted_from));
+                    }
+                }
+                Some(serde_json::to_string(&meta)?)
+            }
+        };
+
         // 5. 插入 publish_queue
         let id = self.db.insert_publish_queue_item(
             &req.workspace_id,
@@ -171,6 +204,8 @@ impl PublishService {
             req.test_report_sandbox_id,
             submitted_by,
             req.description.as_deref(),
+            req.kind,
+            meta_rule_content.as_deref(),
         )?;
 
         info!(
@@ -285,6 +320,7 @@ impl PublishService {
                 // 触发滚动 session 热重载 (加全局发布锁)
                 // 前置缺陷修复: 发布期间队列保持 pending, 若发布失败队列仍为 pending 可重试,
                 // 不残留孤儿 approved 状态 (原实现先置 approved 再发布, 失败无法恢复)。
+                // meta_promotion 分流见 execute_meta_promotion (返回值为业务版本上下文, 未推进)。
                 let published_version = self.execute_publish(queue_id, reviewed_by).await?;
 
                 // 发布成功 → 标记队列为 published (审批人/意见随 complete_publish 一并落库)
@@ -295,11 +331,18 @@ impl PublishService {
                     req.comment.as_deref(),
                 )?;
 
-                info!(
-                    queue_id = queue_id,
-                    published_version = published_version,
-                    "Publish completed: ruleset rolled out to production"
-                );
+                if item.kind == PublishKind::MetaPromotion {
+                    info!(
+                        queue_id = queue_id,
+                        "Meta promotion completed: L2 file landed, business ruleset version unchanged"
+                    );
+                } else {
+                    info!(
+                        queue_id = queue_id,
+                        published_version = published_version,
+                        "Publish completed: ruleset rolled out to production"
+                    );
+                }
             }
             "rejected" => {
                 self.db.update_publish_queue_status(
@@ -347,13 +390,10 @@ impl PublishService {
 
     /// 执行发布 (发布链闭环 + 滚动 session 热重载)
     ///
-    /// 获取全局发布锁 → 审计⑥ 批 B (C1+C5) 发布链闭环:
-    /// 1. 闸门一证据检查 （决策: 未验证不得默认 Pass）
-    /// 2. 逐条 Schema 门禁 (与外部导入通道 import_bundle 第 7 项同级硬失败)
-    /// 3. 构造规范 DatasetBundle + BundleImporter::validate (6 项硬校验)
-    /// 4. 原子落盘 rules_dir (C5, 补 H4 缺失的写盘)
-    /// 5. 滚动 session 热重载 (rolling_swap 内部 reload 从 rules_dir 重扫,
-    ///    故落盘必须在前, 新会话才真正运行新规则)
+    /// 获取全局发布锁后按队列项类型分流:
+    /// - Normal: 业务规则 DatasetBundle 落盘 bundles/ + 滚动 session 版本推进
+    /// - MetaPromotion (UV-145 W3): 元规则 00_meta_ 文件落盘 rules_dir 根目录,
+    ///   不推业务版本, 审计 meta_promoted
     ///
     /// 任一步骤失败 → 发布失败 (队列保持 pending 可重试), 杜绝绕过。
     async fn execute_publish(&self, queue_id: i64, published_by: &str) -> WorkspaceResult<i64> {
@@ -364,21 +404,95 @@ impl PublishService {
             .get_publish_queue_item(queue_id)?
             .ok_or_else(|| WorkspaceError::not_found("publish_queue", queue_id.to_string()))?;
 
+        match item.kind {
+            PublishKind::MetaPromotion => self.execute_meta_promotion(&item, published_by).await,
+            PublishKind::Normal => self.execute_normal_publish(&item, published_by).await,
+        }
+    }
+
+    /// 闸门一证据检查 (fail-closed, 与 B2 import 侧同口径)
+    ///
+    /// 存在性 + closed + 报告文件可解析 + summary.failed == 0,
+    /// 任一不满足即 Err (队列保持 pending 可重试)。
+    /// 通过时返回关联的测试报告路径 (缺口4: 写入 production_audit.test_report_paths)。
+    fn verify_gate_one_evidence(&self, item: &PublishQueueItem) -> WorkspaceResult<Option<String>> {
+        let sandbox_id = item.test_report_sandbox_id.ok_or_else(|| {
+            WorkspaceError::invalid_input(format!(
+                "发布被拒绝（闸门一证据缺失）: 队列项 {} 未关联已完成的沙盒测试。\
+                 请先在沙盒中验证规则集，提交发布时携带 test_report_sandbox_id 后重试",
+                item.id
+            ))
+        })?;
+        let sb = self.db.get_sandbox_session(sandbox_id)?.ok_or_else(|| {
+            WorkspaceError::invalid_input(format!(
+                "发布被拒绝（闸门一证据缺失）: 队列项 {} 关联的沙盒 #{sandbox_id} 不存在",
+                item.id
+            ))
+        })?;
+        if sb.status != crate::SandboxStatus::Closed {
+            return Err(WorkspaceError::invalid_input(format!(
+                "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 状态为 {:?}\
+                 （非 closed，测试未完成），不得作为发布证据。\
+                 请在测试工作台完成沙盒测试并关闭出报告后重试",
+                sb.status
+            )));
+        }
+        // 报告一致性: 与 close_sandbox 落盘同口径推导 report_<basename>.json
+        let export_path = sb.export_path.as_deref().ok_or_else(|| {
+            WorkspaceError::invalid_input(format!(
+                "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 已关闭但无报告\
+                 导出路径（数据异常）。请重跑沙盒测试"
+            ))
+        })?;
+        let file_name = export_path.rsplit('/').next().unwrap_or_default();
+        let report_path = format!("{}/report_{}", crate::SANDBOX_REPORT_DIR, file_name);
+        let content = std::fs::read_to_string(&report_path).map_err(|_| {
+            WorkspaceError::invalid_input(format!(
+                "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告文件缺失\
+                 （{report_path}）。请重跑沙盒测试"
+            ))
+        })?;
+        let report: Value = serde_json::from_str(&content).map_err(|e| {
+            WorkspaceError::invalid_input(format!(
+                "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告文件损坏: {e}"
+            ))
+        })?;
+        let failed = report
+            .pointer("/summary/failed")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| {
+                WorkspaceError::invalid_input(format!(
+                    "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告缺少\
+                     summary.failed 字段（结构异常）"
+                ))
+            })?;
+        if failed != 0 {
+            return Err(WorkspaceError::invalid_input(format!(
+                "发布被拒绝（闸门一 FAIL 报告）: 沙盒 #{sandbox_id} 测试报告有\
+                 {failed} 个失败用例，不得作为发布证据。\
+                 请修复规则后在测试工作台重新验证"
+            )));
+        }
+        Ok(Some(report_path))
+    }
+
+    /// 执行普通业务规则发布 (发布链闭环 + 滚动 session 热重载)
+    ///
+    /// 1. 闸门一证据检查 （决策: 未验证不得默认 Pass）
+    /// 2. 逐条 Schema 门禁 (与外部导入通道 import_bundle 第 7 项同级硬失败)
+    /// 3. 构造规范 DatasetBundle + BundleImporter::validate (6 项硬校验)
+    /// 4. 原子落盘 rules_dir (C5, 补 H4 缺失的写盘)
+    /// 5. 滚动 session 热重载 (rolling_swap 内部 reload 从 rules_dir 重扫,
+    ///    故落盘必须在前, 新会话才真正运行新规则)
+    async fn execute_normal_publish(
+        &self,
+        item: &PublishQueueItem,
+        published_by: &str,
+    ) -> WorkspaceResult<i64> {
         // 解析规则集
         let rules: Vec<Value> = serde_json::from_str(&item.final_candidate_rules).map_err(|e| {
             WorkspaceError::internal(format!("parse final_candidate_rules failed: {e}"))
         })?;
-
-        // 缺口4 修复: 关联沙盒测试报告路径到 production_audit
-        // 若提交时关联了 test_report_sandbox_id, 从 sandbox_sessions.export_path 查得报告路径,
-        // 写入 production_audit.test_report_paths (SANDBOX_ORCHESTRATION_DESIGN.md §5.3)。
-        let test_report_paths: Option<String> = match item.test_report_sandbox_id {
-            Some(sandbox_id) => self
-                .db
-                .get_sandbox_session(sandbox_id)?
-                .and_then(|s| s.export_path),
-            None => None,
-        };
 
         // ===== 发布链闭环 (审计⑥ 批 B C1+C5) =====
 
@@ -390,65 +504,7 @@ impl PublishService {
         // : 升级为与 B2(import 侧)同口径——存在性 + closed + 报告一致性,
         // 一律 fail-closed。旧实现仅查会话存在性(is_some),FAIL 报告/未关闭沙盒均可
         // 过闸门,且 build_publish_bundle 的 verdict 硬编码 Pass——假 pass 证据落盘。
-        let sandbox_verdict_pass = match item.test_report_sandbox_id {
-            Some(sandbox_id) => match self.db.get_sandbox_session(sandbox_id)? {
-                None => false,
-                Some(sb) => {
-                    if sb.status != crate::SandboxStatus::Closed {
-                        return Err(WorkspaceError::invalid_input(format!(
-                            "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 状态为 {:?}\
-                             （非 closed，测试未完成），不得作为发布证据。\
-                             请在测试工作台完成沙盒测试并关闭出报告后重试",
-                            sb.status
-                        )));
-                    }
-                    // 报告一致性: 与 close_sandbox 落盘同口径推导 report_<basename>.json
-                    let export_path = sb.export_path.as_deref().ok_or_else(|| {
-                        WorkspaceError::invalid_input(format!(
-                            "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 已关闭但无报告\
-                             导出路径（数据异常）。请重跑沙盒测试"
-                        ))
-                    })?;
-                    let file_name = export_path.rsplit('/').next().unwrap_or_default();
-                    let report_path = format!("{}/report_{}", crate::SANDBOX_REPORT_DIR, file_name);
-                    let content = std::fs::read_to_string(&report_path).map_err(|_| {
-                        WorkspaceError::invalid_input(format!(
-                            "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告文件缺失\
-                             （{report_path}）。请重跑沙盒测试"
-                        ))
-                    })?;
-                    let report: Value = serde_json::from_str(&content).map_err(|e| {
-                        WorkspaceError::invalid_input(format!(
-                            "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告文件损坏: {e}"
-                        ))
-                    })?;
-                    let failed = report
-                        .pointer("/summary/failed")
-                        .and_then(|v| v.as_i64())
-                        .ok_or_else(|| {
-                            WorkspaceError::invalid_input(format!(
-                                "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告缺少\
-                                 summary.failed 字段（结构异常）"
-                            ))
-                        })?;
-                    if failed != 0 {
-                        return Err(WorkspaceError::invalid_input(format!(
-                            "发布被拒绝（闸门一 FAIL 报告）: 沙盒 #{sandbox_id} 测试报告有\
-                             {failed} 个失败用例，不得作为发布证据。\
-                             请修复规则后在测试工作台重新验证"
-                        )));
-                    }
-                    true
-                }
-            },
-            None => false,
-        };
-        if !sandbox_verdict_pass {
-            return Err(WorkspaceError::invalid_input(format!(
-                "发布被拒绝（闸门一证据缺失）: 队列项 {queue_id} 未关联已完成的沙盒测试。\
-                 请先在沙盒中验证规则集，提交发布时携带 test_report_sandbox_id 后重试"
-            )));
-        }
+        let test_report_paths = self.verify_gate_one_evidence(item)?;
 
         // 2. 逐条 Schema 门禁 (硬失败, 防 loader fail-soft 静默跳过非法规则)
         for (i, rule) in rules.iter().enumerate() {
@@ -464,7 +520,7 @@ impl PublishService {
         // 3. 构造规范 DatasetBundle + BundleImporter::validate (6 项硬校验)
         // 发布队列 MVP 仅规则包（rule 条目不消费领域 schema，resolver 恒未命中即可）
         let no_domain_schema = |_uri: &str| None;
-        let bundle = build_publish_bundle(&rules, &item, new_version, published_by);
+        let bundle = build_publish_bundle(&rules, item, new_version, published_by);
         let import_result = evorule_bundle::BundleImporter::validate(&bundle, &no_domain_schema)
             .map_err(|e| WorkspaceError::internal(format!("发布校验失败（不落盘不生效）: {e}")))?;
 
@@ -488,6 +544,108 @@ impl PublishService {
             .await?;
 
         Ok(result.new_ruleset_version)
+    }
+
+    /// 执行元规则晋升落盘 (UV-145 W3 晋升通道核心)
+    ///
+    /// 与普通发布 ([`Self::execute_normal_publish`]) 的差异:
+    /// 1. 产物为 L2 元规则文件 `rules_dir/00_meta_promoted_{hash16}.json`
+    ///    (根目录直置, 非 bundles/ 子目录), 同内容同名幂等, 原子写 (tmp+rename);
+    /// 2. 不 fork session / 不推业务 ruleset_version (元规则不进业务版本序列),
+    ///    仅触发 reload (会话程序为创建时快照, 新会话生效、存量会话不受影响);
+    /// 3. 审计 event_type=meta_promoted, ruleset_snapshot 存落盘内容 (版本回溯可查);
+    /// 4. 溯源字段 (promoted_by/promoted_at/zero_alarm_window) 服务端权威填充,
+    ///    覆盖客户端同名字段 (防伪造); promoted_from 在提交时已锚定来源规则版本。
+    async fn execute_meta_promotion(
+        &self,
+        item: &PublishQueueItem,
+        published_by: &str,
+    ) -> WorkspaceResult<i64> {
+        // 1. 闸门一证据检查 (零报警证据, 与普通发布同口径 fail-closed)
+        let test_report_paths = self.verify_gate_one_evidence(item)?;
+
+        // 2. 解析转写产物 + 防御性复核 (提交时已校验, 此处防库内篡改后落盘)
+        let raw = item.meta_rule_content.as_deref().ok_or_else(|| {
+            WorkspaceError::internal("meta_promotion queue item missing meta_rule_content")
+        })?;
+        let mut meta: Value = serde_json::from_str(raw).map_err(|e| {
+            WorkspaceError::internal(format!("parse meta_rule_content failed: {e}"))
+        })?;
+        validate_meta_rule_content(raw)?;
+
+        // 3. 服务端权威填充晋升溯源 (覆盖客户端同名字段)
+        if let Some(obj) = meta.as_object_mut() {
+            let md = obj
+                .entry("metadata")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(md_obj) = md.as_object_mut() {
+                md_obj.insert(
+                    "promoted_by".to_string(),
+                    Value::String(published_by.to_string()),
+                );
+                md_obj.insert(
+                    "promoted_at".to_string(),
+                    Value::String(chrono::Utc::now().to_rfc3339()),
+                );
+                md_obj.insert(
+                    "zero_alarm_window".to_string(),
+                    Value::String(format!(
+                        "sandbox:{}",
+                        item.test_report_sandbox_id.unwrap_or(0)
+                    )),
+                );
+            }
+        }
+        let content_str = serde_json::to_string_pretty(&meta)?;
+
+        // 4. 原子落盘 L2 元规则文件 (tmp + rename, 同内容同名幂等)
+        let hash = evorule_hash::digest(content_str.as_bytes());
+        let hash_prefix = hash.get(..16).unwrap_or(&hash);
+        let file_name = format!("00_meta_promoted_{hash_prefix}.json");
+        let final_path = self.rules_dir.join(&file_name);
+        let tmp_path = self.rules_dir.join(format!("{file_name}.tmp"));
+        std::fs::write(&tmp_path, &content_str).map_err(|e| {
+            WorkspaceError::internal(format!("写元规则临时文件失败 (不生效，可重试): {e}"))
+        })?;
+        std::fs::rename(&tmp_path, &final_path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            WorkspaceError::internal(format!("元规则原子落盘失败 (不生效，可重试): {e}"))
+        })?;
+
+        // 5. 审计 meta_promoted (ruleset_snapshot 存落盘内容, 回溯可查;
+        //    event_type 不在回滚快照过滤集 ruleset_published/ruleset_rollback 内,
+        //    不干扰紧急回滚链)
+        let prod_state = self.db.get_production_state()?;
+        let source_ws_ids = serde_json::json!([item.workspace_id]).to_string();
+        self.db.insert_production_audit(
+            "meta_promoted",
+            prod_state.ruleset_version, // 上下文版本, 不推进
+            None,
+            &hash,
+            prod_state.current_session_id.unwrap_or(0),
+            &source_ws_ids,
+            published_by,
+            Some(&format!(
+                "meta promotion: {file_name} (publish_queue #{})",
+                item.id
+            )),
+            test_report_paths.as_deref(),
+            Some(&content_str),
+        )?;
+
+        // 6. 重载规则 (新会话携带新元规则; 不 fork / 不推业务版本)
+        self.rolling_session.reload_rules().await?;
+
+        info!(
+            queue_id = item.id,
+            meta_file = %file_name,
+            content_hash = %hash,
+            published_by = published_by,
+            "Meta rule promoted: L2 file landed and rules reloaded"
+        );
+
+        // 返回当前业务版本号 (仅作 complete_publish 的上下文填充, 未推进)
+        Ok(prod_state.ruleset_version)
     }
 
     /// 紧急回滚 (信息科/院领导权限)
@@ -592,6 +750,53 @@ fn compute_publish_ruleset_hash(rules: &[Value]) -> String {
         buf.extend_from_slice(b"\n");
     }
     evorule_hash::digest(&buf)
+}
+
+/// 校验转写后的元规则内容 (UV-145 W3, 提交与落盘两侧共用单一权威实现)
+///
+/// 与 loader 层级门禁 (`tier_gate_reason`) / Schema 门禁 (`passes_schema_gate`) 同口径:
+/// 1. 合法 JSON 对象;
+/// 2. `metadata.tier == "meta"` (L2 正向门禁——防裸文件冒充元规则);
+/// 3. `metadata.title` 非空 (元规则可观测性, W2 前馈摘要依赖标题);
+/// 4. `transform` 数组存在且逐条通过 `validate_transform_list`
+///    (防落盘后 loader 拒载的废文件入库)。
+fn validate_meta_rule_content(raw: &str) -> WorkspaceResult<()> {
+    let meta: Value = serde_json::from_str(raw)
+        .map_err(|e| WorkspaceError::invalid_input(format!("meta_rule_content 非法 JSON: {e}")))?;
+    if !meta.is_object() {
+        return Err(WorkspaceError::invalid_input(
+            "meta_rule_content 必须是 JSON 对象 (含 metadata + transform)",
+        ));
+    }
+    let tier = meta.pointer("/metadata/tier").and_then(|t| t.as_str());
+    if tier != Some("meta") {
+        return Err(WorkspaceError::invalid_input(format!(
+            "meta_rule_content 必须声明 metadata.tier=\"meta\" (实际 {tier:?})"
+        )));
+    }
+    let title = meta
+        .pointer("/metadata/title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    if title.trim().is_empty() {
+        return Err(WorkspaceError::invalid_input(
+            "meta_rule_content 必须声明非空 metadata.title",
+        ));
+    }
+    let transforms = meta
+        .get("transform")
+        .and_then(|t| t.as_array())
+        .ok_or_else(|| {
+            WorkspaceError::invalid_input("meta_rule_content 必须包含 transform 数组")
+        })?;
+    let report = evorule_rule_schema::validate_transform_list(&Value::Array(transforms.clone()));
+    if !report.valid {
+        return Err(WorkspaceError::invalid_input(format!(
+            "meta_rule_content 未通过 Schema 门禁（引擎原生结构非法）: {}",
+            report.errors.join("; ")
+        )));
+    }
+    Ok(())
 }
 
 /// 由发布队列项构造规范 DatasetBundle (审计⑥ 批 B C5)
@@ -712,6 +917,8 @@ mod tests {
         next_id: AtomicU64,
         /// 注入 reload_rules 失败 (用于测试发布失败时队列保持 pending 可重试)
         reload_fail: AtomicBool,
+        /// reload_rules 调用计数 (meta_promotion 流程断言 reload 被触发)
+        reload_count: AtomicU64,
         /// 已创建的 session id (session_exists 依据)
         created: Mutex<std::collections::HashSet<u64>>,
     }
@@ -720,6 +927,7 @@ mod tests {
             Self {
                 next_id: AtomicU64::new(start),
                 reload_fail: AtomicBool::new(false),
+                reload_count: AtomicU64::new(0),
                 created: Mutex::new(std::collections::HashSet::new()),
             }
         }
@@ -764,6 +972,7 @@ mod tests {
             Ok(serde_json::json!([]))
         }
         async fn reload_rules(&self) -> WorkspaceResult<()> {
+            self.reload_count.fetch_add(1, Ordering::SeqCst);
             if self.reload_fail.load(Ordering::SeqCst) {
                 return Err(WorkspaceError::internal(
                     "mock reload_rules failed (injected)",
@@ -889,6 +1098,8 @@ mod tests {
                     rule_version_ids: vec!["rv-1".to_string()],
                     test_report_sandbox_id: None,
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "doctor-1",
                 &PublishRole::Doctor,
@@ -909,6 +1120,8 @@ mod tests {
                     rule_version_ids: vec![rv_id],
                     test_report_sandbox_id: None,
                     description: Some("内科规则发布".to_string()),
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -937,6 +1150,8 @@ mod tests {
                     rule_version_ids: vec![rv_id],
                     test_report_sandbox_id: Some(sandbox_id),
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1018,6 +1233,8 @@ mod tests {
                     rule_version_ids: vec![rv_id],
                     test_report_sandbox_id: None,
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1075,6 +1292,8 @@ mod tests {
                     rule_version_ids: vec![rv_id.clone()],
                     test_report_sandbox_id: Some(sandbox_id),
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1102,6 +1321,8 @@ mod tests {
                     rule_version_ids: vec![rv_id],
                     test_report_sandbox_id: Some(sandbox_id),
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1174,6 +1395,8 @@ mod tests {
                     rule_version_ids: vec![rv_id],
                     test_report_sandbox_id: Some(sandbox_id),
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1277,6 +1500,8 @@ mod tests {
                     rule_version_ids: vec![v1_id],
                     test_report_sandbox_id: None,
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1292,6 +1517,8 @@ mod tests {
                     rule_version_ids: vec![v2_id],
                     test_report_sandbox_id: None,
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1316,6 +1543,8 @@ mod tests {
                     rule_version_ids: vec![rv_id],
                     test_report_sandbox_id: None,
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1397,6 +1626,8 @@ mod tests {
                     rule_version_ids: vec![rv_id],
                     test_report_sandbox_id: Some(sandbox_id),
                     description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
                 },
                 "head-1",
                 &PublishRole::DepartmentHead,
@@ -1521,6 +1752,8 @@ mod tests {
             published_at: None,
             status: PublishStatus::Pending,
             description: None,
+            kind: PublishKind::Normal,
+            meta_rule_content: None,
         };
         let rules = vec![serde_json::json!({"key": "a"})];
 
@@ -1545,5 +1778,300 @@ mod tests {
 
         let h3 = compute_publish_ruleset_hash(&[serde_json::json!({"key": "a"})]);
         assert_ne!(h1, h3);
+    }
+
+    // ===== UV-145 W3: 元规则晋升通道 =====
+
+    /// 测试辅助: 构造元规则转写产物 JSON 字符串
+    ///
+    /// `tier = None` → 不输出 tier 字段 (测正向门禁缺失形态)
+    fn make_meta_content(tier: Option<&str>) -> String {
+        let tier_field = match tier {
+            Some(t) => format!(r#""tier":"{t}","#),
+            None => String::new(),
+        };
+        format!(
+            r#"{{"kind":"rule_set","metadata":{{{tier_field}"title":"禁改守卫状态哨兵"}},"transform":[{{"type":"set","params":{{"attr":"result","operation":"set","value":"ok"}}}}]}}"#
+        )
+    }
+
+    /// 测试辅助: 携带指定参数提交元规则晋升
+    #[allow(clippy::too_many_arguments)]
+    async fn submit_meta_promotion(
+        publish_svc: &PublishService,
+        ws_id: &str,
+        rv_id: String,
+        sandbox_id: Option<i64>,
+        meta_content: Option<String>,
+    ) -> WorkspaceResult<PublishQueueItem> {
+        publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id.to_string(),
+                    rule_version_ids: vec![rv_id],
+                    test_report_sandbox_id: sandbox_id,
+                    description: None,
+                    kind: PublishKind::MetaPromotion,
+                    meta_rule_content: meta_content,
+                },
+                "head-1",
+                &PublishRole::DepartmentHead,
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_submit_meta_promotion_requires_content() {
+        let (publish_svc, _db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-1").await;
+
+        let result = submit_meta_promotion(&publish_svc, &ws_id, rv_id, None, None).await;
+        assert!(
+            matches!(result, Err(WorkspaceError::InvalidInput(ref msg)) if msg.contains("meta_rule_content")),
+            "缺转写产物应被拒: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_submit_meta_promotion_rejects_missing_tier() {
+        let (publish_svc, _db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-1").await;
+
+        // tier 字段缺失 (正向门禁: L2 必须声明 metadata.tier=meta)
+        let result = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id.clone(),
+            None,
+            Some(make_meta_content(None)),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(WorkspaceError::InvalidInput(ref msg)) if msg.contains("tier")),
+            "缺 tier 声明应被拒: {result:?}"
+        );
+
+        // tier 非法值
+        let result = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id,
+            None,
+            Some(make_meta_content(Some("business"))),
+        )
+        .await;
+        assert!(matches!(result, Err(WorkspaceError::InvalidInput(_))));
+    }
+
+    #[tokio::test]
+    async fn test_submit_meta_promotion_rejects_invalid_transform() {
+        let (publish_svc, _db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-1").await;
+
+        // transform 含非法元指令 → Schema 门禁拒绝
+        let bad = make_meta_content(Some("meta"))
+            .replace(r#""type":"set""#, r#""type":"no_such_instruction""#);
+        let result = submit_meta_promotion(&publish_svc, &ws_id, rv_id, None, Some(bad)).await;
+        assert!(
+            matches!(result, Err(WorkspaceError::InvalidInput(ref msg)) if msg.contains("Schema 门禁")),
+            "非法 transform 应被拒: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_meta_promotion_requires_sandbox_evidence() {
+        // 晋升同普通发布走闸门一 (零报警证据, fail-closed)
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+
+        let item = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id,
+            None,
+            Some(make_meta_content(Some("meta"))),
+        )
+        .await
+        .unwrap();
+
+        let result = publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: None,
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(WorkspaceError::InvalidInput(ref msg)) if msg.contains("闸门一")),
+            "无证据晋升应被闸门一拒绝: {result:?}"
+        );
+
+        // fail-closed: 队列保持 pending 可重试, rules_dir 无落盘
+        let after = db.get_publish_queue_item(item.id).unwrap().unwrap();
+        assert_eq!(after.status, PublishStatus::Pending);
+        let rules_dir = tmp.path().join("rules");
+        let no_meta = std::fs::read_dir(&rules_dir)
+            .unwrap()
+            .filter_map(|e| e.unwrap().file_name().into_string().ok())
+            .all(|n| !n.starts_with("00_meta_promoted_"));
+        assert!(no_meta, "未审批通过前不得落盘 00_meta_ 文件");
+    }
+
+    #[tokio::test]
+    async fn test_meta_promotion_full_flow() {
+        // W3 验收: ①提名→审批→落盘全链留痕 ②非审批路径无法写 00_meta_
+        // ③版本回溯可查 (audit.ruleset_snapshot); 业务 ruleset_version 不推进。
+        let (publish_svc, db, rule_svc_handle, ws_id, ops, tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
+
+        // ② 权限前置: Doctor 无法提交晋升 (写盘仅审批链可达)
+        let doctor_result = publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id.clone(),
+                    rule_version_ids: vec![rv_id.clone()],
+                    test_report_sandbox_id: Some(sandbox_id),
+                    description: None,
+                    kind: PublishKind::MetaPromotion,
+                    meta_rule_content: Some(make_meta_content(Some("meta"))),
+                },
+                "doctor-1",
+                &PublishRole::Doctor,
+            )
+            .await;
+        assert!(matches!(doctor_result, Err(WorkspaceError::Forbidden(_))));
+
+        // 提交晋升 (转写产物 + 闸门一证据)
+        let item = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id.clone(),
+            Some(sandbox_id),
+            Some(make_meta_content(Some("meta"))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(item.kind, PublishKind::MetaPromotion);
+
+        // 审批通过 → 落盘
+        let published = publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: Some("哨兵观察期满,同意晋升".to_string()),
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await
+            .unwrap();
+        assert_eq!(published.status, PublishStatus::Published);
+
+        // ① 00_meta_promoted_{hash}.json 落盘 rules_dir 根目录 + 溯源完整
+        let rules_dir = tmp.path().join("rules");
+        let meta_files: Vec<String> = std::fs::read_dir(&rules_dir)
+            .unwrap()
+            .filter_map(|e| e.unwrap().file_name().into_string().ok())
+            .filter(|n| n.starts_with("00_meta_promoted_") && n.ends_with(".json"))
+            .collect();
+        assert_eq!(meta_files.len(), 1, "应恰好落盘一个元规则文件");
+        let landed: Value =
+            serde_json::from_str(&std::fs::read_to_string(rules_dir.join(&meta_files[0])).unwrap())
+                .unwrap();
+        assert_eq!(
+            landed.pointer("/metadata/tier").and_then(|v| v.as_str()),
+            Some("meta")
+        );
+        assert_eq!(
+            landed.pointer("/metadata/title").and_then(|v| v.as_str()),
+            Some("禁改守卫状态哨兵")
+        );
+        assert_eq!(
+            landed
+                .pointer("/metadata/promoted_by")
+                .and_then(|v| v.as_str()),
+            Some("admin-1"),
+            "promoted_by 须服务端权威填充"
+        );
+        assert_eq!(
+            landed
+                .pointer("/metadata/promoted_from")
+                .and_then(|v| v.as_str()),
+            Some(format!("rule_version:{rv_id}").as_str()),
+            "promoted_from 须锚定来源规则版本"
+        );
+        assert_eq!(
+            landed
+                .pointer("/metadata/zero_alarm_window")
+                .and_then(|v| v.as_str()),
+            Some(format!("sandbox:{sandbox_id}").as_str()),
+            "零报警证据须可追溯"
+        );
+
+        // ③ 审计 meta_promoted + ruleset_snapshot 回溯
+        let audits = db.list_production_audit(20).unwrap();
+        let meta_audit = audits
+            .iter()
+            .find(|a| a.event_type == "meta_promoted")
+            .expect("meta_promoted 审计事件应存在");
+        let snap: Value =
+            serde_json::from_str(meta_audit.ruleset_snapshot.as_deref().expect("快照应存在"))
+                .unwrap();
+        assert_eq!(
+            snap.pointer("/metadata/promoted_by")
+                .and_then(|v| v.as_str()),
+            Some("admin-1")
+        );
+
+        // 业务版本不推进 + 不落 bundle (元规则不进业务版本序列)
+        assert_eq!(db.get_production_state().unwrap().ruleset_version, 0);
+        assert!(!tmp.path().join("rules/bundles").exists());
+
+        // reload 被触发 (新会话携带新元规则)
+        assert_eq!(ops.reload_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_meta_promotion_rejected_no_landing() {
+        // W3 验收②: 驳回路径不落盘
+        let (publish_svc, _db, rule_svc_handle, ws_id, _ops, tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-1").await;
+
+        let item = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id,
+            None,
+            Some(make_meta_content(Some("meta"))),
+        )
+        .await
+        .unwrap();
+
+        let rejected = publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "rejected".to_string(),
+                    comment: Some("暂不晋升".to_string()),
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status, PublishStatus::Rejected);
+
+        let rules_dir = tmp.path().join("rules");
+        let no_meta = std::fs::read_dir(&rules_dir)
+            .unwrap()
+            .filter_map(|e| e.unwrap().file_name().into_string().ok())
+            .all(|n| !n.starts_with("00_meta_promoted_"));
+        assert!(no_meta, "驳回后不得落盘 00_meta_ 文件");
     }
 }

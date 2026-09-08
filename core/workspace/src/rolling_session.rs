@@ -159,6 +159,15 @@ impl RollingSessionService {
         }
     }
 
+    /// 仅重载规则 (不 fork session / 不推版本号; UV-145 W3 元规则晋升通道)
+    ///
+    /// 元规则晋升落盘 00_meta_ 文件后触发 SessionManager 重扫 rules_dir,
+    /// 新会话携带新元规则 (会话程序为创建时快照, 存量会话不受影响——
+    /// 与普通发布同一生效语义, 但不进业务 ruleset 版本序列)。
+    pub async fn reload_rules(&self) -> WorkspaceResult<()> {
+        self.session_ops.reload_rules().await
+    }
+
     /// 滚动 session 切换 (核心编排)
     ///
     /// 三层架构 §3.3 完整流程:
