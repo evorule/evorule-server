@@ -1331,6 +1331,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         step_start.elapsed().as_millis()
     );
 
+    // UV-145 W1：三层规则清单日志（分层=纯约定，语义见 60 号方案 §2.1；
+    // 运维启动时一眼核对层级文件数是否符合预期，异常增量即篡改信号）
+    let tiers = SessionApi::tier_inventory(&cfg.core_eval, &cfg.rules_dir);
+    let tier_summary = tiers
+        .iter()
+        .map(|t| format!("{}={}", t.tier, t.files))
+        .collect::<Vec<_>>()
+        .join(" ");
+    info!(
+        "规则层级清单: [{}]（L1_core_eval=宪法层 L2_meta=元规则层 L3_business=业务层）",
+        tier_summary
+    );
+
     // 3. 确保数据目录存在
     let step_start = Instant::now();
     if let Some(parent) = cfg.db_path.parent() {

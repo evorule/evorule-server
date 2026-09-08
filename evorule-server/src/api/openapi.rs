@@ -202,6 +202,7 @@ use utoipa::OpenApi;
         crate::api::server::ValidateRulesRequest,
         crate::api::server::RulesReloadedResponse,
         crate::api::server::RulesResponse,
+    crate::api::server::RuleTierEntry,
         crate::api::server::SharedFactsVersionResponse,
         // bundles 组
         crate::api::bundles::ImportResponse,
