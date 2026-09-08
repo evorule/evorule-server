@@ -1154,6 +1154,7 @@ dependencies = [
  "evorule-bundle",
  "evorule-hash",
  "evorule-rule-schema",
+ "evorule-rule-tools",
  "rusqlite",
  "serde",
  "serde_json",

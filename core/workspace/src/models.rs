@@ -447,6 +447,8 @@ pub struct SandboxSession {
 ///
 /// 存储沙盒测试用的合成数据 (P0 全合成,Q2 决策)。
 /// cases_json 为 JSON 数组,每个元素是一条测试 case。
+/// case 可选携带 `name`(字符串): 沙盒报告据此逐条命名(不再 "Fact #N (unknown)"),
+/// 缺失时报告回退默认命名。期望断言(expected)按测试工作台配置面推进,本层不扩展。
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestDatasetRecord {
     /// 数据集 ID (自增)

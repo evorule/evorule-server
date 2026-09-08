@@ -38,6 +38,9 @@ ulid = "1"
 async-trait = "0.1"
 # Schema 门禁（线1 防御层）：rule_translate 输出 / 规则提交前的结构校验
 evorule-rule-schema = { path = "../rule_schema" }
+# 规则内容校验：规则创建/更新起草期即跑 Schema 权威校验
+# （与发布门禁同源同函数，fail-fast 前移——"编辑器即校验"优于"发布才兜底"）
+evorule-rule-tools = { path = "../rule_tools" }
 # 发布链闭环（审计⑥ 批 B C1+C5）：发布审批通过时构造 DatasetBundle + BundleImporter 校验 + 原子落盘
 # （[patch.crates-io] 已指向 ../evorule-bundle 本地源，与治理侧校验口径同源）
 evorule-bundle = "0.3.0"

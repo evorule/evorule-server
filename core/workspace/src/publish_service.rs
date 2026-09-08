@@ -94,7 +94,7 @@ impl PublishService {
             .is_workspace_member(&req.workspace_id, submitted_by)?
         {
             return Err(WorkspaceError::forbidden(format!(
-                "user {submitted_by} is not a member of workspace {}",
+                "您不是工作空间 {} 的成员,无法提交发布;请联系工作空间所有者将您加入成员 (user={submitted_by})",
                 req.workspace_id
             )));
         }

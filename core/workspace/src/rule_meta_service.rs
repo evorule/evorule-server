@@ -47,6 +47,28 @@ impl RuleMetaService {
     fn validate_content(content: &str) -> WorkspaceResult<()> {
         serde_json::from_str::<serde_json::Value>(content)
             .map_err(|e| WorkspaceError::invalid_input(format!("invalid rule JSON: {e}")))?;
+
+        // 起草期即跑 Schema 权威校验（与发布门禁同源同函数）。
+        // 此前只查 JSON 合法性，结构非法（如旧 domain/domains 写法）直到发布审批
+        // 才被引擎 Schema 硬拒——fail-fast 前移到创建/更新，起草期即得明确指引；
+        // 发布门禁仍保留为最后闸（防绕过 CRUD 直写落盘的路径）。
+        let report = evorule_rule_tools::validator::validate_rule_json(content);
+        if !report.valid {
+            let detail = report
+                .results
+                .iter()
+                .filter(|r| r.severity == evorule_rule_tools::validator::ValidationSeverity::Error)
+                .take(3)
+                .map(|r| match &r.path {
+                    Some(p) => format!("{} ({})", r.message, p),
+                    None => r.message.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(WorkspaceError::invalid_input(format!(
+                "rule content violates schema (会被发布门禁拒收): {detail}"
+            )));
+        }
         Ok(())
     }
 
@@ -471,7 +493,7 @@ mod tests {
             ws_id,
             CreateRuleRequest {
                 name: name.to_string(),
-                content: r#"{"transform":[{"type":"noop"}]}"#.to_string(),
+                content: r#"{"transform":[{"type":"set","params":{"attr":"__exec__.payload.x","operation":"set","value":1}}]}"#.to_string(),
                 created_by: "owner-1".to_string(),
                 description: None,
             },
@@ -519,7 +541,7 @@ mod tests {
         let rule = make_rule(&rule_svc, &ws_id, "rule-1");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let new_content = r#"{"transform":[{"type":"increment","params":{"attr":"x","delta":1}}]}"#;
+        let new_content = r#"{"transform":[{"type":"set","params":{"attr":"__exec__.payload.y","operation":"set","value":1}}]}"#;
         let new_rv = rt
             .block_on(rule_svc.update_rule_content(
                 &ws_id,
@@ -687,6 +709,32 @@ mod tests {
             ))
             .unwrap_err();
         assert!(matches!(err, WorkspaceError::InvalidInput(_)));
+    }
+
+    /// 结构非法(旧 domain/domains 写法)的内容在创建期即被拒,
+    /// 不再等到发布审批才被引擎 Schema 硬拒(起草期 fail-fast)。
+    #[test]
+    fn test_schema_illegal_content_rejected_at_draft() {
+        let (rule_svc, ws_svc) = make_services();
+        let ws_id = make_workspace(&ws_svc);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(rule_svc.create_rule(
+                &ws_id,
+                CreateRuleRequest {
+                    name: "legacy-domain".to_string(),
+                    // P0-03 非法写法: all 域必须用 inner, 旧 domains 字段被 Schema oneOf 拒收
+                    content: r#"{"transform":[{"type":"branch","params":{"domain":{"type":"all","domains":[]},"on_true":[]}}]}"#.to_string(),
+                    created_by: "owner-1".to_string(),
+                    description: None,
+                },
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(err, WorkspaceError::InvalidInput(ref m) if m.contains("violates schema")),
+            "expected schema violation, got: {err:?}"
+        );
     }
 
     #[test]

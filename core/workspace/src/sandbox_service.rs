@@ -145,7 +145,7 @@ impl SandboxService {
     fn validate_member(&self, workspace_id: &str, started_by: &str) -> WorkspaceResult<()> {
         if !self.db.is_workspace_member(workspace_id, started_by)? {
             return Err(WorkspaceError::forbidden(format!(
-                "user {started_by} is not a member of workspace {workspace_id}"
+                "您不是工作空间 {workspace_id} 的成员,无法执行此操作;请联系工作空间所有者将您加入成员,或创建自己的工作空间 (user={started_by})"
             )));
         }
         Ok(())
@@ -411,7 +411,7 @@ impl SandboxService {
             .is_workspace_member(&sandbox.workspace_id, closed_by)?
         {
             return Err(WorkspaceError::forbidden(format!(
-                "user {closed_by} is not a member of workspace {}",
+                "您不是工作空间 {} 的成员,无法关闭沙盒;请联系工作空间所有者将您加入成员 (user={closed_by})",
                 sandbox.workspace_id
             )));
         }
@@ -455,6 +455,28 @@ impl SandboxService {
         let state_val = self.session_ops.get_session_state(tcb_session_id).await?;
         let audit_val = self.session_ops.get_audit_report(tcb_session_id).await?;
         let facts_val = self.session_ops.get_facts(tcb_session_id).await?;
+
+        // 提取测试 case 显式名(按序对应 facts, 报告据此命名不再 unknown)。
+        // dataset 缺失/解析失败时回退默认命名, 不阻塞报告生成(如实降级)。
+        let case_names: Vec<String> = self
+            .db
+            .get_test_dataset(sandbox.test_dataset_id)
+            .ok()
+            .flatten()
+            .and_then(|ds| serde_json::from_str::<Vec<Value>>(&ds.cases_json).ok())
+            .map(|cases| {
+                cases
+                    .iter()
+                    .map(|c| {
+                        c.get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let report = TestReportBuilder::new()
             .sandbox_id(sandbox_id.to_string())
             .workspace_id(sandbox.workspace_id.clone())
@@ -464,6 +486,7 @@ impl SandboxService {
             .state(state_val)
             .audit(audit_val)
             .facts(facts_val)
+            .case_names(case_names)
             .build();
         let report_json = serde_json::to_string_pretty(&report)
             .map_err(|e| WorkspaceError::internal(format!("serialize test report failed: {e}")))?;
@@ -562,7 +585,7 @@ impl SandboxService {
     ) -> WorkspaceResult<Vec<SandboxSession>> {
         if !self.db.is_workspace_member(workspace_id, requester)? {
             return Err(WorkspaceError::forbidden(format!(
-                "user {requester} is not a member of workspace {workspace_id}"
+                "您不是工作空间 {workspace_id} 的成员,无法执行此操作;请联系工作空间所有者将您加入成员,或创建自己的工作空间 (user={requester})"
             )));
         }
         self.db.list_sandbox_sessions(workspace_id)
@@ -577,7 +600,7 @@ impl SandboxService {
     ) -> WorkspaceResult<SandboxSession> {
         if !self.db.is_workspace_member(workspace_id, requester)? {
             return Err(WorkspaceError::forbidden(format!(
-                "user {requester} is not a member of workspace {workspace_id}"
+                "您不是工作空间 {workspace_id} 的成员,无法执行此操作;请联系工作空间所有者将您加入成员,或创建自己的工作空间 (user={requester})"
             )));
         }
         let sandbox = self
@@ -774,7 +797,7 @@ mod tests {
                 ws_id,
                 CreateRuleRequest {
                     name: name.to_string(),
-                    content: r#"{"transform":[{"type":"noop"}]}"#.to_string(),
+                    content: r#"{"transform":[{"type":"set","params":{"attr":"__exec__.payload.x","operation":"set","value":1}}]}"#.to_string(),
                     created_by: "owner-1".to_string(),
                     description: None,
                 },

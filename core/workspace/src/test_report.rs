@@ -100,6 +100,12 @@ pub struct TestReportBuilder {
     state: Option<serde_json::Value>,
     audit: Option<serde_json::Value>,
     facts: Option<Vec<serde_json::Value>>,
+    /// 测试 case 显式名（与 facts 按序对应）。
+    /// 来源 = test_dataset cases_json 各元素的 `name` 字段（可选）；
+    /// 缺失/为空/越界时报告回退默认命名 "Fact #N (type)"。
+    /// 对应假设: fact[i] ↔ cases[i]（case 顺序注入顺序产生 fact），
+    /// 错位只影响显示名，不影响 status 判定（判定基于 fact 自身类型）。
+    case_names: Option<Vec<String>>,
 }
 
 impl Default for TestReportBuilder {
@@ -119,6 +125,7 @@ impl TestReportBuilder {
             state: None,
             audit: None,
             facts: None,
+            case_names: None,
         }
     }
 
@@ -162,6 +169,12 @@ impl TestReportBuilder {
         self
     }
 
+    /// 注入 case 显式名（按序对应 facts）
+    pub fn case_names(mut self, names: Vec<String>) -> Self {
+        self.case_names = Some(names);
+        self
+    }
+
     /// 构建测试报告 (计算统计 + BLAKE3 签名)
     ///
     /// P0 简化判定: Error/Exception 类型 Fact = failed, 其余 = passed
@@ -170,6 +183,7 @@ impl TestReportBuilder {
         let facts = self.facts.unwrap_or_default();
         let fact_count = facts.len();
 
+        let case_names = self.case_names.unwrap_or_default();
         let cases: Vec<TestCaseResult> = facts
             .iter()
             .enumerate()
@@ -186,9 +200,19 @@ impl TestReportBuilder {
                     CaseStatus::Passed
                 };
 
+                // case 显式名优先(dataset cases_json 的 name 字段),
+                // 缺失/空/越界回退默认命名
+                let case_name = case_names
+                    .get(i)
+                    .filter(|n| !n.trim().is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        format!("Fact #{} ({})", fact_id.unwrap_or(i as u64), fact_type)
+                    });
+
                 TestCaseResult {
                     case_id: format!("case-{}", i + 1),
-                    case_name: format!("Fact #{} ({})", fact_id.unwrap_or(i as u64), fact_type),
+                    case_name,
                     status,
                     fact_id,
                     error_message: if status == CaseStatus::Failed {
@@ -307,5 +331,39 @@ mod tests {
         assert_eq!(report.summary.total_cases, 0);
         assert_eq!(report.summary.pass_rate, 0.0);
         assert!(!report.report_hash.is_empty());
+    }
+
+    /// case 显式名优先透出(不再 "Fact #N (unknown)");
+    /// 缺名/空名/越界回退默认命名,判定语义不变。
+    #[test]
+    fn test_case_names_preferred_with_fallback() {
+        let facts = vec![
+            serde_json::json!({"id": 1, "type": "Command"}),
+            serde_json::json!({"id": 2, "type": "StateTransition"}),
+            serde_json::json!({"id": 3, "type": "Error", "message": "boom"}),
+        ];
+
+        let report = TestReportBuilder::new()
+            .facts(facts)
+            .case_names(vec![
+                "登录超时校验".to_string(),
+                "   ".to_string(), // 空白名 → 回退默认
+            ]) // 第 3 条越界 → 回退默认
+            .build();
+
+        assert_eq!(report.cases[0].case_name, "登录超时校验");
+        assert!(
+            report.cases[1].case_name.starts_with("Fact #2"),
+            "blank name should fall back, got: {}",
+            report.cases[1].case_name
+        );
+        assert!(
+            report.cases[2].case_name.starts_with("Fact #3"),
+            "out-of-range should fall back, got: {}",
+            report.cases[2].case_name
+        );
+        // 判定语义不变: 前两条 passed, Error 仍 failed
+        assert_eq!(report.summary.passed, 2);
+        assert_eq!(report.summary.failed, 1);
     }
 }
