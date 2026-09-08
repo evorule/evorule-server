@@ -7829,6 +7829,12 @@ impl GovernanceServer {
             .merge(crate::api::pdf_export::pdf_export_router())
             // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)
             .merge(evorule_workspace::build_workspace_router())
+            // 工作空间自助加入(身份服务端注入,viewer 最小权限,幂等;
+            // WorkspaceState 经 FromRef 从 AppState 派生)
+            .route(
+                "/api/workspaces/{id}/members/join",
+                post(workspace_join),
+            )
             // abort 双保险：条件挂载（--allow-abort 关闭时为空 Router）
             .merge(abort_router)
             // rewind/diff 已移至 application/core/time_machine（本地实现）
@@ -8440,6 +8446,73 @@ pub async fn plugin_admin_list_proposals(
     let (status, value) =
         proxy_plugin_admin(&api, &id, "proposals", reqwest::Method::GET, None).await?;
     Ok((status, Json(value)))
+}
+
+// ============================================================================
+// 工作空间自由加入(人工显式动作,身份服务端注入)
+// ============================================================================
+
+/// POST /api/workspaces/{id}/members/join —— 当前登录用户自助加入工作空间
+///
+/// 人工治理动作对齐先例:service/app 自动化凭据拒绝;身份取认证中间件注入的
+/// AuthedActor,不信任前端自报。角色固定 viewer 最小权限(沙盒族端点只校验
+/// 「是成员」),幂等(已在名单直接成功)。认证关闭(演示模式)无身份可注入 → 403。
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{id}/members/join",
+    tag = "workspace",
+    params(
+        ("id" = String, Path, description = "工作空间 ID")
+    ),
+    responses(
+        (status = 200, description = "已加入或已在名单(幂等),joined=本次是否实际加入", body = serde_json::Value),
+        (status = 403, description = "无平台登录身份,或自动化凭据禁止自助加入"),
+        (status = 404, description = "工作空间不存在"),
+        (status = 409, description = "工作空间非 Active")
+    )
+)]
+pub async fn workspace_join(
+    State(ws_state): State<WorkspaceState>,
+    Path(workspace_id): Path<String>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+    identity: Option<Extension<CallerIdentity>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    if matches!(
+        identity,
+        Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
+    ) {
+        return Err(proxy_err(
+            StatusCode::FORBIDDEN,
+            "自动化凭据禁止自助加入动作(人工治理语义)".to_string(),
+        ));
+    }
+    let username = match actor {
+        Some(Extension(a)) if !a.0.is_empty() => a.0,
+        _ => {
+            return Err(proxy_err(
+                StatusCode::FORBIDDEN,
+                "加入工作空间需要平台登录身份(请先登录主系统)".to_string(),
+            ));
+        }
+    };
+    let joined = ws_state
+        .workspace_service
+        .join_workspace(&workspace_id, &username)
+        .await
+        .map_err(|e| -> (StatusCode, Json<serde_json::Value>) {
+            let status = match &e {
+                evorule_workspace::WorkspaceError::NotFound { .. } => StatusCode::NOT_FOUND,
+                evorule_workspace::WorkspaceError::InvalidStateTransition { .. }
+                | evorule_workspace::WorkspaceError::AlreadyExists { .. } => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            proxy_err(status, e.to_string())
+        })?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "joined": joined,
+        "message": if joined { "已加入工作空间(角色 viewer)".to_string() } else { "已是工作空间成员".to_string() }
+    })))
 }
 
 /// POST /api/plugins/{id}/admin/proposals/{pid}/approve —— 代理审批通过

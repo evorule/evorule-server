@@ -137,6 +137,10 @@ use utoipa::OpenApi;
         crate::api::server::plugin_admin_list_proposals,
         crate::api::server::plugin_admin_approve,
         crate::api::server::plugin_admin_reject,
+        // 工作空间自助加入（handler 在 server.rs——evorule_workspace 路由族中
+        // 唯一由本仓定义的端点,故在 paths() 登记;其余 workspace 端点走
+        // merged_openapi 运行时合并）
+        crate::api::server::workspace_join,
         // marketplace 组
         crate::api::marketplace::list_templates,
         crate::api::marketplace::upload_template,
@@ -381,6 +385,7 @@ mod tests {
             "/api/workspaces/{id}",
             "/api/workspaces/{id}/members",
             "/api/workspaces/{id}/members/{user_id}",
+            "/api/workspaces/{id}/members/join",
             "/api/workspaces/{id}/rules",
             "/api/workspaces/{id}/rules/{rule_id}",
             "/api/workspaces/{id}/rules/{rule_id}/versions",

@@ -194,13 +194,13 @@ curl -X POST http://localhost:18080/api/platform/auth/login \
 
 Business APIs are protected by unified auth middleware, **triple-channel**: static Bearer token (`--auth-token`) OR platform session token OR app credential key (issued via `/api/platform/apps`, requests attributed by `app_id` in the audit chain) — any one works; unified 401 semantics. App credentials support optional **quotas**: per-app rate limit (requests/sec) and daily total quota (fixed UTC-day window); exceeded requests get `429` with `Retry-After` and `x-quota-dimension: rate|daily` headers; unset/null = unlimited. Quotas are set at issue time or via `POST /api/platform/apps/{id}/quota` (full-overwrite semantics, usage counters preserved), effective immediately. `bootstrap` / `login` / `auth/status` are public; all other platform endpoints require a platform token. Demo scenarios can enable `--demo-auth` (on by default in quick-start packages; production recommends off).
 
-Full routes (**125 paths** recorded in OpenAPI, plus workspace route families) at `GET /api/openapi.json`; Swagger UI requires `--openapi-ui` explicit enable (`GET /api/docs`).
+Full routes (**126 paths** recorded in OpenAPI, plus workspace route families) at `GET /api/openapi.json`; Swagger UI requires `--openapi-ui` explicit enable (`GET /api/docs`).
 
 ---
 
 ## API Overview
 
-> Below is a manually curated summary of main endpoints; **the single source of truth is `GET /api/openapi.json`** (125 paths).
+> Below is a manually curated summary of main endpoints; **the single source of truth is `GET /api/openapi.json`** (126 paths).
 
 ### Health & Meta
 
@@ -790,13 +790,13 @@ curl -X POST http://localhost:18080/api/platform/auth/login \
 
 业务 API 由统一认证中间件保护,**三通道认证**:静态 Bearer token(`--auth-token`)、平台会话 token 或应用凭据 key(经 `/api/platform/apps` 签发,请求按 `app_id` 归因入审计链)任一均可;统一 401 语义。应用凭据支持可选**配额**:per-app 速率限制(次/秒)与每日总量(固定 UTC 日窗口);超限请求返回 `429` + `Retry-After` + `x-quota-dimension: rate|daily` 头;未设置/null = 不限。配额随签发设置或经 `POST /api/platform/apps/{id}/quota` 更新(全量覆盖语义,已用量保留),即时生效。`bootstrap` / `login` / `auth/status` 公开,其余平台端点需平台 token。演示场景可开 `--demo-auth`(体验包默认开,生产建议关闭)。
 
-完整路由(OpenAPI 收录 **125 条**,另有工作空间路由族)见 `GET /api/openapi.json`;Swagger UI 需 `--openapi-ui` 显式开启(`GET /api/docs`)。
+完整路由(OpenAPI 收录 **126 条**,另有工作空间路由族)见 `GET /api/openapi.json`;Swagger UI 需 `--openapi-ui` 显式开启(`GET /api/docs`)。
 
 ---
 
 ## API 概览
 
-> 下表为人工梳理的主要端点;**单一真相源是 `GET /api/openapi.json`**(125 条路径)。
+> 下表为人工梳理的主要端点;**单一真相源是 `GET /api/openapi.json`**(126 条路径)。
 
 ### 健康与元信息
 

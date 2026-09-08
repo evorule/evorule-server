@@ -179,6 +179,34 @@ impl WorkspaceService {
         self.db.delete_member(workspace_id, user_id)
     }
 
+    /// 自由加入(幂等):非成员则以 viewer 角色加入,已是成员(含 owner)直接成功。
+    ///
+    /// 设计(用户裁定方案 A——自由加入):
+    /// - 角色固定 viewer 最小权限:沙盒族端点只校验「是成员」不查角色,
+    ///   viewer 即可解锁全部沙盒操作;admin/editor 的提权仍走 add_member
+    ///   显式授权路径,join 不放大权限。
+    /// - 幂等语义:重复点击「加入」不报错,返回是否本次实际加入。
+    /// - 身份由 server 层统一认证中间件注入(AuthedActor),不信任前端自报。
+    pub async fn join_workspace(&self, workspace_id: &str, user_id: &str) -> WorkspaceResult<bool> {
+        let ws = self.db.get_workspace(workspace_id)?;
+        if ws.state != WorkspaceState::Active {
+            return Err(WorkspaceError::InvalidStateTransition {
+                from: ws.state.as_str().to_string(),
+                to: "member_joined".to_string(),
+            });
+        }
+        // owner 天然是成员(创建时自动加入),重复 join 幂等收敛
+        if user_id == ws.owner_id {
+            return Ok(false);
+        }
+        if self.db.is_workspace_member(workspace_id, user_id)? {
+            return Ok(false);
+        }
+        self.db.insert_member(workspace_id, user_id, "viewer")?;
+        tracing::info!(workspace_id = %workspace_id, user_id = %user_id, "workspace member joined (self-service)");
+        Ok(true)
+    }
+
     /// 列出成员
     pub async fn list_members(
         &self,
@@ -561,6 +589,30 @@ mod tests {
             .block_on(svc.remove_member(&ws.id, "owner-1"))
             .unwrap_err();
         assert!(matches!(err, WorkspaceError::InvalidInput(_)));
+    }
+
+    /// 自由加入锁定:幂等(viewer 最小权限,重复 join 收敛,owner 天然成员)
+    #[test]
+    fn test_join_workspace_idempotent_viewer() {
+        let (svc, _ops) = make_service();
+        let ws = make_workspace_sync(&svc, "team", "owner-1");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // 首次加入:joined=true,角色 viewer
+        let joined = rt.block_on(svc.join_workspace(&ws.id, "user-2")).unwrap();
+        assert!(joined);
+        let members = rt.block_on(svc.list_members(&ws.id)).unwrap();
+        let m = members.iter().find(|m| m.user_id == "user-2").unwrap();
+        assert_eq!(m.role, "viewer");
+
+        // 重复加入:幂等收敛(joined=false,不撞 UNIQUE 报错)
+        let joined_again = rt.block_on(svc.join_workspace(&ws.id, "user-2")).unwrap();
+        assert!(!joined_again);
+
+        // owner join:天然成员,幂等 false
+        let owner_join = rt.block_on(svc.join_workspace(&ws.id, "owner-1")).unwrap();
+        assert!(!owner_join);
     }
 
     #[test]
