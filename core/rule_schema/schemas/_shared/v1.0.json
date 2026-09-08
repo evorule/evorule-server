@@ -170,12 +170,28 @@
       "required": ["type", "params"],
       "properties": {
         "type": {
-          "enum": ["set", "push", "branch", "io_request", "collect", "merge"],
-          "description": "6 元指令类型（权威源 evorule-tcb/src/executor.rs dispatch）。注意：noop/increment/decrement 是指令层，不是元指令层，不得出现在此枚举（P0-01）。"
+          "enum": ["set", "push", "branch", "io_request", "collect", "merge", "enforce"],
+          "description": "7 元指令类型（权威源 evorule-tcb/src/executor.rs dispatch）。注意：noop/increment/decrement 是指令层，不是元指令层，不得出现在此枚举（P0-01）；enforce 仅允许出现在 L2 元规则文件（tier=meta），业务文件/L3 携带由 server 装载门禁拒载（UV-147）。"
         },
         "params": { "type": "object" }
       },
       "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "enforce" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "required": ["domain", "reason"],
+                "properties": {
+                  "domain": { "$ref": "#/$defs/domain", "description": "匹配即强制中断剩余 transform 并拒绝执行违规指令（引擎级阻止，非留痕）；与 branch 的 domain 同构（7 域类型）" },
+                  "reason": { "type": "string", "minLength": 1, "description": "必填违规说明：命中时随系统独占 Violation 事实审计回显；无 reason 的拦截不可审计，不允许静默强制" }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
         {
           "if": { "properties": { "type": { "const": "set" } } },
           "then": {

@@ -1257,6 +1257,9 @@ impl SessionApi {
     ///   `metadata.tier == "meta"`——防裸文件冒充元规则。
     /// - **反向**：其余文件（根目录普通业务文件 / bundles/ 子目录条目）**禁止**声明
     ///   `tier == "meta"`——防 LLM 补丁伪造层级。
+    /// - **enforce 限定**（UV-147）：非 L2 文件禁止携带 `enforce` 强制原语——
+    ///   引擎级阻止权仅随治理链晋升的 L2 元规则下发，业务规则/LLM 补丁
+    ///   私自获得阻止权 = 治理旁路。
     ///
     /// `Ok(())` = 通过；`Err(reason)` = 拒载原因。
     fn tier_gate_reason(
@@ -1274,14 +1277,39 @@ impl SessionApi {
                 .map(|n| n.starts_with("00_meta_"))
                 .unwrap_or(false);
         match (is_root_meta_file, tier) {
-            (true, Some("meta")) => Ok(()),
-            (true, other) => Err(format!(
-                "元规则文件缺少 metadata.tier=\"meta\"（实际 {:?}）",
-                other
-            )),
-            (false, Some("meta")) => Err("非元规则文件携带 tier=\"meta\"（层级伪造）".to_string()),
-            (false, _) => Ok(()),
+            (true, Some("meta")) => {}
+            (true, other) => {
+                return Err(format!(
+                    "元规则文件缺少 metadata.tier=\"meta\"（实际 {:?}）",
+                    other
+                ))
+            }
+            (false, Some("meta")) => {
+                return Err("非元规则文件携带 tier=\"meta\"（层级伪造）".to_string())
+            }
+            (false, _) => {}
         }
+        // enforce 层级限定（UV-147）：L2（根目录 00_meta_ + tier=meta）之外一律拒载
+        if !is_root_meta_file && Self::contains_enforce_rule(json) {
+            return Err(
+                "非元规则文件使用 enforce 强制原语（enforce 仅允许 L2 元规则文件，\
+                 业务规则/补丁禁止私自获得引擎级阻止权）"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// 文档是否携带 `enforce` 元指令（transform 数组两种形态：`{transform:[]}` / 裸数组）
+    fn contains_enforce_rule(json: &serde_json::Value) -> bool {
+        json.get("transform")
+            .and_then(|x| x.as_array())
+            .or_else(|| json.as_array())
+            .map(|a| {
+                a.iter()
+                    .any(|r| r.get("type").and_then(|t| t.as_str()) == Some("enforce"))
+            })
+            .unwrap_or(false)
     }
 
     /// 加载路径的层级门禁包装：违规 warn + 拒载（fail-soft，与 schema 门禁同策略，
@@ -1571,6 +1599,22 @@ impl SessionApi {
                     "条目 `{}` 未通过 Schema 门禁（引擎原生结构非法）: {}",
                     entry.entry_id,
                     report.errors.join("; ")
+                ));
+            }
+        }
+
+        // ②.5 enforce 层级门禁（UV-147）：bundle 恒为 L3（落 rules_dir/bundles/），
+        // 携带 enforce 的规则导入期即硬拒收——不给"loader fail-soft 跳过"留口，
+        // 治理语义：引擎级阻止权不随 bundle 分发，仅治理链晋升（meta_promotion）可达 L2。
+        for entry in &bundle.entries {
+            if entry.entry_kind == evorule_bundle::EntryKind::Knowledge {
+                continue;
+            }
+            if Self::contains_enforce_rule(&entry.rule_body) {
+                return Err(format!(
+                    "条目 `{}` 携带 enforce 强制原语（enforce 仅允许 L2 元规则文件；\
+                     bundle 恒为 L3，禁止随包分发引擎级阻止权，如需强制约束请走元规则晋升治理链）",
+                    entry.entry_id
                 ));
             }
         }
@@ -3443,6 +3487,30 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
                         .collect(),
                 ),
             );
+        }
+
+        // enforce 强制拦截事实（UV-147，记录性事实，不推进版本）
+        Fact::Violation {
+            id,
+            cause,
+            rule_index,
+            reason,
+            instruction,
+        } => {
+            obj.insert("type".into(), serde_json::Value::String("Violation".into()));
+
+            obj.insert("id".into(), serde_json::Value::Number(id.0.into()));
+
+            obj.insert("cause".into(), serde_json::Value::Number(cause.0.into()));
+
+            obj.insert(
+                "rule_index".into(),
+                serde_json::Value::Number((*rule_index).into()),
+            );
+
+            obj.insert("reason".into(), serde_json::Value::String(reason.clone()));
+
+            obj.insert("instruction".into(), tcb_to_serde(instruction));
         }
     }
 
@@ -6117,6 +6185,21 @@ pub enum FactEnvelope {
         /// 各规则命中归因（与合并规则列表等长，按执行顺序）
         rule_hits: Vec<TraceHitDto>,
     },
+    /// enforce 强制拦截（UV-147，记录性事实；不推进版本号）
+    Violation {
+        /// Fact ID
+        id: u64,
+        /// 版本号（FactsLog 中的版本；violation 不推进版本）
+        version: u64,
+        /// 触发此拦截的源事实 ID
+        cause: u64,
+        /// 命中的 enforce 规则在合并规则列表中的下标
+        rule_index: u64,
+        /// 违规说明（enforce params.reason）
+        reason: String,
+        /// 被拒绝执行的违规指令
+        instruction: serde_json::Value,
+    },
 }
 
 /// 单条规则命中归因
@@ -6204,6 +6287,21 @@ fn fact_to_envelope(fact: &Fact, version: u64) -> FactEnvelope {
                     hit: h.hit,
                 })
                 .collect(),
+        },
+        // enforce 强制拦截事实（UV-147，记录性事实，不推进版本）
+        Fact::Violation {
+            id,
+            cause,
+            rule_index,
+            reason,
+            instruction,
+        } => FactEnvelope::Violation {
+            id: id.0,
+            version,
+            cause: cause.0,
+            rule_index: *rule_index,
+            reason: reason.clone(),
+            instruction: tcb_to_serde(instruction),
         },
     }
 }
@@ -12736,5 +12834,67 @@ mod tests {
         );
         assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_enforce_in_l2_passes() {
+        // UV-147 正向：L2 元规则文件携带 enforce → 放行（强制原语唯一合法落点）
+        let dir = std::env::temp_dir().join("uv147_enforce_l2_ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "00_meta_guard.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"违规拦截"}}]}"#,
+        );
+        assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_enforce_in_business_rejected() {
+        // UV-147 反向：业务文件携带 enforce → 拒载（防 LLM 补丁私自获得引擎级阻止权）
+        let dir = std::env::temp_dir().join("uv147_enforce_biz_rej");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "biz_rules.json",
+            r#"{"kind":"rule_set","metadata":{"title":"biz"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"越权"}}]}"#,
+        );
+        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_enforce_in_subdir_meta_rejected() {
+        // UV-147 反向：子目录 00_meta_ 前缀不算 L2，携带 enforce 同样拒载
+        let dir = std::env::temp_dir().join("uv147_enforce_subdir_rej");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "sub/00_meta_y.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"越权"}}]}"#,
+        );
+        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_contains_enforce_rule_bare_array() {
+        // 裸数组形态（transform 顶层即数组）的 enforce 检测
+        let with = serde_json::from_str::<serde_json::Value>(
+            r#"[{"type":"set","params":{}},{"type":"enforce","params":{}}]"#,
+        )
+        .unwrap();
+        let without = serde_json::from_str::<serde_json::Value>(
+            r#"[{"type":"set","params":{}},{"type":"push","params":{}}]"#,
+        )
+        .unwrap();
+        let embedded = serde_json::from_str::<serde_json::Value>(
+            r#"{"metadata":{"title":"enforce 字样出现在标题不误报"},"transform":[{"type":"set","params":{}}]}"#,
+        )
+        .unwrap();
+        assert!(SessionApi::contains_enforce_rule(&with));
+        assert!(!SessionApi::contains_enforce_rule(&without));
+        assert!(!SessionApi::contains_enforce_rule(&embedded));
     }
 }
