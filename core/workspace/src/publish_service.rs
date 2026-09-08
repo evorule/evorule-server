@@ -852,7 +852,7 @@ mod tests {
     ) -> String {
         // 合法元指令 (set): 发布链 Schema 门禁 (审计⑥ 批 B C1) 会拦截非法结构,
         // 测试规则必须通过 evorule_rule_schema::validate_rule_input
-        let content = r#"{"transform":[{"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}}]}"#;
+        let content = r#"{"transform":[{"type":"set","params":{"attr":"result","operation":"set","value":"ok"}}]}"#;
         let rule = rule_svc
             .create_rule(
                 ws_id,
@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(item.status, PublishStatus::Pending);
         assert_eq!(item.submitted_by, "head-1");
         assert!(!item.ruleset_hash.is_empty());
-        assert!(item.final_candidate_rules.contains("payload.result"));
+        assert!(item.final_candidate_rules.contains("\"attr\":\"result\""));
     }
 
     #[tokio::test]
@@ -1237,7 +1237,7 @@ mod tests {
                 &ws_id,
                 CreateRuleRequest {
                     name: "rule-stale".to_string(),
-                    content: r#"{"transform":[{"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}}]}"#.to_string(),
+                    content: r#"{"transform":[{"type":"set","params":{"attr":"result","operation":"set","value":"ok"}}]}"#.to_string(),
                     created_by: "head-1".to_string(),
                     description: None,
                 },
@@ -1252,7 +1252,7 @@ mod tests {
                 &ws_id,
                 &rule.id,
                 UpdateRuleContentRequest {
-                    content: r#"{"transform":[{"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}},{"type":"set","params":{"attr":"payload.extra","operation":"set","value":1}}]}"#.to_string(),
+                    content: r#"{"transform":[{"type":"set","params":{"attr":"result","operation":"set","value":"ok"}},{"type":"set","params":{"attr":"extra","operation":"set","value":1}}]}"#.to_string(),
                     updated_by: "head-1".to_string(),
                 },
             )

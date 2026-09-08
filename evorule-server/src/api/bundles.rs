@@ -365,7 +365,7 @@ mod tests {
             // 修复(2026-09-01): SessionApi 启动 fail-fast 校验要求宪法
             // 必含 call_external 指令规则（LLM 审计桥平台契约），fixture 同步补入
             r#"{"transform":[
-                {"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}},
+                {"type":"set","params":{"attr":"result","operation":"set","value":"ok"}},
                 {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[],"on_false":[]}}
             ]}"#,
         )

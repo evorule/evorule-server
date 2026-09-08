@@ -10,6 +10,13 @@
       "not": { "pattern": "__io_result__" },
       "description": "路径语法（权威源 evorule-tcb/src/path.rs 实际解析器，分隔符仅 . [ \\，其余字符均为字段名）。identifier 允许 [A-Za-z0-9_$\\-\\\\]（含 $，兼容 __exec__.payload.$schema 迁移写法）；index = 1*DIGIT。拒绝空段（x. /.x /x..y /items[0]..name）、缺闭合括号（[0）、空索引（[]）、非数字索引（[abc]）、索引后非法拼接（[0]abc）。not.__io_result__：I/O 结果字段强制复数 __io_results__（P1-03），单数 __io_result__ 拒绝（yuanze-demos 08/012/013/014/016 高频运行时错误）。"
     },
+    "payload_attr_path": {
+      "allOf": [
+        { "$ref": "#/$defs/path" },
+        { "not": { "pattern": "^payload\\." } }
+      ],
+      "description": "写侧 attr 专用（set/increment/decrement 的 params.attr，UV-146 方案 a）：语法同 path，但禁止 payload. 前缀。引擎语义：attr 相对 __exec__.payload 解析，带 payload. 前缀会双重嵌套写入 payload.payload.*（静默失败：不报错但写到错误位置，哨兵/业务规则永远读不到）。正确写法：直接写 payload 内相对路径（如 meta_guard.cleared_for_move），或用 __exec__.payload. 显式全形式。读侧（domain.path）不受此限——读路径相对 __exec__ 根，payload.x 恰是正确形态。引擎 exec_set 对运行时解析出的 payload. 前缀 attr 同样硬拒（双层防御，覆盖绕过 schema 的执行入口）。"
+    },
     "path_or_literal": {
       "if": { "type": "string", "pattern": "^__" },
       "then": { "$ref": "#/$defs/path" },
@@ -91,7 +98,7 @@
                     "type": "object",
                     "required": ["attr", "operation"],
                     "properties": {
-                      "attr": { "$ref": "#/$defs/path", "description": "必填：payload 路径；语法非法（如 x.）在提交期即被拦截，避免运行时 PathResolutionFailed" },
+                      "attr": { "$ref": "#/$defs/payload_attr_path", "description": "必填：payload 路径；语法非法（如 x.）与 payload. 前缀双重嵌套（UV-146 方案 a）在提交期即被拦截，避免运行时 PathResolutionFailed 或静默写歪" },
                       "operation": { "enum": ["set", "add", "sub"], "description": "必填；increment→add / decrement→sub / set→set" },
                       "value": { "$ref": "#/$defs/path_or_literal", "description": "set 指令的值（字面量或 __ 路径引用）" },
                       "delta": { "description": "increment/decrement 指令的增量（core_eval 从 instruction.params.delta 读取）" }
@@ -177,7 +184,7 @@
                 "type": "object",
                 "required": ["attr", "operation", "value"],
                 "properties": {
-                  "attr": { "$ref": "#/$defs/path", "description": "payload 路径（相对或 __exec__.payload.X 全路径）；引用 __ 开头字段需显式前缀（core_eval v0.3.1 约束）" },
+                  "attr": { "$ref": "#/$defs/payload_attr_path", "description": "payload 路径（相对或 __exec__.payload.X 全路径）；引用 __ 开头字段需显式前缀（core_eval v0.3.1 约束）；payload. 前缀禁止（UV-146 方案 a，双重嵌套静默写歪）" },
                   "operation": { "enum": ["set", "add", "sub"], "description": "纯覆盖语义：业务 set 指令的 operation=set 固定为覆盖，params 里的 add/sub 会被忽略（A-1）；算术更新必须用 increment/decrement 指令 + set operation=add/sub" },
                   "value": { "$ref": "#/$defs/path_or_literal", "description": "必填：字面量或 __ 开头路径引用字符串。引擎 exec_set 对缺失 value 报 MissingField（resolve_path_or_literal(None)）——不能省略；__ 路径必须语法合法（防 x. 等运行时错误）" }
                 },

@@ -546,6 +546,59 @@ mod tests {
         assert!(report.valid, "合法 set 指令应通过: {:?}", report.errors);
     }
 
+    // ===== 写侧 attr payload. 前缀禁令（引擎守卫同语义，加载/提交期拒载）=====
+
+    #[test]
+    fn cmd_set_payload_prefix_attr_rejected() {
+        // 写侧 attr 禁止 payload. 前缀：attr 相对 __exec__.payload 解析，
+        // 带前缀会双重嵌套写入 payload.payload.*（静默写歪，运行时读者永远 miss）
+        let instr = serde_json::json!({ "type": "set", "params": { "attr": "payload.result", "operation": "set", "value": "ok" } });
+        let report = validate_command_instruction(&instr);
+        assert!(
+            !report.valid,
+            "写侧 attr payload. 前缀应被拒（双重嵌套静默失败）: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn cmd_set_payload_prefix_attr_rejected_at_rule_set_level() {
+        // rule_set 文档级：transform 内嵌 branch 子树的 set 同样被拒（递归校验）
+        let doc = rs(serde_json::json!([
+            { "type": "branch", "params": {
+                "domain": { "type": "instruction", "instruction_type": "demo" },
+                "on_true": [
+                    { "type": "set", "params": { "attr": "payload.deep", "operation": "set", "value": 1 } }
+                ],
+                "on_false": []
+            } }
+        ]));
+        let report = validate_rule_set(&doc);
+        assert!(!report.valid, "嵌套子树内 payload. 前缀 attr 应被拒: {:?}", report.errors);
+    }
+
+    #[test]
+    fn cmd_set_full_form_attr_ok() {
+        // __exec__.payload. 显式全形式是合法写法（引用 __ 开头字段或显式锚定）
+        let instr = serde_json::json!({ "type": "set", "params": { "attr": "__exec__.payload.system_state", "operation": "set", "value": 1 } });
+        let report = validate_command_instruction(&instr);
+        assert!(report.valid, "显式全形式 attr 应放行: {:?}", report.errors);
+    }
+
+    #[test]
+    fn domain_read_path_payload_prefix_ok() {
+        // 读侧（domain.path）不受写侧禁令影响：payload.x 恰是正确读形态
+        let doc = rs(serde_json::json!([
+            { "type": "branch", "params": {
+                "domain": { "type": "eq", "path": "payload.system_state", "value": 1 },
+                "on_true": [],
+                "on_false": []
+            } }
+        ]));
+        let report = validate_rule_set(&doc);
+        assert!(report.valid, "读侧 payload. 前缀应放行: {:?}", report.errors);
+    }
+
     // ===== C9：validate_service_registry（服务注册表加载期门禁）=====
 
     #[test]

@@ -190,7 +190,7 @@ mod tests {
         let core_eval_path = tmp.path().join("core_eval.json");
         std::fs::write(
             &core_eval_path,
-            r#"{"transform":[{"type":"set","params":{"attr":"payload.result","operation":"set","value":"ok"}}]}"#,
+            r#"{"transform":[{"type":"set","params":{"attr":"result","operation":"set","value":"ok"}}]}"#,
         )
         .unwrap();
         SessionApi::new_with_full_config(
