@@ -153,7 +153,9 @@ fn is_llm_sidecar_command(fact: &Fact) -> Option<String> {
 }
 
 /// 读取单会话 WAL 全部记录（基础文件 + 分片合并；无该档案 → NotFound）
-fn read_records(wal_dir: &Path, session_id: u64) -> Result<Vec<WalRecord>, ArchiveError> {
+///
+/// fork-from-archive（server.rs）复用同一只读通道，保证档案读法单一真相源。
+pub fn read_records(wal_dir: &Path, session_id: u64) -> Result<Vec<WalRecord>, ArchiveError> {
     let path = session_wal_base(wal_dir, session_id);
     if !path.exists() {
         return Err(ArchiveError::NotFound(session_id));

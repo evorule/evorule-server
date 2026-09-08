@@ -247,11 +247,8 @@ pub struct SessionApi {
     sessions: Arc<Mutex<session::SessionManager>>,
 
     /// WAL 目录（fork-from-archive 读归档链的来源；None = 纯内存模式，archive fork 404）
-    /// 消费方接线待后续批次：引擎侧原语已就绪（payload_from_wal_records 全链
-    /// 哈希校验重放 + create_session_from_initial_state 统一 fork 落点 +
-    /// SessionError::ArchiveCorrupted fail-closed），server 侧 fork-from-archive
-    /// handler（读归档 WAL → 重放 → 建链）随后接入。CI -D warnings 过渡豁免。
-    #[allow(dead_code)]
+    /// 由 `fork_from_archive` 消费：两个 fork 端点在父会话不在内存时，
+    /// 经此读 `session_{parent_id}.wal` 归档链重建初始状态建新会话。
     wal_dir: Option<std::path::PathBuf>,
 
     /// API 层 FactId 计数器（从 30000 起，避免与反应器自身 ID 冲突）
@@ -4204,11 +4201,15 @@ pub struct CreateSessionFromParentParams {
 
         (status = 200, description = "子会话创建成功", body = SessionForkResponse),
 
-        (status = 404, description = "父会话不存在"),
+        (status = 404, description = "父会话不存在（内存与归档均无）"),
 
         (status = 429, description = "超过最大会话数"),
 
-        (status = 400, description = "版本无效")
+        (status = 400, description = "版本无效"),
+
+        (status = 500, description = "归档 fork 时审计链完整性校验失败（fail-closed）"),
+
+        (status = 503, description = "新会话 WAL 不可用（审计链无法建立）")
 
     )
 
@@ -4230,6 +4231,26 @@ async fn create_session_from_parent(
         sessions.create_session_from_parent_at_version(parent_id, params.version)
     };
 
+    // fork-from-archive：内存父会话不存在时，从 wal_dir 归档链兜底重建
+    //（读 WAL → 全链校验重放 → create_session_from_initial_state）。
+    // 归档也不存在（NoArchive）则回落到既有 NotFound → 404 分支。
+    let (result, archive_version) = match result {
+        Err(evorule_governance::session::SessionError::NotFound { .. }) => {
+            match fork_from_archive(&api, parent_id, params.version).await {
+                Ok((id, forked_version)) => (Ok(id), Some(forked_version)),
+                Err(ArchiveForkRejection::NoArchive) => (
+                    Err(evorule_governance::session::SessionError::NotFound { id: parent_id }),
+                    None,
+                ),
+                Err(rej) => {
+                    tracing::warn!(parent_id, "fork-from-archive rejected: {:?}", rej);
+                    return Err(rej.to_status());
+                }
+            }
+        }
+        other => (other, None),
+    };
+
     match result {
         Ok(id) => {
             metrics.inc_sessions();
@@ -4237,7 +4258,7 @@ async fn create_session_from_parent(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
-            Ok(Json(serde_json::json!({
+            let mut body = serde_json::json!({
 
                 "session_id": id,
 
@@ -4245,9 +4266,14 @@ async fn create_session_from_parent(
 
                 "message": "Session created from parent",
 
-                "forked_from_version": params.version
+                "forked_from_version": archive_version.or(params.version)
 
-            })))
+            });
+            // 归档 fork 标记：响应体可区分内存 fork 与归档链 fork
+            if archive_version.is_some() {
+                body["source"] = serde_json::json!("archive");
+            }
+            Ok(Json(body))
         }
 
         Err(evorule_governance::session::SessionError::NotFound { id }) => {
@@ -4318,11 +4344,15 @@ pub struct CreateSessionForkParams {
 
         (status = 200, description = "fork 成功", body = SessionForkResponse),
 
-        (status = 404, description = "父会话不存在"),
+        (status = 404, description = "父会话不存在（内存与归档均无）"),
 
         (status = 429, description = "超过最大会话数"),
 
-        (status = 400, description = "缺少/无效版本")
+        (status = 400, description = "缺少/无效版本"),
+
+        (status = 500, description = "归档 fork 时审计链完整性校验失败（fail-closed）"),
+
+        (status = 503, description = "新会话 WAL 不可用（审计链无法建立）")
 
     )
 
@@ -4346,6 +4376,26 @@ async fn create_session_fork(
         sessions.create_session_from_parent_at_version(parent_id, Some(version))
     };
 
+    // fork-from-archive：内存父会话不存在时，从 wal_dir 归档链兜底重建
+    //（读 WAL → 全链校验重放 → create_session_from_initial_state）。
+    // 归档也不存在（NoArchive）则回落到既有 NotFound → 404 分支。
+    let (result, archive_version) = match result {
+        Err(evorule_governance::session::SessionError::NotFound { .. }) => {
+            match fork_from_archive(&api, parent_id, Some(version)).await {
+                Ok((id, forked_version)) => (Ok(id), Some(forked_version)),
+                Err(ArchiveForkRejection::NoArchive) => (
+                    Err(evorule_governance::session::SessionError::NotFound { id: parent_id }),
+                    None,
+                ),
+                Err(rej) => {
+                    tracing::warn!(parent_id, "fork-from-archive rejected: {:?}", rej);
+                    return Err(rej.to_status());
+                }
+            }
+        }
+        other => (other, None),
+    };
+
     match result {
         Ok(id) => {
             metrics.inc_sessions();
@@ -4353,17 +4403,22 @@ async fn create_session_fork(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
-            Ok(Json(serde_json::json!({
+            let mut body = serde_json::json!({
 
                 "session_id": id,
 
                 "parent_session_id": parent_id,
 
-                "forked_from_version": version,
+                "forked_from_version": archive_version.unwrap_or(version),
 
                 "message": "Session forked from parent at specified version"
 
-            })))
+            });
+            // 归档 fork 标记：响应体可区分内存 fork 与归档链 fork
+            if archive_version.is_some() {
+                body["source"] = serde_json::json!("archive");
+            }
+            Ok(Json(body))
         }
 
         Err(evorule_governance::session::SessionError::NotFound { id }) => {
@@ -4402,6 +4457,147 @@ async fn create_session_fork(
             tracing::error!(error = %e, "Session fork rejected (audit integrity)");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    }
+}
+
+/// fork-from-archive 失败原因（由调用方映射为 HTTP 状态码）
+#[derive(Debug)]
+enum ArchiveForkRejection {
+    /// 无归档可用（wal_dir 未启用 / 无该父会话档案）→ 维持 404 语义
+    NoArchive,
+    /// 归档链完整性校验失败（fail-closed，疑似篡改/损坏）→ 500
+    Corrupted(String),
+    /// 归档 WAL 读取 I/O 失败 → 500
+    Io(String),
+    /// 目标版本不在归档链内 → 400
+    InvalidVersion(u64),
+    /// 会话数超限 → 429
+    LimitExceeded { current: usize, max: usize },
+    /// WAL 不可用（新会话审计链无法建立，确定性引擎拒启）→ 503
+    WalUnavailable { session_id: u64, source: String },
+}
+
+impl std::fmt::Display for ArchiveForkRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoArchive => write!(f, "无归档可用（wal_dir 未启用或无该会话档案）"),
+            Self::Corrupted(reason) => write!(f, "归档链完整性校验失败: {reason}"),
+            Self::Io(e) => write!(f, "归档 WAL 读取失败: {e}"),
+            Self::InvalidVersion(v) => write!(f, "目标版本 {v} 不在归档链内"),
+            Self::LimitExceeded { current, max } => write!(f, "会话数超限: {current}/{max}"),
+            Self::WalUnavailable { session_id, source } => {
+                write!(f, "新会话 {session_id} WAL 不可用: {source}")
+            }
+        }
+    }
+}
+
+impl ArchiveForkRejection {
+    fn to_status(&self) -> StatusCode {
+        match self {
+            Self::NoArchive => StatusCode::NOT_FOUND,
+            Self::InvalidVersion(_) => StatusCode::BAD_REQUEST,
+            Self::LimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::WalUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Corrupted(_) | Self::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+/// 读父会话归档 WAL 全部记录（含轮换分片，只读；与审计档案查询同一通道）
+fn read_archive_records(
+    wal_dir: &std::path::Path,
+    parent_id: u64,
+) -> Result<Vec<evorule_reactor::WalRecord>, ArchiveForkRejection> {
+    match audit_archive::read_records(wal_dir, parent_id) {
+        Ok(records) => Ok(records),
+        Err(audit_archive::ArchiveError::NotFound(_) | audit_archive::ArchiveError::WalDisabled) => {
+            Err(ArchiveForkRejection::NoArchive)
+        }
+        Err(audit_archive::ArchiveError::Io(e)) => {
+            tracing::error!(parent_id, error = %e, "fork-from-archive: 归档 WAL 读取失败");
+            Err(ArchiveForkRejection::Io(e))
+        }
+    }
+}
+
+/// 归档记录全链哈希校验 + 重放到目标版本（fail-closed，先于任何建会话动作）
+fn replay_archive_state(
+    parent_id: u64,
+    records: &[evorule_reactor::WalRecord],
+    version: Option<u64>,
+) -> Result<(JsonValue, u64), ArchiveForkRejection> {
+    match session::payload_from_wal_records(records, version) {
+        Ok(state) => Ok(state),
+        Err(session::SessionError::ArchiveCorrupted { reason }) => {
+            tracing::error!(
+                parent_id,
+                %reason,
+                "fork-from-archive: 归档链完整性校验失败，拒绝 fork（fail-closed）"
+            );
+            Err(ArchiveForkRejection::Corrupted(reason))
+        }
+        Err(session::SessionError::InvalidVersion { version }) => {
+            tracing::warn!(parent_id, version, "fork-from-archive: 目标版本不在归档链内");
+            Err(ArchiveForkRejection::InvalidVersion(version))
+        }
+        Err(e) => {
+            tracing::error!(parent_id, error = %e, "fork-from-archive: 归档重放失败");
+            Err(ArchiveForkRejection::Corrupted(e.to_string()))
+        }
+    }
+}
+
+/// 读归档 WAL 并重放出初始状态（fork-from-archive 的同步前置步骤，会话锁外执行）
+fn load_archive_initial_state(
+    wal_dir: &std::path::Path,
+    parent_id: u64,
+    version: Option<u64>,
+) -> Result<(JsonValue, u64), ArchiveForkRejection> {
+    let records = read_archive_records(wal_dir, parent_id)?;
+    replay_archive_state(parent_id, &records, version)
+}
+
+/// fork-from-archive：父会话不在内存时，从 `wal_dir` 归档链重建初始状态建新会话。
+///
+/// 引擎侧原语：[`session::payload_from_wal_records`]（全链校验重放）+
+/// [`session::SessionManager::create_session_from_initial_state`]（统一 fork
+/// 落点，子会话审计链从初始状态独立续起，因果父链接保留）。
+///
+/// 返回 `(新会话 ID, 实际 fork 的父版本号)`。文件读取/校验/重放在会话锁外完成，
+/// 仅最后建会话一步持有会话锁。
+async fn fork_from_archive(
+    api: &SessionApi,
+    parent_id: u64,
+    version: Option<u64>,
+) -> Result<(u64, u64), ArchiveForkRejection> {
+    let Some(wal_dir) = api.wal_dir.as_ref() else {
+        return Err(ArchiveForkRejection::NoArchive);
+    };
+
+    // 读归档 + 全链校验重放（fail-closed，先于任何建会话动作）
+    let (initial_payload, initial_version) = match load_archive_initial_state(wal_dir, parent_id, version)
+    {
+        Ok(state) => state,
+        Err(rej) => return Err(rej),
+    };
+
+    // 建新会话（统一 fork 落点：WAL 版 FactsLog fail-closed → spawn reactor → 注册）
+    let sessions = api.sessions.lock().await;
+    match sessions
+        .create_session_from_initial_state(Some(parent_id), initial_payload, initial_version)
+    {
+        Ok(id) => Ok((id, initial_version)),
+        Err(session::SessionError::LimitExceeded { current, max }) => {
+            Err(ArchiveForkRejection::LimitExceeded { current, max })
+        }
+        Err(session::SessionError::WalUnavailable { session_id, source }) => {
+            Err(ArchiveForkRejection::WalUnavailable {
+                session_id,
+                source: source.to_string(),
+            })
+        }
+        Err(e) => Err(ArchiveForkRejection::Corrupted(e.to_string())),
     }
 }
 
