@@ -1857,6 +1857,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // AppState 注入 metrics 和 readiness
     // H6: metrics 总是注入（PrometheusMetrics 实现 IoMetrics trait）
+    // 59 号 W1:快照任务需要 SharedFactsLog,先 clone 一份再 move 进 AppState
+    let quota_shared = shared_facts.clone();
     let state = AppState::new(
         api,
         session_api,
@@ -1868,6 +1870,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     // :演示登录入口开关注入（经 auth/status 公开下发）
     .with_demo_auth(cfg.demo_auth);
+
+    // 59 号 W1:应用配额快照后台任务(周期落 app_quota_snapshot 事件供重启
+    // 恢复;周期经 EVORULE_QUOTA_SNAPSHOT_SECS 配置,0=关闭;无配额应用时空跳)
+    state.app_quota().spawn_snapshot_task(quota_shared);
 
     info!(
         "[3/4] 审计器 + GovernanceApi + SessionApi 已创建（耗时: {}ms）",

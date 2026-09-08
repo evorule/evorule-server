@@ -41,6 +41,9 @@ use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use crate::api::app_quota::AppCredentials;
 
 /// 事实路径前缀(平台授权命名空间)
 const FACT_PREFIX: &str = "platform.";
@@ -177,6 +180,10 @@ pub struct PlatformApp {
     pub status: String, // ACTIVE | REVOKED
     pub description: String,
     pub created_at_ms: u64,
+    /// 59 号 W1:per-app 速率上限(次/秒;None=不限,缺省向后兼容)
+    pub rate_limit_per_sec: Option<u64>,
+    /// 59 号 W1:每日请求总量预算(UTC 日窗口;None=不限)
+    pub daily_quota: Option<u64>,
 }
 
 /// 平台状态快照(version 单调递增,前端据此感知授权变更)
@@ -284,6 +291,16 @@ impl PlatformSnapshot {
                         description: jstr(v, "description"),
                         created_at_ms: v.get("created_at_ms").and_then(|n| n.as_i64()).unwrap_or(0)
                             as u64,
+                        // 59 号 W1:配额字段缺省 None(旧事实无此字段回放即"不限",
+                        // 向后兼容);Some(0) 由签发/更新端点校验拒绝,回放侧不二次判
+                        rate_limit_per_sec: v
+                            .get("rate_limit_per_sec")
+                            .and_then(|n| n.as_i64())
+                            .map(|n| n as u64),
+                        daily_quota: v
+                            .get("daily_quota")
+                            .and_then(|n| n.as_i64())
+                            .map(|n| n as u64),
                     };
                     snap.apps.insert(name.to_string(), a);
                 }
@@ -328,7 +345,10 @@ impl PlatformSnapshot {
     /// (应用数量级为个位~十位,MVP 可接受;命中且 ACTIVE → Ok(app_id);
     /// 不存在 → Err(Unknown)、已吊销 → Err(Revoked)。中间件对二者
     /// 统一 401 fail-fast,区分原因仅供审计事件如实留痕,不改响应语义)。
-    pub fn validate_app_key(&self, key_hash: &str) -> Result<String, AppKeyReject> {
+    ///
+    /// 59 号 W1:命中返回 [`AppCredentials`](含配额视图)——中间件据此执行
+    /// per-app 限流检查;None 维度=不限。
+    pub fn validate_app_key(&self, key_hash: &str) -> Result<AppCredentials, AppKeyReject> {
         let mut found: Option<&PlatformApp> = None;
         for a in self.apps.values() {
             if a.key_hash == key_hash {
@@ -340,7 +360,11 @@ impl PlatformSnapshot {
         if a.status != "ACTIVE" {
             return Err(AppKeyReject::Revoked);
         }
-        Ok(a.app_id.clone())
+        Ok(AppCredentials {
+            app_id: a.app_id.clone(),
+            rate_limit_per_sec: a.rate_limit_per_sec,
+            daily_quota: a.daily_quota,
+        })
     }
 }
 
@@ -464,7 +488,8 @@ pub fn generate_token() -> Result<(String, String), AuthError> {
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
-fn now_ms() -> u64 {
+/// 当前 UNIX 时间毫秒（pub(crate)：app_quota 快照任务/恢复共用同一时钟源）
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -671,11 +696,52 @@ pub struct ChangePasswordReq {
 
 /// 58 号 W2:应用凭据签发请求(app_id 全局唯一,即使已吊销也不可复用——
 /// 归因连续性优先;需要换钥请换新 app_id 重新登记外部应用)
+///
+/// 59 号 W1:配额字段可选,缺省(缺字段/null)=不限,向后兼容;
+/// Some(0) 非法(0 语义歧义,"不限"只用缺省表达)。
 #[derive(serde::Deserialize, ToSchema)]
 pub struct IssueAppReq {
     pub app_id: String,
     #[serde(default)]
     pub description: String,
+    /// per-app 速率上限(次/秒,1..=4294967295;缺省不限)
+    #[serde(default)]
+    pub rate_limit_per_sec: Option<u64>,
+    /// 每日请求总量预算(UTC 日窗口,1..=2^63-1;缺省不限)
+    #[serde(default)]
+    pub daily_quota: Option<u64>,
+}
+
+/// 59 号 W1:应用配额更新请求(全量覆盖语义:两字段与签发同校验;
+/// 已用量保留,不做清零——"调整配额"≠"重置用量")。
+#[derive(serde::Deserialize, ToSchema)]
+pub struct UpdateAppQuotaReq {
+    #[serde(default)]
+    pub rate_limit_per_sec: Option<u64>,
+    #[serde(default)]
+    pub daily_quota: Option<u64>,
+}
+
+/// 配额值校验:None 合法(不限);Some(0) 非法;速率上限另限 u32::MAX
+/// (governor NonZeroU32 边界)。
+fn validate_quota_values(rate: Option<u64>, daily: Option<u64>) -> Result<(), AuthError> {
+    const U32_MAX: u64 = u32::MAX as u64;
+    if rate.is_some_and(|v| v == 0) {
+        return Err(AuthError::BadRequest(
+            "rate_limit_per_sec 为 0 非法:不限请省略该字段".into(),
+        ));
+    }
+    if daily.is_some_and(|v| v == 0) {
+        return Err(AuthError::BadRequest(
+            "daily_quota 为 0 非法:不限请省略该字段".into(),
+        ));
+    }
+    if rate.is_some_and(|v| v > U32_MAX) {
+        return Err(AuthError::BadRequest(format!(
+            "rate_limit_per_sec 超过上限 {U32_MAX}"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -704,8 +770,10 @@ pub fn platform_auth_router() -> Router<AppState> {
             patch(update_role).delete(delete_role),
         )
         // 58 号 W2:应用级凭据管理面(签发/列表/吊销;manage_apps 权限点)
+        // 59 号 W1:配额更新端点(调整速率/日预算,即时生效)
         .route("/api/platform/apps", get(list_apps).post(issue_app))
         .route("/api/platform/apps/{id}/revoke", post(revoke_app))
+        .route("/api/platform/apps/{id}/quota", post(update_app_quota))
 }
 
 use crate::api::server::AppState;
@@ -913,10 +981,17 @@ pub struct AuthedActor(pub String);
 ///
 /// 403 语义由端点层自理:平台管理端点在 handler 内校验权限点。
 ///
+/// 59 号 W1:State 增补 `Arc<AppQuotaManager>`——通道三命中后执行 per-app
+/// 配额检查(速率+日配额;仅 App 身份,User/Service 直通),超限 429+Retry-After。
+///
 /// (: 直返 `Response`——原 `Result<Response, Response>` 两分支都产出
 /// Response,Err 包装无语义且触发 clippy result_large_err(Response ≥128 字节))
 pub async fn unified_auth_middleware(
-    State((auth_config, shared)): State<(crate::auth::AuthConfig, SharedFactsLog)>,
+    State((auth_config, shared, quota)): State<(
+        crate::auth::AuthConfig,
+        SharedFactsLog,
+        std::sync::Arc<crate::api::app_quota::AppQuotaManager>,
+    )>,
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -933,16 +1008,7 @@ pub async fn unified_auth_middleware(
     // 通道一:静态 token(user/service 白名单)
     if !raw.is_empty() && auth_config.validate(&raw) {
         let identity = auth_config.identity(&raw);
-        // 登录身份注入:平台用户凭据无个人身份(静态 token),记固定标识;
-        // service 凭据不注入 AuthedActor(审批等人工端点在 handler 层 403 拒绝)
-        match identity {
-            crate::auth::CallerIdentity::User => {
-                req.extensions_mut()
-                    .insert(AuthedActor("static-user".to_string()));
-            }
-            crate::auth::CallerIdentity::Service | crate::auth::CallerIdentity::App => {}
-        }
-        req.extensions_mut().insert(identity);
+        inject_static_identity(&mut req, identity);
         return next.run(req).await;
     }
     if raw.is_empty() {
@@ -971,25 +1037,8 @@ pub async fn unified_auth_middleware(
     }
     // 通道三:应用凭据(evorule-hash blake3: 前缀哈希)
     let key_hash = app_key_hash(&raw);
-    match snap.validate_app_key(&key_hash) {
-        Ok(app_id) => {
-            req.extensions_mut()
-                .insert(crate::auth::CallerIdentity::App);
-            // 归因 fact:app_id/方法/路径/ts 入审计链(platform-events 报表可见)。
-            // invoke 直调同为 protected_routes 路由,自动覆盖同一归因路径。
-            append_platform_event(
-                &shared,
-                "app_invoke",
-                serde_json::json!({
-                    "app_id": app_id,
-                    "method": req.method().as_str(),
-                    "path": req.uri().path(),
-                    "ts": now_ms(),
-                }),
-            );
-            tracing::debug!(app_id = %app_id, "应用凭据认证通过");
-            return next.run(req).await;
-        }
+    let creds = match snap.validate_app_key(&key_hash) {
+        Ok(creds) => creds,
         Err(reject) => {
             // 拒绝留痕仅限"已吊销凭据被使用"(真实安全信号:吊销后仍在访问);
             // unknown 垃圾 token 不留痕——否则每个无效请求强制一次事实追加,
@@ -1005,9 +1054,89 @@ pub async fn unified_auth_middleware(
                     }),
                 );
             }
+            return unauthorized_response();
         }
+    };
+    // 59 号 W1:per-app 配额检查(速率→日配额;None 维度不限)。
+    // 超限 → 429+Retry-After,聚合报警事件已在 check 内锁外落链;
+    // 通过 → 注入 App 身份并落逐条归因(既有 58 W2 语义)。
+    if let Some(resp) = app_quota_gate(&quota, &creds, &shared) {
+        return resp;
     }
-    unauthorized_response()
+    req.extensions_mut()
+        .insert(crate::auth::CallerIdentity::App);
+    // 归因 fact:app_id/方法/路径/ts 入审计链(platform-events 报表可见)。
+    // invoke 直调同为 protected_routes 路由,自动覆盖同一归因路径。
+    append_platform_event(
+        &shared,
+        "app_invoke",
+        serde_json::json!({
+            "app_id": creds.app_id,
+            "method": req.method().as_str(),
+            "path": req.uri().path(),
+            "ts": now_ms(),
+        }),
+    );
+    tracing::debug!(app_id = %creds.app_id, "应用凭据认证通过");
+    next.run(req).await
+}
+
+/// 静态 token 通道的身份注入:平台用户凭据无个人身份(静态 token),记固定
+/// 标识;service 凭据不注入 AuthedActor(审批等人工端点在 handler 层 403 拒绝)。
+fn inject_static_identity(req: &mut axum::extract::Request, identity: crate::auth::CallerIdentity) {
+    if matches!(identity, crate::auth::CallerIdentity::User) {
+        req.extensions_mut()
+            .insert(AuthedActor("static-user".to_string()));
+    }
+    req.extensions_mut().insert(identity);
+}
+
+/// 59 号 W1:per-app 配额门(通道三命中后调用)。
+///
+/// 通过 → `None`(调用方继续注入身份/归因);超限 → `Some(429 响应)`
+/// (聚合报警事件已在 [`AppQuotaManager::check`] 锁外落链)。
+fn app_quota_gate(
+    quota: &Arc<crate::api::app_quota::AppQuotaManager>,
+    creds: &AppCredentials,
+    shared: &SharedFactsLog,
+) -> Option<axum::response::Response> {
+    let (retry_after, dimension) = quota.check(creds, shared, now_ms()).err()?;
+    Some(quota_exceeded_response(retry_after, dimension))
+}
+
+/// 429 响应(59 号 W1:per-app 配额超限)。
+///
+/// `Retry-After` 头(速率层=令牌恢复估算秒数;日配额层=到 UTC 次日零点秒数)
+/// 与统一 JSON 错误体。超限请求不落逐条 app_invoke 归因(防写放大;聚合报警
+/// 事件已由 [`AppQuotaManager::check`] 落链,审计面不缺总数)。
+fn quota_exceeded_response(
+    retry_after_secs: u64,
+    dimension: crate::api::app_quota::QuotaDimension,
+) -> axum::response::Response {
+    let dim_str = match dimension {
+        crate::api::app_quota::QuotaDimension::Rate => "rate",
+        crate::api::app_quota::QuotaDimension::Daily => "daily",
+    };
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [
+            (
+                axum::http::header::RETRY_AFTER,
+                retry_after_secs.to_string(),
+            ),
+            (
+                axum::http::header::HeaderName::from_static("x-quota-dimension"),
+                dim_str.to_string(),
+            ),
+        ],
+        axum::Json(serde_json::json!({
+            "success": false,
+            "error": format!("应用配额超限({dim_str}),请按 Retry-After 退避后重试"),
+            "retry_after_secs": retry_after_secs,
+            "dimension": dim_str,
+        })),
+    )
+        .into_response()
 }
 
 /// `POST /api/platform/auth/logout` — 吊销当前会话(幂等)。
@@ -1789,6 +1918,7 @@ async fn issue_app(
 ) -> ApiResult {
     let (snap, caller) = require_permission(&shared, &headers, "manage_apps")?;
     validate_name(&req.app_id, "app_id")?;
+    validate_quota_values(req.rate_limit_per_sec, req.daily_quota)?;
     if snap.apps.contains_key(&req.app_id) {
         return Err(err_json(AuthError::Conflict(format!(
             "app_id 已存在: {}(含已吊销,身份不复用;如需换钥请更换 app_id)",
@@ -1805,12 +1935,20 @@ async fn issue_app(
             "status": "ACTIVE",
             "description": req.description,
             "created_at_ms": created_at_ms,
+            // 59 号 W1:配额随签发落事实(None 序列化为 null,回放侧视为不限)
+            "rate_limit_per_sec": req.rate_limit_per_sec,
+            "daily_quota": req.daily_quota,
         }),
     )?;
     append_auth_event(
         &shared,
         "app_issued",
-        serde_json::json!({ "app_id": req.app_id, "by": caller }),
+        serde_json::json!({
+            "app_id": req.app_id,
+            "by": caller,
+            "rate_limit_per_sec": req.rate_limit_per_sec,
+            "daily_quota": req.daily_quota,
+        }),
     );
     tracing::info!("平台授权:应用凭据已签发 {}(by {caller})", req.app_id);
     Ok(ok_json(
@@ -1820,6 +1958,8 @@ async fn issue_app(
             "app_id": req.app_id,
             "key": key,
             "created_at_ms": created_at_ms,
+            "rate_limit_per_sec": req.rate_limit_per_sec,
+            "daily_quota": req.daily_quota,
         }),
     ))
 }
@@ -1835,8 +1975,13 @@ async fn issue_app(
         (status = 500, description = "事实回放失败", body = serde_json::Value)
     )
 )]
-async fn list_apps(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> ApiResult {
+async fn list_apps(
+    State(shared): State<SharedFactsLog>,
+    State(quota): State<Arc<crate::api::app_quota::AppQuotaManager>>,
+    headers: HeaderMap,
+) -> ApiResult {
     let (snap, _caller) = require_permission(&shared, &headers, "manage_apps")?;
+    let now = now_ms();
     let apps: Vec<serde_json::Value> = snap
         .apps
         .values()
@@ -1847,12 +1992,80 @@ async fn list_apps(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> 
                 "status": a.status,
                 "description": a.description,
                 "created_at_ms": a.created_at_ms,
+                // 59 号 W1:配额设定与今日已用量(null=不限)
+                "rate_limit_per_sec": a.rate_limit_per_sec,
+                "daily_quota": a.daily_quota,
+                "today_usage": quota.today_usage(&a.app_id, now),
             })
         })
         .collect();
     Ok(ok_json(
         StatusCode::OK,
         serde_json::json!({ "success": true, "apps": apps }),
+    ))
+}
+
+/// `POST /api/platform/apps/{id}/quota` — 更新应用配额(59 号 W1,即时生效)。
+///
+/// 全量覆盖语义:两字段与签发同校验(None=不限);已用量保留(调整配额≠重置
+/// 用量)。生效机制:事实 last-write-wins 回放 → 下次请求 `validate_app_key`
+/// 返回新配额视图 → 限流器按配置值比对惰性重建,无需额外失效通知。
+#[utoipa::path(
+    post,
+    path = "/api/platform/apps/{id}/quota",
+    tag = "platform-auth",
+    request_body = UpdateAppQuotaReq,
+    params(("id" = String, Path, description = "应用 id")),
+    responses(
+        (status = 200, description = "配额已更新", body = serde_json::Value),
+        (status = 400, description = "配额值非法(0 或超上限)", body = serde_json::Value),
+        (status = 403, description = "缺少 manage_apps 权限", body = serde_json::Value),
+        (status = 409, description = "应用不存在", body = serde_json::Value),
+        (status = 500, description = "事实写入失败", body = serde_json::Value)
+    )
+)]
+async fn update_app_quota(
+    State(shared): State<SharedFactsLog>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(req): Json<UpdateAppQuotaReq>,
+) -> ApiResult {
+    let (snap, caller) = require_permission(&shared, &headers, "manage_apps")?;
+    validate_quota_values(req.rate_limit_per_sec, req.daily_quota)?;
+    let Some(app) = snap.apps.get(&id) else {
+        return Err(err_json(AuthError::Conflict(format!("应用不存在: {id}"))));
+    };
+    append_fact(
+        &shared,
+        &app_fact_path(&id),
+        serde_json::json!({
+            "key_hash": app.key_hash,
+            "status": app.status,
+            "description": app.description,
+            "created_at_ms": app.created_at_ms,
+            "rate_limit_per_sec": req.rate_limit_per_sec,
+            "daily_quota": req.daily_quota,
+        }),
+    )?;
+    append_auth_event(
+        &shared,
+        "app_quota_updated",
+        serde_json::json!({
+            "app_id": id,
+            "by": caller,
+            "rate_limit_per_sec": req.rate_limit_per_sec,
+            "daily_quota": req.daily_quota,
+        }),
+    );
+    tracing::info!("平台授权:应用配额已更新 {id}(by {caller})");
+    Ok(ok_json(
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "app_id": id,
+            "rate_limit_per_sec": req.rate_limit_per_sec,
+            "daily_quota": req.daily_quota,
+        }),
     ))
 }
 
@@ -1874,6 +2087,7 @@ async fn list_apps(State(shared): State<SharedFactsLog>, headers: HeaderMap) -> 
 )]
 async fn revoke_app(
     State(shared): State<SharedFactsLog>,
+    State(quota): State<Arc<crate::api::app_quota::AppQuotaManager>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> ApiResult {
@@ -1890,6 +2104,9 @@ async fn revoke_app(
                 "status": "REVOKED",
                 "description": app.description,
                 "created_at_ms": app.created_at_ms,
+                // 59 号 W1:吊销事实保留配额字段(回放连续性)
+                "rate_limit_per_sec": app.rate_limit_per_sec,
+                "daily_quota": app.daily_quota,
             }),
         )?;
         append_auth_event(
@@ -1897,6 +2114,8 @@ async fn revoke_app(
             "app_revoked",
             serde_json::json!({ "app_id": id, "by": caller }),
         );
+        // 59 号 W1:吊销清理限流内存态(limiter/日计数/报警状态)
+        quota.on_revoked(&id);
         tracing::info!("平台授权:应用凭据已吊销 {id}(by {caller})");
     }
     Ok(ok_json(
@@ -1917,6 +2136,12 @@ mod tests {
 
     fn shared_log() -> SharedFactsLog {
         SharedFactsLog::new()
+    }
+
+    /// 59 号 W1:管理端点新增 State<Arc<AppQuotaManager>> 参数的测试helper
+    /// (空管理器:today_usage 恒 0,不影响既有断言)
+    fn quota_state() -> State<Arc<crate::api::app_quota::AppQuotaManager>> {
+        State(Arc::new(crate::api::app_quota::AppQuotaManager::new()))
     }
 
     #[test]
@@ -2335,7 +2560,11 @@ mod tests {
         let app: Router = Router::new()
             .route("/api/ping", get(|| async { "ok" }))
             .layer(middleware::from_fn_with_state(
-                (auth_config, shared.clone()),
+                (
+                    auth_config,
+                    shared.clone(),
+                    Arc::new(crate::api::app_quota::AppQuotaManager::new()),
+                ),
                 unified_auth_middleware,
             ));
 
@@ -2409,11 +2638,11 @@ mod tests {
         .unwrap();
         let snap = PlatformSnapshot::replay(&shared).unwrap();
         assert_eq!(snap.apps.len(), 1);
-        assert_eq!(snap.validate_app_key(&key_hash).unwrap(), "alpha");
-        assert_eq!(
+        assert_eq!(snap.validate_app_key(&key_hash).unwrap().app_id, "alpha");
+        assert!(matches!(
             snap.validate_app_key(&app_key_hash("key-beta")),
             Err(AppKeyReject::Unknown)
-        );
+        ));
         // 吊销(last-write-wins)→ Revoked,且不影响其他字段
         append_fact(
             &shared,
@@ -2427,7 +2656,10 @@ mod tests {
         )
         .unwrap();
         let snap = PlatformSnapshot::replay(&shared).unwrap();
-        assert_eq!(snap.validate_app_key(&key_hash), Err(AppKeyReject::Revoked));
+        assert!(matches!(
+            snap.validate_app_key(&key_hash),
+            Err(AppKeyReject::Revoked)
+        ));
     }
 
     /// 管理端点全流程:签发(明文仅一次)→ 重复 409 → 非法 400 →
@@ -2448,13 +2680,15 @@ mod tests {
         .expect_ok();
         let admin_h = auth_headers(&login_token(&shared, "root", "admin-pass-123").await);
 
-        // 签发成功:201,明文 key 仅此一次
+        // 签发成功:201,明文 key 仅此一次(59 号 W1:签发可携带配额)
         let (_, Json(v)) = issue_app(
             State(shared.clone()),
             admin_h.clone(),
             Json(IssueAppReq {
                 app_id: "evo-agent".into(),
                 description: "外部应用接入".into(),
+                rate_limit_per_sec: Some(5),
+                daily_quota: Some(1000),
             }),
         )
         .await
@@ -2472,6 +2706,8 @@ mod tests {
                 Json(IssueAppReq {
                     app_id: "evo-agent".into(),
                     description: String::new(),
+                    rate_limit_per_sec: None,
+                    daily_quota: None,
                 }),
             )
             .await
@@ -2487,6 +2723,8 @@ mod tests {
                 Json(IssueAppReq {
                     app_id: "bad id!".into(),
                     description: String::new(),
+                    rate_limit_per_sec: None,
+                    daily_quota: None,
                 }),
             )
             .await
@@ -2494,14 +2732,17 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
 
-        // 列表:只含哈希,不含明文
-        let (_, Json(v)) = list_apps(State(shared.clone()), admin_h.clone())
+        // 列表:只含哈希,不含明文;配额设定与今日已用量透出
+        let (_, Json(v)) = list_apps(State(shared.clone()), quota_state(), admin_h.clone())
             .await
             .unwrap();
         let apps = v["apps"].as_array().unwrap();
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0]["app_id"], "evo-agent");
         assert_eq!(apps[0]["status"], "ACTIVE");
+        assert_eq!(apps[0]["rate_limit_per_sec"], 5, "配额设定应透出");
+        assert_eq!(apps[0]["daily_quota"], 1000);
+        assert_eq!(apps[0]["today_usage"], 0, "空管理器无用量");
         let key_hash = apps[0]["key_hash"].as_str().unwrap();
         assert!(key_hash.starts_with("blake3:"));
         assert!(!serde_json::to_string(&v).unwrap().contains(&key));
@@ -2509,6 +2750,7 @@ mod tests {
         // 吊销 → 即时生效;重复吊销幂等成功
         let (_, Json(v)) = revoke_app(
             State(shared.clone()),
+            quota_state(),
             admin_h.clone(),
             axum::extract::Path("evo-agent".into()),
         )
@@ -2517,6 +2759,7 @@ mod tests {
         assert_eq!(v["status"], "REVOKED");
         let (_, Json(v)) = revoke_app(
             State(shared.clone()),
+            quota_state(),
             admin_h.clone(),
             axum::extract::Path("evo-agent".into()),
         )
@@ -2528,6 +2771,7 @@ mod tests {
         assert_eq!(
             revoke_app(
                 State(shared.clone()),
+                quota_state(),
                 admin_h.clone(),
                 axum::extract::Path("ghost".into()),
             )
@@ -2553,7 +2797,9 @@ mod tests {
         .expect_ok();
         let carol_h = auth_headers(&login_token(&shared, "carol", "carol-pass-123").await);
         assert_eq!(
-            list_apps(State(shared.clone()), carol_h).await.err_status(),
+            list_apps(State(shared.clone()), quota_state(), carol_h)
+                .await
+                .err_status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -2626,6 +2872,8 @@ mod tests {
             Json(IssueAppReq {
                 app_id: "evo-agent".into(),
                 description: String::new(),
+                rate_limit_per_sec: None,
+                daily_quota: None,
             }),
         )
         .await
@@ -2637,6 +2885,8 @@ mod tests {
             Json(IssueAppReq {
                 app_id: "revoked-app".into(),
                 description: String::new(),
+                rate_limit_per_sec: None,
+                daily_quota: None,
             }),
         )
         .await
@@ -2644,6 +2894,7 @@ mod tests {
         let revoked_key = v["key"].as_str().unwrap().to_string();
         revoke_app(
             State(shared.clone()),
+            quota_state(),
             admin_h,
             axum::extract::Path("revoked-app".into()),
         )
@@ -2671,7 +2922,11 @@ mod tests {
             Router::new()
                 .route("/api/ping", get(probe))
                 .layer(middleware::from_fn_with_state(
-                    (auth_config, shared.clone()),
+                    (
+                        auth_config,
+                        shared.clone(),
+                        Arc::new(crate::api::app_quota::AppQuotaManager::new()),
+                    ),
                     unified_auth_middleware,
                 ));
 
@@ -2751,6 +3006,177 @@ mod tests {
         let v = body_of(resp).await;
         assert!(v["actor"].is_null());
         assert_eq!(v["identity"], "service");
+    }
+
+    /// 59 号 W1:中间件配额集成——app key 超速 → 429+Retry-After,不落
+    /// 逐条 app_invoke 归因(防写放大);User 通道直通不受 app 配额约束。
+    #[tokio::test]
+    async fn test_app_quota_429_integration() {
+        use axum::body::Body;
+        use axum::http::Request as HttpRequest;
+        use axum::middleware;
+        use tower::ServiceExt;
+
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+        bootstrap(
+            State(shared.clone()),
+            Json(BootstrapReq {
+                username: "root".into(),
+                password: "admin-pass-123".into(),
+                display_name: String::new(),
+            }),
+        )
+        .await
+        .expect_ok();
+        let admin_h = auth_headers(&login_token(&shared, "root", "admin-pass-123").await);
+
+        // 签发限速 1/s 的应用凭据
+        let (_, Json(v)) = issue_app(
+            State(shared.clone()),
+            admin_h,
+            Json(IssueAppReq {
+                app_id: "limited".into(),
+                description: String::new(),
+                rate_limit_per_sec: Some(1),
+                daily_quota: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let app_key = v["key"].as_str().unwrap().to_string();
+
+        let auth_config = crate::auth::AuthConfig::new(vec!["static-user-token".into()], true);
+        let quota = Arc::new(crate::api::app_quota::AppQuotaManager::new());
+        let app: Router = Router::new()
+            .route("/api/ping", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                (auth_config, shared.clone(), quota),
+                unified_auth_middleware,
+            ));
+
+        let send = |app: Router, token: String| async move {
+            app.oneshot(
+                HttpRequest::builder()
+                    .uri("/api/ping")
+                    .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        };
+
+        // 第 1 发 app key → 200(令牌桶满)
+        let resp = send(app.clone(), app_key.clone()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        // 第 2 发(同毫秒)→ 429 + Retry-After
+        let resp = send(app.clone(), app_key.clone()).await;
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry = resp
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        assert!(retry.is_some_and(|s| s >= 1), "Retry-After 应存在且 >= 1s");
+        // 超限请求不落逐条 app_invoke(防写放大:恰好 1 条=第 1 发)
+        let invokes = shared.facts_by_path_prefix("platform.event.app_invoke");
+        assert_eq!(invokes.len(), 1, "超限不应追加归因事件");
+        // User 静态 token 直通:不受 app 配额约束 → 200
+        let resp = send(app, "static-user-token".into()).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "User 通道不应被 app 配额拦截"
+        );
+    }
+
+    /// 59 号 W1:配额更新端点——更新后 validate_app_key 返回新配额视图
+    /// (last-write-wins 回放,即时生效);非法值 400;未知应用 409。
+    #[tokio::test]
+    async fn test_update_app_quota_endpoint() {
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+        bootstrap(
+            State(shared.clone()),
+            Json(BootstrapReq {
+                username: "root".into(),
+                password: "admin-pass-123".into(),
+                display_name: String::new(),
+            }),
+        )
+        .await
+        .expect_ok();
+        let admin_h = auth_headers(&login_token(&shared, "root", "admin-pass-123").await);
+
+        // 签发(无配额)→ validate 返回 None/None(不限)
+        let (_, Json(v)) = issue_app(
+            State(shared.clone()),
+            admin_h.clone(),
+            Json(IssueAppReq {
+                app_id: "flex".into(),
+                description: String::new(),
+                rate_limit_per_sec: None,
+                daily_quota: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let key_hash = app_key_hash(v["key"].as_str().unwrap());
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        let creds = snap.validate_app_key(&key_hash).unwrap();
+        assert_eq!(creds.rate_limit_per_sec, None);
+        assert_eq!(creds.daily_quota, None);
+
+        // 更新配额 → 200,回放后新视图生效
+        let (_, Json(v)) = update_app_quota(
+            State(shared.clone()),
+            admin_h.clone(),
+            axum::extract::Path("flex".into()),
+            Json(UpdateAppQuotaReq {
+                rate_limit_per_sec: Some(2),
+                daily_quota: Some(100),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["success"], true);
+        let snap = PlatformSnapshot::replay(&shared).unwrap();
+        let creds = snap.validate_app_key(&key_hash).unwrap();
+        assert_eq!(creds.rate_limit_per_sec, Some(2), "更新后应即时生效");
+        assert_eq!(creds.daily_quota, Some(100));
+
+        // 非法值(rate=0) → 400
+        assert_eq!(
+            update_app_quota(
+                State(shared.clone()),
+                admin_h.clone(),
+                axum::extract::Path("flex".into()),
+                Json(UpdateAppQuotaReq {
+                    rate_limit_per_sec: Some(0),
+                    daily_quota: None,
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        // 未知应用 → 409
+        assert_eq!(
+            update_app_quota(
+                State(shared.clone()),
+                admin_h,
+                axum::extract::Path("ghost".into()),
+                Json(UpdateAppQuotaReq {
+                    rate_limit_per_sec: Some(1),
+                    daily_quota: None,
+                }),
+            )
+            .await
+            .err_status(),
+            StatusCode::CONFLICT
+        );
     }
 
     #[test]

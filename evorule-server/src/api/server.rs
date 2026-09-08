@@ -2194,6 +2194,10 @@ pub struct AppState {
 
     /// 模板市场目录句柄
     marketplace_dir: MarketplaceDir,
+
+    /// 59 号 W1:应用级配额限流管理器(per-app 速率+日配额;
+    /// 创建时从最近快照恢复日计数,快照后台任务由 main 装配后 spawn)
+    app_quota: std::sync::Arc<crate::api::app_quota::AppQuotaManager>,
 }
 
 impl AppState {
@@ -2215,6 +2219,11 @@ impl AppState {
         // W4：模板市场目录自 SessionApi 派生（rules_dir 父目录拼接）——
         // 同模块直读私有字段；先取路径再移动 sessions，避免 use-after-move
         let marketplace_dir = MarketplaceDir(sessions.marketplace_dir.clone());
+        // 59 号 W1:配额管理器随 AppState 创建(从最近快照恢复日计数);
+        // 快照后台任务在 main 装配完成后 spawn(需要 Arc,测试路径不 spawn)
+        let app_quota = std::sync::Arc::new(crate::api::app_quota::AppQuotaManager::start_recover(
+            &shared_facts,
+        ));
         Self {
             governance,
 
@@ -2231,6 +2240,7 @@ impl AppState {
             // :演示登录入口默认开（体验包语义；生产建议 --demo-auth false）
             demo_auth: true,
             marketplace_dir,
+            app_quota,
         }
     }
 
@@ -2244,11 +2254,22 @@ impl AppState {
     pub fn demo_auth(&self) -> bool {
         self.demo_auth
     }
+
+    /// 59 号 W1:应用配额管理器(快照任务 spawn 用)
+    pub fn app_quota(&self) -> std::sync::Arc<crate::api::app_quota::AppQuotaManager> {
+        self.app_quota.clone()
+    }
 }
 
 /// :演示登录入口开关的 axum 状态提取器（经 FromRef 从 AppState 派生）。
 #[derive(Clone, Copy, Debug)]
 pub struct DemoAuthFlag(pub bool);
+
+impl FromRef<AppState> for std::sync::Arc<crate::api::app_quota::AppQuotaManager> {
+    fn from_ref(state: &AppState) -> Self {
+        state.app_quota.clone()
+    }
+}
 
 impl FromRef<AppState> for DemoAuthFlag {
     fn from_ref(state: &AppState) -> Self {
@@ -4511,9 +4532,9 @@ fn read_archive_records(
 ) -> Result<Vec<evorule_reactor::WalRecord>, ArchiveForkRejection> {
     match audit_archive::read_records(wal_dir, parent_id) {
         Ok(records) => Ok(records),
-        Err(audit_archive::ArchiveError::NotFound(_) | audit_archive::ArchiveError::WalDisabled) => {
-            Err(ArchiveForkRejection::NoArchive)
-        }
+        Err(
+            audit_archive::ArchiveError::NotFound(_) | audit_archive::ArchiveError::WalDisabled,
+        ) => Err(ArchiveForkRejection::NoArchive),
         Err(audit_archive::ArchiveError::Io(e)) => {
             tracing::error!(parent_id, error = %e, "fork-from-archive: 归档 WAL 读取失败");
             Err(ArchiveForkRejection::Io(e))
@@ -4538,7 +4559,11 @@ fn replay_archive_state(
             Err(ArchiveForkRejection::Corrupted(reason))
         }
         Err(session::SessionError::InvalidVersion { version }) => {
-            tracing::warn!(parent_id, version, "fork-from-archive: 目标版本不在归档链内");
+            tracing::warn!(
+                parent_id,
+                version,
+                "fork-from-archive: 目标版本不在归档链内"
+            );
             Err(ArchiveForkRejection::InvalidVersion(version))
         }
         Err(e) => {
@@ -4576,17 +4601,19 @@ async fn fork_from_archive(
     };
 
     // 读归档 + 全链校验重放（fail-closed，先于任何建会话动作）
-    let (initial_payload, initial_version) = match load_archive_initial_state(wal_dir, parent_id, version)
-    {
-        Ok(state) => state,
-        Err(rej) => return Err(rej),
-    };
+    let (initial_payload, initial_version) =
+        match load_archive_initial_state(wal_dir, parent_id, version) {
+            Ok(state) => state,
+            Err(rej) => return Err(rej),
+        };
 
     // 建新会话（统一 fork 落点：WAL 版 FactsLog fail-closed → spawn reactor → 注册）
     let sessions = api.sessions.lock().await;
-    match sessions
-        .create_session_from_initial_state(Some(parent_id), initial_payload, initial_version)
-    {
+    match sessions.create_session_from_initial_state(
+        Some(parent_id),
+        initial_payload,
+        initial_version,
+    ) {
         Ok(id) => Ok((id, initial_version)),
         Err(session::SessionError::LimitExceeded { current, max }) => {
             Err(ArchiveForkRejection::LimitExceeded { current, max })
@@ -7808,8 +7835,13 @@ impl GovernanceServer {
             // W2b:统一认证中间件(双凭据:静态 user/service token 或
             // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
             // 内部调用方沿用静态 service token,无需改造。
+            // 59 号 W1:State 增补 AppQuotaManager(per-app 配额检查)
             .layer(axum::middleware::from_fn_with_state(
-                (auth, self.state.shared_facts.clone()),
+                (
+                    auth,
+                    self.state.shared_facts.clone(),
+                    self.state.app_quota.clone(),
+                ),
                 crate::api::platform_auth::unified_auth_middleware,
             ));
 
@@ -7923,8 +7955,13 @@ impl GovernanceServer {
         let metrics_router = Router::<AppState>::new().route("/metrics", get(metrics_handler));
 
         let metrics_router = if self.metrics_requires_auth {
+            // 59 号 W1:State 增补 AppQuotaManager(与 protected_routes 同构)
             metrics_router.layer(axum::middleware::from_fn_with_state(
-                (self.auth.clone(), self.state.shared_facts.clone()),
+                (
+                    self.auth.clone(),
+                    self.state.shared_facts.clone(),
+                    self.state.app_quota.clone(),
+                ),
                 crate::api::platform_auth::unified_auth_middleware,
             ))
         } else {

@@ -127,6 +127,16 @@ use utoipa::OpenApi;
         crate::api::permissions::review_permission,
         crate::api::permissions::permissions_version,
         crate::api::permissions::evaluate_permission,
+        // 平台应用凭据组（58 W2 签发/列表/吊销 + 59 W1 配额更新——
+        // 58 W3 曾声称已入册,复核发现 paths() 实际遗漏,本批补登）
+        crate::api::platform_auth::issue_app,
+        crate::api::platform_auth::list_apps,
+        crate::api::platform_auth::revoke_app,
+        crate::api::platform_auth::update_app_quota,
+        // 插件审批代理组（57 W2 三路由,同上补登）
+        crate::api::server::plugin_admin_list_proposals,
+        crate::api::server::plugin_admin_approve,
+        crate::api::server::plugin_admin_reject,
         // marketplace 组
         crate::api::marketplace::list_templates,
         crate::api::marketplace::upload_template,
