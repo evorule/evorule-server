@@ -600,7 +600,20 @@ mod tests {
             .filter(|f| f.path.contains(EXCEEDED_KIND))
             .collect();
         assert_eq!(exceeded.len(), 2);
-        let last = exceeded.last().expect("有超限事件");
+        // 不能用 .last()：事件 path 时间戳是真实时钟(append_auth_event 内部
+        // now_ms(),非注入值),同真实毫秒内两事件的 path 序由随机后缀决定,
+        // BTreeMap 字典序下 .last() 顺序不稳定(掷硬币式 flaky);
+        // 按 detail.ts(注入的判定时钟)选目标事件,确定性强。
+        let last = exceeded
+            .iter()
+            .max_by_key(|f| {
+                f.value
+                    .get("detail")
+                    .and_then(|d| d.get("ts"))
+                    .and_then(|n| n.as_i64())
+                    .unwrap_or(0)
+            })
+            .expect("有超限事件");
         assert_eq!(
             last.value
                 .get("detail")
