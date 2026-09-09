@@ -66,7 +66,7 @@ impl PublishService {
         }
     }
 
-    /// 提交到发布队列 (科室主任/管理员权限; UV-151: Admin 亦可提交)
+    /// 提交到发布队列 (科室主任/管理员权限; Admin 亦可提交)
     ///
     /// 流程:
     /// 1. 校验角色 (DepartmentHead 或 Admin)
