@@ -574,7 +574,11 @@ mod tests {
             } }
         ]));
         let report = validate_rule_set(&doc);
-        assert!(!report.valid, "嵌套子树内 payload. 前缀 attr 应被拒: {:?}", report.errors);
+        assert!(
+            !report.valid,
+            "嵌套子树内 payload. 前缀 attr 应被拒: {:?}",
+            report.errors
+        );
     }
 
     #[test]
@@ -596,7 +600,11 @@ mod tests {
             } }
         ]));
         let report = validate_rule_set(&doc);
-        assert!(report.valid, "读侧 payload. 前缀应放行: {:?}", report.errors);
+        assert!(
+            report.valid,
+            "读侧 payload. 前缀应放行: {:?}",
+            report.errors
+        );
     }
 
     // ===== C9：validate_service_registry（服务注册表加载期门禁）=====
