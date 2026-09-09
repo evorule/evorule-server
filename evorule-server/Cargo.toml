@@ -19,12 +19,13 @@ path = "src/main.rs"
 
 [dependencies]
 # 核心层 (crates.io 版本依赖)
-# 0.4.2 起 evorule-tcb/reactor 携带规则命中归因（RuleHit/TransitionTrace），
-# server 侧消费该事实做聚合。发布顺序：evorule 0.4.2 先发 crates.io，本仓随后（D8 同发同装）。
-evorule-tcb = { version = "0.4.2" }
-evorule-reactor = { version = "0.4.2", features = ["persistence"] }
+# 0.4.3 起 evorule-tcb/reactor 携带规则命中归因（RuleHit/TransitionTrace）、
+# enforce 元指令与 WAL 重启续链修复，server 侧消费该事实做聚合。
+# 发布顺序：evorule 0.4.3 先发 crates.io，本仓随后（D8 同发同装）。
+evorule-tcb = { version = "0.4.3" }
+evorule-reactor = { version = "0.4.3", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
-evorule-governance = { version = "0.4.2", features = ["persistence"] }
+evorule-governance = { version = "0.4.3", features = ["persistence"] }
 # 审计档案链哈希重算
 blake3 = "1"
 

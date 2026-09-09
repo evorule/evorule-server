@@ -4520,14 +4520,14 @@ async fn create_session_from_parent(
             Err(StatusCode::SERVICE_UNAVAILABLE)
         }
 
-        // 归档链完整性失败等剩余变体 → 500（fail-closed，原因入 error 日志）。
-        // 本地开发经 .cargo/config.toml patch 到引擎工作区时，SessionError 含
-        // ArchiveCorrupted（归档校验失败拒绝 fork-from-archive）由此分支承接；
-        // 该分支对 crates.io 0.4.2（4 变体已被上方全覆盖）不可达，allow 豁免。
-        // 引擎 0.4.3 发布后应改为命名分支并移除本 allow。
-        #[allow(unreachable_patterns)]
-        Err(e) => {
-            tracing::error!(error = %e, "Session creation rejected (audit integrity)");
+        // 归档链完整性失败 → 500（fail-closed，原因入 error 日志）。
+        // ArchiveCorrupted 变体随 evorule 0.4.3 发布（fork-from-archive 原语），
+        // 2026-09-09 联动升级由 catch-all 桥接改为显式命名分支。
+        Err(evorule_governance::session::SessionError::ArchiveCorrupted { reason }) => {
+            tracing::error!(
+                reason,
+                "Session creation rejected: archive corrupted (fail-closed)"
+            );
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -4665,12 +4665,13 @@ async fn create_session_fork(
             Err(StatusCode::SERVICE_UNAVAILABLE)
         }
 
-        // 同 create_session：ArchiveCorrupted（本地引擎新变体，归档校验失败
-        // 拒绝 fork）等剩余变体 → 500 fail-closed；对 0.4.2 不可达，allow 豁免。
-        // 引擎 0.4.3 发布后改命名分支并移除本 allow。
-        #[allow(unreachable_patterns)]
-        Err(e) => {
-            tracing::error!(error = %e, "Session fork rejected (audit integrity)");
+        // 同 create_session：ArchiveCorrupted（归档校验失败拒绝 fork）→ 500 fail-closed。
+        // 2026-09-09 联动升级由 catch-all 桥接改为显式命名分支。
+        Err(evorule_governance::session::SessionError::ArchiveCorrupted { reason }) => {
+            tracing::error!(
+                reason,
+                "Session fork rejected: archive corrupted (fail-closed)"
+            );
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -8056,10 +8057,7 @@ impl GovernanceServer {
             .merge(evorule_workspace::build_workspace_router())
             // 工作空间自助加入(身份服务端注入,viewer 最小权限,幂等;
             // WorkspaceState 经 FromRef 从 AppState 派生)
-            .route(
-                "/api/workspaces/{id}/members/join",
-                post(workspace_join),
-            )
+            .route("/api/workspaces/{id}/members/join", post(workspace_join))
             // abort 双保险：条件挂载（--allow-abort 关闭时为空 Router）
             .merge(abort_router)
             // rewind/diff 已移至 application/core/time_machine（本地实现）
@@ -12756,7 +12754,11 @@ mod tests {
     // ====================================================================
 
     /// 构造临时规则文件并返回 (文件路径, 解析后 JSON)
-    fn tier_gate_fixture(dir: &std::path::Path, rel: &str, body: &str) -> (std::path::PathBuf, serde_json::Value) {
+    fn tier_gate_fixture(
+        dir: &std::path::Path,
+        rel: &str,
+        body: &str,
+    ) -> (std::path::PathBuf, serde_json::Value) {
         let f = dir.join(rel);
         if let Some(parent) = f.parent() {
             std::fs::create_dir_all(parent).unwrap();

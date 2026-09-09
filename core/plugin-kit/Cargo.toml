@@ -11,8 +11,8 @@ description = "进程内原生插件机制公共件 —— NativeService trait /
 publish = false
 
 [dependencies]
-evorule-tcb = { version = "0.4.0" }
-evorule-reactor = { version = "0.4.0" }
+evorule-tcb = { version = "0.4.3" }
+evorule-reactor = { version = "0.4.3" }
 async-trait = "0.1"
 
 [dev-dependencies]
