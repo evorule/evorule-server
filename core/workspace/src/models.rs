@@ -508,9 +508,9 @@ impl PublishRole {
         }
     }
 
-    /// 是否可提交到发布队列 (仅 DepartmentHead)
+    /// 是否可提交到发布队列 (DepartmentHead 提交; Admin 亦可——平台 administrator 需提交+审批双权, UV-151)
     pub fn can_submit_publish(&self) -> bool {
-        matches!(self, Self::DepartmentHead)
+        matches!(self, Self::DepartmentHead | Self::Admin)
     }
 
     /// 是否可审批发布 (仅 Admin)
@@ -1141,13 +1141,13 @@ mod tests {
         assert!(!PublishRole::Doctor.can_review_publish());
         assert!(!PublishRole::Doctor.can_rollback());
 
-        // DepartmentHead: 仅可提交
+        // DepartmentHead: 可提交, 不可审批/回滚
         assert!(PublishRole::DepartmentHead.can_submit_publish());
         assert!(!PublishRole::DepartmentHead.can_review_publish());
         assert!(!PublishRole::DepartmentHead.can_rollback());
 
-        // Admin: 可审批 + 回滚, 但不直接提交 (职责分离)
-        assert!(!PublishRole::Admin.can_submit_publish());
+        // Admin: 可提交 + 审批 + 回滚 (UV-151: 平台 administrator 需提交+审批双权)
+        assert!(PublishRole::Admin.can_submit_publish());
         assert!(PublishRole::Admin.can_review_publish());
         assert!(PublishRole::Admin.can_rollback());
     }

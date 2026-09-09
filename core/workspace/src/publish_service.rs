@@ -66,10 +66,10 @@ impl PublishService {
         }
     }
 
-    /// 提交到发布队列 (科室主任权限)
+    /// 提交到发布队列 (科室主任/管理员权限; UV-151: Admin 亦可提交)
     ///
     /// 流程:
-    /// 1. 校验角色 (仅 DepartmentHead)
+    /// 1. 校验角色 (DepartmentHead 或 Admin)
     /// 2. 校验规则版本存在 + 所属 workspace + 规则状态为 Candidate
     /// 3. 计算规则集 BLAKE3 哈希
     /// 4. 序列化规则集 (JSON 数组)
@@ -83,7 +83,7 @@ impl PublishService {
         // 1. 权限校验
         if !role.can_submit_publish() {
             return Err(WorkspaceError::forbidden(format!(
-                "role {:?} cannot submit to publish queue (requires DepartmentHead)",
+                "role {:?} cannot submit to publish queue (requires DepartmentHead or Admin)",
                 role
             )));
         }
