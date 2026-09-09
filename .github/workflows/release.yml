@@ -14,12 +14,18 @@
 #   console-cloud 镜像仓(CONSOLE_CLOUD_REF)现场构建, 两仓解耦
 # - TLS 后端为 rustls(UV-100), musl 静态构建无系统 OpenSSL 依赖
 # - bat/说明模板在仓内 dist/ 目录(可审阅可版本化), 打包直拷
+# - 发布原始二进制由 cosign keyless (OIDC) 签名, .sig 随 Release 发布, 见 SIGNING.md
+
 name: Release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write   # cosign keyless 签名所需 OIDC token
 
 env:
   CARGO_TERM_COLOR: always
@@ -80,7 +86,50 @@ jobs:
           path: target/${{ matrix.target }}/release/evorule-server${{ matrix.ext }}
 
   # ==========================================================================
-  # 2. 拉取配套资产 (方案 A 两仓解耦)
+  # 2. 发布原始二进制 cosign keyless 签名 (OIDC, 无密钥管理)
+  #    签名落库为 .sig, 随 Release 资产发布。验证见 SIGNING.md。
+  # ==========================================================================
+  sign:
+    name: sign (cosign keyless)
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 Linux 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: evorule-server-linux-x86_64
+          path: sign/linux
+
+      - name: 下载 Windows 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: evorule-server-windows-x86_64
+          path: sign/windows
+
+      - name: 安装 cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Keyless 签名 (OIDC)
+        run: |
+          mkdir -p sigout
+          cosign sign-blob --yes \
+            sign/linux/evorule-server \
+            --output-signature sigout/evorule-server-linux-x86_64.sig
+          cosign sign-blob --yes \
+            sign/windows/evorule-server.exe \
+            --output-signature sigout/evorule-server-windows-x86_64.exe.sig
+          ls -la sigout
+
+      - name: 上传签名产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: evorule-server-sigs
+          path: sigout/
+
+  # ==========================================================================
+  # 3. 拉取配套资产 (方案 A 两仓解耦)
   #    a) rule-serve 双平台二进制 ← evorule-rule Release(RULE_SERVE_VERSION)
   #       用其 sha256-checks.txt 做完整性校验,再跑 --help sanity
   #    b) web 静态产物 ← console-cloud 镜像仓 vite build
@@ -142,7 +191,7 @@ jobs:
           path: assets-out/
 
   # ==========================================================================
-  # 3. 组装双平台零依赖分发包
+  # 4. 组装双平台零依赖分发包
   #    win64: zip (含 start-evorule.bat)  linux64: tar.gz (含 start-evorule.sh)
   #    包结构对齐体验版 v0.2.0 形态 + UV-044 更名(server_eval.json)
   # ==========================================================================
@@ -227,11 +276,11 @@ jobs:
             sha256-checks.txt
 
   # ==========================================================================
-  # 4. GitHub Release
+  # 5. GitHub Release
   # ==========================================================================
   release:
     name: release
-    needs: [bundle]
+    needs: [bundle, sign]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -242,6 +291,12 @@ jobs:
           name: dist-packages
           path: release-assets
 
+      - name: 下载签名
+        uses: actions/download-artifact@v4
+        with:
+          name: evorule-server-sigs
+          path: release-sigs
+
       - name: 创建 Release 并附加分发包
         uses: softprops/action-gh-release@v2
         with:
@@ -249,19 +304,22 @@ jobs:
             release-assets/evorule-server-*-win64.zip
             release-assets/evorule-server-*-linux64.tar.gz
             release-assets/sha256-checks.txt
+            release-sigs/evorule-server-linux-x86_64.sig
+            release-sigs/evorule-server-windows-x86_64.exe.sig
           body: |
             EvoRule Server ${{ github.ref_name }} 零依赖分发包。
 
             - `evorule-server-*-win64.zip` — Windows 10/11 64 位:解压后双击 start-evorule.bat
             - `evorule-server-*-linux64.tar.gz` — Linux x86_64:解压后运行 start-evorule.sh
             - `sha256-checks.txt` — 分发包完整性校验
+            - `evorule-server-*.sig` — 发布原始二进制 cosign keyless 签名, 验证见 SIGNING.md
 
             无需 Node/Rust/数据库;中文说明见包内 README-STARTUP.txt。
             rule-serve 治理服务二进制来自 [evorule-rule](${{ env.RULE_SERVE_VERSION }} 配套版本)。
           generate_release_notes: true
 
   # ==========================================================================
-  # 5. 分发包附加到 Gitee Release (gitee 是主仓/发布主入口)
+  # 6. 分发包附加到 Gitee Release (gitee 是主仓/发布主入口)
   #    与 evorule / evorule-rule 仓同构: Gitee Go 云端 agent 对当前账号
   #    不可用(agents not available,登记台账 UV-098),产物由本侧构建并经
   #    Gitee OpenAPI 附加;agent 就绪后可切回原生构建(.workflow/release.yml)。
@@ -271,7 +329,7 @@ jobs:
   # ==========================================================================
   attach-gitee:
     name: attach-all-to-gitee
-    needs: [bundle]
+    needs: [bundle, sign]
     runs-on: ubuntu-latest
     steps:
       - name: 下载分发包
@@ -279,6 +337,12 @@ jobs:
         with:
           name: dist-packages
           path: gitee-assets
+
+      - name: 下载签名
+        uses: actions/download-artifact@v4
+        with:
+          name: evorule-server-sigs
+          path: gitee-assets/sigs
 
       - name: 附加到 Gitee Release
         env:
@@ -311,8 +375,10 @@ jobs:
           fi
           echo "gitee Release id: ${RELEASE_ID}"
 
+          cp gitee-assets/sigs/evorule-server-linux-x86_64.sig gitee-assets/
+          cp gitee-assets/sigs/evorule-server-windows-x86_64.exe.sig gitee-assets/
           cd gitee-assets
-          for f in $(ls evorule-server-*-win64.zip evorule-server-*-linux64.tar.gz sha256-checks.txt); do
+          for f in $(ls evorule-server-*-win64.zip evorule-server-*-linux64.tar.gz sha256-checks.txt evorule-server-linux-x86_64.sig evorule-server-windows-x86_64.exe.sig); do
             echo "上传 ${f} ..."
             curl --retry 3 --retry-delay 5 --retry-connrefused -fsS -X POST \
               "https://gitee.com/api/v5/repos/${REPO}/releases/${RELEASE_ID}/attach_files" \

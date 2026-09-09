@@ -1,0 +1,37 @@
+name: 功能建议 / Feature Request
+description: 提出一个新功能或改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题背景
+      description: 这个需求解决什么实际问题? 当前缺什么?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 提议方案
+      description: 你期望如何被解决? 若有设计草图/参考请附上。
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: 影响面
+      options:
+        - 仅文档 / 流程
+        - 单服务内部
+        - API / 协议 (需谨慎)
+        - 分发包结构
+    validations:
+      required: true
+  - type: checkboxes
+    id: cla
+    attributes:
+      label: CLA
+      options:
+        - label: 我已阅读并同意 Individual CLA (CLA-individual.md)
+          required: true
