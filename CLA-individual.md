@@ -180,7 +180,7 @@
 
 ### Q4:公司贡献怎么处理?
 
-**A**: 公司贡献者需要签署 **Corporate CLA**(待发布,联系 <evorulelab@gmail.com>)。
+**A**: 公司贡献者需要签署 **Corporate CLA**（已发布，见 [CLA-corporate.md](CLA-corporate.md)）。注意：Gitee 官方 CLA 模块当前**仅支持个人签署、无企业入口**，企业贡献者请按 CLA-corporate.md 的“企业如何签署”走邮件人工流程，勿用个人 CLA 代替。
 
 ### Q5:CLA 适用所有贡献吗?
 
