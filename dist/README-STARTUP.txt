@@ -1,4 +1,4 @@
-evorule 体验版(单机一键启动) v0.5.0
+evorule 体验版(单机一键启动) v0.5.2
 ====================================
 
 环境要求
@@ -20,7 +20,9 @@ start-evorule.bat 可重新启动。
 
 启动失败排查
 ------------
-若某个服务窗口闪退或页面无法访问,查看 data\ 目录下的
+启动脚本会在启动前自动检测端口是否被占用:若 18080 或 18081
+已被其他程序占用,会弹出提示框并停止启动,此时请关闭占用端口的
+程序后重试。若某个服务仍然启动失败,查看 data\ 目录下的
 server-stderr.log / rule-serve-stderr.log,常见原因:
 - 端口被占用(改 bat 中对应端口,浏览器地址同步修改)
 - 杀毒软件拦截(见下方常见问题)
@@ -68,6 +70,7 @@ service_registry.json,可自行扩展为真实 HTTP 服务端点。
 
 插件看门狗(可选)
 ----------------
+普通用户无需运行本功能,直接忽略即可;默认分发包不加载任何插件看门狗。
 外部插件(如 finance-config)是独立进程,主服务不负责拉起;
 若希望插件进程崩溃后自动恢复,可启用部署侧看门狗:
 
@@ -109,7 +112,7 @@ service_registry.json,可自行扩展为真实 HTTP 服务端点。
 - start-watchdog.bat       插件看门狗启动脚本(可选,Windows 版包内)
 - watchdog-plugins.ps1     看门狗主体(读 /api/health,离线自动拉起插件)
 - plugins-watchdog.json    看门狗配置(缺省不守护任何插件,按需登记)
-- evorule-server.exe       主服务(evorule-server v0.5.0,运行时 :18080)
+- evorule-server.exe       主服务(evorule-server v0.5.2,运行时 :18080)
 - evorule-rule-serve.exe   治理服务(evorule-rule v0.3.1,规则资产库 :18081)
 - web\                     前端页面(evorule-console-cloud)
 - rules\                   运行规则集(业务场景演示规则)

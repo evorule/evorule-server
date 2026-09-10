@@ -18,9 +18,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.5.1-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.5.2-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.5.1-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.5.2-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 **Language / 语言**: [English](#english) · [中文 / Chinese](#chinese)
@@ -45,9 +45,11 @@
 
 ---
 
-> ## ✅ v0.5.1 — Stable Release (2026-09-10)
+> ## ✅ v0.5.2 — Stable Release (2026-09-10)
 >
 > This repo **releases independently**, not tied to other repos' release cadence; version numbers correspond only to this repo's [CHANGELOG](CHANGELOG.md).
+>
+> **0.5.2**: Consumer distribution-pack startup experience — `dist/start-evorule.bat` now pre-checks ports 18080/18081 on launch and shows a visible dialog on conflict instead of silently failing; polls the main service readiness and surfaces a readable error dialog (plus opening the log in Notepad) on start failure.
 >
 > **0.5.1**: External plugin runtime reliability & governance — external plugin package mechanism rebuilt as pluggable & hot-pluggable; runtime liveness probing (online/offline/not-implemented) with platform alert on outage and recovery closing record; unified plugin approval proxy with forced approver identity; deployment watchdog (auto-restart with hourly budget & escalation); application-scoped credentials with three-channel auth & audit attribution; per-app rate throttling and daily quota with 429/Retry-After & platform event alarms; archive fork fallback rebuilding sessions from WAL; meta-rule promotion pipeline with governance approval routing & enforce primitive; rule schema import/import-time gates with three-tier rule inventory.
 >
@@ -624,9 +626,9 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.5.1-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.5.2-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.5.1-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.5.2-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -643,9 +645,11 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 ---
 
-> ## ✅ v0.5.0 — 稳定发布 (2026-09-06)
+> ## ✅ v0.5.2 — 稳定发布 (2026-09-10)
 >
 > 本仓库**独立 release**,不绑其他仓的发布节奏;版本号只与本仓 [CHANGELOG](CHANGELOG.md) 对应。
+>
+> **0.5.2**:消费者分发包启动体验 — `dist/start-evorule.bat` 启动前预检 18080/18081 端口占用,冲突时弹可视化提示框并停止启动(不再静默一闪而过);主服务启动后轮询就绪状态,失败时弹窗提示并直接打开错误日志引导纠错。
 >
 > **0.5.0**:🔒 接口认证显式豁免(⚠️ 回环默认行为变更)——loopback + 无 token 时必须显式声明 `--insecure-serve`(或 `EVORULE_INSECURE_SERVE=1`)才允许无认证启动,否则拒绝启动并给三选一自诊断指引;旧 0.4.x 的回环隐式无认证豁免取消(非 loopback 的 fail-closed 硬拒不放松)。体验包启动脚本/文档同步显式声明,行为不变、声明显式化。市场接口注释与实际认证语义对齐。
 >
