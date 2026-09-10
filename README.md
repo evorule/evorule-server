@@ -18,9 +18,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.5.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.5.1-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.5.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.5.1-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 **Language / 语言**: [English](#english) · [中文 / Chinese](#chinese)
@@ -45,9 +45,11 @@
 
 ---
 
-> ## ✅ v0.5.0 — Stable Release (2026-09-06)
+> ## ✅ v0.5.1 — Stable Release (2026-09-10)
 >
 > This repo **releases independently**, not tied to other repos' release cadence; version numbers correspond only to this repo's [CHANGELOG](CHANGELOG.md).
+>
+> **0.5.1**: External plugin runtime reliability & governance — external plugin package mechanism rebuilt as pluggable & hot-pluggable; runtime liveness probing (online/offline/not-implemented) with platform alert on outage and recovery closing record; unified plugin approval proxy with forced approver identity; deployment watchdog (auto-restart with hourly budget & escalation); application-scoped credentials with three-channel auth & audit attribution; per-app rate throttling and daily quota with 429/Retry-After & platform event alarms; archive fork fallback rebuilding sessions from WAL; meta-rule promotion pipeline with governance approval routing & enforce primitive; rule schema import/import-time gates with three-tier rule inventory.
 >
 > **0.5.0**: 🔒 Explicit auth exemption for loopback (⚠️ loopback default behavior change) — when on loopback with no token, you must explicitly declare `--insecure-serve` (or set `EVORULE_INSECURE_SERVE=1`) to allow unauthenticated startup; otherwise startup is refused with a three-option self-diagnostic guide. The old 0.4.x implicit loopback auth exemption is removed (non-loopback fail-closed hard refusal remains). Quick-start scripts / docs updated to declare explicitly; behavior unchanged, declaration made explicit.
 >
@@ -622,9 +624,9 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.5.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.5.1-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.5.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.5.1-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
