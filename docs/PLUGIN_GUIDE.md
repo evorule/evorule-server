@@ -1,7 +1,20 @@
-# 插件开发指南（外部插件包）
+# 插件开发指南
 
-> 适用版本：evorule-server 0.5.0+
-> 首个范本：[`plugins/finance-config/`](../plugins/finance-config/)（财务配置键读写，独立服务进程 + 自持存储 + 审批管理面）
+> 适用版本：evorule-server 0.5.0+（声明式 pack 自 0.6.0 起）
+> 两类范本：
+> - **外部插件包**（进程型）：[`plugins/finance-config/`](../plugins/finance-config/)（财务配置键读写，独立服务进程 + 自持存储 + 审批管理面，§一～§十一）
+> - **声明式资产包**（契约 v1）：[`plugins/finance-pack/`](../plugins/finance-pack/)（1 场景 + 2 规则模板，零代码零进程，§十二）
+
+---
+
+## 〇、插件两类形态：先选对路
+
+| 形态 | 提供什么 | 形态特征 | 适用场景 | 章节 |
+|------|---------|---------|---------|------|
+| **外部插件包** | 服务能力（`call_service` 可调） | 独立进程 + 自持数据 + plugin.json | 任意语言实现、有状态、需审批的业务能力 | §一～§十一 |
+| **声明式资产包** | 场景 + 规则模板（表单化生成规则草稿） | 纯 JSON 目录，**零进程零代码** | 把领域知识打包成"选场景 → 填表单 → 出草稿"的低门槛规则生产 | §十二 |
+
+两者可在同一份 plugin_manifest.json 共存登记（§四）；一个插件目录只能是一种形态。
 
 ---
 
@@ -104,18 +117,20 @@ my-plugin/                    ← 插件包根目录（目录名建议 = 插件 
 ## 四、挂载：plugin_manifest.json 登记一行
 
 ```jsonc
-// plugin_manifest.json（与进程内插件条目共存）
+// plugin_manifest.json（三种条目形态共存）
 {
   "plugins": {
-    "demo-services":   { "enabled": true, "services": ["config_persist"] },   // builtin 条目（既有）
-    "finance-config":  { "enabled": true, "manifest": "plugins/finance-config/plugin.json" }  // external 条目
+    "demo-services":   { "enabled": true, "services": ["config_persist"] },                      // builtin 条目（进程内）
+    "finance-config":  { "enabled": true, "manifest": "plugins/finance-config/plugin.json" },    // external 条目（进程外服务包）
+    "finance-pack":    { "enabled": true, "pack": "plugins/finance-pack/pack.json" }             // pack 条目（声明式资产包,§十二）
   }
 }
 ```
 
-- external 条目键 = 插件 id；`manifest` 指向 plugin.json。
+- external 条目键 = 插件 id；`manifest` 指向 plugin.json；pack 条目 `pack` 指向 pack.json。
+- **`manifest` 与 `pack` 互斥**（同条目同时声明二者启动期拒绝）；`services` 子集形态仅用于 builtin 条目。
 - **相对路径基准 = plugin_manifest.json 所在目录**（清单自包含语义：整体挪动/换机部署不破装载）。
-- server 启动传 `--plugins <清单路径>`；未配置清单 → 外部插件不装载（显式安装语义，与进程内"缺省全启"相反）。
+- server 启动传 `--plugins <清单路径>`；未配置清单 → 外部插件与 pack 均不装载（显式安装语义，与进程内"缺省全启"相反）。
 
 ---
 
@@ -288,7 +303,7 @@ Linux/容器部署无 PowerShell 依赖时，用编排层等价物达到同样�
 
 ## 十一、外部应用接入与配额（应用凭据通道）
 
-> 定位：插件包之外,外部应用（如运维脚本、第三方系统、evo-agent 类伴生进程）经 server 调用服务能力时,使用**应用凭据**身份而非静态 token——归因粒度到应用,配额防滥用。
+> 定位：插件包之外,外部应用（如运维脚本、第三方系统、伴生 agent 程序）经 server 调用服务能力时,使用**应用凭据**身份而非静态 token——归因粒度到应用,配额防滥用。
 
 ### 11.1 应用凭据签发与使用
 
@@ -314,8 +329,148 @@ Linux/容器部署无 PowerShell 依赖时，用编排层等价物达到同样�
 
 ---
 
+## 十二、声明式资产包（Plugin Contract v1）
+
+> 定位：**零进程零代码**的资产包——把领域知识打包成「场景 + 规则模板」，用户在 console 通用表单页选场景字段、填表单值，server 以**纯函数**生成规则 JSON 草稿。草稿不落库，生效仍走既有 Draft→Publish 治理链。
+> 契约 SSOT：Plugin Contract v1（MAJOR 不符拒载）；范本：[`plugins/finance-pack/`](../plugins/finance-pack/)。
+
+### 12.1 目录形态
+
+```
+finance-pack/                  ← pack 根目录（目录名建议 = pack id）
+  ├─ pack.json                 ← pack SSOT（声明 + 资产索引）
+  └─ assets/
+      ├─ scenes/*.json         ← 场景资产（表单字段下拉来源）
+      └─ templates/*.json      ← 规则模板资产（骨架 + 表单声明）
+```
+
+### 12.2 pack.json 规范
+
+| 字段 | 必填 | 类型 | 说明 |
+|------|------|------|------|
+| `id` | ✅ | string | pack id，**须与 plugin_manifest.json 条目键一致**（不一致启动期拒绝，防漂移） |
+| `contract_version` | ✅ | string | 契约版本，当前 `1.x`；**MAJOR 不符拒载**（契约演进须升级 pack 或 server） |
+| `version` | ✅ | string | pack 版本，独立演进，透传至插件清单 API 与草稿 provenance |
+| `description` | ✅ | string | pack 描述，透传至插件清单 API |
+| `capabilities` | ✅ | array | 能力声明集（v1 已知集：`assets` / `services` / `flow-compile` / `ai-assist`）；**未知能力拒绝装载**（不静默忽略） |
+| `assets` | assets 能力时✅ | object | `scenes` / `templates` 两个字符串数组：显式相对路径或 `*.json` glob（相对 pack.json 所在目录；glob 无匹配文件即拒载） |
+
+**fail-fast 清单**（任一命中即拒绝装载并报错退出）：pack.json 不可读 / JSON 非法 / 顶层必须是 object / **未知顶层字段**（v1 字段钉死，新字段须走契约演进）/ id 漂移 / contract_version MAJOR 不符 / 未知能力 / 声明 assets 能力但缺 assets 节（或有 assets 节未声明能力）/ 场景或模板 id 重复 / glob 无匹配。
+
+### 12.3 场景资产（scene）
+
+给模板表单提供「字段下拉」来源，用户不记字段名。示例（范本 `assets/scenes/expense.json`）：
+
+```jsonc
+{
+  "scene_id": "expense",
+  "display_name": { "zh": "报销场景", "en": "Expense" },   // 双语展示对象,R5 纯展示数据
+  "description": "...",                                     // 可选
+  "business_objects": [
+    {
+      "object_id": "expense_form",
+      "display_name": { "zh": "报销单" },
+      "fields": [
+        // path = 状态路径,声明了 path 的字段才可用于模板 .path 锁定(见 12.5)
+        { "field_id": "amount", "display_name": { "zh": "报销金额" }, "type": "number", "unit": "元",
+          "path": "__exec__.payload.amount" },
+        { "field_id": "dept", "display_name": { "zh": "申请部门" }, "type": "enum",
+          "options": ["sales", "hr", "finance"], "path": "__exec__.payload.dept" }
+      ]
+    }
+  ]
+}
+```
+
+- 字段 `type` 取 §12.4 控件词表**减 `scene_field`**（scene_field 仅用于模板表单）；enum 必须带非空 `options`。
+- 资产字段由契约 v1 钉死（未知顶层字段 / 未知业务对象字段 / 未知字段键均拒载）。
+
+### 12.4 控件词表（v1 固定枚举；新增 = 契约 v2 事件）
+
+| type | 表单呈现 | 生成值类型 |
+|------|---------|-----------|
+| `text` / `textarea` | 文本框 / 多行文本框 | 非空字符串 |
+| `number` / `currency` | 数字输入 | 数值 |
+| `date` | 日期输入 | 非空字符串 |
+| `boolean` | 复选框 | 布尔 |
+| `enum` | 下拉（必须带非空 `options`） | 字符串（越界生成期报错） |
+| `scene_field` | 场景字段下拉（来源 = 场景中**声明了 path** 的字段） | 字段 id（仅可作 `{{form.X.path}}` 使用） |
+
+`params_form[]` 每项：`field_id`（模板内唯一）/ `display_name`（双语对象）/ `type` / `required`（缺省 false）/ `default` / `options`（enum）/ `scene_ref`（scene_field 必填，参数级或模板级任一声明）。**required 语义：表单值与 default 都缺失才报错**（default 的职责就是填充缺失值）。
+
+### 12.5 规则模板资产（rule template）与生成语言
+
+```jsonc
+{
+  "template_id": "amount_threshold_approval",
+  "display_name": { "zh": "金额阈值审批" },
+  "scene_ref": "expense",
+  "params_form": [ /* 12.4 形态 */ ],
+  "rule_draft_skeleton": {
+    "id": "{{pack}}.{{template}}",
+    "version": 1,
+    "description": "{{form.threshold}} 以上需 {{form.approver}} 审批",
+    "transform": [
+      { "type": "branch", "params": {
+        "domain": { "type": "lt", "path": "{{form.amount_field.path}}", "value": "{{form.threshold}}" },
+        "on_true": [],
+        "on_false": [
+          { "type": "io_request", "params": {
+            "io_type": "call_external",
+            "prompt": "{{form.threshold}} 以上需 {{form.approver}} 审批",
+            "role": "{{form.approver}}" } }
+        ] } }
+    ]
+  }
+}
+```
+
+**生成语言 `{{...}}`（v1 故意极小，无逻辑无表达式）**：
+
+| 占位符 | 求值 | 类型规则 |
+|---|---|---|
+| `{{form.X}}` | 表单值 | 按 X 的控件 type 定型：number/currency → 数值字面量；enum/text/... → 字符串；整槽替换保留 JSON 类型，嵌入字符串则文本化 |
+| `{{form.X.path}}` | 场景字段状态路径 | **仅 scene_field 可用**；取值域锁定为「场景中声明了 path 的字段」，非自由字符串 |
+| `{{pack}}` / `{{template}}` | pack id / 模板 id | 字符串 |
+| 其他任何 `{{...}}` | **装载期即拒绝**（fail-fast，不静默替换） | — |
+
+**四条红线**（装载期与生成期双重校验）：
+
+| 红线 | 内容 | 校验点 |
+|------|------|--------|
+| R1 确定性 | 同（模板字节, 表单值）→ 字节级同输出；零随机/零时钟/零 IO | 随仓门禁测试 `finance_pack_reference_impl_loads_and_generates` |
+| R2 结构不可达 | 用户值只落**值位**（value/prompt/role/description 等），永远填不进结构键；`.path` 取值域锁定 | scene_field 裸用（不带 `.path`）拒载；非 scene_field 用 `.path` 拒载；**键内占位符拒载** |
+| R3 draft-only | 生成不落库不进治理状态；草稿生效必须经用户确认走既有 Draft→Publish 链 | generate 端点纯内存返回 |
+| R5 locale 纯展示 | display_name 双语字段仅为展示数据，不进事实/命令 | 装载期校验 {zh,en} 字符串对象 |
+
+### 12.6 API 面（受认证保护，与业务 API 同门禁）
+
+```
+GET  /api/plugins                                             已装载 pack 清单（含资产计数）
+GET  /api/plugins/{pack_id}/assets/{kind}                     资产只读面,kind ∈ scenes|templates（其他 404）
+POST /api/plugins/templates/{pack_id}/{template_id}/generate  草稿生成纯函数面
+```
+
+- generate 请求体 = 表单值对象（`{"field_id": 值, ...}`）；响应 = `{"rule_draft": {...}, "provenance": {"pack", "pack_version", "template", "contract_version"}}`。
+- 校验失败 → **400 显式错误**（含 fail-fast 文案，不静默降级）；未知 pack / 未知模板 → 404。
+- console 消费入口：工作空间页「插件模板」→ `/workspace/templates` 通用表单（模板列表 → 表单 → 生成 → 预览/复制 JSON）。
+
+### 12.7 装卸操作手册
+
+1. **装入**：按 §12.1 备好目录 → plugin_manifest.json 登记 pack 条目（§四）→ 重启 server → 验证：启动日志出现 `插件契约 pack: {id} 装载`；`GET /api/plugins` 出现该 pack。
+2. **拔出**：清单条目 `enabled: false`（或删除条目）→ 重启 server → 插件清单该 pack 消失（不涉及服务对账与回落语义）。
+3. **升级**：改资产 JSON → 重启即生效（启动期读盘，运行期只读）；改字段形态前先核对契约版本（MAJOR 不符拒载）。
+
+### 12.8 与外部插件包的关系
+
+- 二者**互不替代**：pack 不提供可调用服务（无进程），外部插件包不提供表单化模板；领域能力既有服务又有模板时，登记两个条目各司其职。
+- 模板骨架中的 `io_request` 运行时仍经会话链调用服务（call_external），**装载期不校验服务名存在性**（草稿期纯函数、执行期 fail-fast 显式报错）。
+
+---
+
 ## 相关文档
 
 - [INTEGRATION_GUIDE §八 插件清单](INTEGRATION_GUIDE.md#八插件清单部署期启用裁剪) — 挂载清单与回落语义
 - [README「服务能力对账与直调」](../README.md) — 对账/直调端点
 - 范本源码：[`plugins/finance-config/`](../plugins/finance-config/)（Rust/axum 实现）
+- 声明式 pack 范本：[`plugins/finance-pack/`](../plugins/finance-pack/)（纯 JSON 资产）

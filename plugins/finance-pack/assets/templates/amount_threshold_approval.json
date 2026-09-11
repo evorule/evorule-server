@@ -1,0 +1,27 @@
+{
+  "template_id": "amount_threshold_approval",
+  "display_name": { "zh": "金额阈值审批", "en": "Amount Threshold Approval" },
+  "description": "报销金额低于阈值时发起审批（contract §4.3 范例模板）。scene_ref 为参数级声明。",
+  "params_form": [
+    { "field_id": "threshold", "display_name": { "zh": "阈值金额", "en": "Threshold" }, "type": "number", "required": true, "default": 5000 },
+    { "field_id": "approver", "display_name": { "zh": "审批角色", "en": "Approver" }, "type": "enum", "required": true, "options": ["CFO", "finance_manager"] },
+    { "field_id": "amount_field", "display_name": { "zh": "比较字段", "en": "Amount Field" }, "type": "scene_field", "scene_ref": "expense", "required": true }
+  ],
+  "rule_draft_skeleton": {
+    "id": "{{pack}}.{{template}}",
+    "version": 1,
+    "description": "{{form.threshold}} 以上需 {{form.approver}} 审批",
+    "transform": [
+      { "type": "branch", "params": {
+        "domain": { "type": "lt", "path": "{{form.amount_field.path}}", "value": "{{form.threshold}}" },
+        "on_true": [],
+        "on_false": [
+          { "type": "io_request", "params": {
+            "io_type": "call_external",
+            "prompt": "{{form.threshold}} 以上需 {{form.approver}} 审批",
+            "role": "{{form.approver}}" } }
+        ]
+      } }
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "finance-pack",
+  "contract_version": "1.0",
+  "version": "0.1.0",
+  "description": "财务域声明式资产包（Plugin Contract v1 参考实现：1 场景 + 2 规则模板）",
+  "capabilities": ["assets"],
+  "assets": {
+    "scenes": ["assets/scenes/*.json"],
+    "templates": ["assets/templates/*.json"]
+  }
+}

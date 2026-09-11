@@ -1,0 +1,36 @@
+{
+  "template_id": "expense_material_completeness",
+  "display_name": { "zh": "报销材料完整性检查", "en": "Expense Material Completeness" },
+  "description": "大额报销缺少必备材料时通知补交。scene_ref 为模板级声明（check_field 经模板级回退解析），金额比较字段为参数级声明——两种解析形态并存作参考实现。",
+  "scene_ref": "expense",
+  "params_form": [
+    { "field_id": "amount_field", "display_name": { "zh": "金额字段", "en": "Amount Field" }, "type": "scene_field", "scene_ref": "expense", "required": true },
+    { "field_id": "check_field", "display_name": { "zh": "必备材料字段", "en": "Material Field" }, "type": "scene_field", "required": true },
+    { "field_id": "min_amount", "display_name": { "zh": "金额下限", "en": "Min Amount" }, "type": "currency", "required": true, "default": 1000 },
+    { "field_id": "notify_role", "display_name": { "zh": "通知角色", "en": "Notify Role" }, "type": "enum", "required": true, "options": ["CFO", "finance_manager", "auditor"] },
+    { "field_id": "material_label", "display_name": { "zh": "材料名称", "en": "Material Label" }, "type": "text", "required": true, "default": "发票" }
+  ],
+  "rule_draft_skeleton": {
+    "id": "{{pack}}.{{template}}",
+    "version": 1,
+    "description": "金额 ≥ {{form.min_amount}} 的报销缺少{{form.material_label}}时通知 {{form.notify_role}}",
+    "transform": [
+      { "type": "branch", "params": {
+        "domain": { "type": "lt", "path": "{{form.amount_field.path}}", "value": "{{form.min_amount}}" },
+        "on_true": [],
+        "on_false": [
+          { "type": "branch", "params": {
+            "domain": { "type": "exists", "path": "{{form.check_field.path}}" },
+            "on_true": [],
+            "on_false": [
+              { "type": "io_request", "params": {
+                "io_type": "call_external",
+                "prompt": "金额 ≥ {{form.min_amount}} 的报销缺少{{form.material_label}}，请补交",
+                "role": "{{form.notify_role}}" } }
+            ]
+          } }
+        ]
+      } }
+    ]
+  }
+}

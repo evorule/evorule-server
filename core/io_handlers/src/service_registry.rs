@@ -242,6 +242,9 @@ fn parse_service_entry(name: &str, val: &serde_json::Value) -> Result<ServiceEnt
 // params 翻译成 HttpHandler 能执行的 params，然后委托执行
 // ==========================================================================
 
+/// 动态头解析器类型（每请求无参调用返回附加头集；clippy type_complexity 抽出）
+type DynHeaderResolver = std::sync::Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>;
+
 /// 基于 `ServiceRegistry` 的 `IoHandler` 包装器
 ///
 /// IoType: `CALL_SERVICE` / `CALL_EXTERNAL`
@@ -250,15 +253,33 @@ fn parse_service_entry(name: &str, val: &serde_json::Value) -> Result<ServiceEnt
 ///   service_registry entry → params（让 rules 侧可以覆盖如 body/单请求超时）
 ///
 /// 安全：`url` 一旦由 service_registry 给出，params 侧不得再覆盖（防止规则写
-/// `"service_name":"notify_vip","url":"http://evil.com"` 绕过注册表打外部）。
+///   `"service_name":"notify_vip","url":"http://evil.com"` 绕过注册表打外部）。
 pub struct ServiceRegistryHandler {
     registry: ServiceRegistry,
     http: Arc<HttpHandler>,
+    /// v1 插件契约 §3.3（02-Plugin-Contract-v1.md）：每请求动态附加头解析器
+    /// （server 侧注入 `X-Evorule-Actor-*` 身份头）。
+    /// None = 无动态头（存量行为不变）。优先级：注册表条目头 > 动态头 > params 头
+    /// （or_insert 语义——规则/params 永远无法伪造身份头）。
+    dynamic_headers: Option<DynHeaderResolver>,
 }
 
 impl ServiceRegistryHandler {
     pub fn new(registry: ServiceRegistry, http: Arc<HttpHandler>) -> Self {
-        Self { registry, http }
+        Self {
+            registry,
+            http,
+            dynamic_headers: None,
+        }
+    }
+
+    /// 注入每请求动态头解析器（builder 模式，插件契约 v1 身份透传）
+    ///
+    /// 解析器在每次 `execute` 时调用（同一 tokio 任务内），返回的头按
+    /// or_insert 注入——注册表条目头优先，params 合并不可覆盖。
+    pub fn with_dynamic_headers(mut self, resolver: DynHeaderResolver) -> Self {
+        self.dynamic_headers = Some(resolver);
+        self
     }
 
     /// 转换 params：service_name → url/method/headers/timeout_ms
@@ -300,6 +321,25 @@ impl ServiceRegistryHandler {
         }
         if let Some(t) = entry.timeout_ms {
             merged.insert("timeout_ms".into(), JsonValue::Integer(t));
+        }
+
+        // 1.5 v1 插件契约 §3.3：动态身份头注入（在 params 合并**之前**，or_insert
+        // 语义 → params 的 headers 合并同样不可覆盖动态头；注册表条目头仍最高优先）。
+        if let Some(resolver) = &self.dynamic_headers {
+            for (k, v) in resolver() {
+                match merged.entry("headers".into()) {
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        let mut h = BTreeMap::new();
+                        h.insert(k, JsonValue::string(v.as_str()));
+                        e.insert(JsonValue::Object(h));
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut e) => {
+                        if let JsonValue::Object(h) = e.get_mut() {
+                            h.entry(k).or_insert_with(|| JsonValue::string(v.as_str()));
+                        }
+                    }
+                }
+            }
         }
 
         // 2. 合并 params 里的字段（url 禁止覆盖；body/args/timeout_ms 允许覆盖或补充）
@@ -429,6 +469,55 @@ mod tests {
         let r = ServiceRegistry::empty();
         assert!(r.is_empty());
         assert_eq!(r.len(), 0);
+    }
+
+    /// v1 插件契约 §3.3：动态身份头注入 + params 不可伪造（or_insert 语义锁定）
+    #[test]
+    fn test_dynamic_headers_injected_and_not_forgable() {
+        let r = ServiceRegistry::load_from_str(r#"{ "svc": {"url": "http://x/svc"} }"#).unwrap();
+        let handler = ServiceRegistryHandler::new(r, Arc::new(HttpHandler::new()))
+            .with_dynamic_headers(std::sync::Arc::new(|| {
+                vec![
+                    ("X-Evorule-Actor-Type".to_string(), "user".to_string()),
+                    ("X-Evorule-Actor-Id".to_string(), "alice".to_string()),
+                ]
+            }));
+        // params 尝试伪造身份头（X-Evorule-Actor-Type: service）→ 必须被动态头压制
+        let params = serde_to_json_value(serde_json::json!({
+            "service_name": "svc",
+            "headers": { "X-Evorule-Actor-Type": "service", "X-Extra": "1" }
+        }));
+        let resolved = handler.resolve(&params).unwrap();
+        let headers = resolved.get("headers").unwrap();
+        assert_eq!(
+            headers
+                .get("X-Evorule-Actor-Type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "user",
+            "params 伪造的身份头必须被动态头压制"
+        );
+        assert_eq!(
+            headers.get("X-Evorule-Actor-Id").unwrap().as_str().unwrap(),
+            "alice"
+        );
+        assert_eq!(headers.get("X-Extra").unwrap().as_str().unwrap(), "1");
+    }
+
+    /// 无 dynamic_headers（存量路径）时 params 头合并行为不变
+    #[test]
+    fn test_no_dynamic_headers_legacy_behavior() {
+        let r = ServiceRegistry::load_from_str(r#"{ "svc": {"url": "http://x/svc"} }"#).unwrap();
+        let handler = ServiceRegistryHandler::new(r, Arc::new(HttpHandler::new()));
+        let params = serde_to_json_value(serde_json::json!({
+            "service_name": "svc",
+            "headers": { "X-Extra": "1" }
+        }));
+        let resolved = handler.resolve(&params).unwrap();
+        let headers = resolved.get("headers").unwrap();
+        assert!(headers.get("X-Evorule-Actor-Type").is_none());
+        assert_eq!(headers.get("X-Extra").unwrap().as_str().unwrap(), "1");
     }
 
     #[test]

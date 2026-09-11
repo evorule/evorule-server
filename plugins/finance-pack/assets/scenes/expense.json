@@ -1,0 +1,17 @@
+{
+  "scene_id": "expense",
+  "display_name": { "zh": "报销场景", "en": "Expense" },
+  "description": "报销单业务对象：模板表单的 scene_field 下拉来源。带 path 的字段可用于模板 .path 锁定（契约 §4.2 / R2）。",
+  "business_objects": [
+    {
+      "object_id": "expense_form",
+      "display_name": { "zh": "报销单", "en": "Expense Form" },
+      "fields": [
+        { "field_id": "amount", "display_name": { "zh": "报销金额", "en": "Amount" }, "type": "number", "unit": "元", "path": "__exec__.payload.amount" },
+        { "field_id": "dept", "display_name": { "zh": "申请部门", "en": "Department" }, "type": "enum", "options": ["sales", "hr", "finance"], "path": "__exec__.payload.dept" },
+        { "field_id": "applied_at", "display_name": { "zh": "申请日期", "en": "Applied At" }, "type": "date", "path": "__exec__.payload.applied_at" },
+        { "field_id": "receipt_no", "display_name": { "zh": "发票号", "en": "Receipt No." }, "type": "text", "path": "__exec__.payload.receipt_no" }
+      ]
+    }
+  ]
+}

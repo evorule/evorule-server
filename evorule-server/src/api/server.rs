@@ -334,6 +334,12 @@ pub struct SessionApi {
     /// 插件,代理端点一律 404。
     plugin_admins: Arc<std::collections::BTreeMap<String, PluginAdminEndpoint>>,
 
+    /// 插件契约 v1：声明式 pack 资产注册表（02-Plugin-Contract-v1.md §4）
+    ///
+    /// main.rs 启动期经 `load_plugin_packs` 读盘装载（fail-fast），运行期只读
+    /// （契约 §4.1.3 无热加载）。资产面三 API 的数据来源；默认空注册表。
+    plugin_packs: crate::api::plugin_packs::PluginPackRegistry,
+
     /// 规则命中统计聚合器：消费各会话/单反应器的 TransitionTrace，
     /// 按 规则集版本×来源×下标 聚合；查询面 /api/rules/hit-stats 与 Prometheus 指标。
     hit_stats: Arc<crate::api::hit_stats::HitStatsAggregator>,
@@ -598,8 +604,11 @@ impl SessionApi {
                 wal_dir,
             ))),
 
-            // external 插件管理面端点表(默认空=无 external 插件;main.rs 生产注入)
+            // external 插件管理面端点表(默认空=无 external 插件,main.rs 生产注入)
             plugin_admins: Arc::new(std::collections::BTreeMap::new()),
+
+            // 插件契约 v1：声明式 pack 资产注册表（默认空=无 pack,main.rs 生产注入）
+            plugin_packs: crate::api::plugin_packs::PluginPackRegistry::empty(),
 
             // 命中统计聚合器（初始 layout 见构造器开头）
             hit_stats: Arc::new(crate::api::hit_stats::HitStatsAggregator::new(
@@ -718,6 +727,22 @@ impl SessionApi {
     ) -> Self {
         self.plugin_admins = Arc::new(admins);
         self
+    }
+
+    /// 注入声明式 pack 资产注册表（builder 模式，插件契约 v1 资产面）
+    ///
+    /// main.rs 启动期 `load_plugin_packs` 装载后注入；运行期只读（无热加载）。
+    pub fn with_plugin_packs(
+        mut self,
+        packs: crate::api::plugin_packs::PluginPackRegistry,
+    ) -> Self {
+        self.plugin_packs = packs;
+        self
+    }
+
+    /// 插件契约 v1 pack 注册表只读访问（plugin_packs 模块 handler 使用）
+    pub(crate) fn plugin_packs(&self) -> &crate::api::plugin_packs::PluginPackRegistry {
+        &self.plugin_packs
     }
 
     /// 获取已加载的核心规则（core_eval）只读引用
@@ -2522,6 +2547,85 @@ pub struct ApiResponse {
 
     /// Fact ID（如适用）
     pub fact_id: Option<u64>,
+
+    /// 稳定错误码（i18n 阶段2）：仅错误响应（success=false）填充，
+    /// 前端据此本地化错误文案。成功响应为 None。
+    pub code: Option<String>,
+}
+
+/// HTTP 状态码 → 稳定错误码映射（i18n 阶段2 续：裸 StatusCode 错误点 code 透传）。
+///
+/// 门禁脚本 `check_error_code_i18n.py` 扫描本函数体内的 `Some("...")` 字面量，
+/// 与前端 err.* 字典对照；删除本函数或挪动字面量会使门禁报错（刻意设计）。
+fn status_error_code(status: axum::http::StatusCode) -> Option<&'static str> {
+    use axum::http::StatusCode;
+    match status {
+        StatusCode::BAD_REQUEST => Some("BAD_REQUEST"),
+        StatusCode::UNAUTHORIZED => Some("UNAUTHORIZED"),
+        StatusCode::FORBIDDEN => Some("FORBIDDEN"),
+        StatusCode::NOT_FOUND => Some("NOT_FOUND"),
+        StatusCode::METHOD_NOT_ALLOWED => Some("METHOD_NOT_ALLOWED"),
+        StatusCode::CONFLICT => Some("CONFLICT"),
+        StatusCode::PAYLOAD_TOO_LARGE => Some("PAYLOAD_TOO_LARGE"),
+        StatusCode::TOO_MANY_REQUESTS => Some("RATE_LIMITED"),
+        StatusCode::INTERNAL_SERVER_ERROR => Some("INTERNAL_ERROR"),
+        StatusCode::BAD_GATEWAY => Some("BAD_GATEWAY"),
+        StatusCode::SERVICE_UNAVAILABLE => Some("SERVICE_UNAVAILABLE"),
+        _ => None,
+    }
+}
+
+/// 裸 StatusCode 错误点 code 透传中间件（i18n 阶段2 续）。
+///
+/// 对「4xx/5xx 且无 Content-Type（即 handler 返回裸 StatusCode 的空体响应）」
+/// 注入与 ApiResponse 同构的 JSON 体（success=false + code + message），
+/// 使前端可按 code 本地化。已有 JSON 体的错误响应（ApiResponse/{error} 形态）
+/// 与一切带 Content-Type 的响应（SSE/文件/静态资源）原样放行，不重复包装。
+async fn inject_error_code_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let res = next.run(req).await;
+
+    let status = res.status();
+    if !(status.is_client_error() || status.is_server_error()) {
+        return res;
+    }
+    if res.headers().contains_key(axum::http::header::CONTENT_TYPE) {
+        return res;
+    }
+    let Some(code) = status_error_code(status) else {
+        return res;
+    };
+
+    let (mut parts, body) = res.into_parts();
+    let bytes = match axum::body::to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
+        Ok(b) => b,
+        Err(_) => return axum::response::Response::from_parts(parts, axum::body::Body::empty()),
+    };
+    if !bytes.is_empty() {
+        // 无 Content-Type 但非空体（罕见）：不覆写，原样回填
+        return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
+    }
+
+    // 保留原响应状态码与头（WWW-Authenticate 等），仅替换体为 ApiResponse 同构 JSON；
+    // 注意不能走 Json::into_response()（默认 200，会吞掉原状态码）
+    let payload = match serde_json::to_vec(&ApiResponse {
+        success: false,
+        message: status.canonical_reason().unwrap_or("Error").to_string(),
+        fact_id: None,
+        code: Some(code.to_string()),
+    }) {
+        Ok(v) => v,
+        Err(_) => return axum::response::Response::from_parts(parts, axum::body::Body::empty()),
+    };
+    parts.headers.remove(axum::http::header::CONTENT_TYPE);
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    parts.headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::HeaderValue::from_static("application/json"),
+    );
+    axum::response::Response::from_parts(parts, axum::body::Body::from(payload))
 }
 
 /// 插件健康快照（启动时由 main 注入；未注入 = 未配置清单,原生插件缺省全启用）
@@ -3581,6 +3685,8 @@ async fn liveness() -> Json<ApiResponse> {
         message: "alive".to_string(),
 
         fact_id: None,
+
+        code: None,
     })
 }
 
@@ -3614,6 +3720,8 @@ async fn readiness(State(flag): State<ReadinessFlag>) -> Result<Json<ApiResponse
             message: "ready".to_string(),
 
             fact_id: None,
+
+            code: None,
         }))
     } else {
         Err(StatusCode::SERVICE_UNAVAILABLE)
@@ -3758,6 +3866,8 @@ async fn submit_command(
                 "指令未通过 Schema 门禁（引擎原生结构非法，参见固化 rule_set v1.0 Schema，records/77）: {detail}"
             ),
             fact_id: None,
+
+            code: Some("SCHEMA_GATE_FAILED".to_string()),
         }));
     }
 
@@ -3769,6 +3879,8 @@ async fn submit_command(
             message: "Command submitted".to_string(),
 
             fact_id: Some(id.0),
+
+            code: None,
         })),
 
         Err(msg) => Ok(Json(ApiResponse {
@@ -3777,6 +3889,8 @@ async fn submit_command(
             message: msg,
 
             fact_id: None,
+
+            code: Some("SESSION_ERROR".to_string()),
         })),
     }
 }
@@ -3836,6 +3950,8 @@ async fn update_payload(
                     req.path
                 ),
                 fact_id: None,
+
+                code: Some("UNAUTHORIZED".to_string()),
             }),
         ));
     }
@@ -3865,6 +3981,8 @@ async fn update_payload(
                 message: "PayloadUpdate submitted".to_string(),
 
                 fact_id: Some(id.0),
+
+                code: None,
             }),
         )),
 
@@ -3876,6 +3994,8 @@ async fn update_payload(
                 message: msg,
 
                 fact_id: None,
+
+                code: Some("SESSION_ERROR".to_string()),
             }),
         )),
     }
@@ -4901,6 +5021,8 @@ async fn session_command(
                 "指令未通过 Schema 门禁（引擎原生结构非法，参见固化 rule_set v1.0 Schema，records/77）: {detail}"
             ),
             fact_id: None,
+
+            code: Some("SCHEMA_GATE_FAILED".to_string()),
         }));
     }
 
@@ -4927,6 +5049,8 @@ async fn session_command(
                 message: "Command submitted".to_string(),
 
                 fact_id: Some(id.0),
+
+                code: None,
             }))
         }
 
@@ -4936,6 +5060,8 @@ async fn session_command(
             message: "Command channel closed (reactor exited)".to_string(),
 
             fact_id: None,
+
+            code: Some("SESSION_ERROR".to_string()),
         })),
     }
 }
@@ -5751,6 +5877,8 @@ async fn session_payload(
                     req.path
                 ),
                 fact_id: None,
+
+                code: Some("UNAUTHORIZED".to_string()),
             }),
         ));
     }
@@ -5805,6 +5933,8 @@ async fn session_payload(
                 message: "PayloadUpdate submitted".to_string(),
 
                 fact_id: Some(id.0),
+
+                code: None,
             }),
         )),
 
@@ -5816,6 +5946,8 @@ async fn session_payload(
                 message: "Command channel closed (reactor exited)".to_string(),
 
                 fact_id: None,
+
+                code: Some("SESSION_ERROR".to_string()),
             }),
         )),
     }
@@ -6760,6 +6892,8 @@ async fn record_used_at_startup(
         message: "used_at_startup recorded".to_string(),
 
         fact_id: None,
+
+        code: None,
     }))
 }
 
@@ -6884,6 +7018,8 @@ async fn shared_facts_rollup(
         message: format!("{} facts marked as rolled up", count),
 
         fact_id: None,
+
+        code: None,
     }))
 }
 
@@ -7616,6 +7752,8 @@ async fn session_io_response(
                 message: "IoResponse submitted".to_string(),
 
                 fact_id: Some(id.0),
+
+                code: None,
             }))
         }
 
@@ -7625,6 +7763,8 @@ async fn session_io_response(
             message: "Command channel closed (reactor exited)".to_string(),
 
             fact_id: None,
+
+            code: Some("SESSION_ERROR".to_string()),
         })),
     }
 }
@@ -7909,6 +8049,20 @@ impl GovernanceServer {
             .route(
                 "/api/plugins/{id}/admin/proposals/{pid}/reject",
                 post(plugin_admin_reject),
+            )
+            // 插件契约 v1 资产面（只读 + 纯函数生成,R3:不落库不进治理状态;
+            // 草稿生效仍走既有 Draft→Publish 链）——console 通用表单的后端通道
+            .route(
+                "/api/plugins",
+                get(crate::api::plugin_packs::list_plugins_handler),
+            )
+            .route(
+                "/api/plugins/{pack_id}/assets/{kind}",
+                get(crate::api::plugin_packs::plugin_assets_handler),
+            )
+            .route(
+                "/api/plugins/templates/{pack_id}/{template_id}/generate",
+                post(crate::api::plugin_packs::generate_template_handler),
             )
             .route("/api/payload", post(update_payload))
             .route("/api/state", get(get_state))
@@ -8254,7 +8408,10 @@ impl GovernanceServer {
             None => {
                 tracing::info!("速率限制已禁用（--no-rate-limit / per_sec=0）");
 
-                router.with_state(self.state.clone())
+                // i18n 阶段2 续：code 透传中间件置于最外层（含 fallback/静态资源 404）
+                router
+                    .layer(axum::middleware::from_fn(inject_error_code_middleware))
+                    .with_state(self.state.clone())
             }
 
             Some(cfg) => {
@@ -8268,8 +8425,10 @@ impl GovernanceServer {
                     self.rate_limit_burst
                 );
 
+                // i18n 阶段2 续：code 透传中间件置于 GovernorLayer 之外（governor 429 也能带 code）
                 router
                     .layer(tower_governor::GovernorLayer::new(cfg))
+                    .layer(axum::middleware::from_fn(inject_error_code_middleware))
                     .with_state(self.state.clone())
             }
         }
@@ -8536,6 +8695,7 @@ pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<Bo
 pub async fn invoke_service_handler(
     State(api): State<SessionApi>,
     Path(name): Path<String>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
     Json(args): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let sensitive_native = api
@@ -8571,7 +8731,20 @@ pub async fn invoke_service_handler(
         ));
     };
     let params = serde_to_tcb(serde_json::json!({ "service_name": name, "args": args }));
-    match chain.execute(&params).await {
+    // 插件契约 v1 §3.3：操作者身份经 task_local 作用域随链路透传——
+    // ServiceRegistryHandler 的动态头解析器（actor_headers）在本作用域内
+    // 读取并注入 X-Evorule-Actor-*；会话 io_request 路径不在作用域内（其
+    // 审计归因走 Fact 链,不靠头）。
+    let actor_ctx = crate::api::plugin_packs::ActorContext {
+        actor_type: if actor.is_some() { "user" } else { "anonymous" }.to_string(),
+        actor_id: actor
+            .map(|Extension(a)| a.0)
+            .unwrap_or_else(|| "anonymous".to_string()),
+    };
+    let result = crate::api::plugin_packs::CURRENT_ACTOR
+        .scope(actor_ctx, chain.execute(&params))
+        .await;
+    match result {
         Ok(result) => Ok(Json(tcb_to_serde(&result))),
         Err(e) => Err((
             StatusCode::BAD_GATEWAY,
@@ -10703,6 +10876,27 @@ mod tests {
         .await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+
+    /// i18n 阶段2 续：裸 StatusCode 错误点经中间件注入 ApiResponse 同构 JSON 体
+    /// （状态码不变 + code 透传），前端据此本地化。
+    async fn test_error_code_passthrough_injects_json_body() {
+        let (state, _) = make_test_state();
+
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "DELETE",
+            "/api/sessions/9999",
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["success"], serde_json::Value::Bool(false));
+        assert_eq!(json["code"], "NOT_FOUND");
+        assert!(json["fact_id"].is_null());
     }
 
     #[tokio::test]

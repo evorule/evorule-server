@@ -763,6 +763,7 @@ mod tests {
         let ok = crate::api::server::invoke_service_handler(
             axum::extract::State(api.clone()),
             axum::extract::Path("physics_simulate".to_string()),
+            None,
             axum::Json(serde_json::json!({ "steps": 10 })),
         )
         .await
@@ -773,6 +774,7 @@ mod tests {
         let (status, body) = crate::api::server::invoke_service_handler(
             axum::extract::State(api.clone()),
             axum::extract::Path("finance_config_set".to_string()),
+            None,
             axum::Json(serde_json::json!({})),
         )
         .await
@@ -787,6 +789,7 @@ mod tests {
         let (status, body) = crate::api::server::invoke_service_handler(
             axum::extract::State(api.clone()),
             axum::extract::Path("no_such_service".to_string()),
+            None,
             axum::Json(serde_json::json!({})),
         )
         .await
@@ -799,6 +802,7 @@ mod tests {
         let (status, _) = crate::api::server::invoke_service_handler(
             axum::extract::State(bare),
             axum::extract::Path("config_persist".to_string()),
+            None,
             axum::Json(serde_json::json!({})),
         )
         .await

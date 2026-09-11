@@ -19,6 +19,7 @@ pub mod openapi;
 pub mod pdf_export;
 pub mod permissions;
 pub mod platform_auth;
+pub mod plugin_packs;
 pub mod plugin_probe;
 pub mod server;
 

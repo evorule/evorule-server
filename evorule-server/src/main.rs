@@ -568,6 +568,11 @@ struct PluginManifestEntry {
     /// 不进进程内挂载链。
     #[serde(default)]
     manifest: Option<String>,
+    /// 声明式 pack 路径（插件契约 v1 资产包 pack.json；与 manifest 互斥）：
+    /// 由 `evorule_server::api::plugin_packs::load_plugin_packs` 处理
+    /// （资产读盘注册，无服务路由），不进进程内挂载链与服务注册表。
+    #[serde(default)]
+    pack: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -663,6 +668,11 @@ fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, Plugi
         if entry.manifest.is_some() {
             // 外部插件包条目:由 load_external_plugins 处理(路由合入服务注册表
             // HTTP 回落管道),不进进程内挂载链,故跳过进程内 id 校验。
+            continue;
+        }
+        if entry.pack.is_some() {
+            // 声明式 pack 条目(插件契约 v1 资产包):由 load_plugin_packs 处理
+            // (资产读盘注册,无服务路由),不进进程内挂载链与服务注册表,同上跳过。
             continue;
         }
         let def = PLUGIN_DEFS.iter().find(|d| d.id == *id).ok_or_else(|| {
@@ -1394,6 +1404,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let external_mounted =
         load_external_plugins(cfg.plugins.as_ref(), &mut registry, &builtin_service_names)?;
 
+    // 插件契约 v1：声明式 pack 装载（02-Plugin-Contract-v1.md §2.4）。
+    // 资产面 SSOT = pack 目录文件；fail-fast：任何校验失败拒绝启动。
+    // 顺带锁定互斥语义（同条目 pack+manifest 在 loader 内 fail-fast）。
+    let pack_registry =
+        evorule_server::api::plugin_packs::load_plugin_packs(cfg.plugins.as_deref())?;
+    if !pack_registry.is_empty() {
+        info!("插件契约 v1: 已装载 {} 个声明式 pack", pack_registry.len());
+    }
+
     let reg_count = registry.len();
     // 服务绑定核对集：注册表服务名（含外部插件包派生条目）注入 SessionApi，
     // 与原生叶子能力并集——sensitive 服务须显式绑定的预检语义自动覆盖外部插件
@@ -1419,7 +1438,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         HttpHandler::new()
     });
-    let svc_handler = Arc::new(ServiceRegistryHandler::new(registry.clone(), http.clone()));
+    let svc_handler = Arc::new(
+        ServiceRegistryHandler::new(registry.clone(), http.clone())
+            // 插件契约 v1 §3.3：REST invoke 身份透传——动态头解析器在
+            // invoke_service_handler 的 task_local 作用域内读取操作者身份，
+            // 注入 X-Evorule-Actor-*（or_insert 语义,params/规则不可伪造）。
+            .with_dynamic_headers(Arc::new(evorule_server::api::plugin_packs::actor_headers)),
+    );
     // 按登记表声明序构建回落链:各插件路由原生优先,未命中回落链尾(HTTP 注册表,
     // 含外部插件包派生条目)。逆序包裹——链条头 = 第一个已挂载插件;
     // 全停用时链条头 = 直连 svc_handler。
@@ -1654,6 +1679,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 插件对账泛化:/api/services native 清单 = manifest 实际挂载的全插件服务
     // (含 plugin 归属/描述/敏感标记);invoke 直调复用同一回落链,无第二执行路径。
     .with_native_services(native_service_infos)
+    // 插件契约 v1：声明式 pack 资产注册表注入（资产面三 API 数据源）
+    .with_plugin_packs(pack_registry)
     .with_service_chain(call_handler.clone());
 
     // 创建 readiness flag（优雅退出时设为 false）
