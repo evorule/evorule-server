@@ -1,0 +1,36 @@
+{
+  "template_id": "leave_handover_completeness",
+  "display_name": { "zh": "长假交接材料完整性检查", "en": "Long Leave Handover Completeness" },
+  "description": "长假缺少交接材料时通知补交（与 finance-pack 材料完整性同构——scene_ref 模板级回退解析形态一并复制）。scene_ref 为模板级声明，check_field 经模板级回退解析。",
+  "scene_ref": "leave_request",
+  "params_form": [
+    { "field_id": "days_field", "display_name": { "zh": "天数字段", "en": "Days Field" }, "type": "scene_field", "scene_ref": "leave_request", "required": true },
+    { "field_id": "check_field", "display_name": { "zh": "交接材料字段", "en": "Handover Field" }, "type": "scene_field", "required": true },
+    { "field_id": "min_days", "display_name": { "zh": "天数下限", "en": "Min Days" }, "type": "number", "required": true, "default": 7 },
+    { "field_id": "notify_role", "display_name": { "zh": "通知角色", "en": "Notify Role" }, "type": "enum", "required": true, "options": ["hr_manager", "hr_specialist", "department_head"] },
+    { "field_id": "doc_label", "display_name": { "zh": "材料名称", "en": "Doc Label" }, "type": "text", "required": true, "default": "交接单" }
+  ],
+  "rule_draft_skeleton": {
+    "id": "{{pack}}.{{template}}",
+    "version": 1,
+    "description": "请假 ≥ {{form.min_days}} 天缺少{{form.doc_label}}时通知 {{form.notify_role}}",
+    "transform": [
+      { "type": "branch", "params": {
+        "domain": { "type": "lt", "path": "{{form.days_field.path}}", "value": "{{form.min_days}}" },
+        "on_true": [],
+        "on_false": [
+          { "type": "branch", "params": {
+            "domain": { "type": "exists", "path": "{{form.check_field.path}}" },
+            "on_true": [],
+            "on_false": [
+              { "type": "io_request", "params": {
+                "io_type": "call_external",
+                "prompt": "请假 ≥ {{form.min_days}} 天缺少{{form.doc_label}}，请补交",
+                "role": "{{form.notify_role}}" } }
+            ]
+          } }
+        ]
+      } }
+    ]
+  }
+}

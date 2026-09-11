@@ -1,0 +1,27 @@
+{
+  "template_id": "leave_days_threshold_approval",
+  "display_name": { "zh": "请假天数阈值审批", "en": "Leave Days Threshold Approval" },
+  "description": "请假天数达到阈值时发起审批（与 finance-pack 金额阈值同构——领域复制即同构换域）。scene_ref 为参数级声明。",
+  "params_form": [
+    { "field_id": "threshold", "display_name": { "zh": "阈值天数", "en": "Threshold Days" }, "type": "number", "required": true, "default": 3 },
+    { "field_id": "approver", "display_name": { "zh": "审批角色", "en": "Approver" }, "type": "enum", "required": true, "options": ["hr_manager", "department_head"] },
+    { "field_id": "days_field", "display_name": { "zh": "比较字段", "en": "Days Field" }, "type": "scene_field", "scene_ref": "leave_request", "required": true }
+  ],
+  "rule_draft_skeleton": {
+    "id": "{{pack}}.{{template}}",
+    "version": 1,
+    "description": "请假 {{form.threshold}} 天以上需 {{form.approver}} 审批",
+    "transform": [
+      { "type": "branch", "params": {
+        "domain": { "type": "lt", "path": "{{form.days_field.path}}", "value": "{{form.threshold}}" },
+        "on_true": [],
+        "on_false": [
+          { "type": "io_request", "params": {
+            "io_type": "call_external",
+            "prompt": "请假 {{form.threshold}} 天以上需 {{form.approver}} 审批",
+            "role": "{{form.approver}}" } }
+        ]
+      } }
+    ]
+  }
+}

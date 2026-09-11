@@ -1,0 +1,21 @@
+{
+  "flow_id": "leave_approval_flow",
+  "display_name": { "zh": "请假审批流程", "en": "Leave Approval Flow" },
+  "description": "请假天数阈值审批：低于 3 天自动通过，达到 3 天需 hr_manager 人工审批",
+  "version": 1,
+  "nodes": [
+    { "node_id": "n1", "node_type": "start" },
+    {
+      "node_id": "n2",
+      "node_type": "approval",
+      "params": { "role": "hr_manager", "prompt": "请假天数达到阈值，请审批该请假单" },
+      "form_ref": { "scene": "leave_request", "field": "days" },
+      "threshold": 3
+    },
+    { "node_id": "n3", "node_type": "end" }
+  ],
+  "edges": [
+    { "from": "n1", "to": "n2" },
+    { "from": "n2", "to": "n3", "guard": "approved" }
+  ]
+}

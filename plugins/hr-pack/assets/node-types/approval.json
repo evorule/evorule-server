@@ -1,0 +1,12 @@
+{
+  "node_type": "approval",
+  "display_name": { "zh": "审批", "en": "Approval" },
+  "description": "人工审批节点：低于阈值自动通过，达到阈值转人工审批（编译为 branch(lt)+io_request 或 io_request）",
+  "params_form": [
+    { "field_id": "role", "display_name": { "zh": "审批角色", "en": "Approver Role" }, "type": "text", "required": true },
+    { "field_id": "prompt", "display_name": { "zh": "审批提示语", "en": "Approval Prompt" }, "type": "textarea", "required": true },
+    { "field_id": "form_ref", "display_name": { "zh": "触发字段", "en": "Trigger Field" }, "type": "scene_field", "scene_ref": "leave_request", "required": true },
+    { "field_id": "threshold", "display_name": { "zh": "审批阈值", "en": "Threshold" }, "type": "number" }
+  ],
+  "compile_hint": { "emits": "io_request", "note": "带阈值时编译为 branch(lt)+io_request；无阈值时为 io_request" }
+}

@@ -1,0 +1,5 @@
+{
+  "node_type": "start",
+  "display_name": { "zh": "开始", "en": "Start" },
+  "description": "流程起点：v0 线性链唯一入口，无参数"
+}

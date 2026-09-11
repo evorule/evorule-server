@@ -8064,6 +8064,11 @@ impl GovernanceServer {
                 "/api/plugins/templates/{pack_id}/{template_id}/generate",
                 post(crate::api::plugin_packs::generate_template_handler),
             )
+            // 契约 v1.1 流程编译代理（draft-only,R3;R2 等价性门禁为强制位）
+            .route(
+                "/api/plugins/flows/{pack_id}/{flow_id}/compile",
+                post(crate::api::plugin_packs::compile_flow_handler),
+            )
             .route("/api/payload", post(update_payload))
             .route("/api/state", get(get_state))
             .route("/api/audit", get(get_audit))

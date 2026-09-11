@@ -466,6 +466,18 @@ POST /api/plugins/templates/{pack_id}/{template_id}/generate  草稿生成纯函
 - 二者**互不替代**：pack 不提供可调用服务（无进程），外部插件包不提供表单化模板；领域能力既有服务又有模板时，登记两个条目各司其职。
 - 模板骨架中的 `io_request` 运行时仍经会话链调用服务（call_external），**装载期不校验服务名存在性**（草稿期纯函数、执行期 fail-fast 显式报错）。
 
+### 12.9 复制一个领域包（领域复制手册）
+
+领域复制的本质是**同构换域**：模板骨架的机器结构（`type`/`io_type`/`domain` 形态）不动，只换展示语义与值域。已验证实证：[`plugins/hr-pack/`](../plugins/hr-pack/)（人事域：1 场景 + 2 模板，**零 loader 改动**，纯数据包即完成复制，随仓门禁 `hr_pack_replication_loads_and_generates`）。
+
+五步复制法（finance-pack → hr-pack 实测路径）：
+
+1. **拷贝目录、改清单**：复制 pack 目录，改 `pack.json` 的 `id`/`version`/`description`（id 全局唯一，小写字母/数字/连字符；`contract_version` 保持 `"1.0"`）。
+2. **换场景**：改 `scene_id` 与业务对象字段——**字段必须带 `path`** 才能被 `scene_field` 参数引用（`.path` 取值域锁定的来源，R2）；`path` 指向运行时事实路径（如 `__exec__.payload.days`）。
+3. **换模板语义**：只动三处值域——展示文案（display_name/prompt/description）、枚举选项（options）、默认值（default）+ `scene_ref` 指向新场景；**结构键一律不碰**（结构键是预先写死的机器形态，用户值永远落值位，R2 的结构性保证）。
+4. **加随仓门禁测试**：镜像 `hr_pack_replication_loads_and_generates`（装载校验 + 逐模板确定性生成 + provenance 断言）——领域包从此进回归闸门，改坏即红。
+5. **登记与验证**：plugin_manifest.json 加 pack 条目（§四）→ 重启 → 启动日志出现 `插件契约 pack: {id} 装载` + `GET /api/plugins` 可见。
+
 ---
 
 ## 相关文档
@@ -474,3 +486,4 @@ POST /api/plugins/templates/{pack_id}/{template_id}/generate  草稿生成纯函
 - [README「服务能力对账与直调」](../README.md) — 对账/直调端点
 - 范本源码：[`plugins/finance-config/`](../plugins/finance-config/)（Rust/axum 实现）
 - 声明式 pack 范本：[`plugins/finance-pack/`](../plugins/finance-pack/)（纯 JSON 资产）
+- 领域复制范本：[`plugins/hr-pack/`](../plugins/hr-pack/)（finance-pack 同构换域实证）

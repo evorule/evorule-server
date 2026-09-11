@@ -1,0 +1,6 @@
+{
+  "plugins": {
+    "finance-pack": { "enabled": true, "pack": "plugins/finance-pack/pack.json" },
+    "hr-pack": { "enabled": true, "pack": "plugins/hr-pack/pack.json" }
+  }
+}

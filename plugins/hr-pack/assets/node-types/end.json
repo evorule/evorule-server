@@ -1,0 +1,5 @@
+{
+  "node_type": "end",
+  "display_name": { "zh": "结束", "en": "End" },
+  "description": "流程终点：v0 线性链出口，无参数"
+}

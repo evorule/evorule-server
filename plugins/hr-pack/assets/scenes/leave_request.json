@@ -1,0 +1,18 @@
+{
+  "scene_id": "leave_request",
+  "display_name": { "zh": "请假场景", "en": "Leave Request" },
+  "description": "请假单业务对象：模板表单的 scene_field 下拉来源。带 path 的字段可用于模板 .path 锁定（契约 §4.2 / R2）。",
+  "business_objects": [
+    {
+      "object_id": "leave_form",
+      "display_name": { "zh": "请假单", "en": "Leave Form" },
+      "fields": [
+        { "field_id": "days", "display_name": { "zh": "请假天数", "en": "Leave Days" }, "type": "number", "unit": "天", "path": "__exec__.payload.days" },
+        { "field_id": "leave_type", "display_name": { "zh": "请假类型", "en": "Leave Type" }, "type": "enum", "options": ["annual", "sick", "personal", "unpaid"], "path": "__exec__.payload.leave_type" },
+        { "field_id": "start_date", "display_name": { "zh": "开始日期", "en": "Start Date" }, "type": "date", "path": "__exec__.payload.start_date" },
+        { "field_id": "reason", "display_name": { "zh": "请假事由", "en": "Reason" }, "type": "text", "path": "__exec__.payload.reason" },
+        { "field_id": "handover_doc", "display_name": { "zh": "交接单号", "en": "Handover Doc No." }, "type": "text", "path": "__exec__.payload.handover_doc" }
+      ]
+    }
+  ]
+}
