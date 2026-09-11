@@ -25,7 +25,24 @@
 
 ---
 
-## [Unreleased]
+## [0.6.0] - 2026-09-11
+
+### 🆕 新增
+
+- **插件契约 v1:声明式资产包(declarative pack)** — 插件形态新增"零代码零进程"资产包:把领域知识打包成「场景 + 规则模板」,server 启动期从 pack 目录读盘装载(fail-fast:未知顶层字段/未知能力/未知控件词表/id 漂移/契约 MAJOR 不符/场景与模板 id 重复/glob 无匹配/资产形态漂移任一命中即拒绝装载),运行期只读。模板表单支持 v1 固定控件词表(text/textarea/number/currency/date/boolean/enum/scene_field);草稿生成是纯函数,生成语言 v1 只有 `{{form.X}}`/`{{pack}}`/`{{template}}` 无逻辑替换,未知占位符装载期即拒绝。四条红线落地:R1 确定性(同输入字节级同输出,零随机/零时钟/零 IO)、R2 结构不可达(用户值只落值位,scene_field 仅可作 `{{form.X.path}}` 且取值域锁定为场景已注册 path 字段,键内占位符拒载)、R3 draft-only(生成不落库,生效仍走既有 Draft→Publish 链)、R5 locale 纯展示(display_name 双语字段不进事实/命令)
+- **插件资产面 API** — `GET /api/plugins`(已装载 pack 清单)、`GET /api/plugins/{pack_id}/assets/{kind}`(场景/模板资产只读面,kind ∈ scenes|templates)、`POST /api/plugins/templates/{pack_id}/{template_id}/generate`(草稿生成纯函数面:响应含 `rule_draft` + `provenance` 来源标记,校验失败 400 显式错误,未知 pack/模板 404);三端点受认证保护与业务 API 同门禁
+- **服务调用操作者身份透传** — REST 直调路径经 task-local 操作者上下文向下游服务注入 `X-Evorule-Actor-Type` / `X-Evorule-Actor-Id` 动态头:or_insert 合并语义保证注册表条目头 > 动态头 > params 头,规则/params 永远无法伪造身份头;会话 io_request 链不受影响(审计归因走 Fact 链,不靠头)
+- **finance-pack 参考包** — 财务域声明式资产包范本(1 场景 + 2 模板:金额阈值审批/报销材料完整性检查),演示参数级与模板级 scene_ref 两种解析形态与嵌套 branch/exists 域函数;随仓门禁测试锁定"参考包必须始终通过装载校验且生成确定性"
+- **console 通用表单入口** — 工作空间新增「插件模板」页(evorule-console 侧):模板列表 → 按 params_form 渲染表单 → 生成 → 草稿预览/复制,草稿不落库
+
+### 🐛 修复
+
+- **分发包内置中性插件清单** — 打包步骤生成空条目 `plugin_manifest.json`(空条目=内建插件全启):server 对 `--plugins` 清单缺失 fail-fast,缺此文件会导致主服务在干净机器上拒启
+
+### 📚 文档
+
+- **插件开发指南**(docs/PLUGIN_GUIDE.md) — 新增「声明式资产包(Plugin Contract v1)」章节:目录形态、pack.json/场景/模板资产规范、控件词表、生成语言与四条红线、API 面、装卸手册、与外部插件包的关系;开篇补「插件两类形态」选型指引
+- 文档门禁存量项清零:README/版本策略/发布流程中过期版本字面量改写(历史版本改为泛化表述)、`plugin_probe.rs` 补 SPDX 头、兄弟仓名提及收敛为依赖声明措辞(CLA/双许可/插件指南)
 
 ## [0.5.2] - 2026-09-10
 

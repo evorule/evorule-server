@@ -21,7 +21,7 @@
 
 **版本**: 2.0
 **生效日期**: 2026-09-08
-**适用范围**: EvoRule 生态全集 —— `evorule`、`evorule-server`（自托管）、`evorule-rule`、`evorule-system-rules`、`evo-agent`、`evorule-agent`、`evorule-console-cloud` 的 console 查看器部分等 **A 类开源仓**。闭源运营层（cloud / server 托管变体）属 B 类，另行商用协议。
+**适用范围**: EvoRule 生态全集 —— `evorule`、`evorule-server`（自托管）、`evorule-rule`、`evorule-system-rules`、`evo-agent`、`evorule-agent`、`evorule-console-cloud` 的 console 查看器部分等 **A 类开源仓**（各自独立发布）。闭源运营层（cloud / server 托管变体）属 B 类，另行商用协议。
 
 ---
 

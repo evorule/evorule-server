@@ -1,4 +1,4 @@
-evorule 体验版(单机一键启动) v0.5.2
+evorule 体验版(单机一键启动) v0.6.0
 ====================================
 
 环境要求
@@ -112,7 +112,7 @@ service_registry.json,可自行扩展为真实 HTTP 服务端点。
 - start-watchdog.bat       插件看门狗启动脚本(可选,Windows 版包内)
 - watchdog-plugins.ps1     看门狗主体(读 /api/health,离线自动拉起插件)
 - plugins-watchdog.json    看门狗配置(缺省不守护任何插件,按需登记)
-- evorule-server.exe       主服务(evorule-server v0.5.2,运行时 :18080)
+- evorule-server.exe       主服务(evorule-server v0.6.0,运行时 :18080)
 - evorule-rule-serve.exe   治理服务(evorule-rule v0.3.1,规则资产库 :18081)
 - web\                     前端页面(evorule-console-cloud)
 - rules\                   运行规则集(业务场景演示规则)

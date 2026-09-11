@@ -18,9 +18,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.5.2-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.6.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.5.2-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.6.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 **Language / 语言**: [English](#english) · [中文 / Chinese](#chinese)
@@ -45,9 +45,11 @@
 
 ---
 
-> ## ✅ v0.5.2 — Stable Release (2026-09-10)
+> ## ✅ v0.6.0 — Stable Release (2026-09-11)
 >
 > This repo **releases independently**, not tied to other repos' release cadence; version numbers correspond only to this repo's [CHANGELOG](CHANGELOG.md).
+>
+> **0.6.0**: Plugin Contract v1 — declarative asset packs: zero-code, zero-process packs bundling scenes + rule templates; server loads them fail-fast at startup, exposes a read-only asset API, and generates rule JSON drafts as a pure function (byte-level deterministic, structure-inaccessible by construction, draft-only — activation still goes through the existing Draft→Publish chain); operator identity (`X-Evorule-Actor-*`) injected as non-forgeable dynamic headers on REST service invocation; reference pack `finance-pack` (1 scene + 2 templates) ships in-repo with a gate test; plugin guide gains the declarative-pack chapter (§0/§12) and the distribution package now ships a neutral plugin manifest.
 >
 > **0.5.2**: Consumer distribution-pack startup experience — `dist/start-evorule.bat` now pre-checks ports 18080/18081 on launch and shows a visible dialog on conflict instead of silently failing; polls the main service readiness and surfaces a readable error dialog (plus opening the log in Notepad) on start failure.
 >
@@ -284,7 +286,7 @@ Full routes (**126 paths** recorded in OpenAPI, plus workspace route families) a
 | `/api/shared/facts/{fact_id}/source` `/used_by` | GET | Fact source / consumer trace |
 | `/api/sessions/{id}/used_at_startup` | GET | Facts used at startup |
 
-### Platform Auth / Users / Roles (v0.4.0)
+### Platform Auth / Users / Roles
 
 | Path | Method | Description |
 | --- | --- | --- |
@@ -549,7 +551,7 @@ cargo build --release
 | Multi-session concurrent | 800 cmd/s/session | `evorule-server/examples/bench_throughput.rs` |
 | 100k-command long session | 1.2 GB WAL | `evorule-server/examples/bench_long_session.rs` |
 
-Load drill scripts in `scripts/load-drill.ps1`. v0.4.0 fixed the single-session long-run O(n²) defect — 10,000-command session completes in 51s flat (pre-fix same scale would take tens of hours).
+Load drill scripts in `scripts/load-drill.ps1`. An earlier release fixed the single-session long-run O(n²) defect — 10,000-command session completes in 51s flat (pre-fix same scale would take tens of hours).
 
 ---
 
@@ -626,9 +628,9 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.5.2-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.6.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.5.2-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.6.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -645,9 +647,11 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 ---
 
-> ## ✅ v0.5.2 — 稳定发布 (2026-09-10)
+> ## ✅ v0.6.0 — 稳定发布 (2026-09-11)
 >
 > 本仓库**独立 release**,不绑其他仓的发布节奏;版本号只与本仓 [CHANGELOG](CHANGELOG.md) 对应。
+>
+> **0.6.0**:插件契约 v1——声明式资产包:零代码零进程,把领域知识打包成「场景 + 规则模板」;server 启动期 fail-fast 装载,提供只读资产 API,草稿生成为纯函数(字节级确定性、结构不可达、draft-only——生效仍走既有 Draft→Publish 链);REST 服务调用注入不可伪造的操作者身份动态头(`X-Evorule-Actor-*`);随仓发布参考包 `finance-pack`(1 场景 + 2 模板)与随仓门禁测试;插件指南补声明式资产包章节(§〇/§十二),分发包内置中性插件清单。
 >
 > **0.5.2**:消费者分发包启动体验 — `dist/start-evorule.bat` 启动前预检 18080/18081 端口占用,冲突时弹可视化提示框并停止启动(不再静默一闪而过);主服务启动后轮询就绪状态,失败时弹窗提示并直接打开错误日志引导纠错。
 >
