@@ -38,7 +38,7 @@
 ### 🐛 修复
 
 - **分发包内置中性插件清单** — 打包步骤生成空条目 `plugin_manifest.json`(空条目=内建插件全启):server 对 `--plugins` 清单缺失 fail-fast,缺此文件会导致主服务在干净机器上拒启
-- **发布流水线收口(release.yml)** — ① build 矩阵补 macOS(x86_64 + aarch64,交叉产物跳过本机 sanity check),原始二进制 + cosign 签名随 Release 发布(Gitee 同步对齐);② attach-gitee 整体限时 20 分钟 + 全部 curl 加 `--max-time`,消除 Gitee 上传偶发挂死(历史已知问题);③ macOS 二进制附件按架构重命名,防同名覆盖
+- **发布流水线收口(release.yml)** — attach-gitee 整体限时 20 分钟 + 全部 curl 加 `--max-time`,消除 Gitee 上传偶发挂死(历史已知问题);本仓维持双平台分发包形态,经产品决策(2026-09-11)不发 macOS 产物
 
 ### 📚 文档
 

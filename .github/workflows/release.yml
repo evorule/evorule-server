@@ -1,14 +1,14 @@
 # Release workflow for EvoRule Server
 #
 # 触发: 推送 v* tag
-# 产物: 零依赖分发包 + 原始二进制 (GitHub Release 附件 + gitee 主仓回传)
+# 产物: 双平台零依赖分发包 (GitHub Release 附件 + gitee 主仓回传)
 #   - evorule-server-v{VER}-win64.zip    (server.exe + rule-serve.exe + web + rules + 启动脚本 + 中文说明)
 #   - evorule-server-v{VER}-linux64.tar.gz (同构 linux 包)
-#   - evorule-server-macos-x86_64 / -aarch64 (macOS 原始二进制,无安装包形态)
 #   - sha256-checks.txt + cosign .sig
+# 注: 经产品决策(2026-09-11)本仓不发 macOS 产物(定位 Windows 一键包 + Linux 服务)
 #
 # 设计说明:
-# - 与 evorule 仓同构: gitee 是主仓/发布主入口, github 是镜像(承担多平台
+# - 与 evorule 仓同构: gitee 是主仓/发布主入口, github 是镜像(承担双平台
 #   构建并经 Gitee OpenAPI 回传附件, 幂等创建 Release)
 # - 方案 A(UV-100): rule-serve.exe 来自 evorule-rule 独立发版 Release
 #   (RULE_SERVE_VERSION 锁定配套版本), web 静态与业务场景规则来自
@@ -51,26 +51,11 @@ jobs:
             target: x86_64-unknown-linux-musl
             artifact: evorule-server-linux-x86_64
             ext: ""
-            native: true
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: evorule-server-windows-x86_64
             ext: ".exe"
-            native: true
-          - name: macos-x86_64
-            os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: evorule-server-macos-x86_64
-            ext: ""
-            # macos-latest 是 arm64 runner,x86_64 产物无法在本机执行
-            native: false
-          - name: macos-aarch64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: evorule-server-macos-aarch64
-            ext: ""
-            native: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -92,9 +77,7 @@ jobs:
 
       # sanity check 不做输出重定向: windows runner 默认 pwsh 不认 >/dev/null,
       # 且 --help 正常退出码为 0,输出到控制台无害(此处只为证明"编译过且能起")
-      # 交叉编译产物(非 runner 原生架构)无法本机执行,跳过 sanity(native: false)
       - name: binary sanity check (防"编译过但起不来"被当成成功)
-        if: matrix.native
         run: target/${{ matrix.target }}/release/evorule-server${{ matrix.ext }} --help
 
       - name: 上传构建产物
@@ -126,18 +109,6 @@ jobs:
           name: evorule-server-windows-x86_64
           path: sign/windows
 
-      - name: 下载 macOS 构建产物
-        uses: actions/download-artifact@v4
-        with:
-          name: evorule-server-macos-x86_64
-          path: sign/macos-x86_64
-
-      - name: 下载 macOS arm64 构建产物
-        uses: actions/download-artifact@v4
-        with:
-          name: evorule-server-macos-aarch64
-          path: sign/macos-aarch64
-
       - name: 安装 cosign
         uses: sigstore/cosign-installer@v3.7.0
 
@@ -150,12 +121,6 @@ jobs:
           cosign sign-blob --yes \
             sign/windows/evorule-server.exe \
             --output-signature sigout/evorule-server-windows-x86_64.exe.sig
-          cosign sign-blob --yes \
-            sign/macos-x86_64/evorule-server \
-            --output-signature sigout/evorule-server-macos-x86_64.sig
-          cosign sign-blob --yes \
-            sign/macos-aarch64/evorule-server \
-            --output-signature sigout/evorule-server-macos-aarch64.sig
           ls -la sigout
 
       - name: 上传签名产物
@@ -339,25 +304,6 @@ jobs:
           name: evorule-server-sigs
           path: release-sigs
 
-      - name: 下载 macOS 原始二进制
-        uses: actions/download-artifact@v4
-        with:
-          name: evorule-server-macos-x86_64
-          path: release-macos-x86_64
-
-      - name: 下载 macOS arm64 原始二进制
-        uses: actions/download-artifact@v4
-        with:
-          name: evorule-server-macos-aarch64
-          path: release-macos-aarch64
-
-      # 两个 artifact 内文件同名 evorule-server,重命名区分架构
-      # (Release 附件按文件名区分,同名会互相覆盖)
-      - name: 重命名 macOS 二进制(附件名区分架构)
-        run: |
-          mv release-macos-x86_64/evorule-server release-macos-x86_64/evorule-server-macos-x86_64
-          mv release-macos-aarch64/evorule-server release-macos-aarch64/evorule-server-macos-aarch64
-
       - name: 创建 Release 并附加分发包
         uses: softprops/action-gh-release@v2
         with:
@@ -365,18 +311,13 @@ jobs:
             release-assets/evorule-server-*-win64.zip
             release-assets/evorule-server-*-linux64.tar.gz
             release-assets/sha256-checks.txt
-            release-macos-x86_64/evorule-server-macos-x86_64
-            release-macos-aarch64/evorule-server-macos-aarch64
             release-sigs/evorule-server-linux-x86_64.sig
             release-sigs/evorule-server-windows-x86_64.exe.sig
-            release-sigs/evorule-server-macos-x86_64.sig
-            release-sigs/evorule-server-macos-aarch64.sig
           body: |
             EvoRule Server ${{ github.ref_name }} 零依赖分发包。
 
             - `evorule-server-*-win64.zip` — Windows 10/11 64 位:解压后双击 start-evorule.bat
             - `evorule-server-*-linux64.tar.gz` — Linux x86_64:解压后运行 start-evorule.sh
-            - `evorule-server-macos-x86_64` / `evorule-server-macos-aarch64` — macOS 原始二进制(无安装包形态,`chmod +x` 后直接运行)
             - `sha256-checks.txt` — 分发包完整性校验
             - `evorule-server-*.sig` — 发布原始二进制 cosign keyless 签名, 验证见 SIGNING.md
 
@@ -412,24 +353,6 @@ jobs:
           name: evorule-server-sigs
           path: gitee-assets/sigs
 
-      - name: 下载 macOS 原始二进制
-        uses: actions/download-artifact@v4
-        with:
-          name: evorule-server-macos-x86_64
-          path: gitee-assets/macos-x86_64
-
-      - name: 下载 macOS arm64 原始二进制
-        uses: actions/download-artifact@v4
-        with:
-          name: evorule-server-macos-aarch64
-          path: gitee-assets/macos-aarch64
-
-      # 与 release job 同理:重命名区分架构,避免附件同名覆盖
-      - name: 重命名 macOS 二进制(附件名区分架构)
-        run: |
-          mv gitee-assets/macos-x86_64/evorule-server gitee-assets/evorule-server-macos-x86_64
-          mv gitee-assets/macos-aarch64/evorule-server gitee-assets/evorule-server-macos-aarch64
-
       - name: 附加到 Gitee Release
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
@@ -463,10 +386,8 @@ jobs:
 
           cp gitee-assets/sigs/evorule-server-linux-x86_64.sig gitee-assets/
           cp gitee-assets/sigs/evorule-server-windows-x86_64.exe.sig gitee-assets/
-          cp gitee-assets/sigs/evorule-server-macos-x86_64.sig gitee-assets/
-          cp gitee-assets/sigs/evorule-server-macos-aarch64.sig gitee-assets/
           cd gitee-assets
-          for f in $(ls evorule-server-*-win64.zip evorule-server-*-linux64.tar.gz sha256-checks.txt evorule-server-macos-x86_64 evorule-server-macos-aarch64 evorule-server-linux-x86_64.sig evorule-server-windows-x86_64.exe.sig evorule-server-macos-x86_64.sig evorule-server-macos-aarch64.sig); do
+          for f in $(ls evorule-server-*-win64.zip evorule-server-*-linux64.tar.gz sha256-checks.txt evorule-server-linux-x86_64.sig evorule-server-windows-x86_64.exe.sig); do
             echo "上传 ${f} ..."
             # --max-time 防止单文件上传挂死(历史已知问题);-f 失败即中止,保幂等可重跑
             curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 600 -fsS -X POST \
