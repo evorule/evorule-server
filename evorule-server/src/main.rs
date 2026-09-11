@@ -753,7 +753,18 @@ struct ExternalServiceDecl {
     /// LLM 消费方据此生成动态工具 schema，可带参真实调用
     #[serde(default)]
     parameters: Option<serde_json::Value>,
+    /// 代理调用超时（毫秒，契约 v1.2 可选字段）：缺省 5000 向后兼容；
+    /// 声明值钳制进 [1, 120000]（LLM 等慢服务需要长超时；上限防代理线程
+    /// 被病态声明长期占用）。非正整数 = 装载拒绝（fail-fast，不静默纠正）。
+    #[serde(default)]
+    timeout_ms: Option<i64>,
 }
+
+/// 服务声明 timeout_ms 的合法上界（契约 v1.2 §6）
+const EXTERNAL_SERVICE_TIMEOUT_MAX_MS: i64 = 120_000;
+
+/// 缺省代理超时（与既有行为一致，向后兼容）
+const EXTERNAL_SERVICE_TIMEOUT_DEFAULT_MS: i64 = 5_000;
 
 /// 已装载的外部插件包（健康节呈现 + 对账清单注入 + 探活目标派生用）。
 #[derive(Debug)]
@@ -857,13 +868,35 @@ fn load_external_plugins(
             let url = format!("{}/services/{}", m.base_url.trim_end_matches('/'), s.name);
             let mut headers = std::collections::BTreeMap::new();
             headers.insert("X-Source".to_string(), "evorule-server".to_string());
+            // 契约 v1.2：可选 timeout_ms —— 非正 fail-fast；超上限钳制（warn 留痕，
+            // 不静默：钳制值可从启动日志对账）。缺省 5000 与既有行为一致。
+            let timeout_ms = match s.timeout_ms {
+                None => EXTERNAL_SERVICE_TIMEOUT_DEFAULT_MS,
+                Some(v) if v <= 0 => {
+                    return Err(format!(
+                        "外部插件包 {id} 服务 '{}' timeout_ms 非法: {v}（须为正整数毫秒; \
+                         合法范围 [1, {EXTERNAL_SERVICE_TIMEOUT_MAX_MS}], 缺省 \
+                         {EXTERNAL_SERVICE_TIMEOUT_DEFAULT_MS}）",
+                        s.name
+                    ));
+                }
+                Some(v) if v > EXTERNAL_SERVICE_TIMEOUT_MAX_MS => {
+                    warn!(
+                        "外部插件包 {id} 服务 '{}' timeout_ms={v} 超上限, 钳制为 \
+                         {EXTERNAL_SERVICE_TIMEOUT_MAX_MS}ms（契约 v1.2 §6）",
+                        s.name
+                    );
+                    EXTERNAL_SERVICE_TIMEOUT_MAX_MS
+                }
+                Some(v) => v,
+            };
             registry.insert(
                 s.name.clone(),
                 evorule_io_handlers::ServiceEntry {
                     url,
                     method: "POST".to_string(),
                     headers,
-                    timeout_ms: Some(5000),
+                    timeout_ms: Some(timeout_ms),
                     version: Some(m.version.clone()),
                     description: s.description.clone(),
                 },
@@ -2336,6 +2369,62 @@ mod tests {
                 "sensitive 标记应透传对账清单"
             );
             let _ = pj;
+        }
+
+        #[test]
+        fn timeout_ms_declared_passes_through_and_clamps_to_max() {
+            let dir = TempDir::new().unwrap();
+            // ai_plugin_chat 声明 30000（LLM 延迟面，契约 v1.2 动机）；
+            // slow_chat 声明 999999 → 钳制 120000
+            write_file(
+                dir.path(),
+                "plugin.json",
+                r#"{"id":"t","version":"1.0","base_url":"http://127.0.0.1:9130",
+                    "services":[
+                        {"name":"ai_plugin_chat","timeout_ms":30000},
+                        {"name":"slow_chat","timeout_ms":999999}
+                    ]}"#,
+            );
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"t":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
+            assert_eq!(
+                registry.get("ai_plugin_chat").unwrap().timeout_ms,
+                Some(30000),
+                "声明值应原样传递（含对账清单）"
+            );
+            assert_eq!(
+                registry.get("slow_chat").unwrap().timeout_ms,
+                Some(EXTERNAL_SERVICE_TIMEOUT_MAX_MS),
+                "超上限声明应钳制（不 fail-fast）"
+            );
+            // 注：对账清单 BoundServiceInfo 不携带 timeout_ms（契约 v1.2 仅注册表面生效）
+        }
+
+        #[test]
+        fn timeout_ms_non_positive_rejected_fail_fast() {
+            let dir = TempDir::new().unwrap();
+            write_file(
+                dir.path(),
+                "plugin.json",
+                r#"{"id":"z","version":"1.0","base_url":"http://127.0.0.1:9130",
+                    "services":[{"name":"svc_z","timeout_ms":0}]}"#,
+            );
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"z":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap_err();
+            assert!(err.contains("timeout_ms 非法"), "{err}");
+            let _ = dir;
         }
 
         #[test]

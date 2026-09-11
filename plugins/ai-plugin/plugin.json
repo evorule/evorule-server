@@ -1,0 +1,15 @@
+{
+  "id": "ai-plugin",
+  "contract_version": "1.2",
+  "version": "0.1.0",
+  "description": "AI 辅助插件（服务端驻留 LLM 执行者）：服务面 + 自编排审计回路，prompt/结果全文入 sidecar 会话审计链；凭据从 ai-plugin.json 读取，缺省禁用（配置后显式开启）",
+  "base_url": "http://127.0.0.1:9130",
+  "services": [
+    {
+      "name": "ai_plugin_chat",
+      "sensitive": false,
+      "description": "审计链内 LLM 对话（服务端托管凭据执行）。body={messages:[{role,content}...],model?,temperature?,audit_purpose?}；返回 {reply, session_id}（session_id 供 GET /api/sessions/{id}/audit 审计对账）",
+      "timeout_ms": 120000
+    }
+  ]
+}
