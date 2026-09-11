@@ -221,6 +221,10 @@ jobs:
           cp rules/10_role13_demo.json "${PKG}/rules/"
           cp resources/server_eval.json "${PKG}/resources/"
           cp service_registry.json "${PKG}/"
+          # 包内自带中性插件清单(空条目=内建插件全启): dist/ 的开发机清单引用
+          # 包外 finance-config, 不可入包; server 对 --plugins 清单缺失 fail-fast,
+          # 缺此文件会导致主服务在干净机器上拒启
+          printf '{ "plugins": {} }\n' > "${PKG}/plugin_manifest.json"
           # bat 模板按 .gitattributes 钉 CRLF 检出,直拷即兼容记事本/cmd
           cp dist/start-evorule.bat "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
@@ -250,6 +254,8 @@ jobs:
           cp rules/10_role13_demo.json "${PKG}/rules/"
           cp resources/server_eval.json "${PKG}/resources/"
           cp service_registry.json "${PKG}/"
+          # 同 win64: 包内自带中性插件清单(server 对 --plugins 清单缺失 fail-fast)
+          printf '{ "plugins": {} }\n' > "${PKG}/plugin_manifest.json"
           cp dist/start-evorule.sh "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
           cd "${PKG}"
