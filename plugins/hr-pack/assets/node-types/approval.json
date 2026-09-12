@@ -2,6 +2,7 @@
   "node_type": "approval",
   "display_name": { "zh": "审批", "en": "Approval" },
   "description": "人工审批节点：低于阈值自动通过，达到阈值转人工审批（编译为 branch(lt)+io_request 或 io_request）",
+  "out_guards": ["approved"],
   "params_form": [
     { "field_id": "role", "display_name": { "zh": "审批角色", "en": "Approver Role" }, "type": "text", "required": true },
     { "field_id": "prompt", "display_name": { "zh": "审批提示语", "en": "Approval Prompt" }, "type": "textarea", "required": true },

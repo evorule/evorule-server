@@ -1,8 +1,8 @@
 {
   "id": "hr-pack",
-  "contract_version": "1.1",
+  "contract_version": "1.2",
   "version": "0.3.0",
-  "description": "人事域声明式资产包（v1.1：1 场景 + 2 规则模板 + 1 审批流程 + 3 节点类型 + flow-compile 编译服务，零核心改动）",
+  "description": "人事域声明式资产包（v1.2：1 场景 + 2 规则模板 + 1 审批流程 + 3 节点类型（含 out_guards 声明）+ flow-compile 编译服务，零核心改动）",
   "capabilities": ["assets", "flow-compile"],
   "service": { "base_url": "http://127.0.0.1:9120" },
   "assets": {

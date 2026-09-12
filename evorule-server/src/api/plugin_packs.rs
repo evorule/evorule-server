@@ -825,11 +825,14 @@ fn validate_template(
 /// v0 流程节点类型词表（契约 v1.1 §4.6 钉死；扩充 = 契约演进事件）
 const FLOW_NODE_TYPES: &[&str] = &["start", "end", "approval"];
 
-/// 校验设计器节点类型资产（契约 §4.4；第二期 Phase C 生效）：
+/// 校验设计器节点类型资产（契约 §4.4；第二期 Phase C 生效，v1.2 增 out_guards）：
 /// - `node_type` 收敛于 v0 流程节点词表 [`FLOW_NODE_TYPES`]（新节点类型 = 契约
 ///   演进事件，装载期 fail-fast，不允许资产静默扩词表）；
 /// - `display_name` 双语（R5）；`params_form` 复用 §4.3 控件词表校验——画布
 ///   属性面板唯一来源（R4：前端零领域知识）；
+/// - `out_guards`（v1.2 可选）= 该类型节点出边允许的 guard 取值域声明（画布
+///   提示面），成员收敛 v0 guard 词表 `['approved']`（词表扩充 = 契约演进
+///   事件）；缺省/空数组 = 该类型出边禁 guard（与 v1.0/v1.1 行为一致）；
 /// - `compile_hint.emits` 收敛于 R2 transform 词表（画布纯展示提示，
 ///   不参与编译语义；编译产物由 server 侧 R2 门禁强制兜底，契约 §6）。
 ///
@@ -847,6 +850,7 @@ fn validate_node_type(
         if !matches!(
             k.as_str(),
             "node_type" | "display_name" | "description" | "params_form" | "compile_hint"
+                | "out_guards"
         ) {
             return Err(fail(format!("未知顶层字段 '{k}'（契约 §4.4 钉死）")));
         }
@@ -908,6 +912,25 @@ fn validate_node_type(
             None,
             scene_fields,
         )?;
+    }
+    if let Some(og) = obj.get("out_guards") {
+        let og = og
+            .as_array()
+            .ok_or_else(|| fail(format!("节点类型 {node_type} out_guards 必须是数组")))?;
+        for g in og {
+            let gs = g
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    fail(format!("节点类型 {node_type} out_guards 成员必须是非空字符串"))
+                })?;
+            if gs != FLOW_GUARD_APPROVED {
+                return Err(fail(format!(
+                    "节点类型 {node_type} out_guards 成员 '{gs}' 不在 v0 guard 词表 \
+                     ['{FLOW_GUARD_APPROVED}']（词表扩充 = 契约演进事件,fail-fast）"
+                )));
+            }
+        }
     }
     Ok(node_type.to_string())
 }
@@ -1558,7 +1581,8 @@ pub async fn list_plugins_handler(State(api): State<SessionApi>) -> Json<Value> 
             })
         })
         .collect();
-    Json(serde_json::json!({ "contract_version": "1.1", "plugins": plugins }))
+    // server 支持的契约级别（v1.2 增 node_types.out_guards 声明面；MINOR 向后兼容）
+    Json(serde_json::json!({ "contract_version": "1.2", "plugins": plugins }))
 }
 
 /// GET /api/plugins/{pack_id}/assets/{kind} —— 包资产只读面
@@ -2223,6 +2247,8 @@ mod tests {
     /// 零 loader 改动、纯数据包即可新增领域，契约 §1"资产是静态数据"的实证）。
     /// Phase B 起该包升级契约 v1.1（+flow-compile 能力 + 1 流程资产）——
     /// v1.0/v1.1 混装同仓装载 = MINOR 向后兼容的回归证据。
+    /// UV-178 批次E 起升 v1.2（node_types.out_guards 声明面）——
+    /// v1.0 finance-pack（无 node_types）与 v1.2 hr-pack 混装 = 同款回归证据。
     #[test]
     fn hr_pack_replication_loads_and_generates() {
         let pack_json = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2280,7 +2306,8 @@ mod tests {
             );
             assert_eq!(d1["provenance"]["pack"], json!("hr-pack"));
             assert_eq!(d1["provenance"]["template"], json!(tpl.template_id));
-            assert_eq!(d1["provenance"]["contract_version"], json!("1.1"));
+            // v1.2 起 hr-pack 升位（node_types.out_guards 声明面）；MINOR 向后兼容
+            assert_eq!(d1["provenance"]["contract_version"], json!("1.2"));
         }
     }
 
@@ -2654,6 +2681,67 @@ mod tests {
         let v = json!({ "node_type": "end", "display_name": "结束" });
         let err = validate_node_type("p", &v, &flow_scene()).unwrap_err();
         assert!(err.contains("display_name"), "got: {err}");
+    }
+
+    // ===== v1.2：node_types.out_guards 声明面（画布 guard 取值域提示） =====
+
+    #[test]
+    fn node_type_accepts_out_guards_within_v0_vocab() {
+        let mut v = node_type_approval();
+        v.as_object_mut()
+            .unwrap()
+            .insert("out_guards".to_string(), json!(["approved"]));
+        assert_eq!(
+            validate_node_type("p", &v, &flow_scene()).unwrap(),
+            "approval"
+        );
+    }
+
+    #[test]
+    fn node_type_accepts_out_guards_empty_and_absent() {
+        let mut v = node_type_approval();
+        v.as_object_mut()
+            .unwrap()
+            .insert("out_guards".to_string(), json!([]));
+        assert_eq!(
+            validate_node_type("p", &v, &flow_scene()).unwrap(),
+            "approval"
+        );
+        // 缺省 = 该类型出边禁 guard（v1.0/v1.1 行为向后兼容）
+        let plain = node_type_approval();
+        assert_eq!(
+            validate_node_type("p", &plain, &flow_scene()).unwrap(),
+            "approval"
+        );
+    }
+
+    #[test]
+    fn node_type_rejects_out_guards_outside_v0_vocab() {
+        let mut v = node_type_approval();
+        v.as_object_mut()
+            .unwrap()
+            .insert("out_guards".to_string(), json!(["rejected"]));
+        let err = validate_node_type("p", &v, &flow_scene()).unwrap_err();
+        assert!(
+            err.contains("out_guards") && err.contains("guard 词表"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn node_type_rejects_out_guards_malformed() {
+        let mut v = node_type_approval();
+        v.as_object_mut()
+            .unwrap()
+            .insert("out_guards".to_string(), json!("approved"));
+        let err = validate_node_type("p", &v, &flow_scene()).unwrap_err();
+        assert!(err.contains("out_guards 必须是数组"), "got: {err}");
+        let mut v2 = node_type_approval();
+        v2.as_object_mut()
+            .unwrap()
+            .insert("out_guards".to_string(), json!([""]));
+        let err2 = validate_node_type("p", &v2, &flow_scene()).unwrap_err();
+        assert!(err2.contains("非空字符串"), "got: {err2}");
     }
 
     // ===== Phase C：编译源分派（画布草稿编译,契约 v1.1 §6） =====
