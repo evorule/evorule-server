@@ -3,6 +3,8 @@
 # 来源与 release.yml win64 打包步骤保持一致：
 #   - evorule-server.exe        <- 本仓 target/release
 #   - evorule-rule-serve.exe    <- evorule-rule 仓 target/release（与 RULE_SERVE_VERSION 配套）
+#   - ai-plugin 分发件          <- 本仓 plugins/ai-plugin（release exe + plugin.json + config.example.json；
+#                                  凭据文件 ai-plugin.json 绝不入包）
 #   - web/                      <- evorule-console-cloud build/（adapter-static 产物）
 #   - rules/                    <- console-cloud assets/evorule-rules/*.json + 本仓 rules/10_role13_demo.json
 #   - resources/server_eval.json / service_registry.json / dist 启动脚本与说明
@@ -27,6 +29,14 @@ function RequireFile($path) {
 Copy-Item (RequireFile (Join-Path $ServerRepo "target\release\evorule-server.exe")) $payload
 Copy-Item (RequireFile (Join-Path $RuleRepo "target\release\evorule-rule-serve.exe")) $payload
 
+# 1b. AI 插件分发件（缺省禁用；启用引导见 README-STARTUP.txt / 激活状态卡）
+#     需先编译: cargo build --release --manifest-path plugins/ai-plugin/Cargo.toml
+$AiPluginDir = Join-Path $payload "plugins\ai-plugin"
+New-Item $AiPluginDir -ItemType Directory -Force | Out-Null
+Copy-Item (RequireFile (Join-Path $ServerRepo "plugins\ai-plugin\target\release\evorule-ai-plugin.exe")) $AiPluginDir
+Copy-Item (RequireFile (Join-Path $ServerRepo "plugins\ai-plugin\plugin.json")) $AiPluginDir
+Copy-Item (RequireFile (Join-Path $ServerRepo "plugins\ai-plugin\config.example.json")) $AiPluginDir
+
 # 2. web 静态产物
 Copy-Item (RequireFile (Join-Path $ConsoleRepo "build")) (Join-Path $payload "web") -Recurse
 
@@ -46,12 +56,12 @@ foreach ($f in @("start-evorule.bat","start-evorule.sh","start-watchdog.bat","wa
     Copy-Item (RequireFile (Join-Path $dist $f)) $payload
 }
 
-# 6. 插件清单：写中性清单（不含任何外部插件条目）
-#    注意 dist/plugin_manifest.json 是开发机专用（引用 ../plugins/finance-config），
-#    官方 zip 也不打包它；包内必须自带合法清单，否则 server 对 --plugins
-#    fail-fast 拒启（v0.5.2 win64 zip 即因此主服务起不来）。
-#    空条目清单 = 内建插件全启 + 零外部插件（见 main.rs load_plugin_mounts）。
-Set-Content -Path (Join-Path $payload "plugin_manifest.json") -Value '{ "plugins": {} }' -Encoding ascii
+# 6. 插件清单：预登记 ai-plugin（enabled:false 缺省禁用，包内自带其
+#    plugin.json/exe/config.example，路径均包内相对；finance/hr pack 仍
+#    不入包保持零外部包形态）。dist/plugin_manifest.json 是开发机专用
+#    （引用 ../plugins/finance-config），官方 zip 也不打包它；包内必须
+#    自带合法清单，否则 server 对 --plugins fail-fast 拒启。
+Set-Content -Path (Join-Path $payload "plugin_manifest.json") -Value '{ "plugins": { "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" } } }' -Encoding ascii
 
 $count = (Get-ChildItem $payload -Recurse -File).Count
 $size = [math]::Round((Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)

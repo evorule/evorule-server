@@ -6,6 +6,9 @@
 #   - evorule-server-v{VER}-linux64.tar.gz (同构 linux 包)
 #   - sha256-checks.txt + cosign .sig
 # 注: 经产品决策(2026-09-11)本仓不发 macOS 产物(定位 Windows 一键包 + Linux 服务)
+# 注(UV-178 批次A): 双包均内置 ai-plugin 分发件(plugins/ai-plugin/,缺省禁用:
+#   evorule-ai-plugin 二进制 + plugin.json + config.example.json;凭据文件
+#   ai-plugin.json 绝不入包;包内 plugin_manifest.json 预登记 enabled:false 条目)
 #
 # 设计说明:
 # - 与 evorule 仓同构: gitee 是主仓/发布主入口, github 是镜像(承担双平台
@@ -75,6 +78,11 @@ jobs:
       - name: 构建 server 二进制
         run: cargo build -p evorule-server --release --target ${{ matrix.target }} --bin evorule-server
 
+      # ai-plugin 独立插件包(脱离 workspace),同 target 双平台编译;
+      # 依赖 rustls(无 OpenSSL),musl 静态构建可行
+      - name: 构建 ai-plugin 二进制
+        run: cargo build --release --target ${{ matrix.target }} --manifest-path plugins/ai-plugin/Cargo.toml
+
       # sanity check 不做输出重定向: windows runner 默认 pwsh 不认 >/dev/null,
       # 且 --help 正常退出码为 0,输出到控制台无害(此处只为证明"编译过且能起")
       - name: binary sanity check (防"编译过但起不来"被当成成功)
@@ -85,6 +93,12 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: target/${{ matrix.target }}/release/evorule-server${{ matrix.ext }}
+
+      - name: 上传 ai-plugin 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-ai-plugin
+          path: plugins/ai-plugin/target/${{ matrix.target }}/release/evorule-ai-plugin${{ matrix.ext }}
 
   # ==========================================================================
   # 2. 发布原始二进制 cosign keyless 签名 (OIDC, 无密钥管理)
@@ -222,10 +236,15 @@ jobs:
           cp rules/10_role13_demo.json "${PKG}/rules/"
           cp resources/server_eval.json "${PKG}/resources/"
           cp service_registry.json "${PKG}/"
-          # 包内自带中性插件清单(空条目=内建插件全启): dist/ 的开发机清单引用
+          # ai-plugin 分发件(UV-178 批次A): 缺省禁用,启用引导见 README-STARTUP.txt;
+          # 凭据文件 ai-plugin.json 绝不入包
+          mkdir -p "${PKG}/plugins/ai-plugin"
+          cp artifacts/evorule-server-windows-x86_64-ai-plugin/evorule-ai-plugin.exe "${PKG}/plugins/ai-plugin/"
+          cp plugins/ai-plugin/plugin.json plugins/ai-plugin/config.example.json "${PKG}/plugins/ai-plugin/"
+          # 包内自带插件清单(预登记 ai-plugin enabled:false): dist/ 的开发机清单引用
           # 包外 finance-config, 不可入包; server 对 --plugins 清单缺失 fail-fast,
           # 缺此文件会导致主服务在干净机器上拒启
-          printf '{ "plugins": {} }\n' > "${PKG}/plugin_manifest.json"
+          printf '{ "plugins": { "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" } } }\n' > "${PKG}/plugin_manifest.json"
           # bat 模板按 .gitattributes 钉 CRLF 检出,直拷即兼容记事本/cmd
           cp dist/start-evorule.bat "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
@@ -235,7 +254,7 @@ jobs:
           cp dist/plugins-watchdog.json "${PKG}/"
           # 包内完整性清单
           cd "${PKG}"
-          sha256sum evorule-server.exe evorule-rule-serve.exe > sha256-checks.txt
+          sha256sum evorule-server.exe evorule-rule-serve.exe plugins/ai-plugin/evorule-ai-plugin.exe > sha256-checks.txt
           cd ..
           zip -qr "${PKG}.zip" "${PKG}"
           ls -la "${PKG}.zip"
@@ -255,12 +274,17 @@ jobs:
           cp rules/10_role13_demo.json "${PKG}/rules/"
           cp resources/server_eval.json "${PKG}/resources/"
           cp service_registry.json "${PKG}/"
-          # 同 win64: 包内自带中性插件清单(server 对 --plugins 清单缺失 fail-fast)
-          printf '{ "plugins": {} }\n' > "${PKG}/plugin_manifest.json"
+          # ai-plugin 分发件(UV-178 批次A, musl 静态二进制): 同 win64 语义
+          mkdir -p "${PKG}/plugins/ai-plugin"
+          cp artifacts/evorule-server-linux-x86_64-ai-plugin/evorule-ai-plugin "${PKG}/plugins/ai-plugin/"
+          chmod +x "${PKG}/plugins/ai-plugin/evorule-ai-plugin"
+          cp plugins/ai-plugin/plugin.json plugins/ai-plugin/config.example.json "${PKG}/plugins/ai-plugin/"
+          # 同 win64: 包内自带预登记插件清单(server 对 --plugins 清单缺失 fail-fast)
+          printf '{ "plugins": { "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" } } }\n' > "${PKG}/plugin_manifest.json"
           cp dist/start-evorule.sh "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
           cd "${PKG}"
-          sha256sum evorule-server evorule-rule-serve > sha256-checks.txt
+          sha256sum evorule-server evorule-rule-serve plugins/ai-plugin/evorule-ai-plugin > sha256-checks.txt
           cd ..
           tar -czf "${PKG}.tar.gz" "${PKG}"
           ls -la "${PKG}.tar.gz"
@@ -323,6 +347,7 @@ jobs:
 
             无需 Node/Rust/数据库;中文说明见包内 README-STARTUP.txt。
             rule-serve 治理服务二进制来自 [evorule-rule](${{ env.RULE_SERVE_VERSION }} 配套版本)。
+            包内已内置 AI 插件(plugins/ai-plugin/,缺省禁用;启用三步见 README-STARTUP.txt)。
           generate_release_notes: true
 
   # ==========================================================================

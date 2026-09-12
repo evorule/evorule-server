@@ -54,6 +54,26 @@ API Key,在页面右上角「设置 → LLM 配置」中填写:
 
 Key 只保存在你本机浏览器中,不会上传到任何第三方。
 
+体验服务端 AI 助手(可选,ai-plugin)
+----------------------------------
+包内已内置 AI 插件(plugins\ai-plugin\,缺省禁用)。相比上面的
+浏览器直连方式,服务端通道的 LLM 调用经插件审计链执行(审计页
+可查完整会话链),凭据保存在本机配置文件而非浏览器。启用三步:
+
+1. 编辑 plugin_manifest.json,把 ai-plugin 条目的
+   "enabled": false 改为 true
+2. 复制 plugins\ai-plugin\config.example.json 为同目录下的
+   ai-plugin.json,填入你的 LLM API Key(此文件含凭据,注意
+   保管,勿提交到版本库或外传)
+3. 双击 start-evorule.bat 重启:脚本检测到 ai-plugin.json
+   存在会自动拉起插件进程(端口 9130)
+
+启用后,在页面「设置 → LLM 配置」选择服务端通道并测试连接;
+激活状态卡会实时显示插件在线/离线状态。若希望插件进程崩溃后
+自动恢复,可启用看门狗(见下方"插件看门狗",ai-plugin 已预登记)。
+尚未启用(enabled 仍为 false)时,插件进程即使被拉起也空转,
+不注册任何服务,无副作用。
+
 体验服务调用(可选,离线可跑)
 ------------------------------
 本包内置「工具调用」演示:规则通过 call_service 指令调用
@@ -111,7 +131,10 @@ service_registry.json,可自行扩展为真实 HTTP 服务端点。
 - start-evorule.sh         一键启动脚本(Linux 版包内)
 - start-watchdog.bat       插件看门狗启动脚本(可选,Windows 版包内)
 - watchdog-plugins.ps1     看门狗主体(读 /api/health,离线自动拉起插件)
-- plugins-watchdog.json    看门狗配置(缺省不守护任何插件,按需登记)
+- plugins-watchdog.json    看门狗配置(缺省已预登记 ai-plugin;未启用该
+                           插件时看门狗不会动作;其余插件按需登记)
+- plugins\ai-plugin\       AI 插件(evorule-ai-plugin.exe + plugin.json
+                           + config.example.json;缺省禁用,启用见上文)
 - evorule-server.exe       主服务(evorule-server v0.6.0,运行时 :18080)
 - evorule-rule-serve.exe   治理服务(evorule-rule v0.3.1,规则资产库 :18081)
 - web\                     前端页面(evorule-console-cloud)

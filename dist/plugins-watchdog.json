@@ -4,5 +4,10 @@
   "offline_threshold": 3,
   "max_restarts_per_hour": 5,
   "fetch_timeout_secs": 5,
-  "plugins": {}
+  "plugins": {
+    "ai-plugin": {
+      "command": "plugins/ai-plugin/evorule-ai-plugin.exe",
+      "args": ["--config", "plugins/ai-plugin/ai-plugin.json"]
+    }
+  }
 }

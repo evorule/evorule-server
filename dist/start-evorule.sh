@@ -22,6 +22,13 @@ nohup ./evorule-server \
   --core-eval resources/server_eval.json \
   --wal-dir ./data/wal --wal-fsync \
   2>>data/server-stderr.log &
+# [Optional] ai-plugin: start automatically only when its config file exists
+if [ -f "plugins/ai-plugin/ai-plugin.json" ]; then
+  echo "[+] ai-plugin config found, starting ai-plugin (port 9130)..."
+  nohup ./plugins/ai-plugin/evorule-ai-plugin \
+    --config plugins/ai-plugin/ai-plugin.json \
+    2>>data/ai-plugin-stderr.log &
+fi
 sleep 2
 echo "[3/3] Done. Visit http://localhost:18080"
 echo "If a service fails to start, check data/server-stderr.log or"
