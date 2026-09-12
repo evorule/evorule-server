@@ -76,3 +76,8 @@ test_output.txt
 
 # 本地 cargo override（不进 CI，见 evorule-server/Cargo.toml UV-100 注释）
 .cargo/config.toml
+
+# === 安装器载荷（prepare-payload.ps1 生成,build.rs 整树内嵌;可随时重建,不入库）===
+# 2026-09-12 installer 源码入库（用户裁定）;payload 为分发包汇集产物
+# （exe/web 静态/rules/资源）,由 prepare-payload.ps1 重建,exe 另受全局 *.exe 规则排除
+installer/payload/
