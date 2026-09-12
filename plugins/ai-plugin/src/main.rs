@@ -98,11 +98,12 @@ fn main() {
         }
     };
     tracing::info!(
-        "ai-plugin 配置装载成功: {}（server={} llm_model={} 监听={}）",
+        "ai-plugin 配置装载成功: {}（server={} llm_model={} 监听={} 凭据来源={:?}）",
         path_used.display(),
         cfg.server_base_url,
         cfg.llm_model,
-        cfg.listen_addr
+        cfg.listen_addr,
+        cfg.llm_api_key_source
     );
 
     let listen_addr = cfg.listen_addr.clone();
@@ -173,7 +174,8 @@ fn resolve_config(explicit: Option<PathBuf>) -> Result<(PathBuf, String), String
     Err(format!(
         "找不到配置文件 ai-plugin.json（已查找: {}）。\
          自诊断指引: ① 复制 plugins/ai-plugin/config.example.json 为 ai-plugin.json; \
-         ② 填写 server_base_url/llm_endpoint/llm_api_key/llm_model; \
+         ② 填写 server_base_url/llm_endpoint/llm_model，LLM 凭据推荐设环境变量 \
+         EVORULE_AI_PLUGIN_LLM_API_KEY（不落盘），或填入文件 llm_api_key; \
          ③ 用 --config 指定路径或放到 exe 同目录; \
          ④ plugin.json 中 ai-plugin 条目 enabled=false 时不会装载（缺省禁用，配置完成后显式开启）",
         candidates

@@ -31,7 +31,8 @@
 //!     工具调用（影子扫描纪律扩展到工具面）；
 //!   - LLM/工具执行失败也要回写错误 io_response（引擎状态机收尾，不留
 //!     悬空 IoRequest），再向消费方显式报错，无静默兜底；
-//!   - 凭据（llm_api_key）不进日志/不进错误消息/不进 URL。
+//!   - 凭据（llm_api_key）不进日志/不进错误消息/不进 URL；推荐经环境变量
+//!     `EVORULE_AI_PLUGIN_LLM_API_KEY` 注入（不落盘），配置文件字段为兼容形态。
 //!
 //! 协议要点（与 audited-llm.ts 对齐）：
 //!   - 必须先订阅 SSE 再提交命令（broadcast 通道不重放历史）；
@@ -83,10 +84,23 @@ impl fmt::Display for PluginError {
 
 impl std::error::Error for PluginError {}
 
+/// LLM 凭据环境变量名（推荐注入方式：凭据不落盘；优先于配置文件值）。
+pub const LLM_API_KEY_ENV: &str = "EVORULE_AI_PLUGIN_LLM_API_KEY";
+
+/// LLM 凭据实际生效来源（日志/自诊断只记来源，不记凭据内容）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmApiKeySource {
+    /// 环境变量注入（推荐：凭据不落盘）
+    EnvVar,
+    /// 配置文件 ai-plugin.json（明文落盘，部署方需自管文件权限）
+    ConfigFile,
+}
+
 /// 插件配置（ai-plugin.json）。
 ///
-/// 凭据安全：`llm_api_key` 只存在于本结构，序列化/日志/错误消息均不得携带。
-#[derive(Debug, Clone)]
+/// 凭据安全：`llm_api_key` 只存在于本结构，序列化/日志/错误消息均不得携带
+/// （Debug 实现为手工脱敏版）。
+#[derive(Clone)]
 pub struct PluginConfig {
     /// 服务监听地址
     pub listen_addr: String,
@@ -97,6 +111,8 @@ pub struct PluginConfig {
     /// LLM API 根地址（OpenAI 兼容，/chat/completions 自动拼接）
     pub llm_endpoint: String,
     pub llm_api_key: String,
+    /// LLM 凭据生效来源（环境变量 > 配置文件）
+    pub llm_api_key_source: LlmApiKeySource,
     pub llm_model: String,
     /// 缺省采样温度（调用方可按次覆盖）
     pub llm_temperature: f64,
@@ -123,6 +139,36 @@ fn require_str(v: &Value, key: &str) -> Result<String, PluginError> {
     Ok(s.to_string())
 }
 
+/// 可选字符串字段：缺失/非字符串/空白 → None。
+fn optional_str(v: &Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// 凭据脱敏：Debug 输出不含 llm_api_key/server_auth_token 明文（UV-178 批次B）。
+impl std::fmt::Debug for PluginConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginConfig")
+            .field("listen_addr", &self.listen_addr)
+            .field("server_base_url", &self.server_base_url)
+            .field(
+                "server_auth_token",
+                &self.server_auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("llm_endpoint", &self.llm_endpoint)
+            .field("llm_api_key", &"[REDACTED]")
+            .field("llm_api_key_source", &self.llm_api_key_source)
+            .field("llm_model", &self.llm_model)
+            .field("llm_temperature", &self.llm_temperature)
+            .field("llm_timeout_ms", &self.llm_timeout_ms)
+            .field("tools_enabled", &self.tools_enabled)
+            .finish()
+    }
+}
+
 fn require_http(s: &str, key: &str) -> Result<(), PluginError> {
     if s.starts_with("http://") || s.starts_with("https://") {
         Ok(())
@@ -135,12 +181,37 @@ fn require_http(s: &str, key: &str) -> Result<(), PluginError> {
 
 impl PluginConfig {
     /// 从 JSON 解析；缺必填字段/非法值 fail-fast（附自诊断指引，不静默补省）。
+    ///
+    /// LLM 凭据优先级：环境变量 `EVORULE_AI_PLUGIN_LLM_API_KEY` > 配置文件
+    /// `llm_api_key`（后者改为可缺省）；两者皆缺 → fail-fast。环境变量取到
+    /// 空白值视为未设置（回落到文件值）。
     pub fn from_value(v: &Value) -> Result<Self, PluginError> {
+        Self::from_value_with_env(v, &|name| std::env::var(name).ok())
+    }
+
+    /// 测试注入版：env 闭包替代真实环境变量读取（其余语义同 `from_value`）。
+    pub fn from_value_with_env(
+        v: &Value,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Self, PluginError> {
         let server_base_url = require_str(v, "server_base_url")?;
         require_http(&server_base_url, "server_base_url")?;
         let llm_endpoint = require_str(v, "llm_endpoint")?;
         require_http(&llm_endpoint, "llm_endpoint")?;
-        let llm_api_key = require_str(v, "llm_api_key")?;
+        let llm_api_key_file = optional_str(v, "llm_api_key");
+        let llm_api_key_env = env(LLM_API_KEY_ENV)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let (llm_api_key, llm_api_key_source) = if let Some(k) = llm_api_key_env {
+            (k, LlmApiKeySource::EnvVar)
+        } else if let Some(k) = llm_api_key_file {
+            (k, LlmApiKeySource::ConfigFile)
+        } else {
+            return Err(PluginError::Config(format!(
+                "缺少 LLM 凭据（自诊断指引: 推荐设环境变量 {LLM_API_KEY_ENV}，凭据不落盘; \
+                 或在 ai-plugin.json 填 llm_api_key，明文落盘需自管文件权限且勿提交版本库)"
+            )));
+        };
         let llm_model = require_str(v, "llm_model")?;
         let listen_addr = v
             .get("listen_addr")
@@ -235,6 +306,7 @@ impl PluginConfig {
             server_auth_token,
             llm_endpoint,
             llm_api_key,
+            llm_api_key_source,
             llm_model,
             llm_temperature,
             llm_timeout_ms,
@@ -1276,7 +1348,51 @@ mod tests {
             r#"{"server_base_url":"http://x","llm_endpoint":"http://x","llm_model":"m"}"#,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("缺少必填字段 'llm_api_key'"));
+        // 环境变量与文件字段皆缺 → fail-fast 且指引提到环境变量名
+        assert!(err.to_string().contains(LLM_API_KEY_ENV));
+    }
+
+    #[test]
+    fn config_llm_api_key_env_overrides_file() {
+        let v = serde_json::json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_api_key":"file-key","llm_model":"m"});
+        let cfg = PluginConfig::from_value_with_env(&v, &|_| Some("  env-key  ".to_string()))
+            .unwrap();
+        assert_eq!(cfg.llm_api_key, "env-key");
+        assert_eq!(cfg.llm_api_key_source, LlmApiKeySource::EnvVar);
+    }
+
+    #[test]
+    fn config_llm_api_key_blank_env_falls_back_to_file() {
+        let v = serde_json::json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_api_key":"file-key","llm_model":"m"});
+        let cfg =
+            PluginConfig::from_value_with_env(&v, &|_| Some("   ".to_string())).unwrap();
+        assert_eq!(cfg.llm_api_key, "file-key");
+        assert_eq!(cfg.llm_api_key_source, LlmApiKeySource::ConfigFile);
+    }
+
+    #[test]
+    fn config_llm_api_key_env_without_file_field() {
+        // 文件省略 llm_api_key + 环境变量在场 → 合法（凭据不落盘形态）
+        let v = serde_json::json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_model":"m"});
+        let cfg = PluginConfig::from_value_with_env(&v, &|_| Some("env-key".to_string()))
+            .unwrap();
+        assert_eq!(cfg.llm_api_key, "env-key");
+        assert_eq!(cfg.llm_api_key_source, LlmApiKeySource::EnvVar);
+    }
+
+    #[test]
+    fn config_debug_redacts_credentials() {
+        let v = serde_json::json!({"server_base_url":"http://x","server_auth_token":"tok-123",
+            "llm_endpoint":"http://y","llm_api_key":"file-key","llm_model":"m"});
+        let cfg = PluginConfig::from_value_with_env(&v, &|_| None::<String>).unwrap();
+        let s = format!("{cfg:?}");
+        assert!(!s.contains("file-key"));
+        assert!(!s.contains("tok-123"));
+        assert!(s.contains("[REDACTED]"));
+        assert!(s.contains("EnvVar") || s.contains("ConfigFile"));
     }
 
     #[test]

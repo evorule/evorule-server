@@ -3,7 +3,7 @@
   "server_base_url": "http://127.0.0.1:18080",
   "server_auth_token": "",
   "llm_endpoint": "https://api.minimaxi.com/v1",
-  "llm_api_key": "在此填入你的 LLM API Key（此文件含凭据，注意文件权限，勿提交版本库）",
+  "llm_api_key": "",
   "llm_model": "MiniMax-Text-01",
   "llm_temperature": 0.2,
   "llm_timeout_ms": 60000
