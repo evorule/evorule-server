@@ -1756,6 +1756,7 @@ fn resolve_flow_refs(pack: &PluginPack, flow: &Value) -> Result<Value, String> {
 /// 请求 = `{ "flow": <已解析 form_ref 的 flow> }`；
 /// 响应 = `{ "rule_draft": <规则草稿>, "compiler_version": "<semver>" }`。
 /// 传输/超时/解析失败全部显式 Err（调用方映射 502 + 自诊断），不静默。
+/// 重定向不跟随（P0-1/UV-180：SSRF 防线，对齐 io_handlers B1 修复）——3xx 按显式错误透传。
 async fn compile_via_service(
     base_url: &str,
     flow: &Value,
@@ -1763,6 +1764,9 @@ async fn compile_via_service(
     let url = format!("{}/v1/compile", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(COMPILE_TIMEOUT_SECS))
+        // P0-1/UV-180：重定向不跟随（SSRF 防线，对齐 io_handlers B1 修复）——
+        // 本地编译服务可借 302 把请求（含 flow 内容）投递到任意主机。
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("编译 HTTP 客户端构建失败: {e}"))?;
     let resp = client
@@ -1825,11 +1829,11 @@ fn resolve_compile_source<'a>(
     };
     let draft_flow = v
         .get("flow")
-        .ok_or_else(|| "请求体必须为空（编译已装载流程）或含 flow 键（编译画布草稿,契约 v1.1 §6）")?;
+        .ok_or("请求体必须为空（编译已装载流程）或含 flow 键（编译画布草稿,契约 v1.1 §6）")?;
     let body_id = draft_flow
         .get("flow_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| "画布草稿 flow 缺 flow_id（契约 v1.1 §4.6）")?;
+        .ok_or("画布草稿 flow 缺 flow_id（契约 v1.1 §4.6）")?;
     if body_id != flow_id {
         return Err(format!(
             "草稿 flow_id='{body_id}' 与路径 flow_id='{flow_id}' 漂移 — 请对齐（fail-fast,不静默）"
@@ -2601,6 +2605,45 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("400"), "got: {err}");
         assert!(err.contains("flow 缺 nodes"), "got: {err}");
+    }
+
+    /// P0-1（UV-180 批次 B）：编译客户端不跟随重定向——本地编译服务可借 302
+    /// 把请求（含 flow 内容）投递到任意主机。若重定向被跟随，目标将返回合法
+    /// 信封导致本测试误绿；Policy::none 下 302 原样返回（空 body → 非 JSON
+    /// 错误透传），重定向目标必须零命中。
+    #[tokio::test]
+    async fn compile_via_service_does_not_follow_redirect() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let target_hits = hits.clone();
+        let app = axum::Router::new()
+            .route(
+                "/rd/v1/compile",
+                axum::routing::post(|| async {
+                    (StatusCode::FOUND, [("Location", "/target/v1/compile")])
+                }),
+            )
+            .route(
+                "/target/v1/compile",
+                axum::routing::post(move || {
+                    let target_hits = target_hits.clone();
+                    async move {
+                        target_hits.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({ "rule_draft": {}, "compiler_version": "0.0.0" }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let err = compile_via_service(
+            &format!("http://127.0.0.1:{}/rd", addr.port()),
+            &flow_value(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "重定向目标不得被访问");
+        assert!(err.contains("302"), "302 应按显式错误透传: {err}");
     }
 
     // ===== Phase C：节点类型资产装载/校验（契约 §4.4） =====

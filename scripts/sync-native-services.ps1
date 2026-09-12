@@ -17,12 +17,18 @@
 # 用法：
 #   pwsh ./scripts/sync-native-services.ps1                        # 默认 D:\evorule-rule
 #   pwsh ./scripts/sync-native-services.ps1 -RepoRule E:\evorule-rule
+#   pwsh ./scripts/sync-native-services.ps1 -Verify                # 校验模式（CI 用）
+#
+# -Verify 模式：不复制、不跑测试，仅逐插件对比 SSOT 与治理侧嵌入副本是否
+#   逐字节一致（哈希对比，零 cargo 依赖）；任何漂移即退出码 1（fail-closed）。
+#   用途：CI 漂移检查——SSOT 改动而忘记跑同步脚本时，此模式红灯拦截。
 #
 # 退出码 0 = 同步完成且双侧守卫全绿；非 0 = 存在失败项（如实退出）。
 
 [CmdletBinding()]
 param(
-    [string]$RepoRule = "D:\evorule-rule"
+    [string]$RepoRule = "D:\evorule-rule",
+    [switch]$Verify
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,6 +43,31 @@ $plugins = @(
 )
 
 if (-not (Test-Path (Join-Path $RepoRule "Cargo.toml"))) { Write-Host "[FAIL] 治理仓不存在: $RepoRule" -ForegroundColor Red; exit 1 }
+
+# ── 校验模式（-Verify）：SSOT vs 嵌入副本逐字节对比，漂移即 fail-closed ──
+if ($Verify) {
+    $verifyFailures = 0
+    foreach ($p in $plugins) {
+        $ssot = Join-Path $repoRoot "plugins\$($p.Id)\official_native_services.json"
+        $embedded = Join-Path $RepoRule "src\model\official_native_services.$($p.Id).embedded.json"
+        if (-not (Test-Path $ssot)) { Write-Host "[FAIL] $($p.Id) SSOT 不存在: $ssot" -ForegroundColor Red; $verifyFailures++; continue }
+        if (-not (Test-Path $embedded)) { Write-Host "[FAIL] $($p.Id) 嵌入副本不存在: $embedded（SSOT 已改而未同步？）" -ForegroundColor Red; $verifyFailures++; continue }
+        $hA = (Get-FileHash $ssot -Algorithm SHA256).Hash
+        $hB = (Get-FileHash $embedded -Algorithm SHA256).Hash
+        if ($hA -ne $hB) {
+            Write-Host "[FAIL] $($p.Id) 嵌入副本与 SSOT 漂移（治理侧 sensitive/description 将静默失真）— 请运行本脚本（无 -Verify）重新同步" -ForegroundColor Red
+            $verifyFailures++
+        } else {
+            Write-Host "[OK] $($p.Id) 嵌入副本与 SSOT 逐字节一致" -ForegroundColor Green
+        }
+    }
+    if ($verifyFailures -gt 0) {
+        Write-Host "`n校验失败：$verifyFailures 项漂移 — 治理侧目录正在低报/失真，禁止合入" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "`n校验通过：$($plugins.Count) 份嵌入副本与 SSOT 全部一致" -ForegroundColor Green
+    exit 0
+}
 
 # ① 复制（只复制，不移动）+ ② 字节核验（复制后必须逐字节一致）
 $syncFailures = 0

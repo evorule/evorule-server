@@ -432,8 +432,13 @@ pub fn next_sse_event(buffer: &mut String) -> Result<Option<SseEvent>, PluginErr
 }
 
 /// HTTP 客户端（无全局超时：各等待点独立限时，SSE 长流不受限）
+///
+/// 重定向不跟随（P0-1/UV-180：SSRF 防线，对齐 io_handlers http_handler B1 修复）：
+/// reqwest 默认跟随重定向并可能复发 Authorization 头，302 可把出站请求
+/// （含 LLM Key）投递到任意主机。禁用后 3xx 原样返回，由调用方按错误处理。
 pub fn build_http_client() -> Result<reqwest::Client, PluginError> {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| PluginError::Config(format!("HTTP 客户端构建失败: {e}")))
 }
@@ -1321,7 +1326,7 @@ mod tests {
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     // ---------- 配置解析 ----------
@@ -1468,6 +1473,47 @@ mod tests {
         assert_eq!(e.id, Some(3));
         let mut bad = String::from("data: not-json\n\n");
         assert!(next_sse_event(&mut bad).is_err());
+    }
+
+    // ---------- build_http_client：重定向门禁 ----------
+
+    /// P0-1（UV-180 批次 B）：出站客户端不跟随重定向——reqwest 默认跟随 3xx
+    /// 且可能复发 Authorization 头，302 可把请求（含 LLM Key）投递到任意主机。
+    /// 3xx 必须原样返回，重定向目标零命中。
+    #[tokio::test]
+    async fn build_http_client_does_not_follow_redirect() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let target_hits = hits.clone();
+        let app = Router::new()
+            .route(
+                "/rd",
+                get(|| async { axum::response::Redirect::to("/target") }),
+            )
+            .route(
+                "/target",
+                get(move || {
+                    let target_hits = target_hits.clone();
+                    async move {
+                        target_hits.fetch_add(1, Ordering::SeqCst);
+                        "should-not-be-hit"
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let client = build_http_client().unwrap();
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/rd", addr.port()))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_redirection(),
+            "3xx 必须原样返回(不跟随): {}",
+            resp.status()
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "重定向目标不得被访问");
     }
 
     // ---------- mock server（sidecar 全回路 e2e：单轮与多轮工具循环） ----------
