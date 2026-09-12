@@ -1,10 +1,14 @@
 ﻿# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-# ai-plugin 脚本级 e2e（UV-172 DoD-①②）：真实 evorule-server + 真实 ai-plugin 进程 + mock LLM。
+# ai-plugin 脚本级 e2e（UV-172 DoD-①② + UV-174 P1-c 工具回路全链）：
+# 真实 evorule-server + 真实 ai-plugin 进程 + mock LLM。
 # 断言:
 #   ① REST invoke 链路 200，返回含 reply 与 session_id
 #   ② sidecar 会话审计链含两事实: call_external 命令(prompt 全文) + io_response(结果全文)
 #   ③ 失败路径: mock LLM 不可达 → invoke 显式 502，无静默
+#   ④ 工具回路（UV-174）: NL 请求触发 tools.enabled 白名单工具调用 → 审计链含
+#      call_service+tool_name 命令事实、多轮 call_external、多轮 IoRequest、
+#      io_response 工具结果全文、最终回复；消费方收到 reply+session_id
 # 用法: powershell -ExecutionPolicy Bypass -File e2e.ps1
 # 退出码: 0=全过 1=失败
 
@@ -16,6 +20,7 @@ $PluginExe = Join-Path $PSScriptRoot "target\debug\evorule-ai-plugin.exe"
 $ServerCwd = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $ServerUrl = "http://127.0.0.1:18080"
 $MockLlmPort = 19199
+$MockLlmPort3 = 19197   # 工具回路 e2e 用（状态化 mock LLM）
 
 $Failures = New-Object System.Collections.Generic.List[string]
 
@@ -33,7 +38,7 @@ function Write-Utf8NoBom($Path, $Text) {
 # ---------- 环境预检 ----------
 if (-not (Test-Path $ServerExe)) { Write-Host "server 二进制缺失: $ServerExe（先 cargo build -p evorule-server --bin evorule-server）"; exit 1 }
 if (-not (Test-Path $PluginExe)) { Write-Host "ai-plugin 二进制缺失: $PluginExe（先在本目录 cargo build）"; exit 1 }
-foreach ($p in @(18080, 9130, $MockLlmPort)) {
+foreach ($p in @(18080, 9130, $MockLlmPort, $MockLlmPort3)) {
     $used = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
     if ($used) { Write-Host "端口 $p 已被占用，e2e 无法启动"; exit 1 }
 }
@@ -194,6 +199,125 @@ try {
         if ($p -and -not $p.HasExited) { try { $p.Kill(); $p.WaitForExit(5000) | Out-Null } catch {} }
     }
     Remove-Item -Recurse -Force $Tmp2 -ErrorAction SilentlyContinue
+}
+
+# ---------- 8. 工具回路全链 e2e（UV-174 P1-c: tools.enabled + 多轮审计链） ----------
+# 独立环境: 状态化 mock LLM（第 1 次调用回 rules_list 工具请求 JSON，第 2 次
+# 回最终答复），插件配置授权 tools.enabled=["rules_list"] → 全链:
+# call_external(0) → call_service(rules_list) → 插件自执行 GET /api/rules →
+# io_response(工具结果全文) → call_external(1) → io_response(最终答复)。
+$Tmp3 = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-plugin-e2e3-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+New-Item -ItemType Directory -Path $Tmp3 | Out-Null
+$serverProc3 = $null; $pluginProc3 = $null; $mockJob3 = $null
+$FinalReply3 = "工具回路 e2e 最终答复(规则库已查询)"
+try {
+    # 状态化 mock LLM：用计数文件区分第 1/2 次调用（Start-Job 独立运行空间，
+    # 只能经文件系统传状态；调用严格串行，无竞态）
+    $llmCounterFile = Join-Path $Tmp3 "llm-call-counter.txt"
+    Write-Utf8NoBom $llmCounterFile "0"
+    $mockJob3 = Start-Job -ArgumentList $MockLlmPort3, $llmCounterFile -ScriptBlock {
+        param($port, $counterFile)
+        $l = [System.Net.HttpListener]::new()
+        $l.Prefixes.Add("http://127.0.0.1:$port/")
+        $l.Start()
+        while ($l.IsListening) {
+            $ctx = $l.GetContext()
+            try {
+                $null = [System.IO.StreamReader]::new($ctx.Request.InputStream).ReadToEnd()
+                $n = 0
+                if (Test-Path $counterFile) { $n = [int](Get-Content $counterFile -Raw) }
+                $n++
+                Set-Content -Path $counterFile -Value $n -Encoding Ascii
+                if ($n -eq 1) {
+                    $content = '{"tool_call":{"name":"rules_list","arguments":{}}}'
+                } else {
+                    $content = '工具回路 e2e 最终答复(规则库已查询)'
+                }
+                $payload = '{"choices":[{"message":{"content":' +
+                    ($content | ConvertTo-Json -Compress) + '}}]}'
+                $buf = [System.Text.Encoding]::UTF8.GetBytes($payload)
+                $ctx.Response.ContentType = "application/json"
+                $ctx.Response.StatusCode = 200
+                $ctx.Response.OutputStream.Write($buf, 0, $buf.Length)
+                $ctx.Response.OutputStream.Close()
+            } catch { try { $ctx.Response.Abort() } catch {} }
+        }
+    }
+
+    # 插件配置（手写 JSON：PS5.1 ConvertTo-Json 会把单元素数组塌缩成标量，
+    # tools.enabled=["rules_list"] 会被写成 "rules_list" 而过不了门禁校验）
+    $pluginCfg3 = Join-Path $Tmp3 "ai-plugin.json"
+    $pluginCfg3Json = @"
+{
+  "listen_addr": "127.0.0.1:9130",
+  "server_base_url": "$ServerUrl",
+  "llm_endpoint": "http://127.0.0.1:$MockLlmPort3/v1",
+  "llm_api_key": "e2e-mock-key",
+  "llm_model": "e2e-model",
+  "llm_timeout_ms": 30000,
+  "tools": { "enabled": ["rules_list"] }
+}
+"@
+    Write-Utf8NoBom $pluginCfg3 $pluginCfg3Json
+    $pluginProc3 = Start-Process -FilePath $PluginExe -ArgumentList @("--config", $pluginCfg3) -PassThru -WindowStyle Hidden
+
+    $manifest3 = Join-Path $Tmp3 "plugin_manifest.json"
+    @{
+        plugins = @{
+            "ai-plugin" = @{ enabled = $true; manifest = (Resolve-Path (Join-Path $PSScriptRoot "plugin.json")).Path -replace "\\", "/" }
+        }
+    } | ConvertTo-Json -Depth 5 | ForEach-Object { Write-Utf8NoBom $manifest3 $_ }
+    $serverProc3 = Start-Process -FilePath $ServerExe `
+        -ArgumentList @("--addr", "127.0.0.1:18080", "--insecure-serve", "--allow-loopback", "--wal-dir", (Join-Path $Tmp3 "wal"), "--plugins", $manifest3) `
+        -WorkingDirectory $ServerCwd -PassThru -WindowStyle Hidden
+
+    $ready3 = $false
+    foreach ($i in 1..40) {
+        Start-Sleep -Milliseconds 500
+        try {
+            $null = Invoke-RestMethod -Uri "$ServerUrl/api/health" -TimeoutSec 2 -ErrorAction Stop
+            $null = Invoke-RestMethod -Uri "http://127.0.0.1:9130/health" -TimeoutSec 2 -ErrorAction Stop
+            $ready3 = $true; break
+        } catch {}
+    }
+    Assert-True $ready3 "工具回路环境就绪"
+    if (-not $ready3) { throw "工具回路环境未就绪" }
+
+    $body3 = '{"messages":[{"role":"user","content":"e2e 工具探针: 查一下规则库再回答"}]}'
+    $bodyFile3 = Join-Path $Tmp3 "invoke-body.json"
+    Write-Utf8NoBom $bodyFile3 $body3
+    $curlOut3 = Join-Path $Tmp3 "invoke-out.json"
+    $status3 = & curl.exe -s -o $curlOut3 -w "%{response_code}" -X POST -H "Content-Type: application/json" --data "@$bodyFile3" "$ServerUrl/api/services/ai_plugin_chat/invoke"
+    Assert-True ($status3 -eq 200) "工具回路 invoke 返回 200"
+    $resp3 = if (Test-Path $curlOut3) { (Get-Content $curlOut3 -Raw -Encoding UTF8) | ConvertFrom-Json } else { $null }
+    if ($resp3 -is [string]) { $resp3 = $resp3 | ConvertFrom-Json }
+    Assert-True ($null -ne $resp3 -and $resp3.reply -eq $FinalReply3) "消费方收到最终回复（经工具回路）"
+    $sid3 = 0
+    if ($null -ne $resp3) { $sid3 = [int]$resp3.session_id }
+    Assert-True ($sid3 -gt 0) "消费方收到审计会话 id（session_id=$sid3）"
+
+    # 审计链断言（只读档案端点重建，含 content_json 全文）
+    $auditFile3 = Join-Path $Tmp3 "audit3.json"
+    $null = & curl.exe -s -o $auditFile3 -w "%{response_code}" "$ServerUrl/api/audit-archive/sessions/$sid3/audit`?include_content=true"
+    $fact3 = Get-Content $auditFile3 -Raw -Encoding UTF8
+    Assert-True ($fact3 -match "call_service") "审计链含 call_service 工具命令事实"
+    Assert-True ($fact3 -match "tool_name") "审计链含 tool_name 参数"
+    Assert-True ($fact3 -match "rules_list") "审计链含工具名 rules_list"
+    Assert-True ($fact3 -match "tool_round") "审计链含 tool_round 轮次位"
+    Assert-True (([regex]::Matches($fact3, "call_external")).Count -ge 2) "审计链含多轮 call_external 命令事实"
+    Assert-True (([regex]::Matches($fact3, "IoRequest")).Count -ge 2) "审计链含多轮 IoRequest 事实"
+    Assert-True ($fact3 -match '"core_eval"') "审计链含 io_response 工具结果全文（/api/rules 响应）"
+    # 括号是正则元字符：最终答复含半角括号，必须 Escape 后匹配（PS -match 右侧按正则解析）
+    Assert-True ($fact3 -match [regex]::Escape($FinalReply3)) "审计链含最终回复全文"
+} catch {
+    Write-Host "  [FAIL] 工具回路 e2e 执行异常: $($_.Exception.Message)"
+    $Failures.Add("工具回路 e2e 执行异常") | Out-Null
+} finally {
+    foreach ($p in @($serverProc3, $pluginProc3)) {
+        if ($p -and -not $p.HasExited) { try { $p.Kill(); $p.WaitForExit(5000) | Out-Null } catch {} }
+    }
+    if ($mockJob3) { Stop-Job $mockJob3 -ErrorAction SilentlyContinue; Remove-Job $mockJob3 -Force -ErrorAction SilentlyContinue }
+    Remove-Item -Recurse -Force $Tmp3 -ErrorAction SilentlyContinue
 }
 
 Write-Host ""

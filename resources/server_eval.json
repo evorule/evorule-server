@@ -378,6 +378,57 @@
     {
       "type": "branch",
       "params": {
+        "domain": {
+          "type": "all",
+          "inner": [
+            { "type": "instruction", "instruction_type": "call_service" },
+            { "type": "exists", "path": "__exec__.instruction.params.tool_name" },
+            { "type": "not", "inner": { "type": "exists", "path": "__exec__.instruction.params.service_name" } },
+            { "type": "not", "inner": { "type": "exists", "path": "__exec__.instruction.params.name" } }
+          ]
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "exists",
+                "path": "__exec__.payload.__io_results__.call_service"
+              },
+              "on_true": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.__io_results__.call_service",
+                    "operation": "set",
+                    "value": null
+                  }
+                },
+                {
+                  "type": "push",
+                  "params": {
+                    "instructions": [{ "type": "noop" }]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "io_request",
+                  "params": {
+                    "io_type": "call_service",
+                    "tool_name": "__exec__.instruction.params.tool_name",
+                    "arguments?": "__exec__.instruction.params.arguments"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
         "domain": { "type": "all", "inner": [] },
         "on_true": []
       }
