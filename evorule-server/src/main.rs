@@ -111,6 +111,8 @@ struct FileServerConfig {
     max_rounds: Option<usize>,
     /// :演示登录入口开关（缺省 true；生产部署建议 false）
     demo_auth: Option<bool>,
+    /// UV-181 批次C：pack 编译服务 base_url 端口白名单（空/缺省 = 仅黑名单 18080/18081）
+    compile_allowed_ports: Option<Vec<u16>>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -336,6 +338,19 @@ struct Cli {
     #[arg(long, env = "EVORULE_PLUGIN_PROBE_INTERVAL")]
     plugin_probe_interval: Option<u64>,
 
+    /// pack 编译服务 base_url 端口白名单（逗号分隔 u16；空 = 仅黑名单）
+    ///
+    /// UV-181 批次C：黑名单（18080/18081，evorule 控制面自身端口）恒拒不可放开；
+    /// 配置白名单后，pack.json service.base_url 的端口必须命中其一，否则拒绝装载。
+    /// 例：--compile-allowed-ports 9120,9121
+    #[arg(
+        long,
+        env = "EVORULE_COMPILE_ALLOWED_PORTS",
+        value_delimiter = ',',
+        value_parser = clap::value_parser!(u16)
+    )]
+    compile_allowed_ports: Vec<u16>,
+
     /// CORS 允许的 Origin 列表（逗号分隔；空 = 放行本机 loopback Origin
     /// (localhost/127.0.0.1/[::1] 任意端口,开发友好);* 代表放行全部）
     ///
@@ -436,6 +451,8 @@ struct ResolvedConfig {
     plugins: Option<PathBuf>,
     /// external 插件探活周期（秒；0 = 关闭；缺省 30）
     plugin_probe_interval: u64,
+    /// UV-181 批次C：pack 编译服务 base_url 端口白名单（空 = 仅黑名单）
+    compile_allowed_ports: Vec<u16>,
     /// CORS 白名单；若 CLI 指定了 "*" 则为全放行模式（仅限开发）
     allowed_origins: Vec<String>,
     /// 是否允许 HTTP handler 访问 loopback（仅本地开发）
@@ -521,6 +538,12 @@ impl ResolvedConfig {
             plugins: cli.plugins.or(file.paths.plugins),
             // external 插件探活周期（CLI/env > 缺省 30；0 = 关闭）
             plugin_probe_interval: cli.plugin_probe_interval.unwrap_or(30),
+            // UV-181 批次C：pack 编译端口白名单（CLI/env > file > 默认空 = 仅黑名单）
+            compile_allowed_ports: if cli.compile_allowed_ports.is_empty() {
+                file.server.compile_allowed_ports.unwrap_or_default()
+            } else {
+                cli.compile_allowed_ports
+            },
             allowed_origins,
             allow_loopback: cli.allow_loopback,
             // S2：从 CLI/环境变量读取 metrics_auth 配置
@@ -730,9 +753,16 @@ struct ExternalPluginManifest {
     /// 插件包 id（须与 plugin_manifest.json 条目键一致，防漂移）
     id: String,
     /// 插件包版本（独立演进，与 server 版本无关）
+    ///
+    /// **定位澄清（UV-181 批次F）**：version 是展示位（透传对账/健康呈现），
+    /// **不参与兼容判定**；兼容判定只看 `contract_version`（若声明）。
     version: String,
     #[serde(default)]
     description: Option<String>,
+    /// UV-181 批次F（契约 v1.2 MINOR 增补）：可选契约版本。
+    /// 缺省 = 兼容（存量 plugin.json 零迁移）；声明时 MAJOR 须为 1（`starts_with("1.")`），
+    /// 否则 fail-fast 拒载（与 pack.json 同纪律）。
+    contract_version: Option<String>,
     /// 服务进程根地址（路由 = base_url + /services/{name}；本地插件用
     /// 127.0.0.1 需 server 侧 --allow-loopback）
     base_url: String,
@@ -781,6 +811,9 @@ struct ExternalPluginMounted {
 /// fail-fast（三拒绝扩展）：plugin.json 不可读 / JSON 非法 / id 漂移 / 空服务集 /
 /// base_url 非法 / 服务名冲突（进程内插件全集 ∪ 注册表 ∪ 已装载外部包）——
 /// 均启动报错附自诊断指引，不静默装载任何条目。
+// UV-181 批次F 增补 contract_version 校验后超阈值（28/25）；拆子函数会切断
+// 错误信息中的 fail-fast 上下文，按仓库先例豁免（同 load_pack）。
+#[allow(clippy::cognitive_complexity)]
 fn load_external_plugins(
     path: Option<&PathBuf>,
     registry: &mut ServiceRegistry,
@@ -842,6 +875,16 @@ fn load_external_plugins(
                 "外部插件包 id 漂移: 清单条目键 '{id}' 与 plugin.json 声明 id '{}' 不一致（{rel}）",
                 m.id
             ));
+        }
+        // UV-181 批次F（契约 v1.2）：可选 contract_version —— 缺省兼容（存量零迁移）；
+        // 声明时 MAJOR 须为 1，否则 fail-fast（与 pack.json 同纪律）
+        if let Some(cv) = &m.contract_version {
+            if !cv.starts_with("1.") {
+                return Err(format!(
+                    "外部插件包 {id} contract_version='{cv}' 与本 server 支持的 v1.x 不兼容 \
+                     — MAJOR 不符拒载（契约 v1.2;与 pack.json 同纪律）;请升级插件包或 server（{rel}）"
+                ));
+            }
         }
         if m.services.is_empty() {
             return Err(format!(
@@ -1440,8 +1483,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 插件契约 v1：声明式 pack 装载（02-Plugin-Contract-v1.md §2.4）。
     // 资产面 SSOT = pack 目录文件；fail-fast：任何校验失败拒绝启动。
     // 顺带锁定互斥语义（同条目 pack+manifest 在 loader 内 fail-fast）。
-    let pack_registry =
-        evorule_server::api::plugin_packs::load_plugin_packs(cfg.plugins.as_deref())?;
+    let pack_registry = evorule_server::api::plugin_packs::load_plugin_packs(
+        cfg.plugins.as_deref(),
+        &cfg.compile_allowed_ports,
+    )?;
     if !pack_registry.is_empty() {
         info!("插件契约 v1: 已装载 {} 个声明式 pack", pack_registry.len());
     }
@@ -2319,6 +2364,48 @@ mod tests {
             ]
         }"#;
 
+        // UV-181 批次F：外部 plugin.json 可选 contract_version（契约 v1.2 MINOR 增补）
+        #[test]
+        fn contract_version_declared_v1_loads() {
+            let dir = TempDir::new().unwrap();
+            let cv_json = r#"{
+                "id": "finance-config", "version": "0.1.0", "contract_version": "1.2",
+                "base_url": "http://127.0.0.1:9110",
+                "services": [{"name": "finance_config_get", "sensitive": false, "description": "读"}]
+            }"#;
+            write_file(dir.path(), "plugin.json", cv_json);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
+            assert_eq!(out.len(), 1, "contract_version=1.2 必须可装载");
+        }
+
+        #[test]
+        fn contract_version_major_mismatch_rejected() {
+            let dir = TempDir::new().unwrap();
+            let cv_json = r#"{
+                "id": "finance-config", "version": "0.1.0", "contract_version": "2.0",
+                "base_url": "http://127.0.0.1:9110",
+                "services": [{"name": "finance_config_get", "sensitive": false, "description": "读"}]
+            }"#;
+            write_file(dir.path(), "plugin.json", cv_json);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap_err();
+            assert!(err.contains("contract_version"), "got: {err}");
+            assert!(err.contains("MAJOR 不符"), "got: {err}");
+        }
+
         #[test]
         fn loads_derives_route_entry_and_service_info() {
             let dir = TempDir::new().unwrap();
@@ -2391,7 +2478,7 @@ mod tests {
                 r#"{"plugins":{"t":{"enabled":true,"manifest":"plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let out =
+            let _out =
                 load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
             assert_eq!(
                 registry.get("ai_plugin_chat").unwrap().timeout_ms,
@@ -2865,6 +2952,7 @@ mod tests {
                 addr: Some("0.0.0.0:1111".to_string()),
                 max_rounds: Some(999),
                 demo_auth: None,
+                compile_allowed_ports: None,
             },
             ..Default::default()
         };
@@ -2880,6 +2968,7 @@ mod tests {
                 addr: Some("0.0.0.0:7777".to_string()),
                 max_rounds: Some(300),
                 demo_auth: None,
+                compile_allowed_ports: None,
             },
             auth: FileAuthConfig {
                 token: Some("filetoken".to_string()),

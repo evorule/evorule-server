@@ -56,7 +56,8 @@ my-plugin/                    ← 插件包根目录（目录名建议 = 插件 
 | 字段 | 必填 | 类型 | 说明 |
 |------|------|------|------|
 | `id` | ✅ | string | 插件包 id，**须与 plugin_manifest.json 条目键一致**（不一致启动期拒绝，防漂移） |
-| `version` | ✅ | string | 插件包版本，**独立演进**（与 server 版本无关），透传至对账清单 |
+| `version` | ✅ | string | 插件包版本，**独立演进**（与 server 版本无关），透传至对账清单。**定位澄清（契约 v1.2）**：version 是展示位，**不参与兼容判定** |
+| `contract_version` |  | string | **契约版本（v1.2 可选增补）**：缺省 = 兼容（存量零迁移）；声明时 MAJOR 须为 `1`（如 `"1.2"`），否则启动期拒绝装载（与 pack.json 同纪律） |
 | `description` |  | string | 插件包描述，透传至对账清单与启动日志 |
 | `base_url` | ✅ | string | 服务进程根地址（`http://` 或 `https://` 前缀必检）；路由 = `base_url + /services/{name}`；**本地插件用 `127.0.0.1` 需 server 以 `--allow-loopback` 启动** |
 | `services` | ✅ | array | 服务声明集（**不得为空**——要停用请在挂载清单置 `enabled:false`） |
@@ -226,7 +227,7 @@ POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留�
 
 | # | 校验 | 错误信息要点 |
 |---|------|-------------|
-| 1 | plugin.json 不可读 / JSON 非法 / id 漂移（条目键 ≠ 声明 id）/ 空服务集 / base_url 非 http(s) | 附自诊断指引，不静默装载 |
+| 1 | plugin.json 不可读 / JSON 非法 / id 漂移（条目键 ≠ 声明 id）/ 空服务集 / base_url 非 http(s) / `contract_version` MAJOR 不符（声明时须 `1.x`，契约 v1.2） | 附自诊断指引，不静默装载 |
 | 2 | 服务名冲突（与宿主内置声明表全集、注册表、已装载外部包任一冲突） | 服务名全局唯一，含**停用**插件名亦占用（防回落路径被静默劫持） |
 | 3 | 挂载清单本身不可读 / JSON 非法 | 启动报错退出 |
 
@@ -352,10 +353,10 @@ finance-pack/                  ← pack 根目录（目录名建议 = pack id）
 | `contract_version` | ✅ | string | 契约版本，当前 `1.x`；**MAJOR 不符拒载**（契约演进须升级 pack 或 server） |
 | `version` | ✅ | string | pack 版本，独立演进，透传至插件清单 API 与草稿 provenance |
 | `description` | ✅ | string | pack 描述，透传至插件清单 API |
-| `capabilities` | ✅ | array | 能力声明集（v1 已知集：`assets` / `services` / `flow-compile` / `ai-assist`）；**未知能力拒绝装载**（不静默忽略） |
+| `capabilities` | ✅ | array | 能力声明集，两级收口（契约 v1.2）：**已实现集** `assets` / `flow-compile`（声明即生效）；**预留集** `services` / `ai-assist`（v1 未实现，**声明即拒绝装载**）；其他未知能力同样拒绝（不静默忽略）。预留转正 = 契约演进事件 |
 | `assets` | assets 能力时✅ | object | `scenes` / `templates` 两个字符串数组：显式相对路径或 `*.json` glob（相对 pack.json 所在目录；glob 无匹配文件即拒载） |
 
-**fail-fast 清单**（任一命中即拒绝装载并报错退出）：pack.json 不可读 / JSON 非法 / 顶层必须是 object / **未知顶层字段**（v1 字段钉死，新字段须走契约演进）/ id 漂移 / contract_version MAJOR 不符 / 未知能力 / 声明 assets 能力但缺 assets 节（或有 assets 节未声明能力）/ 场景或模板 id 重复 / glob 无匹配。
+**fail-fast 清单**（任一命中即拒绝装载并报错退出）：pack.json 不可读 / JSON 非法 / 顶层必须是 object / **未知顶层字段**（v1 字段钉死，新字段须走契约演进）/ id 漂移 / contract_version MAJOR 不符 / 未知或预留能力 / 声明 assets 能力但缺 assets 节（或有 assets 节未声明能力）/ 场景或模板 id 重复 / glob 无匹配。
 
 ### 12.3 场景资产（scene）
 
@@ -449,11 +450,18 @@ finance-pack/                  ← pack 根目录（目录名建议 = pack id）
 GET  /api/plugins                                             已装载 pack 清单（含资产计数）
 GET  /api/plugins/{pack_id}/assets/{kind}                     资产只读面,kind ∈ scenes|templates（其他 404）
 POST /api/plugins/templates/{pack_id}/{template_id}/generate  草稿生成纯函数面
+POST /api/plugins/flows/{pack_id}/{flow_id}/compile           流程编译代理（声明 flow-compile 能力的 pack,契约 v1.1 §6）
 ```
 
 - generate 请求体 = 表单值对象（`{"field_id": 值, ...}`）；响应 = `{"rule_draft": {...}, "provenance": {"pack", "pack_version", "template", "contract_version"}}`。
 - 校验失败 → **400 显式错误**（含 fail-fast 文案，不静默降级）；未知 pack / 未知模板 → 404。
 - console 消费入口：工作空间页「插件模板」→ `/workspace/templates` 通用表单（模板列表 → 表单 → 生成 → 预览/复制 JSON）。
+
+**编译路径 R2 边界（如实声明）**：server 对编译产物做**全树 `type` 词表门禁**——任何对象携带
+`type` 字段时，取值必须 ∈ 内核 transform 词表 ∪ domain 词表，越界或**非字符串 type** 一律
+502 拒收（不静默放行）。该门禁**只校验 type 词表，不做全结构白名单校验**；防线纵深 =
+产物为 draft-only（不落库不进治理状态），草稿生效前仍走既有 Draft→Publish 链的**下游结构校验兜底**。
+编译器升级引入新 type 须先走契约演进。
 
 ### 12.7 装卸操作手册
 

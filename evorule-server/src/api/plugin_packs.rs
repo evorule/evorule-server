@@ -72,8 +72,25 @@ pub const CONTROL_VOCAB: &[&str] = &[
     "scene_field",
 ];
 
-/// v1 已知能力集（契约 §2.2）
-const KNOWN_CAPABILITIES: &[&str] = &["assets", "services", "flow-compile", "ai-assist"];
+/// v1 已实现能力集（契约 §2.2）——声明即按对应能力面生效
+const IMPLEMENTED_CAPABILITIES: &[&str] = &["assets", "flow-compile"];
+
+/// UV-181 批次E 能力收口：v1 预留能力集（契约 §2.2 词表已知但 v1 未实现）。
+/// 声明预留能力 = fail-fast 拒载（收口「声明 reserved 能力却被静默接受」的
+/// 过度承诺面；词表扩充/转正 = 契约演进事件）。
+const RESERVED_CAPABILITIES: &[&str] = &["services", "ai-assist"];
+
+/// UV-181 批次B：装载期资源上限（fail-fast，防恶意超大 pack 拖垮启动/内存）。
+/// 单个资产文件字节上限（2MB）
+const ASSET_FILE_MAX_BYTES: u64 = 2 * 1024 * 1024;
+/// pack.json 字节上限（256KB）
+const PACK_JSON_MAX_BYTES: u64 = 256 * 1024;
+/// 单 pack 单 kind 资产条目数上限（500）
+const ASSET_MAX_ENTRIES_PER_KIND: usize = 500;
+
+/// UV-181 批次C：pack 编译服务 base_url 端口黑名单——evorule 控制面自身端口。
+/// pack 编译服务指向 server 自身会造成控制面递归/自我调用，永远拒绝（不可配置放开）。
+const COMPILE_PORT_BLACKLIST: &[u16] = &[18080, 18081];
 
 /// 已装载的声明式插件包（启动期从 pack 目录读盘注册，运行期只读——契约 §4.1.3）
 #[derive(Debug)]
@@ -178,7 +195,13 @@ fn default_true() -> bool {
 ///
 /// 与 main.rs `load_external_plugins` 同读一份插件清单；pack 条目用 `pack` 键，
 /// 外部服务包用 `manifest` 键，二者同条目混用 → fail-fast。
-pub fn load_plugin_packs(manifest_path: Option<&FsPath>) -> Result<PluginPackRegistry, String> {
+///
+/// UV-181 批次C 端口治理入口：`allowed_ports` 空 = 仅黑名单（默认，控制面端口恒拒）；
+/// 非空 = 黑名单 + 白名单双收紧（部署方显式限定编译服务端口面）。
+pub fn load_plugin_packs(
+    manifest_path: Option<&FsPath>,
+    allowed_ports: &[u16],
+) -> Result<PluginPackRegistry, String> {
     let Some(p) = manifest_path else {
         return Ok(PluginPackRegistry::empty());
     };
@@ -217,7 +240,7 @@ pub fn load_plugin_packs(manifest_path: Option<&FsPath>) -> Result<PluginPackReg
         } else {
             manifest_base.join(rel_path)
         };
-        let pack = load_pack(id, &pk_path)?;
+        let pack = load_pack_with_ports(id, &pk_path, allowed_ports)?;
         tracing::info!(
             "插件契约 pack: {id} v{} 装载（{} 场景 + {} 模板, contract {}）",
             pack.version,
@@ -231,10 +254,21 @@ pub fn load_plugin_packs(manifest_path: Option<&FsPath>) -> Result<PluginPackReg
 }
 
 /// 装载单个 pack.json（fail-fast 校验链：字段存在性 → 契约版本 → 能力集 → 资产）
+/// 默认端口策略 = 仅黑名单（测试入口；生产路径经 `load_plugin_packs` → `load_pack_with_ports`）。
+#[cfg(test)]
+fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, String> {
+    load_pack_with_ports(entry_id, pack_json_path, &[])
+}
+
+/// 装载单个 pack.json（含批次C 端口治理：黑名单恒拒 + `allowed_ports` 白名单可选收紧）
 // 各资产 kind（scenes/templates/flows/node_types）的装载链共享 fail-fast 错误上下文，
 // 提取子函数会切断错误信息中的 pack id 指引；Phase C 累积后超行数阈值，按仓库先例豁免。
 #[allow(clippy::too_many_lines)]
-fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, String> {
+fn load_pack_with_ports(
+    entry_id: &str,
+    pack_json_path: &FsPath,
+    allowed_ports: &[u16],
+) -> Result<PluginPack, String> {
     let raw = std::fs::read_to_string(pack_json_path).map_err(|e| {
         format!(
             "pack.json 读取失败 {}: {e}（自诊断指引: ① 路径相对插件清单所在目录; \
@@ -242,6 +276,15 @@ fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, Stri
             pack_json_path.display()
         )
     })?;
+    // UV-181 批次B：pack.json 字节上限（防超大声明文件拖垮装载）
+    if raw.len() as u64 > PACK_JSON_MAX_BYTES {
+        return Err(format!(
+            "pack.json {} 超过大小上限: {} 字节 > {PACK_JSON_MAX_BYTES} — \
+             资源上限防线,fail-fast",
+            pack_json_path.display(),
+            raw.len()
+        ));
+    }
     let v: Value = serde_json::from_str(&raw)
         .map_err(|e| format!("pack.json JSON 非法 {}: {e}", pack_json_path.display()))?;
     let obj = v.as_object().ok_or_else(|| {
@@ -281,9 +324,16 @@ fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, Stri
         })
         .collect::<Result<Vec<String>, String>>()?;
     for c in &capabilities {
-        if !KNOWN_CAPABILITIES.contains(&c.as_str()) {
+        // UV-181 批次E：两级能力收口——未知与预留均 fail-fast，不静默接受
+        if !IMPLEMENTED_CAPABILITIES.contains(&c.as_str()) {
+            if RESERVED_CAPABILITIES.contains(&c.as_str()) {
+                return Err(format!(
+                    "pack {id} 声明了预留能力 '{c}' — v1 未实现,声明即拒绝装载 \
+                     （能力收口: 预留词存在但不接受声明,转正须走契约演进）"
+                ));
+            }
             return Err(format!(
-                "pack {id} 声明了未知能力 '{c}'（合法集: {KNOWN_CAPABILITIES:?}）— \
+                "pack {id} 声明了未知能力 '{c}'（合法集: {IMPLEMENTED_CAPABILITIES:?}）— \
                  未知能力禁止静默忽略（fail-fast）"
             ));
         }
@@ -307,7 +357,7 @@ fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, Stri
             .unwrap_or_default();
         // 场景（契约 §4.2）
         for path in resolve_globs(&id, &pack_root, assets.get("scenes"), "scenes")? {
-            let sv = read_json(&path)?;
+            let sv = read_json(&id, "scenes", &path)?;
             let (scene_id, fields) = validate_scene(&id, &sv)?;
             if scene_fields.insert(scene_id.clone(), fields).is_some() {
                 return Err(format!("pack {id} 场景 id 重复: '{scene_id}'"));
@@ -316,7 +366,7 @@ fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, Stri
         }
         // 模板（契约 §4.3；scene_ref 解析 + 占位符全量装载期校验）
         for path in resolve_globs(&id, &pack_root, assets.get("templates"), "templates")? {
-            let tv = read_json(&path)?;
+            let tv = read_json(&id, "templates", &path)?;
             let tpl = validate_template(&id, &tv, &scene_fields)?;
             if templates
                 .iter()
@@ -335,7 +385,7 @@ fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, Stri
             ));
         }
         for path in resolve_globs(&id, &pack_root, assets.get("flows"), "flows")? {
-            let fv = read_json(&path)?;
+            let fv = read_json(&id, "flows", &path)?;
             let flow_id = validate_flow(&id, &fv, &scene_fields)?;
             if flows
                 .iter()
@@ -347,7 +397,7 @@ fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, Stri
         }
         // 节点类型（契约 §4.4；第二期 Phase C 生效：画布节点面板/属性表单唯一来源）
         for path in resolve_globs(&id, &pack_root, assets.get("node_types"), "node_types")? {
-            let nv = read_json(&path)?;
+            let nv = read_json(&id, "node_types", &path)?;
             let nt = validate_node_type(&id, &nv, &scene_fields)?;
             if node_types
                 .iter()
@@ -383,7 +433,7 @@ fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, Stri
             let u = so.get("base_url").and_then(Value::as_str).ok_or_else(|| {
                 format!("pack {id} service.base_url 必须是非空字符串")
             })?;
-            Some(validate_loopback_base_url(&id, u)?)
+            Some(validate_loopback_base_url(&id, u, allowed_ports)?)
         }
         None => {
             if has_flow_compile {
@@ -425,7 +475,17 @@ fn load_pack(entry_id: &str, pack_json_path: &FsPath) -> Result<PluginPack, Stri
 
 /// v1.1 基地址校验：仅允许本地插件 `http://127.0.0.1:<port>`（SSRF 防线，契约钉死）。
 /// 返回去掉尾随 `/` 的规范化基地址。
-fn validate_loopback_base_url(pack_id: &str, u: &str) -> Result<String, String> {
+///
+/// UV-181 批次C 端口治理（黑名单恒拒 + 白名单可选收紧）：
+/// - 黑名单 [`COMPILE_PORT_BLACKLIST`]（evorule 控制面自身端口）永远拒绝——
+///   pack 编译服务指向 server 自身会造成控制面递归/自我调用；
+/// - `allowed_ports` 非空时按白名单收紧（部署方可通过
+///   `--compile-allowed-ports` / 配置文件 `server.compile_allowed_ports` 限定）。
+fn validate_loopback_base_url(
+    pack_id: &str,
+    u: &str,
+    allowed_ports: &[u16],
+) -> Result<String, String> {
     let rest = u.strip_prefix("http://127.0.0.1:").ok_or_else(|| {
         format!(
             "pack {pack_id} service.base_url='{u}' 非法 — 契约 v1.1 仅允许本地插件 \
@@ -445,6 +505,18 @@ fn validate_loopback_base_url(pack_id: &str, u: &str) -> Result<String, String> 
     if port == 0 {
         return Err(format!("pack {pack_id} service.base_url 端口不能为 0"));
     }
+    if COMPILE_PORT_BLACKLIST.contains(&port) {
+        return Err(format!(
+            "pack {pack_id} service.base_url 端口 {port} 属 evorule 控制面端口（黑名单 \
+             {COMPILE_PORT_BLACKLIST:?}）— 编译服务不得指向 server 自身（防控制面递归）,请改用独立端口"
+        ));
+    }
+    if !allowed_ports.is_empty() && !allowed_ports.contains(&port) {
+        return Err(format!(
+            "pack {pack_id} service.base_url 端口 {port} 不在 compile_allowed_ports \
+             白名单 {allowed_ports:?} 内 — 白名单已配置时编译服务端口必须命中其一"
+        ));
+    }
     Ok(u.trim_end_matches('/').to_string())
 }
 
@@ -463,7 +535,18 @@ fn str_field(
         .ok_or_else(|| format!("{} 字段 '{key}' 必须是非空字符串", path.display()))
 }
 
-fn read_json(path: &FsPath) -> Result<Value, String> {
+fn read_json(pack_id: &str, kind: &str, path: &FsPath) -> Result<Value, String> {
+    // UV-181 批次B：单资产文件字节上限（防超大资产拖垮装载/内存）
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("资产文件读取失败 {}: {e}", path.display()))?;
+    if meta.len() > ASSET_FILE_MAX_BYTES {
+        return Err(format!(
+            "pack {pack_id} assets.{kind} 单文件超限: {}（{} 字节 > 上限 \
+             {ASSET_FILE_MAX_BYTES} 字节）— 资源上限防线,fail-fast",
+            path.display(),
+            meta.len()
+        ));
+    }
     let s = std::fs::read_to_string(path)
         .map_err(|e| format!("资产文件读取失败 {}: {e}", path.display()))?;
     serde_json::from_str(&s).map_err(|e| format!("资产文件 JSON 非法 {}: {e}", path.display()))
@@ -471,6 +554,11 @@ fn read_json(path: &FsPath) -> Result<Value, String> {
 
 /// 极简 glob：仅支持 `*.json` 形态与显式相对路径（契约 §2.2；不引第三方 glob 依赖）。
 /// 模式 = 目录列表 + 前后缀匹配；结果按文件名排序（装载序确定性，R1）。
+///
+/// UV-181 批次A 路径穿越防线（fail-fast）：
+/// ① component 级校验——拒绝绝对路径与 `..` 组件；
+/// ② canonicalize 后前缀校验——任何形式（含软链）逃逸 pack 目录即拒载；
+/// ③ glob 目录与其匹配文件逐一过 ②（pack 目录内的软链指向外部目标同样拒绝）。
 fn resolve_globs(
     pack_id: &str,
     pack_root: &FsPath,
@@ -483,24 +571,43 @@ fn resolve_globs(
     let arr = entries
         .as_array()
         .ok_or_else(|| format!("pack {pack_id} assets.{kind} 必须是字符串数组"))?;
+    let canon_root = pack_root.canonicalize().map_err(|e| {
+        format!(
+            "pack {pack_id} assets.{kind} 根目录不可解析 {}: {e}",
+            pack_root.display()
+        )
+    })?;
     let mut out = Vec::new();
     for e in arr {
         let pat = e
             .as_str()
             .ok_or_else(|| format!("pack {pack_id} assets.{kind} 必须是字符串数组"))?;
-        let p = FsPath::new(pat);
-        let full = if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            pack_root.join(p)
-        };
+        let rel = FsPath::new(pat);
+        if rel.is_absolute() {
+            return Err(format!(
+                "pack {pack_id} assets.{kind} 条目 '{pat}' 非法 — 禁止绝对路径 \
+                 （路径穿越防线：资产必须相对 pack.json 所在目录,fail-fast）"
+            ));
+        }
+        if rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(format!(
+                "pack {pack_id} assets.{kind} 条目 '{pat}' 非法 — 禁止 '..' 路径组件 \
+                 （路径穿越防线,fail-fast）"
+            ));
+        }
+        let full = pack_root.join(rel);
         let file_name = full
             .file_name()
             .and_then(std::ffi::OsStr::to_str)
             .ok_or_else(|| format!("pack {pack_id} assets.{kind} 条目非法: '{pat}'"))?;
         if let Some((prefix, suffix)) = file_name.split_once('*') {
+            // 目录部分先过穿越校验（canonicalize 前缀），read_dir 落在解析后的真实目录
             let dir = full.parent().unwrap_or(FsPath::new("."));
-            let mut matched: Vec<PathBuf> = std::fs::read_dir(dir)
+            let canon_dir = ensure_within_pack_dir(pack_id, kind, &canon_root, dir)?;
+            let mut matched: Vec<PathBuf> = std::fs::read_dir(&canon_dir)
                 .map_err(|e| {
                     format!(
                         "pack {pack_id} assets.{kind} 目录不可读 {}: {e}（自诊断指引: \
@@ -525,17 +632,53 @@ fn resolve_globs(
                      声明了资产就必须存在（fail-fast,不静默）"
                 ));
             }
-            out.extend(matched);
+            // 匹配文件逐一复验：pack 目录内的软链指向外部目标同样拒载
+            for m in matched {
+                out.push(ensure_within_pack_dir(pack_id, kind, &canon_root, &m)?);
+            }
         } else {
             if !full.is_file() {
                 return Err(format!(
                     "pack {pack_id} assets.{kind} 文件不存在: {pat}（相对 pack.json 所在目录）"
                 ));
             }
-            out.push(full);
+            out.push(ensure_within_pack_dir(pack_id, kind, &canon_root, &full)?);
         }
     }
+    // UV-181 批次B：单 kind 资产条目数上限（防海量条目拖慢装载/放大攻击面）
+    if out.len() > ASSET_MAX_ENTRIES_PER_KIND {
+        return Err(format!(
+            "pack {pack_id} assets.{kind} 条目数超限: {} > {ASSET_MAX_ENTRIES_PER_KIND} — \
+             资源上限防线,fail-fast",
+            out.len()
+        ));
+    }
     Ok(out)
+}
+
+/// UV-181 批次A：canonicalize 后前缀校验——同时覆盖 `..` 残留与软链逃逸
+/// （canonicalize 把符号链接解析到真实目标，逃逸 pack 目录即拒载）。
+fn ensure_within_pack_dir(
+    pack_id: &str,
+    kind: &str,
+    canon_root: &FsPath,
+    path: &FsPath,
+) -> Result<PathBuf, String> {
+    let canon = path.canonicalize().map_err(|e| {
+        format!(
+            "pack {pack_id} assets.{kind} 路径不可解析 {}: {e}（自诊断指引: \
+             相对 pack.json 所在目录且文件存在）",
+            path.display()
+        )
+    })?;
+    if !canon.starts_with(canon_root) {
+        return Err(format!(
+            "pack {pack_id} assets.{kind} 路径逃逸 pack 目录: {} \
+             （路径穿越防线：软链/.. 均不可绕过,fail-fast）",
+            path.display()
+        ));
+    }
+    Ok(canon)
 }
 
 // ===== 资产校验（装载期 fail-fast） =====
@@ -834,7 +977,7 @@ const FLOW_NODE_TYPES: &[&str] = &["start", "end", "approval"];
 ///   提示面），成员收敛 v0 guard 词表 `['approved']`（词表扩充 = 契约演进
 ///   事件）；缺省/空数组 = 该类型出边禁 guard（与 v1.0/v1.1 行为一致）；
 /// - `compile_hint.emits` 收敛于 R2 transform 词表（画布纯展示提示，
-///   不参与编译语义；编译产物由 server 侧 R2 门禁强制兜底，契约 §6）。
+///   不参与编译语义；编译产物由 server 侧 type 词表门禁强制兜底，契约 §6）。
 ///
 /// 返回 node_type。
 fn validate_node_type(
@@ -1657,7 +1800,7 @@ pub async fn generate_template_handler(
 // ===== 流程编译代理（契约 v1.1 §6；draft-only，R3） =====
 
 /// 内核 transform 元指令词表（对齐 evorule-tcb executor / evorule-governance
-/// rule_validation 的 6 元指令白名单；R2 等价性门禁的基准面）
+/// rule_validation 的 6 元指令白名单；type 词表门禁的基准面）
 const R2_TRANSFORM_TYPES: &[&str] = &["branch", "set", "push", "io_request", "collect", "merge"];
 
 /// 内核域函数词表（对齐 evorule-tcb domain 7 域类型）
@@ -1666,23 +1809,36 @@ const R2_DOMAIN_TYPES: &[&str] = &["eq", "lt", "exists", "instruction", "all", "
 /// 编译服务调用超时（设计期操作，非运行时链路；固定值不配置化，契约钉死）
 const COMPILE_TIMEOUT_SECS: u64 = 10;
 
-/// R2 等价性门禁（契约 v1.1 §6）：编译产物全树 `type` 白名单校验。
+/// type 词表门禁（契约 v1.1 §6）：编译产物全树 `type` 字段词表校验。
 ///
-/// 产物中任何对象若带 `type` 字段，值必须 ∈ transform 词表 ∪ domain 词表；
-/// 越界（含把指令层词 conditional/while_loop/sequence 混进 transform 位、
-/// 或未知自定义类型）一律 Err——**不静默放行**（协议不可达面，方案 Phase B 风险 #1）。
+/// **边界如实声明（UV-181 批次D 如实化）**：本门禁只校验 `type` 字段取值
+/// ∈ transform 词表 ∪ domain 词表，**不做全结构白名单校验**（"等价性"系过度
+/// 声称，已修正）。防线纵深：产物为 draft-only（不落库不进治理状态），生效前
+/// 仍走既有 Draft→Publish 链的下游结构校验兜底。越界（含把指令层词
+/// conditional/while_loop/sequence 混进 transform 位、未知自定义类型、
+/// `type` 非字符串）一律 Err——**不静默放行**（协议不可达面，方案 Phase B 风险 #1）。
 fn r2_gate(v: &Value) -> Result<(), String> {
     match v {
         Value::Object(o) => {
-            if let Some(Value::String(t)) = o.get("type") {
-                if !R2_TRANSFORM_TYPES.contains(&t.as_str())
-                    && !R2_DOMAIN_TYPES.contains(&t.as_str())
-                {
+            match o.get("type") {
+                Some(Value::String(t)) => {
+                    if !R2_TRANSFORM_TYPES.contains(&t.as_str())
+                        && !R2_DOMAIN_TYPES.contains(&t.as_str())
+                    {
+                        return Err(format!(
+                            "type '{t}' 不在内核词表（transform {R2_TRANSFORM_TYPES:?} ∪ \
+                             domain {R2_DOMAIN_TYPES:?}）— type 词表门禁拒绝"
+                        ));
+                    }
+                }
+                // UV-181 批次D：堵「type 非字符串静默放行」小洞——协议对象
+                // 携带非字符串 type 即非法形态，fail-fast（含 null）。
+                Some(other) => {
                     return Err(format!(
-                        "type '{t}' 不在内核词表（transform {R2_TRANSFORM_TYPES:?} ∪ \
-                         domain {R2_DOMAIN_TYPES:?}）— R2 等价性门禁拒绝"
+                        "type 字段非字符串（{other}）— type 词表门禁拒绝（非法形态不静默放行）"
                     ));
                 }
+                None => {}
             }
             for val in o.values() {
                 r2_gate(val)?;
@@ -1912,7 +2068,9 @@ pub async fn compile_flow_handler(
         return Err(api_err(
             StatusCode::BAD_GATEWAY,
             format!(
-                "R2 等价性门禁拒绝编译产物: {e}（自诊断指引: ① 核对编译器版本与契约 v1.1 对齐; \
+                "type 词表门禁拒绝编译产物: {e}（边界如实声明: 本门禁仅校验 type 词表,不做全结构 \
+                 白名单校验;草稿 draft-only 不落库,生效前由 Draft→Publish 链下游结构校验兜底。\
+                 自诊断指引: ① 核对编译器版本与契约 v1.1 对齐; \
                  ② 编译器升级引入新 type 须先走契约演进,门禁不静默放行）"
             ),
         ));
@@ -2187,6 +2345,154 @@ mod tests {
         .unwrap();
         let err = load_pack("p", &pj).unwrap_err();
         assert!(err.contains("未知顶层字段"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// UV-181 批次A 反例①：`..` 组件穿越拒载（fail-fast 在文件存在性检查之前）。
+    #[test]
+    fn load_pack_rejects_parent_dir_traversal() {
+        let dir = std::env::temp_dir().join(format!("evorule-trav-a-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pj = write_pack_json(
+            &dir,
+            "a",
+            json!({
+                "id": "p", "contract_version": "1.0", "version": "0.1.0",
+                "description": "x", "capabilities": ["assets"],
+                "assets": { "scenes": ["../outside.json"] }
+            }),
+        );
+        let err = load_pack("p", &pj).unwrap_err();
+        assert!(err.contains("'..'"), "got: {err}");
+        assert!(err.contains("路径穿越"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// UV-181 批次A 反例②：绝对路径拒载（资产必须相对 pack.json 所在目录）。
+    #[test]
+    fn load_pack_rejects_absolute_asset_path() {
+        let dir = std::env::temp_dir().join(format!("evorule-trav-b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // is_absolute 平台差异：Windows 需盘符前缀，Unix 需根斜杠——各取本平台的绝对形态
+        let abs_pat = if cfg!(windows) {
+            "C:/Windows/win.ini"
+        } else {
+            "/etc/passwd"
+        };
+        let pj = write_pack_json(
+            &dir,
+            "b",
+            json!({
+                "id": "p", "contract_version": "1.0", "version": "0.1.0",
+                "description": "x", "capabilities": ["assets"],
+                "assets": { "scenes": [abs_pat] }
+            }),
+        );
+        let err = load_pack("p", &pj).unwrap_err();
+        assert!(err.contains("绝对路径"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// UV-181 批次A 反例③：pack 目录内软链指向外部目标拒载
+    /// （canonicalize 解析真实目标 → 前缀校验失败）。Windows 无特权环境跳过
+    /// （symlink 需开发者模式/管理员；防线本体在 Linux CI 全量验证）。
+    #[test]
+    fn load_pack_rejects_symlink_escape() {
+        let dir = std::env::temp_dir().join(format!("evorule-trav-c-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        let outside =
+            std::env::temp_dir().join(format!("evorule-trav-outside-{}.json", std::process::id()));
+        std::fs::write(&outside, "{}").unwrap();
+        #[cfg(windows)]
+        let link = std::os::windows::fs::symlink_file(&outside, dir.join("assets").join("s.json"));
+        #[cfg(not(windows))]
+        let link = std::os::unix::fs::symlink(&outside, dir.join("assets").join("s.json"));
+        if link.is_err() {
+            eprintln!("skip: symlink 不可用（Windows 需开发者模式/管理员特权）");
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_file(&outside);
+            return;
+        }
+        let pj = write_pack_json(
+            &dir,
+            "c",
+            json!({
+                "id": "p", "contract_version": "1.0", "version": "0.1.0",
+                "description": "x", "capabilities": ["assets"],
+                "assets": { "scenes": ["assets/s.json"] }
+            }),
+        );
+        let err = load_pack("p", &pj).unwrap_err();
+        assert!(err.contains("逃逸"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// UV-181 批次B 反例①：pack.json 超 256KB 拒载。
+    #[test]
+    fn load_pack_rejects_oversized_pack_json() {
+        let dir = std::env::temp_dir().join(format!("evorule-cap-a-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let huge = "x".repeat(300 * 1024);
+        let pj = dir.join("pack.json");
+        std::fs::write(
+            &pj,
+            json!({
+                "id": "p", "contract_version": "1.0", "version": "0.1.0",
+                "description": huge, "capabilities": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let err = load_pack("p", &pj).unwrap_err();
+        assert!(err.contains("大小上限"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// UV-181 批次B 反例②：单资产文件超 2MB 拒载（大小检查在 JSON 解析之前）。
+    #[test]
+    fn load_pack_rejects_oversized_asset_file() {
+        let dir = std::env::temp_dir().join(format!("evorule-cap-b-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        let pad = "a".repeat(2 * 1024 * 1024 + 100);
+        std::fs::write(
+            dir.join("assets").join("big.json"),
+            json!({ "pad": pad }).to_string(),
+        )
+        .unwrap();
+        let pj = write_pack_json(
+            &dir,
+            "b",
+            json!({
+                "id": "p", "contract_version": "1.0", "version": "0.1.0",
+                "description": "x", "capabilities": ["assets"],
+                "assets": { "scenes": ["assets/*.json"] }
+            }),
+        );
+        let err = load_pack("p", &pj).unwrap_err();
+        assert!(err.contains("单文件超限"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// UV-181 批次B 反例③：单 kind 条目数超 500 拒载（上限在 read_json 之前收口）。
+    #[test]
+    fn load_pack_rejects_too_many_asset_entries() {
+        let dir = std::env::temp_dir().join(format!("evorule-cap-c-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        for i in 0..501 {
+            std::fs::write(dir.join("assets").join(format!("f{i}.json")), "{}").unwrap();
+        }
+        let pj = write_pack_json(
+            &dir,
+            "c",
+            json!({
+                "id": "p", "contract_version": "1.0", "version": "0.1.0",
+                "description": "x", "capabilities": ["assets"],
+                "assets": { "scenes": ["assets/*.json"] }
+            }),
+        );
+        let err = load_pack("p", &pj).unwrap_err();
+        assert!(err.contains("条目数超限"), "got: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2504,6 +2810,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ===== UV-181 批次C：base_url 端口治理（黑名单恒拒 + 白名单可选收紧） =====
+
+    fn base_url_pack(tag: &str, port: u16) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("evorule-port-c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_pack_json(
+            &dir,
+            tag,
+            json!({
+                "id": "p", "contract_version": "1.1", "version": "0.1.0",
+                "description": "x", "capabilities": ["flow-compile"],
+                "service": { "base_url": format!("http://127.0.0.1:{port}") }
+            }),
+        )
+    }
+
+    #[test]
+    fn load_pack_rejects_control_plane_port() {
+        // 黑名单：18080/18081 是 evorule 控制面自身端口，恒拒（不可配置放开）
+        for port in [18080u16, 18081] {
+            let pj = base_url_pack("bl", port);
+            let err = load_pack("p", &pj).unwrap_err();
+            assert!(err.contains("控制面端口"), "port {port}: got: {err}");
+        }
+    }
+
+    #[test]
+    fn load_pack_rejects_port_not_in_whitelist() {
+        // 白名单已配置：未命中其一的端口拒绝装载
+        let pj = base_url_pack("wl1", 9120);
+        let err = load_pack_with_ports("p", &pj, &[9200]).unwrap_err();
+        assert!(err.contains("compile_allowed_ports"), "got: {err}");
+    }
+
+    // ===== UV-181 批次E：能力收口（implemented/reserved 两级） =====
+
+    fn capabilities_pack(tag: &str, capabilities: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("evorule-cap-e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let caps: Vec<String> = capabilities.iter().map(|s| s.to_string()).collect();
+        write_pack_json(
+            &dir,
+            tag,
+            json!({
+                "id": "p", "contract_version": "1.1", "version": "0.1.0",
+                "description": "x", "capabilities": caps
+            }),
+        )
+    }
+
+    #[test]
+    fn load_pack_rejects_reserved_capability() {
+        // 预留能力（词表已知但 v1 未实现）：声明即 fail-fast 拒载
+        for cap in ["services", "ai-assist"] {
+            let pj = capabilities_pack("rsv", &[cap]);
+            let err = load_pack("p", &pj).unwrap_err();
+            assert!(err.contains("预留能力"), "cap {cap}: got: {err}");
+        }
+    }
+
+    #[test]
+    fn load_pack_rejects_unknown_capability_still_works() {
+        // 未知能力维持既有 fail-fast 语义（批次E 未放松）
+        let pj = capabilities_pack("unk", &["blockchain"]);
+        let err = load_pack("p", &pj).unwrap_err();
+        assert!(err.contains("未知能力"), "got: {err}");
+    }
+
+    #[test]
+    fn load_pack_accepts_port_in_whitelist_but_blacklist_wins() {
+        // 白名单命中：正常装载；且白名单即使包含黑名单端口，黑名单仍恒拒
+        let pj = base_url_pack("wl2", 9120);
+        let pack = load_pack_with_ports("p", &pj, &[9120, 9121])
+            .unwrap_or_else(|e| panic!("白名单命中端口必须可装载: {e}"));
+        assert_eq!(pack.base_url.as_deref(), Some("http://127.0.0.1:9120"));
+
+        let pj_bl = base_url_pack("wl3", 18080);
+        let err = load_pack_with_ports("p", &pj_bl, &[18080]).unwrap_err();
+        assert!(err.contains("控制面端口"), "got: {err}");
+    }
+
     #[test]
     fn r2_gate_accepts_compiled_draft() {
         let draft = json!({
@@ -2524,13 +2911,29 @@ mod tests {
         // 指令层词混入 transform 位（G8 禁止词形态）
         let bad1 = json!({ "transform": [ { "type": "while_loop" } ] });
         let err = r2_gate(&bad1).unwrap_err();
-        assert!(err.contains("R2"), "got: {err}");
+        assert!(err.contains("词表门禁"), "got: {err}");
         // 未知自定义类型
         let bad2 = json!({ "transform": [ { "type": "custom_step" } ] });
         assert!(r2_gate(&bad2).is_err());
         // 嵌套深层也要被扫到
         let bad3 = json!({ "a": [ { "b": { "type": "conditional" } } ] });
         assert!(r2_gate(&bad3).is_err());
+    }
+
+    #[test]
+    fn r2_gate_rejects_non_string_type() {
+        // UV-181 批次D：堵「type 非字符串静默放行」小洞——非法形态含 null 一律拒
+        for bad in [
+            json!({ "transform": [ { "type": 123 } ] }),
+            json!({ "transform": [ { "type": null } ] }),
+            json!({ "transform": [ { "type": ["set"] } ] }),
+            json!({ "x": { "type": true } }),
+        ] {
+            let err = r2_gate(&bad).unwrap_err();
+            assert!(err.contains("非字符串"), "got: {err}");
+        }
+        // 无 type 字段的对象不受影响（词表门禁只看 type 键）
+        assert!(r2_gate(&json!({ "name": "n", "params": {} })).is_ok());
     }
 
     #[test]
