@@ -1127,6 +1127,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-setup"
+version = "0.6.0"
+
+[[package]]
 name = "evorule-tcb"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4649,10 +4653,6 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "evorule-rule"
-version = "0.3.1"
-
-[[patch.unused]]
 name = "evorule-governance"
 version = "0.5.0"
 
@@ -4663,3 +4663,7 @@ version = "0.5.0"
 [[patch.unused]]
 name = "evorule-tcb"
 version = "0.5.0"
+
+[[patch.unused]]
+name = "evorule-rule"
+version = "0.3.1"

@@ -13,6 +13,7 @@ members = [
     "core/time_machine",
     "core/workspace",
     "evorule-server",
+    "installer",
     "plugins/demo-services",
     "plugins/physics-services",
     "plugins/indicator-services",
