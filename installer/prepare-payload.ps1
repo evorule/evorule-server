@@ -1,4 +1,4 @@
-﻿# evorule-setup 安装器载荷填充脚本
+﻿﻿# evorule-setup 安装器载荷填充脚本
 # 将分发包内容汇集到 installer/payload/（build.rs 会整树内嵌进单文件安装器）。
 # 来源与 release.yml win64 打包步骤保持一致：
 #   - evorule-server.exe        <- 本仓 target/release
@@ -52,8 +52,18 @@ Copy-Item (RequireFile (Join-Path $ServerRepo "service_registry.json")) $payload
 
 # 5. 启动脚本与说明（与 dist/ 一致）
 $dist = Join-Path $ServerRepo "dist"
-foreach ($f in @("start-evorule.bat","start-evorule.sh","start-watchdog.bat","watchdog-plugins.ps1","plugins-watchdog.json","README-STARTUP.txt")) {
+foreach ($f in @("start-evorule.bat","start-evorule.sh","start-watchdog.bat","watchdog-plugins.ps1","README-STARTUP.txt")) {
     Copy-Item (RequireFile (Join-Path $dist $f)) $payload
+}
+# UV-182 批次E：plugins-watchdog.json 已移出版本库（部署侧可能写入真实
+# token 环境变量，防误提交）——优先用开发机本地文件；缺失时从 example
+# 模板生成（UV-178 批次A payload 预登记链路保持可用，fresh clone 不挂）。
+$wdCfg = Join-Path $dist "plugins-watchdog.json"
+if (Test-Path $wdCfg) {
+    Copy-Item $wdCfg $payload
+} else {
+    Copy-Item (RequireFile (Join-Path $dist "plugins-watchdog.example.json")) (Join-Path $payload "plugins-watchdog.json")
+    Write-Host "plugins-watchdog.json 不在本地（已出库），payload 内由 example 模板生成"
 }
 
 # 6. 插件清单：预登记 ai-plugin（enabled:false 缺省禁用，包内自带其

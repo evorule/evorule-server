@@ -5,11 +5,16 @@
 //!
 //! 职责边界:
 //! - 探测 = GET `{base_url}/health`(超时 3s):2xx 且 JSON 可解析 = online,
-//!   404/405 = no_probe(未实现探活端点,不报警),其余(超时/连接拒绝/5xx/非 JSON)= offline
+//!   404/405 = no_probe(未实现探活端点,不报警),
+//!   401/403 = unauthorized(UV-182 批次A:进程活着但鉴权被拒,告警语义=凭据/配置
+//!   问题,重启无效——与 offline「进程死了」区分,看门狗侧对 unauthorized 不动作),
+//!   其余(超时/连接拒绝/5xx/非 JSON)= offline
 //! - 状态翻转即报(报警权系统独占,无条件行使):进入 offline 记
-//!   `platform.event.plugin_offline`(error! 自诊断日志);退出 offline 记
-//!   `plugin_online`(系统关警附全链留痕);首轮探测即 offline 同样报警——
-//!   "offline 是唯一报警态,退出即关警",无报警悬挂
+//!   `platform.event.plugin_offline`(error! 自诊断日志);进入 unauthorized 记
+//!   `platform.event.plugin_unauthorized`(凭据/配置问题自诊断);退出报警态
+//!   (offline/unauthorized → online 或 no_probe)记 `plugin_online`
+//!   (系统关警附全链留痕);首轮探测即 offline/unauthorized 同样报警——
+//!   "offline/unauthorized 是报警态,退出即关警",无报警悬挂
 //! - 每轮探测后更新 PLUGIN_LIVENESS 快照(/api/health external 插件节合并呈现)
 //! - 不做自动重启/拉起(watchdog 后置另立);native 插件不探活(随宿主生死);
 //!   registry 绑定服务不探活(运维自有监控范畴)
@@ -35,15 +40,19 @@ pub struct ProbeTarget {
     pub base_url: String,
 }
 
-/// 探测结果三态
+/// 探测结果四态
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeStatus {
     /// 2xx 且 JSON 可解析
     Online,
-    /// 超时/连接拒绝/非 2xx(除 404/405)/2xx 但响应非 JSON
+    /// 超时/连接拒绝/非 2xx(除 404/405/401/403)/2xx 但响应非 JSON
     Offline,
     /// /health 返回 404/405——插件进程可达但未实现探活端点(不报警)
     NoProbe,
+    /// /health 返回 401/403——进程活着但鉴权被拒(UV-182 批次A):
+    /// 告警语义=凭据/配置问题,重启无效;与 offline(进程死了)区分,
+    /// 看门狗侧不动作(5xx 维持 offline 不细分,Q7 裁定)
+    Unauthorized,
 }
 
 impl ProbeStatus {
@@ -52,14 +61,18 @@ impl ProbeStatus {
             ProbeStatus::Online => "online",
             ProbeStatus::Offline => "offline",
             ProbeStatus::NoProbe => "no_probe",
+            ProbeStatus::Unauthorized => "unauthorized",
         }
     }
 }
 
-/// HTTP 响应分类(纯函数,单测锁定):code + 响应体是否可解析为 JSON → 三态
+/// HTTP 响应分类(纯函数,单测锁定):code + 响应体是否可解析为 JSON → 四态
 pub fn classify_response(code: u16, body_is_json: bool) -> ProbeStatus {
     if code == 404 || code == 405 {
         return ProbeStatus::NoProbe;
+    }
+    if code == 401 || code == 403 {
+        return ProbeStatus::Unauthorized;
     }
     if (200..300).contains(&code) && body_is_json {
         return ProbeStatus::Online;
@@ -67,23 +80,37 @@ pub fn classify_response(code: u16, body_is_json: bool) -> ProbeStatus {
     ProbeStatus::Offline
 }
 
-/// 状态翻转报警决策(纯函数,单测锁定):
-/// - 进入 offline(含首轮探测即 offline)→ plugin_offline 报警
-/// - 退出 offline(恢复 online 或进程可达但 no_probe)→ plugin_online 关警留痕
+/// 状态翻转报警决策(纯函数,单测锁定)。返回本轮要落链的事件序列(至多 2 个):
+/// - 进入 offline(含首轮)→ plugin_offline 报警
+/// - 进入 unauthorized(含首轮)→ plugin_unauthorized 报警(凭据/配置问题)
+/// - 离开报警态(offline/unauthorized 恢复 online/no_probe)→ plugin_online 关警留痕
+/// - 跨报警态迁移(offline↔unauthorized)→ 先关旧警再开新警(事件序 =
+///   [plugin_online, 新警],链上如实呈现「进程活着但凭据错」的进展)
 /// - 其余迁移(online↔no_probe、状态持续)→ 无事件
-pub fn transition_alert(prev: Option<&ProbeStatus>, now: &ProbeStatus) -> Option<&'static str> {
+pub fn transition_alert(prev: Option<&ProbeStatus>, now: &ProbeStatus) -> Vec<&'static str> {
+    let mut events: Vec<&'static str> = Vec::new();
     let was_offline = matches!(prev, Some(ProbeStatus::Offline));
     let is_offline = *now == ProbeStatus::Offline;
-    if is_offline && !was_offline {
-        return Some("plugin_offline");
-    }
+    let was_unauth = matches!(prev, Some(ProbeStatus::Unauthorized));
+    let is_unauth = *now == ProbeStatus::Unauthorized;
+    // 关警优先:离开原报警态(去向任何其他状态,含另一报警态)先关警
     if was_offline && !is_offline {
-        return Some("plugin_online");
+        events.push("plugin_online");
     }
-    None
+    if was_unauth && !is_unauth {
+        events.push("plugin_online");
+    }
+    // 开警:进入新报警态
+    if is_offline && !was_offline {
+        events.push("plugin_offline");
+    }
+    if is_unauth && !was_unauth {
+        events.push("plugin_unauthorized");
+    }
+    events
 }
 
-/// 探测一轮:GET {base_url}/health → (三态, 失败摘要)
+/// 探测一轮:GET {base_url}/health → (四态, 失败摘要)
 async fn probe_once(client: &reqwest::Client, base_url: &str) -> (ProbeStatus, Option<String>) {
     let url = format!("{}/health", base_url.trim_end_matches('/'));
     match client.get(&url).send().await {
@@ -93,6 +120,17 @@ async fn probe_once(client: &reqwest::Client, base_url: &str) -> (ProbeStatus, O
                 // 进程可达但未实现探活端点——先取 body 前不做 JSON 解析,
                 // 直接归 no_probe(存量插件可先跑起来,文档引导新插件实现)
                 return (ProbeStatus::NoProbe, None);
+            }
+            if code == 401 || code == 403 {
+                // UV-182 批次A:进程活着但鉴权被拒——凭据/配置问题,
+                // 重启无效;与 offline(进程死了)区分,看门狗不动作
+                return (
+                    ProbeStatus::Unauthorized,
+                    Some(format!(
+                        "HTTP {code}(凭据/配置问题:进程活着但鉴权被拒,重启无效;\
+                         检查插件鉴权配置/plugin_admin_token_env 注入)"
+                    )),
+                );
             }
             let body_json = resp.json::<serde_json::Value>().await.ok().is_some();
             let status = classify_response(code, body_json);
@@ -134,6 +172,12 @@ fn emit_alert(shared: &SharedFactsLog, kind: &str, id: &str, base_url: &str, err
              ② 检查端口/启动脚本; ③ 恢复后下轮探活自动记 plugin_online 关警）",
             err.unwrap_or("未知错误")
         ),
+        "plugin_unauthorized" => error!(
+            "插件鉴权被拒: {id}（{base_url}）{}（凭据/配置问题——进程活着,重启无效; \
+             自诊断指引: ① 核对插件侧鉴权配置与 server 侧 plugin_admin_token_env 注入; \
+             ② 凭据轮换后下轮探活自动记 plugin_online 关警）",
+            err.unwrap_or("未知错误")
+        ),
         "plugin_online" => {
             info!("插件恢复在线: {id}（{base_url}）— 系统关警（plugin_online 事件已入链留痕）")
         }
@@ -161,6 +205,9 @@ fn liveness_entry(
 /// 任务随进程生存——server shutdown 即进程退出,无需独立取消句柄
 /// (与 log_cleanup_task 既有形态一致)。
 pub fn spawn_probe_task(targets: Vec<ProbeTarget>, interval: Duration, shared: SharedFactsLog) {
+    // UV-182 批次B:并发探测句柄(目标 + join 句柄,按原序聚合结果);
+    // 函数级类型别名化解 clippy::type_complexity
+    type ProbeHandle = (ProbeTarget, tokio::task::JoinHandle<(ProbeStatus, Option<String>)>);
     if targets.is_empty() {
         return;
     }
@@ -180,13 +227,32 @@ pub fn spawn_probe_task(targets: Vec<ProbeTarget>, interval: Duration, shared: S
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            for t in &targets {
-                let (status, err) = probe_once(&client, &t.base_url).await;
+            // UV-182 批次B:并发探测(tokio::spawn 逐目标并发,reqwest::Client
+            // 内部 Arc 廉价克隆)——多插件慢/超时不再串行拖长整轮;结果按
+            // 原序聚合,落链/快照次序与旧实现一致(不涉确定性面)
+            let handles: Vec<ProbeHandle> =
+                targets
+                    .iter()
+                    .map(|t| {
+                        let client = client.clone();
+                        let base_url = t.base_url.clone();
+                        (t.clone(), tokio::spawn(async move { probe_once(&client, &base_url).await }))
+                    })
+                    .collect();
+            for (t, handle) in handles {
+                let (status, err) = match handle.await {
+                    Ok(pair) => pair,
+                    Err(e) => (
+                        ProbeStatus::Offline,
+                        Some(format!("探活任务异常终止(join 失败): {e}")),
+                    ),
+                };
                 if status == ProbeStatus::Online {
                     last_ok.insert(t.id.clone(), now_ms);
                 }
-                // 状态翻转即报(首轮 offline 也报;offline 退出即关警留痕)
-                if let Some(kind) = transition_alert(prev.get(&t.id), &status) {
+                // 状态翻转即报(首轮 offline/unauthorized 也报;报警态退出即关警留痕;
+                // 跨报警态迁移先关旧警再开新警)
+                for kind in transition_alert(prev.get(&t.id), &status) {
                     emit_alert(&shared, kind, &t.id, &t.base_url, err.as_deref());
                 }
                 update_plugin_liveness(
@@ -227,8 +293,14 @@ mod tests {
     fn test_classify_5xx_and_others_offline() {
         assert_eq!(classify_response(500, true), ProbeStatus::Offline);
         assert_eq!(classify_response(503, false), ProbeStatus::Offline);
-        assert_eq!(classify_response(401, true), ProbeStatus::Offline);
         assert_eq!(classify_response(301, true), ProbeStatus::Offline);
+    }
+
+    #[test]
+    fn test_classify_401_403_is_unauthorized() {
+        // UV-182 批次A:401/403 与 offline 分道——凭据/配置问题,重启无效
+        assert_eq!(classify_response(401, true), ProbeStatus::Unauthorized);
+        assert_eq!(classify_response(403, false), ProbeStatus::Unauthorized);
     }
 
     // ===== transition_alert 翻转矩阵 =====
@@ -238,56 +310,88 @@ mod tests {
         // 首轮探测即 offline:启动即故障不是"无翻转"豁免
         assert_eq!(
             transition_alert(None, &ProbeStatus::Offline),
-            Some("plugin_offline")
+            vec!["plugin_offline"]
+        );
+    }
+
+    #[test]
+    fn test_first_probe_unauthorized_alerts() {
+        // UV-182 批次A:首轮即 unauthorized 同样报警(凭据问题不悬挂)
+        assert_eq!(
+            transition_alert(None, &ProbeStatus::Unauthorized),
+            vec!["plugin_unauthorized"]
         );
     }
 
     #[test]
     fn test_first_probe_online_or_no_probe_silent() {
-        assert_eq!(transition_alert(None, &ProbeStatus::Online), None);
-        assert_eq!(transition_alert(None, &ProbeStatus::NoProbe), None);
+        assert!(transition_alert(None, &ProbeStatus::Online).is_empty());
+        assert!(transition_alert(None, &ProbeStatus::NoProbe).is_empty());
     }
 
     #[test]
     fn test_online_to_offline_alerts_and_recovery_closes() {
         assert_eq!(
             transition_alert(Some(&ProbeStatus::Online), &ProbeStatus::Offline),
-            Some("plugin_offline")
+            vec!["plugin_offline"]
         );
         // 恢复 → 系统关警(全链留痕)
         assert_eq!(
             transition_alert(Some(&ProbeStatus::Offline), &ProbeStatus::Online),
-            Some("plugin_online")
+            vec!["plugin_online"]
         );
         // 进程恢复但 /health 仍未实现(404 = TCP+HTTP 可达)→ 同样关警,
-        // 报警面语义 = offline 是唯一报警态,退出即关警,无报警悬挂
+        // 报警面语义 = 报警态退出即关警,无报警悬挂
         assert_eq!(
             transition_alert(Some(&ProbeStatus::Offline), &ProbeStatus::NoProbe),
-            Some("plugin_online")
+            vec!["plugin_online"]
+        );
+    }
+
+    #[test]
+    fn test_unauthorized_transitions_open_and_close() {
+        // online → unauthorized:开凭据警
+        assert_eq!(
+            transition_alert(Some(&ProbeStatus::Online), &ProbeStatus::Unauthorized),
+            vec!["plugin_unauthorized"]
+        );
+        // unauthorized → online:关警留痕
+        assert_eq!(
+            transition_alert(Some(&ProbeStatus::Unauthorized), &ProbeStatus::Online),
+            vec!["plugin_online"]
+        );
+        // unauthorized → no_probe(进程可达):同样关警
+        assert_eq!(
+            transition_alert(Some(&ProbeStatus::Unauthorized), &ProbeStatus::NoProbe),
+            vec!["plugin_online"]
+        );
+        // 持续 unauthorized 不重复报警
+        assert!(transition_alert(Some(&ProbeStatus::Unauthorized), &ProbeStatus::Unauthorized).is_empty());
+    }
+
+    #[test]
+    fn test_cross_alarming_transition_closes_then_opens() {
+        // offline → unauthorized:进程活着但凭据错——先关 offline 警再开凭据警
+        assert_eq!(
+            transition_alert(Some(&ProbeStatus::Offline), &ProbeStatus::Unauthorized),
+            vec!["plugin_online", "plugin_unauthorized"]
+        );
+        // unauthorized → offline:凭据问题恶化成进程失联——先关凭据警再开离线警
+        assert_eq!(
+            transition_alert(Some(&ProbeStatus::Unauthorized), &ProbeStatus::Offline),
+            vec!["plugin_online", "plugin_offline"]
         );
     }
 
     #[test]
     fn test_no_repeated_alerts_and_no_probe_transitions_silent() {
         // 持续 offline 不重复报警
-        assert_eq!(
-            transition_alert(Some(&ProbeStatus::Offline), &ProbeStatus::Offline),
-            None
-        );
+        assert!(transition_alert(Some(&ProbeStatus::Offline), &ProbeStatus::Offline).is_empty());
         // online↔no_probe 迁移不产生事件(no_probe 不报警语义)
-        assert_eq!(
-            transition_alert(Some(&ProbeStatus::Online), &ProbeStatus::NoProbe),
-            None
-        );
-        assert_eq!(
-            transition_alert(Some(&ProbeStatus::NoProbe), &ProbeStatus::Online),
-            None
-        );
+        assert!(transition_alert(Some(&ProbeStatus::Online), &ProbeStatus::NoProbe).is_empty());
+        assert!(transition_alert(Some(&ProbeStatus::NoProbe), &ProbeStatus::Online).is_empty());
         // 持续 online/no_probe 静默
-        assert_eq!(
-            transition_alert(Some(&ProbeStatus::Online), &ProbeStatus::Online),
-            None
-        );
+        assert!(transition_alert(Some(&ProbeStatus::Online), &ProbeStatus::Online).is_empty());
     }
 
     // ===== liveness_entry 快照字段语义 =====
@@ -407,5 +511,20 @@ mod tests {
         assert_eq!(ProbeStatus::Online.as_str(), "online");
         assert_eq!(ProbeStatus::Offline.as_str(), "offline");
         assert_eq!(ProbeStatus::NoProbe.as_str(), "no_probe");
+        // UV-182 批次A:unauthorized 为 /api/health status 新增值
+        assert_eq!(ProbeStatus::Unauthorized.as_str(), "unauthorized");
+    }
+
+    #[test]
+    fn test_liveness_entry_unauthorized_status() {
+        // unauthorized 进快照:status 字段呈现新值,last_ok 不更新语义与 offline 一致
+        let e = liveness_entry(
+            &ProbeStatus::Unauthorized,
+            4000,
+            Some(3900),
+            Some("HTTP 401(凭据/配置问题)".to_string()),
+        );
+        assert_eq!(e.status, "unauthorized");
+        assert_eq!(e.last_error.as_deref(), Some("HTTP 401(凭据/配置问题)"));
     }
 }

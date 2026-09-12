@@ -81,3 +81,6 @@ test_output.txt
 # 2026-09-12 installer 源码入库（用户裁定）;payload 为分发包汇集产物
 # （exe/web 静态/rules/资源）,由 prepare-payload.ps1 重建,exe 另受全局 *.exe 规则排除
 installer/payload/
+
+# === 看门狗守护配置（UV-182 批次E 出库:部署侧可能写入真实 token env,防误提交;模板 = plugins-watchdog.example.json 入库）===
+dist/plugins-watchdog.json

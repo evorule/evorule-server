@@ -249,9 +249,15 @@ jobs:
           cp dist/start-evorule.bat "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
           # deployment-side plugin watchdog (optional; windows package only)
+          # UV-182 批次E: plugins-watchdog.json 已出库（部署侧或含真实 token
+          # env，防误提交）——CI 优先本地文件，缺失则由 example 模板生成
           cp dist/start-watchdog.bat "${PKG}/"
           cp dist/watchdog-plugins.ps1 "${PKG}/"
-          cp dist/plugins-watchdog.json "${PKG}/"
+          if [ -f dist/plugins-watchdog.json ]; then
+            cp dist/plugins-watchdog.json "${PKG}/"
+          else
+            cp dist/plugins-watchdog.example.json "${PKG}/plugins-watchdog.json"
+          fi
           # 包内完整性清单
           cd "${PKG}"
           sha256sum evorule-server.exe evorule-rule-serve.exe plugins/ai-plugin/evorule-ai-plugin.exe > sha256-checks.txt
