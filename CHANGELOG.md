@@ -35,6 +35,10 @@
 - **finance-pack 参考包** — 财务域声明式资产包范本(1 场景 + 2 模板:金额阈值审批/报销材料完整性检查),演示参数级与模板级 scene_ref 两种解析形态与嵌套 branch/exists 域函数;随仓门禁测试锁定"参考包必须始终通过装载校验且生成确定性"
 - **console 通用表单入口** — 工作空间新增「插件模板」页(evorule-console 侧):模板列表 → 按 params_form 渲染表单 → 生成 → 草稿预览/复制,草稿不落库
 
+### 🔄 变更
+
+- **核心依赖升级 0.4.3 → 0.6.0（补齐发版线，2026-09-14）** — 6 个 Cargo.toml 的 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 依赖从 0.4.3 提升至 0.6.0（crates.io 补发 0.6.0 后）：引擎元指令白名单随 TCB 0.6.0 收窄为 5 种（`collect`/`merge` 已退役，69 号清理），与本仓 schema 双副本对齐（`2b0b2c4`）消除「引擎 6 种旧口径 vs 校验层 5 种」的分裂；workspace 全量编译回归通过（`cargo check --workspace --all-targets`，1m28s）
+
 ### 🐛 修复
 
 - **分发包内置中性插件清单** — 打包步骤生成空条目 `plugin_manifest.json`(空条目=内建插件全启):server 对 `--plugins` 清单缺失 fail-fast,缺此文件会导致主服务在干净机器上拒启
