@@ -375,6 +375,15 @@ pub fn plugin_admin_token_env(id: &str) -> String {
     format!("EVORULE_PLUGIN_ADMIN_TOKEN__{folded}")
 }
 
+/// UV-183 批次A（P1-10 折叠撞名）: 两个不同插件 id 是否折叠映射到同一
+/// admin token env 名。折叠把非 ASCII 字母数字统一映射为 '_',不同 id 可撞
+/// 同一 env 名（如 "finance-config" 与 "finance_config"）——部署侧将无法
+/// 分别配置 admin token（一个值同时授权两个插件的审批代理,归因不可分）。
+/// 装载期 fail-fast 拒绝装载（调用方 load_external_plugins）。
+pub fn plugin_admin_token_env_collides(a: &str, b: &str) -> bool {
+    a != b && plugin_admin_token_env(a) == plugin_admin_token_env(b)
+}
+
 impl SessionApi {
     /// 创建会话管理 API
     ///
@@ -1144,11 +1153,18 @@ impl SessionApi {
         // 完整路径字典序 = 确定性（bundles/ 子目录条目按路径自然归位）
         paths.sort();
 
+        // UV-183 批次F（P1-14 reload 防篡改）: bundle 条目 blake3 复验，
+        // 失配条目 fail-fast 拒载（ERROR 不静默；拒载原因在收集阶段明示）
+        let tampered = Self::collect_tampered_bundle_files(rules_dir);
+
         let mut out: Vec<JsonValue> = Vec::new();
 
         let mut sources: Vec<String> = Vec::new();
 
         for p in paths {
+            if tampered.contains(&p) {
+                continue; // 复验失配/manifest 非法——收集阶段已 ERROR 留痕
+            }
             if let Some(extra) = Self::parse_rule_file(&p, rules_dir) {
                 // 来源标签 = 相对 rules_dir 的路径（/ 归一化，URL/标签安全）
                 let rel = p
@@ -1188,6 +1204,89 @@ impl SessionApi {
         }
     }
 
+    /// UV-183 批次F（P1-14 reload 防篡改）: bundle 条目 blake3 复验收集。
+    ///
+    /// 扫描 `{rules_dir}/bundles/` 各 bundle 目录（带 `bundle_manifest.json`），
+    /// 对 manifest 记录了 content_hash 的条目重算落盘文件哈希比对：
+    /// - 哈希失配/文件缺失 → 拒载该条目（ERROR 不静默）；
+    /// - manifest 在但不可读/非法 → 无法证明条目未篡改 → fail-closed 拒载该
+    ///   目录全部条目（ERROR 不静默）；
+    /// - 旧 manifest 未记录哈希的条目 → 跳过（防护不追溯存量，零迁移）；
+    /// - 无 manifest 的目录（手工放置规则文件）→ 维持既有语义照常加载。
+    ///
+    /// 存量豁免清零 L2（2026-09-15）: 在条目复验前先做 manifest 落盘完整性比对
+    /// （`landed_content_hash`，防"文件与 manifest 记录被同步篡改"绕过条目哈希）：
+    /// - 记录值 ≠ 重算值 → manifest 不可信 → fail-closed 拒载该目录全部条目；
+    /// - 旧 manifest 未记录该字段 → 跳过（零迁移，与条目哈希同策略）。
+    ///
+    /// 返回拒载文件路径集（装载清单与 tier_inventory 共用，保证视图一致）。
+    fn collect_tampered_bundle_files(
+        rules_dir: &std::path::Path,
+    ) -> std::collections::BTreeSet<std::path::PathBuf> {
+        use evorule_workspace::bundle_land::{
+            verify_bundle_entry_hashes, verify_landed_hash_recorded, BundleManifest,
+        };
+        let mut out = std::collections::BTreeSet::new();
+        let Ok(rd) = std::fs::read_dir(rules_dir.join("bundles")) else {
+            return out;
+        };
+        for entry in rd.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') {
+                continue; // 临时/备份目录本就不参与加载
+            }
+            let manifest_path = dir.join(crate::api::bundles::BUNDLE_MANIFEST_FILE);
+            let refuse_whole_dir = |reason: String, out: &mut std::collections::BTreeSet<_>| {
+                let mut all = Vec::new();
+                Self::collect_json_files_recursive(&dir, &mut all);
+                for f in all {
+                    tracing::error!(
+                        "bundle 条目拒载（UV-183 批次F）: {} — manifest 复验不可用（{reason}）,\
+                         fail-closed 拒载;恢复方式: 重新导入该 bundle 或回滚文件",
+                        f.display()
+                    );
+                    out.insert(f);
+                }
+            };
+            let raw = match std::fs::read_to_string(&manifest_path) {
+                Ok(raw) => raw,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    continue; // 非 bundle 管理目录，保持既有语义
+                }
+                Err(e) => {
+                    refuse_whole_dir(format!("manifest 读取失败: {e}"), &mut out);
+                    continue;
+                }
+            };
+            let manifest: BundleManifest = match serde_json::from_str(&raw) {
+                Ok(m) => m,
+                Err(e) => {
+                    refuse_whole_dir(format!("manifest 解析失败: {e}"), &mut out);
+                    continue;
+                }
+            };
+            // L2 落盘完整性比对先于条目复验：manifest 自身不可信则条目哈希无意义
+            if let Err(reason) = verify_landed_hash_recorded(&manifest) {
+                refuse_whole_dir(reason, &mut out);
+                continue;
+            }
+            for f in verify_bundle_entry_hashes(&dir, &manifest) {
+                tracing::error!(
+                    "bundle 条目拒载（UV-183 批次F 复验失配）: {} — 落盘内容与导入时 \
+                     blake3 哈希不一致（疑似篡改/半成品）,fail-fast 拒载该条目;\
+                     恢复方式: 重新导入该 bundle 或回滚文件",
+                    dir.join(&f).display()
+                );
+                out.insert(dir.join(f));
+            }
+        }
+        out
+    }
+
     /// 三层规则清单（UV-145 W1：层级可观测，60 号方案 §2.1）
     ///
     /// 分层是**纯约定**（执行顺序由"core_eval 在前 + 完整路径字典序"保证，本函数不参与
@@ -1214,7 +1313,12 @@ impl SessionApi {
         let (mut l2, mut l3): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         let mut all: Vec<std::path::PathBuf> = Vec::new();
         Self::collect_json_files_recursive(rules_dir, &mut all);
+        // UV-183 批次F: bundle 复验拒载的条目不计入清单（清单与实载一致的既有口径）
+        let tampered = Self::collect_tampered_bundle_files(rules_dir);
         for p in all {
+            if tampered.contains(&p) {
+                continue; // 拒载证据见加载日志 ERROR（复验失配/manifest 非法）
+            }
             let rel = p
                 .strip_prefix(rules_dir)
                 .unwrap_or(&p)
@@ -8751,10 +8855,20 @@ pub async fn invoke_service_handler(
         .await;
     match result {
         Ok(result) => Ok(Json(tcb_to_serde(&result))),
-        Err(e) => Err((
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": e })),
-        )),
+        Err(e) => {
+            // UV-183 批次B（P1-11 错误脱敏）: 错误响应不再内嵌链路错误原文
+            // （reqwest Display/上游响应片段可携带内网 URL/端口/报文细节）。
+            // 分类 → 通用文案回传;原始细节只进服务端日志。会话内 call_service
+            // 路径（io_request Fact 入链）不经此处,错误串零改动。
+            let class = classify_upstream_error(&e);
+            tracing::warn!("REST invoke 服务直调失败: service={name} detail={e}");
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": format!("服务调用失败: {class}（详情见服务端日志）")
+                })),
+            ))
+        }
     }
 }
 
@@ -8766,6 +8880,28 @@ const PLUGIN_PROXY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// 代理错误 JSON 快捷构造
 fn proxy_err(status: StatusCode, msg: String) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({ "error": msg })))
+}
+
+/// UV-183 批次B（P1-11 错误脱敏）: 上游/链路错误字符串分类 → 通用文案。
+///
+/// invoke 直调与审批代理的错误响应不再内嵌 reqwest Display 或上游响应片段
+/// （可能携带内网 URL/端口/上游报文等内部拓扑细节）。本函数对最终错误串做
+/// 关键词分类（timeout/connect/其他）,回传统一口径文案;原始细节只进服务端
+/// 日志（调用方 warn!）。纯函数,单测锁定。
+fn classify_upstream_error(e: &str) -> &'static str {
+    let lower = e.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") || lower.contains("deadline") {
+        "上游超时（服务未在时限内响应）"
+    } else if lower.contains("dns lookup failed")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("connect")
+        || lower.contains("error sending request")
+    {
+        "上游连接失败（服务不可达）"
+    } else {
+        "上游请求失败"
+    }
 }
 
 /// approver 强制注入判定（纯逻辑,单测锁定）:
@@ -8831,7 +8967,10 @@ async fn proxy_plugin_admin(
         } else if e.is_connect() {
             "上游连接失败(插件进程未监听/端口不可达)".to_string()
         } else {
-            format!("上游请求失败: {e}")
+            // UV-183 批次B: fallback 分支同口径——raw reqwest Display 不回传
+            // 客户端,分类通用文案 + 细节只进服务端日志
+            tracing::warn!("插件审批代理转发失败: plugin={id} url={url} detail={e}");
+            "上游请求失败（详情见服务端日志）".to_string()
         };
         proxy_err(
             StatusCode::BAD_GATEWAY,
@@ -8844,8 +8983,19 @@ async fn proxy_plugin_admin(
         .text()
         .await
         .map_err(|e| proxy_err(StatusCode::BAD_GATEWAY, format!("上游响应读取失败: {e}")))?;
-    let value: serde_json::Value = serde_json::from_str(&text)
-        .unwrap_or_else(|_| serde_json::json!({ "error": "上游响应非 JSON", "raw": text }));
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => {
+            // UV-183 批次B: 非 JSON 上游响应不再原样透传（raw 面收缩）——
+            // 客户端只收通用文案,原文（截断）进服务端日志
+            let snippet: String = text.chars().take(512).collect();
+            tracing::warn!(
+                "插件审批代理: 上游响应非 JSON: plugin={id} status={status} len={} 原文(截断): {snippet}",
+                text.len()
+            );
+            serde_json::json!({ "error": "上游响应非 JSON（原始响应已省略,详情见服务端日志）" })
+        }
+    };
     Ok((status, value))
 }
 
@@ -10280,6 +10430,56 @@ mod tests {
             "EVORULE_PLUGIN_ADMIN_TOKEN__MY_PLUGIN_2"
         );
         assert_eq!(plugin_admin_token_env("a"), "EVORULE_PLUGIN_ADMIN_TOKEN__A");
+    }
+
+    /// UV-183 批次A（P1-10 折叠撞名）: 不同 id 折叠撞同一 env 名 → true;
+    /// 不同 env 名 / 同一 id → false（装载期 fail-fast 的纯函数判定基座）
+    #[test]
+    fn test_plugin_admin_token_env_collision() {
+        assert!(plugin_admin_token_env_collides("finance-config", "finance_config"));
+        assert!(plugin_admin_token_env_collides("a.b", "a-b"));
+        assert!(!plugin_admin_token_env_collides("finance-config", "finance-config2"));
+        assert!(!plugin_admin_token_env_collides("finance-config", "finance-config"));
+        assert!(!plugin_admin_token_env_collides("a", "b"));
+    }
+
+    /// UV-183 批次B（P1-11 错误脱敏）: 链路错误串分类——timeout/connect 类
+    /// 命中对应通用文案;含 URL/端口/响应片段的 raw Display 落"其他"通用文案
+    /// （客户端永远只见分类文案,原文只进日志）
+    #[test]
+    fn test_classify_upstream_error() {
+        // timeout 类
+        assert_eq!(
+            classify_upstream_error("http request failed: operation timed out"),
+            "上游超时（服务未在时限内响应）"
+        );
+        assert_eq!(
+            classify_upstream_error("Timeout while waiting"),
+            "上游超时（服务未在时限内响应）"
+        );
+        // connect 类
+        assert_eq!(
+            classify_upstream_error(
+                "error sending request for url (http://127.0.0.1:8848/services/x)"
+            ),
+            "上游连接失败（服务不可达）"
+        );
+        assert_eq!(
+            classify_upstream_error("dns lookup failed for 'internal-host'"),
+            "上游连接失败（服务不可达）"
+        );
+        assert_eq!(
+            classify_upstream_error("os error 10061 connection refused"),
+            "上游连接失败（服务不可达）"
+        );
+        // 其他类（含上游响应片段的 raw 面——一律通用文案）
+        assert_eq!(
+            classify_upstream_error(
+                "http request failed with status: 500 Internal Server Error, body: {\"secret\":\"...\"}"
+            ),
+            "上游请求失败"
+        );
+        assert_eq!(classify_upstream_error("service chain 未装配"), "上游请求失败");
     }
 
     /// approver 强制注入:AuthedActor 存在取注入值,缺失（认证关闭）记 anonymous;

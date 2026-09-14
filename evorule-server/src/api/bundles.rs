@@ -454,6 +454,111 @@ mod tests {
         assert!(api.core_eval_len() >= 1);
     }
 
+    // ============ UV-183 批次F: bundle 条目 reload blake3 复验 ============
+
+    /// UV-183 批次F: 导入落盘 manifest 记录条目文件哈希;落盘内容被篡改 →
+    /// reload 时该条目 fail-fast 拒载（其余规则不受影响,ERROR 不静默）。
+    #[tokio::test]
+    async fn bundle_entry_tamper_rejected_on_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = test_api(&tmp);
+        let bundle = valid_bundle(schema_valid_body());
+
+        api.import_bundle(&bundle, false).await.unwrap();
+        assert_eq!(api.core_eval_len(), 3, "导入后 bundle 条目应被加载（宪法 2 + 条目 1）");
+
+        // 落盘 manifest 记录条目哈希（blake3:hex over 文件字节,SSOT 口径）
+        let bundle_dir = tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1");
+        let entry_path = bundle_dir.join("entry-tax-001.json");
+        let manifest: evorule_workspace::bundle_land::BundleManifest = serde_json::from_str(
+            &std::fs::read_to_string(bundle_dir.join("bundle_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let recorded = manifest.entry_files[0]
+            .content_hash
+            .as_deref()
+            .expect("新导入 manifest 必须记录条目哈希");
+        assert_eq!(
+            recorded,
+            evorule_workspace::bundle_land::entry_file_hash(&std::fs::read(&entry_path).unwrap()),
+            "记录哈希必须等于落盘文件哈希"
+        );
+
+        // 篡改落盘条目（保持 Schema 合法,内容变化）→ reload 复验失配 → 拒载该条
+        let mut tampered: Value =
+            serde_json::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
+        tampered["transform"][0]["params"]["service_name"] = Value::from("tampered_svc");
+        std::fs::write(&entry_path, serde_json::to_string_pretty(&tampered).unwrap()).unwrap();
+        api.reload_from_disk().await.unwrap();
+        assert_eq!(
+            api.core_eval_len(),
+            2,
+            "被篡改条目必须拒载（core_eval 2 = 仅宪法规则）"
+        );
+    }
+
+    /// UV-183 批次F: 旧格式 manifest（条目无 content_hash 字段）→ 条目照常加载
+    /// （防护不追溯存量,零迁移）。
+    #[tokio::test]
+    async fn bundle_legacy_manifest_without_entry_hashes_still_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let bdir = rules_dir.join("bundles").join("b-legacy");
+        std::fs::create_dir_all(&bdir).unwrap();
+        std::fs::write(
+            bdir.join("e1.json"),
+            r#"{"transform":[{"type":"io_request","params":{"io_type":"call_service","service_name":"payroll_svc"}}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            bdir.join("bundle_manifest.json"),
+            r#"{"bundle_id":"b-legacy","dataset_id":"ds-legacy","source_version":"v1",
+                "selection_mode":"pinned","content_hash":"blake3:legacy",
+                "entry_files":[{"entry_id":"e1","file":"e1.json"}]}"#,
+        )
+        .unwrap();
+        let core_eval_path = tmp.path().join("core_eval.json");
+        std::fs::write(
+            &core_eval_path,
+            r#"{"transform":[
+                {"type":"set","params":{"attr":"result","operation":"set","value":"ok"}},
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[],"on_false":[]}}
+            ]}"#,
+        )
+        .unwrap();
+        let merged = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)
+            .expect("legacy manifest 条目应照常加载");
+        assert_eq!(merged.len(), 3, "宪法 2 + 旧 manifest 条目 1（不追溯拒载）");
+    }
+
+    /// UV-183 批次F: manifest 在但不可解析 → 无法证明条目未篡改 →
+    /// fail-closed 拒载该目录全部条目（ERROR 留痕,不静默）。
+    #[tokio::test]
+    async fn bundle_manifest_illegal_refuses_whole_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        let bdir = rules_dir.join("bundles").join("b-bad");
+        std::fs::create_dir_all(&bdir).unwrap();
+        std::fs::write(
+            bdir.join("e1.json"),
+            r#"{"transform":[{"type":"io_request","params":{"io_type":"call_service","service_name":"payroll_svc"}}]}"#,
+        )
+        .unwrap();
+        std::fs::write(bdir.join("bundle_manifest.json"), "{not json").unwrap();
+        let core_eval_path = tmp.path().join("core_eval.json");
+        std::fs::write(
+            &core_eval_path,
+            r#"{"transform":[
+                {"type":"set","params":{"attr":"result","operation":"set","value":"ok"}},
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[],"on_false":[]}}
+            ]}"#,
+        )
+        .unwrap();
+        let merged = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)
+            .expect("复验拒载不构成装载失败（其余规则照常）");
+        assert_eq!(merged.len(), 2, "manifest 非法 → 该目录条目 fail-closed 拒载");
+    }
+
     #[tokio::test]
     async fn import_records_bundle_import_trace() {
         let tmp = tempfile::tempdir().unwrap();

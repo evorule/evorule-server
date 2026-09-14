@@ -841,6 +841,8 @@ fn load_external_plugins(
     // 服务名占用核对集 = 进程内插件声明表全集（含停用插件——Off 的进程内服务名
     // 会直连 HTTP 注册表回落，外部包占用同名会造成挂载态静默切换路由，禁止）
     let mut taken: std::collections::BTreeSet<String> = builtin_names.iter().cloned().collect();
+    // UV-183 批次A（P1-10 折叠撞名）: 已占用 admin token env 名 → 首个插件 id
+    let mut env_taken: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let mut out = Vec::new();
     for (id, entry) in &manifest.plugins {
         let Some(rel) = entry.manifest.as_ref() else {
@@ -849,6 +851,19 @@ fn load_external_plugins(
         if !entry.enabled {
             info!("外部插件包: {id} enabled=false — 不装载（call_service 直连 HTTP 注册表）");
             continue;
+        }
+        // UV-183 批次A（P1-10 折叠撞名）: 折叠把非字母数字统一映射 '_',不同 id
+        // 可撞同一 EVORULE_PLUGIN_ADMIN_TOKEN__* env 名（如 "finance-config" 与
+        // "finance_config"）——两插件共享同一 token 配置,审批代理归因不可分 →
+        // fail-fast 拒载（最早的装载点,先于 plugin.json 读取）。
+        let env_name = evorule_server::api::server::plugin_admin_token_env(id);
+        if let Some(prev) = env_taken.insert(env_name.clone(), id.clone()) {
+            return Err(format!(
+                "外部插件包 admin token env 撞名: 插件 id '{id}' 与 '{prev}' 折叠后映射到 \
+                 同一环境变量 {env_name}（非字母数字统一折叠为下划线）— 两插件将共享同一 \
+                 admin token 配置,审批代理归因不可分,拒绝装载;请重命名其中一个插件 id \
+                 （自诊断指引: 建议仅用小写字母/数字/连字符,确保折叠后互异）"
+            ));
         }
         let rel_path = std::path::PathBuf::from(rel);
         let pj = if rel_path.is_absolute() {
@@ -2404,6 +2419,67 @@ mod tests {
                 .unwrap_err();
             assert!(err.contains("contract_version"), "got: {err}");
             assert!(err.contains("MAJOR 不符"), "got: {err}");
+        }
+
+        // UV-183 批次A（P1-10 折叠撞名）: 两个 id 折叠后映射到同一
+        // EVORULE_PLUGIN_ADMIN_TOKEN__* env 名 → 装载期 fail-fast 拒载
+        #[test]
+        fn admin_token_env_fold_collision_fails_fast() {
+            let dir = TempDir::new().unwrap();
+            // 两个合法且互不冲突的插件包（服务名互异）——唯一可失败点即撞名
+            write_file(
+                dir.path(),
+                "a.json",
+                r#"{"id":"finance-config","version":"1.0","base_url":"http://127.0.0.1:9110",
+                    "services":[{"name":"svc_a"}]}"#,
+            );
+            write_file(
+                dir.path(),
+                "b.json",
+                r#"{"id":"finance_config","version":"1.0","base_url":"http://127.0.0.1:9111",
+                    "services":[{"name":"svc_b"}]}"#,
+            );
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"a.json"},
+                               "finance_config":{"enabled":true,"manifest":"b.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
+                .unwrap_err();
+            assert!(err.contains("撞名"), "got: {err}");
+            assert!(err.contains("finance-config") && err.contains("finance_config"), "got: {err}");
+            assert!(
+                err.contains("EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG"),
+                "got: {err}"
+            );
+            // fail-fast 在第二个条目触发:首个插件已合法入表(真实启动整体中止,
+            // 部分装载不留存),撞名插件本身不得入表
+            assert!(registry.get("svc_a").is_some());
+            assert!(registry.get("svc_b").is_none(), "撞名插件不得装载");
+        }
+
+        // UV-183 批次A: 撞名判定只作用于装载面——enabled=false 的撞名条目不拒载
+        #[test]
+        fn admin_token_env_collision_ignores_disabled_entries() {
+            let dir = TempDir::new().unwrap();
+            write_file(
+                dir.path(),
+                "a.json",
+                r#"{"id":"finance-config","version":"1.0","base_url":"http://127.0.0.1:9110",
+                    "services":[{"name":"svc_a"}]}"#,
+            );
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"a.json"},
+                               "finance_config":{"enabled":false,"manifest":"a.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
+            assert_eq!(out.len(), 1, "停用条目不参与撞名判定");
         }
 
         #[test]
