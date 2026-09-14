@@ -43,8 +43,7 @@ use crate::error::{WorkspaceError, WorkspaceResult};
 // 权威校验的"放行/拒绝结论"一致, 而非常量数值相等。
 // (自动报警见 evorule-server 对齐集成测试的规划, 尚未落地)
 
-const VALID_META_INSTRUCTIONS: &[&str] =
-    &["set", "push", "branch", "io_request", "collect", "merge"];
+const VALID_META_INSTRUCTIONS: &[&str] = &["set", "push", "branch", "io_request"];
 const VALID_DOMAIN_TYPES: &[&str] = &[
     "eq",
     "lt",

@@ -1800,8 +1800,9 @@ pub async fn generate_template_handler(
 // ===== 流程编译代理（契约 v1.1 §6；draft-only，R3） =====
 
 /// 内核 transform 元指令词表（对齐 evorule-tcb executor / evorule-governance
-/// rule_validation 的 6 元指令白名单；type 词表门禁的基准面）
-const R2_TRANSFORM_TYPES: &[&str] = &["branch", "set", "push", "io_request", "collect", "merge"];
+/// rule_validation 的元指令白名单；type 词表门禁的基准面。
+/// collect/merge 已退役（69 号清理计划 2026-09-14），enforce 由 tier 门禁管控不入选）
+const R2_TRANSFORM_TYPES: &[&str] = &["branch", "set", "push", "io_request"];
 
 /// 内核域函数词表（对齐 evorule-tcb domain 7 域类型）
 const R2_DOMAIN_TYPES: &[&str] = &["eq", "lt", "exists", "instruction", "all", "not", "has_fields"];

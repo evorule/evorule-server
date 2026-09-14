@@ -320,7 +320,7 @@ Content-Type: application/gzip
 
 ### 4.1 meta 指令
 
-evorule TCB 有 **6 种合法 meta 指令**（0.3.2 起，之前为 4 种）：
+evorule TCB 有 **4 种合法 meta 指令**（0.6.0 起；0.3.2~0.5.x 曾有 `collect`/`merge` 两种 ReAct 编排元指令，已随 0.6.0 的 69 号清理退役——多工具扇出与结果回环编排由应用层 runner 负责）：
 
 | 指令 | 用途 | 示例 |
 |------|------|------|
@@ -328,8 +328,6 @@ evorule TCB 有 **6 种合法 meta 指令**（0.3.2 起，之前为 4 种）：
 | `push` | 入队业务指令 | `{"type":"push","params":{"instruction":{...}}}` |
 | `branch` | 条件分支 | `{"type":"branch","params":{"domain":{...},"on_true":[...],"on_false":[...]}}` |
 | `io_request` | 发起 I/O | `{"type":"io_request","params":{"io_type":"call_service",...}}` |
-| `collect` | 遍历数组生成多条指令（多工具扇出） | `{"type":"collect","params":{"from":"__exec__.payload.items","template":{...}}}` |
-| `merge` | 将工具结果合并进消息历史 | `{"type":"merge","params":{"messages":"__exec__.payload.history","tool_result":"__exec__.payload._io_results.call_service"}}` |
 
 **任何其他 `type` 都不是 meta 指令**，会被当作业务指令 push 到队列。
 

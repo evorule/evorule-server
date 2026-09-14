@@ -536,7 +536,7 @@ mod tests {
 
     fn layout() -> RulesetLayout {
         RulesetLayout::from_rules(
-            &[rule("branch"), rule("set"), rule("collect")],
+            &[rule("branch"), rule("set"), rule("io_request")],
             vec![
                 "core_eval".to_string(),
                 "core_eval".to_string(),
@@ -567,7 +567,7 @@ mod tests {
         let b = layout();
         assert_eq!(a.ruleset_version, b.ruleset_version, "同内容同版本");
         let swapped = RulesetLayout::from_rules(
-            &[rule("set"), rule("branch"), rule("collect")],
+            &[rule("set"), rule("branch"), rule("io_request")],
             vec![
                 "core_eval".to_string(),
                 "core_eval".to_string(),
@@ -610,7 +610,7 @@ mod tests {
         let v1 = agg.current_version();
         // reload：规则内容变化 → 新版本
         let new_layout = RulesetLayout::from_rules(
-            &[rule("branch"), rule("merge"), rule("collect")],
+            &[rule("branch"), rule("push"), rule("io_request")],
             vec![
                 "core_eval".to_string(),
                 "core_eval".to_string(),
@@ -641,7 +641,7 @@ mod tests {
         let v1 = agg.current_version();
         // reload：来源变化（规则 2 换文件）→ 新版本（规则 1 来源不变，切片可跨版本）
         let new_layout = RulesetLayout::from_rules(
-            &[rule("branch"), rule("set"), rule("collect")],
+            &[rule("branch"), rule("set"), rule("io_request")],
             vec![
                 "core_eval".to_string(),
                 "core_eval".to_string(),

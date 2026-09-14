@@ -243,7 +243,8 @@ pub fn validate_rule_input(input: &Value) -> SchemaReport {
 /// 校验 submit_command / session_command 提交的单条指令（线1 防御层，records/77，Opt3）。
 ///
 /// 双层语言（records/75）分派：
-/// - **元指令层类型**（set/push/branch/io_request/collect/merge）→ 按 `transform_rule` 严格
+/// - **元指令层类型**（set/push/branch/io_request；collect/merge 已退役，69 号清理计划）→
+///   按 `transform_rule` 严格
 ///   递归校验（含 domain 结构、path 语法、`__io_results__` 复数强制）——demos 08/012/013/014/016
 ///   的 `branch` 工作流走此路径，单数 `__io_result__` / 非法元指令在此被拦截。
 /// - **指令层类型**（sequence/conditional/while_loop/noop/set 及业务类型）→ 按 `instruction` $defs
@@ -258,7 +259,7 @@ pub fn validate_command_instruction(instr: &Value) -> SchemaReport {
         );
     }
     let ty = instr.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    const META: &[&str] = &["set", "push", "branch", "io_request", "collect", "merge"];
+    const META: &[&str] = &["set", "push", "branch", "io_request"];
     if META.contains(&ty) {
         validate_transform_list(&serde_json::Value::Array(vec![instr.clone()]))
     } else {
@@ -353,35 +354,16 @@ mod tests {
     }
 
     #[test]
-    fn merge_tool_results_plural_accepted() {
-        let doc = rs(serde_json::json!([
-            { "type": "merge", "params": {
-                "messages": "__exec__.payload.llm_response.messages",
-                "tool_results": "__exec__.payload.service_results",
-                "next_instruction": { "type": "call_external", "params": { "messages": "{{messages}}" } }
-            } }
-        ]));
-        let report = validate_rule_set(&doc);
-        assert!(
-            report.valid,
-            "merge 用 tool_results 复数应通过: {:?}",
-            report.errors
-        );
-    }
-
-    #[test]
-    fn merge_without_tool_result_rejected() {
-        let doc = rs(serde_json::json!([
-            { "type": "merge", "params": {
-                "messages": "__exec__.payload.llm_response.messages",
-                "next_instruction": { "type": "noop" }
-            } }
-        ]));
-        let report = validate_rule_set(&doc);
-        assert!(
-            !report.valid,
-            "merge 无 tool_result 且无 tool_results 应被拒"
-        );
+    fn retired_collect_merge_rejected() {
+        // 69 号清理计划（2026-09-14）：collect/merge 原语已退役，
+        // schema 枚举移除后两类指令必须被拒（防事故回流）
+        for ty in ["collect", "merge"] {
+            let doc = rs(serde_json::json!([
+                { "type": ty, "params": {} }
+            ]));
+            let report = validate_rule_set(&doc);
+            assert!(!report.valid, "退役元指令 {ty} 应被 schema 拒绝");
+        }
     }
 
     #[test]

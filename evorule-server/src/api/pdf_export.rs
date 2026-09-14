@@ -1050,7 +1050,7 @@ mod tests {
         let mut r = req("audit_chain");
         r.raw_data = Some(serde_json::json!([
             {"fact_id": "#30001", "type": "set", "payload": {"规则": "报销上限 5000 元"}},
-            {"fact_id": "#30002", "type": "merge", "payload": {"结论": "通过"}}
+            {"fact_id": "#30002", "type": "branch", "payload": {"结论": "通过"}}
         ]));
         r.integrity = Some(serde_json::json!({
             "algorithm": "BLAKE3", "content_hash": "abc123", "fact_count": 2, "verified": true

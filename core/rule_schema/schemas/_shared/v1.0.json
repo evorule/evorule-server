@@ -170,8 +170,8 @@
       "required": ["type", "params"],
       "properties": {
         "type": {
-          "enum": ["set", "push", "branch", "io_request", "collect", "merge", "enforce"],
-          "description": "7 元指令类型（权威源 evorule-tcb/src/executor.rs dispatch）。注意：noop/increment/decrement 是指令层，不是元指令层，不得出现在此枚举（P0-01）；enforce 仅允许出现在 L2 元规则文件（tier=meta），业务文件/L3 携带由 server 装载门禁拒载（UV-147）。"
+          "enum": ["set", "push", "branch", "io_request", "enforce"],
+          "description": "5 元指令类型（权威源 evorule-tcb/src/executor.rs META_INSTRUCTION_TYPES）。注意：noop/increment/decrement 是指令层，不是元指令层，不得出现在此枚举（P0-01）；enforce 仅允许出现在 L2 元规则文件（tier=meta），业务文件/L3 携带由 server 装载门禁拒载（UV-147）；collect/merge 已退役（69 号清理计划 2026-09-14）。"
         },
         "params": { "type": "object" }
       },
@@ -258,45 +258,6 @@
                 },
                 "additionalProperties": { "$ref": "#/$defs/path_or_literal" },
                 "description": "io_type 专属参数（call_external: messages 必填路径 + tools? 可选；call_service: service_name + args?）。可选参数必须以 '?' 后缀显式声明（审计决策）：键名带 ? 时路径解析失败可跳过（业务性缺省），不带 ? 时解析失败立即报错——可选必须显式声明，禁止静默推断。所有参数值经 resolve_path_or_literal：__ 前缀字符串必须语法合法（防 x. 等运行时错误）"
-              }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "type": { "const": "collect" } } },
-          "then": {
-            "properties": {
-              "params": {
-                "type": "object",
-                "required": ["from", "each"],
-                "properties": {
-                  "from": { "$ref": "#/$defs/path", "description": "必填：源数组路径（如 __exec__.payload.llm_response.tool_calls）" },
-                  "each": { "type": "object", "description": "必填：指令模板，支持 {{placeholder}} 插值（如 {type: call_service, params: {service_name: \"{{name}}\"}}）" },
-                  "after": { "$ref": "#/$defs/instruction", "description": "可选：附加指令，追加到所有生成指令之后（解决队列顺序依赖，引擎 exec_collect 末尾支持）" }
-                },
-                "additionalProperties": true
-              }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "type": { "const": "merge" } } },
-          "then": {
-            "properties": {
-              "params": {
-                "type": "object",
-                "required": ["messages", "next_instruction"],
-                "anyOf": [
-                  { "required": ["tool_result"] },
-                  { "required": ["tool_results"] }
-                ],
-                "properties": {
-                  "messages": { "$ref": "#/$defs/path", "description": "必填：消息历史路径（如 __exec__.payload.llm_response.messages）" },
-                  "tool_result": { "$ref": "#/$defs/path", "description": "工具结果路径（单工具，向后兼容）；与 tool_results 二选一" },
-                  "tool_results": { "$ref": "#/$defs/path", "description": "工具结果数组路径（多工具扇出，ReAct）；与 tool_result 二选一。引擎 exec_merge 优先读 tool_results，其次 tool_result，两者皆无报 MissingField" },
-                  "next_instruction": { "$ref": "#/$defs/instruction", "description": "必填：下一条指令模板，支持 {{messages}}/{{tools}} 插值" }
-                },
-                "additionalProperties": true
               }
             }
           }
