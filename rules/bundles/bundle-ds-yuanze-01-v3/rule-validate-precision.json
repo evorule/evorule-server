@@ -1,59 +1,75 @@
-[
-  {
-    "params": {
-      "domain": {
-        "instruction_type": "validate_precision",
-        "type": "instruction"
-      },
-      "on_true": [
-        {
-          "params": {
-            "domain": {
-              "path": "payload.service_result.converged_ok",
-              "type": "eq",
-              "value": true
-            },
-            "on_false": [
-              {
-                "params": {
-                  "attr": "audit.pending_alert.error",
-                  "operation": "set",
-                  "value": "Service result out of tolerance"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "audit.pending_alert.residual",
-                  "operation": "set",
-                  "value": "__exec__.payload.service_result.residual"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "audit.pending_alert.threshold",
-                  "operation": "set",
-                  "value": "__exec__.instruction.params.max_allowed_residual"
-                },
-                "type": "set"
-              }
-            ],
-            "on_true": [
-              {
-                "params": {
-                  "attr": "audit.pending_alert",
-                  "operation": "set",
-                  "value": null
-                },
-                "type": "set"
-              }
-            ]
-          },
-          "type": "branch"
-        }
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.bundle.bundle_ds_yuanze_01_v3.rule_validate_precision",
+  "version": "1.0.0",
+  "metadata": {
+    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
+    "license": "AGPL-3.0-or-later",
+    "provenance": {
+      "source": "derived",
+      "derived_from": [
+        "rule-validate-precision.json"
       ]
-    },
-    "type": "branch"
-  }
-]
+    }
+  },
+  "transform": [
+    {
+      "params": {
+        "domain": {
+          "instruction_type": "validate_precision",
+          "type": "instruction"
+        },
+        "on_true": [
+          {
+            "params": {
+              "domain": {
+                "path": "payload.service_result.converged_ok",
+                "type": "eq",
+                "value": true
+              },
+              "on_false": [
+                {
+                  "params": {
+                    "attr": "audit.pending_alert.error",
+                    "operation": "set",
+                    "value": "Service result out of tolerance"
+                  },
+                  "type": "set"
+                },
+                {
+                  "params": {
+                    "attr": "audit.pending_alert.residual",
+                    "operation": "set",
+                    "value": "__exec__.payload.service_result.residual"
+                  },
+                  "type": "set"
+                },
+                {
+                  "params": {
+                    "attr": "audit.pending_alert.threshold",
+                    "operation": "set",
+                    "value": "__exec__.instruction.params.max_allowed_residual"
+                  },
+                  "type": "set"
+                }
+              ],
+              "on_true": [
+                {
+                  "params": {
+                    "attr": "audit.pending_alert",
+                    "operation": "set",
+                    "value": null
+                  },
+                  "type": "set"
+                }
+              ]
+            },
+            "type": "branch"
+          }
+        ]
+      },
+      "type": "branch"
+    }
+  ]
+}

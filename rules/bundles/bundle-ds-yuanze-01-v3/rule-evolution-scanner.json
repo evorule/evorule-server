@@ -1,69 +1,85 @@
-[
-  {
-    "params": {
-      "domain": {
-        "instruction_type": "evolution_scanner",
-        "type": "instruction"
-      },
-      "on_true": [
-        {
-          "params": {
-            "attr": "audit.failure_count",
-            "operation": "add",
-            "value": "__exec__.instruction.params.inc"
-          },
-          "type": "set"
-        },
-        {
-          "params": {
-            "domain": {
-              "inner": {
-                "path": "payload.audit.failure_count",
-                "type": "lt",
-                "value": 3
-              },
-              "type": "not"
-            },
-            "on_false": [],
-            "on_true": [
-              {
-                "params": {
-                  "attr": "audit.evolve_request.reason",
-                  "operation": "set",
-                  "value": "连续3次残差超标"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "audit.evolve_request.context",
-                  "operation": "set",
-                  "value": "__exec__.payload.audit.compacted_log"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "audit.evolve_request.target_rule",
-                  "operation": "set",
-                  "value": "__exec__.instruction.params.target_rule_type"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "audit.failure_count",
-                  "operation": "set",
-                  "value": 0
-                },
-                "type": "set"
-              }
-            ]
-          },
-          "type": "branch"
-        }
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.bundle.bundle_ds_yuanze_01_v3.rule_evolution_scanner",
+  "version": "1.0.0",
+  "metadata": {
+    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
+    "license": "AGPL-3.0-or-later",
+    "provenance": {
+      "source": "derived",
+      "derived_from": [
+        "rule-evolution-scanner.json"
       ]
-    },
-    "type": "branch"
-  }
-]
+    }
+  },
+  "transform": [
+    {
+      "params": {
+        "domain": {
+          "instruction_type": "evolution_scanner",
+          "type": "instruction"
+        },
+        "on_true": [
+          {
+            "params": {
+              "attr": "audit.failure_count",
+              "operation": "add",
+              "value": "__exec__.instruction.params.inc"
+            },
+            "type": "set"
+          },
+          {
+            "params": {
+              "domain": {
+                "inner": {
+                  "path": "payload.audit.failure_count",
+                  "type": "lt",
+                  "value": 3
+                },
+                "type": "not"
+              },
+              "on_false": [],
+              "on_true": [
+                {
+                  "params": {
+                    "attr": "audit.evolve_request.reason",
+                    "operation": "set",
+                    "value": "连续3次残差超标"
+                  },
+                  "type": "set"
+                },
+                {
+                  "params": {
+                    "attr": "audit.evolve_request.context",
+                    "operation": "set",
+                    "value": "__exec__.payload.audit.compacted_log"
+                  },
+                  "type": "set"
+                },
+                {
+                  "params": {
+                    "attr": "audit.evolve_request.target_rule",
+                    "operation": "set",
+                    "value": "__exec__.instruction.params.target_rule_type"
+                  },
+                  "type": "set"
+                },
+                {
+                  "params": {
+                    "attr": "audit.failure_count",
+                    "operation": "set",
+                    "value": 0
+                  },
+                  "type": "set"
+                }
+              ]
+            },
+            "type": "branch"
+          }
+        ]
+      },
+      "type": "branch"
+    }
+  ]
+}

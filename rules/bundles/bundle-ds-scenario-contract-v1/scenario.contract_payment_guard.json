@@ -1,73 +1,89 @@
-[
-  {
-    "params": {
-      "domain": {
-        "instruction_type": "contract_payment_check",
-        "type": "instruction"
-      },
-      "on_true": [
-        {
-          "params": {
-            "attr": "data",
-            "operation": "set",
-            "value": "__exec__.instruction.params"
-          },
-          "type": "set"
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.bundle.bundle_ds_scenario_contract_v1.scenario.contract_payment_guard",
+  "version": "1.0.0",
+  "metadata": {
+    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
+    "license": "AGPL-3.0-or-later",
+    "provenance": {
+      "source": "derived",
+      "derived_from": [
+        "scenario.contract_payment_guard.json"
+      ]
+    }
+  },
+  "transform": [
+    {
+      "params": {
+        "domain": {
+          "instruction_type": "contract_payment_check",
+          "type": "instruction"
         },
-        {
-          "params": {
-            "domain": {
-              "inner": [
+        "on_true": [
+          {
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            },
+            "type": "set"
+          },
+          {
+            "params": {
+              "domain": {
+                "inner": [
+                  {
+                    "path": "__exec__.payload.data.contract.signed",
+                    "type": "eq",
+                    "value": true
+                  },
+                  {
+                    "path": "__exec__.payload.data.approval_id",
+                    "type": "exists"
+                  },
+                  {
+                    "path": "__exec__.payload.data.payment.amount",
+                    "type": "lt",
+                    "value": 100000
+                  }
+                ],
+                "type": "all"
+              },
+              "on_false": [
                 {
-                  "path": "__exec__.payload.data.contract.signed",
-                  "type": "eq",
-                  "value": true
+                  "params": {
+                    "attr": "__exec__.payload.data.payment.status",
+                    "operation": "set",
+                    "value": "blocked"
+                  },
+                  "type": "set"
                 },
                 {
-                  "path": "__exec__.payload.data.approval_id",
-                  "type": "exists"
-                },
-                {
-                  "path": "__exec__.payload.data.payment.amount",
-                  "type": "lt",
-                  "value": 100000
+                  "params": {
+                    "attr": "__exec__.payload.data.payment.block_reason",
+                    "operation": "set",
+                    "value": "付款前提缺失：需合同已签 + 审批单存在 + 金额低于 100000"
+                  },
+                  "type": "set"
                 }
               ],
-              "type": "all"
+              "on_true": [
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.payment.status",
+                    "operation": "set",
+                    "value": "approved"
+                  },
+                  "type": "set"
+                }
+              ]
             },
-            "on_false": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.payment.status",
-                  "operation": "set",
-                  "value": "blocked"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.payment.block_reason",
-                  "operation": "set",
-                  "value": "付款前提缺失：需合同已签 + 审批单存在 + 金额低于 100000"
-                },
-                "type": "set"
-              }
-            ],
-            "on_true": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.payment.status",
-                  "operation": "set",
-                  "value": "approved"
-                },
-                "type": "set"
-              }
-            ]
-          },
-          "type": "branch"
-        }
-      ]
-    },
-    "type": "branch"
-  }
-]
+            "type": "branch"
+          }
+        ]
+      },
+      "type": "branch"
+    }
+  ]
+}

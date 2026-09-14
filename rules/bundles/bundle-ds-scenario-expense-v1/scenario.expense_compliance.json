@@ -1,89 +1,105 @@
-[
-  {
-    "params": {
-      "domain": {
-        "instruction_type": "expense_compliance_check",
-        "type": "instruction"
-      },
-      "on_true": [
-        {
-          "params": {
-            "attr": "data",
-            "operation": "set",
-            "value": "__exec__.instruction.params"
-          },
-          "type": "set"
-        },
-        {
-          "params": {
-            "domain": {
-              "path": "__exec__.payload.data.invoice.duplicate",
-              "type": "eq",
-              "value": true
-            },
-            "on_false": [
-              {
-                "params": {
-                  "domain": {
-                    "path": "__exec__.payload.data.expense.amount",
-                    "type": "lt",
-                    "value": 5000
-                  },
-                  "on_false": [
-                    {
-                      "params": {
-                        "attr": "__exec__.payload.data.expense.decision",
-                        "operation": "set",
-                        "value": "manager_approval_needed"
-                      },
-                      "type": "set"
-                    },
-                    {
-                      "params": {
-                        "attr": "__exec__.payload.data.expense.escalate_to",
-                        "operation": "set",
-                        "value": "部门主管审批队列"
-                      },
-                      "type": "set"
-                    }
-                  ],
-                  "on_true": [
-                    {
-                      "params": {
-                        "attr": "__exec__.payload.data.expense.decision",
-                        "operation": "set",
-                        "value": "auto_approved"
-                      },
-                      "type": "set"
-                    }
-                  ]
-                },
-                "type": "branch"
-              }
-            ],
-            "on_true": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.expense.decision",
-                  "operation": "set",
-                  "value": "rejected"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.expense.reject_reason",
-                  "operation": "set",
-                  "value": "发票重复：同一发票号已存在报销记录"
-                },
-                "type": "set"
-              }
-            ]
-          },
-          "type": "branch"
-        }
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.bundle.bundle_ds_scenario_expense_v1.scenario.expense_compliance",
+  "version": "1.0.0",
+  "metadata": {
+    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
+    "license": "AGPL-3.0-or-later",
+    "provenance": {
+      "source": "derived",
+      "derived_from": [
+        "scenario.expense_compliance.json"
       ]
-    },
-    "type": "branch"
-  }
-]
+    }
+  },
+  "transform": [
+    {
+      "params": {
+        "domain": {
+          "instruction_type": "expense_compliance_check",
+          "type": "instruction"
+        },
+        "on_true": [
+          {
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            },
+            "type": "set"
+          },
+          {
+            "params": {
+              "domain": {
+                "path": "__exec__.payload.data.invoice.duplicate",
+                "type": "eq",
+                "value": true
+              },
+              "on_false": [
+                {
+                  "params": {
+                    "domain": {
+                      "path": "__exec__.payload.data.expense.amount",
+                      "type": "lt",
+                      "value": 5000
+                    },
+                    "on_false": [
+                      {
+                        "params": {
+                          "attr": "__exec__.payload.data.expense.decision",
+                          "operation": "set",
+                          "value": "manager_approval_needed"
+                        },
+                        "type": "set"
+                      },
+                      {
+                        "params": {
+                          "attr": "__exec__.payload.data.expense.escalate_to",
+                          "operation": "set",
+                          "value": "部门主管审批队列"
+                        },
+                        "type": "set"
+                      }
+                    ],
+                    "on_true": [
+                      {
+                        "params": {
+                          "attr": "__exec__.payload.data.expense.decision",
+                          "operation": "set",
+                          "value": "auto_approved"
+                        },
+                        "type": "set"
+                      }
+                    ]
+                  },
+                  "type": "branch"
+                }
+              ],
+              "on_true": [
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.expense.decision",
+                    "operation": "set",
+                    "value": "rejected"
+                  },
+                  "type": "set"
+                },
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.expense.reject_reason",
+                    "operation": "set",
+                    "value": "发票重复：同一发票号已存在报销记录"
+                  },
+                  "type": "set"
+                }
+              ]
+            },
+            "type": "branch"
+          }
+        ]
+      },
+      "type": "branch"
+    }
+  ]
+}

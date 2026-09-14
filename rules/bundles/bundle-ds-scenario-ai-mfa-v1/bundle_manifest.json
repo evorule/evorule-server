@@ -8,7 +8,8 @@
   "entry_files": [
     {
       "entry_id": "scenario.ai_mfa_gate",
-      "file": "scenario.ai_mfa_gate.json"
+      "file": "scenario.ai_mfa_gate.json",
+      "content_hash": "blake3:1efba31fdaf0b13545acb0b7c343162116d316655adec97068917b52167ce974"
     }
   ]
 }

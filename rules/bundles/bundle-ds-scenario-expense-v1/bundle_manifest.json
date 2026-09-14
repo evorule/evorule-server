@@ -8,7 +8,8 @@
   "entry_files": [
     {
       "entry_id": "scenario.expense_compliance",
-      "file": "scenario.expense_compliance.json"
+      "file": "scenario.expense_compliance.json",
+      "content_hash": "blake3:7f23e507c4e3d7393864129467a746cfd50ed115c06235c9c7455785efd7db77"
     }
   ]
 }

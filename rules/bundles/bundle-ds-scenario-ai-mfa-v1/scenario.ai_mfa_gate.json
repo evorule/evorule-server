@@ -1,59 +1,75 @@
-[
-  {
-    "params": {
-      "domain": {
-        "instruction_type": "ai_mfa_gate_check",
-        "type": "instruction"
-      },
-      "on_true": [
-        {
-          "params": {
-            "attr": "data",
-            "operation": "set",
-            "value": "__exec__.instruction.params"
-          },
-          "type": "set"
-        },
-        {
-          "params": {
-            "domain": {
-              "path": "__exec__.payload.data.request.mfa_verified",
-              "type": "eq",
-              "value": true
-            },
-            "on_false": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.request.gate_decision",
-                  "operation": "set",
-                  "value": "blocked"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.request.gate_note",
-                  "operation": "set",
-                  "value": "等保 2.0 三级 §8.1.4.1.d：资金类操作需先通过 MFA 验证，已阻断并留痕"
-                },
-                "type": "set"
-              }
-            ],
-            "on_true": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.request.gate_decision",
-                  "operation": "set",
-                  "value": "allowed"
-                },
-                "type": "set"
-              }
-            ]
-          },
-          "type": "branch"
-        }
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.bundle.bundle_ds_scenario_ai_mfa_v1.scenario.ai_mfa_gate",
+  "version": "1.0.0",
+  "metadata": {
+    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
+    "license": "AGPL-3.0-or-later",
+    "provenance": {
+      "source": "derived",
+      "derived_from": [
+        "scenario.ai_mfa_gate.json"
       ]
-    },
-    "type": "branch"
-  }
-]
+    }
+  },
+  "transform": [
+    {
+      "params": {
+        "domain": {
+          "instruction_type": "ai_mfa_gate_check",
+          "type": "instruction"
+        },
+        "on_true": [
+          {
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            },
+            "type": "set"
+          },
+          {
+            "params": {
+              "domain": {
+                "path": "__exec__.payload.data.request.mfa_verified",
+                "type": "eq",
+                "value": true
+              },
+              "on_false": [
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.request.gate_decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  },
+                  "type": "set"
+                },
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.request.gate_note",
+                    "operation": "set",
+                    "value": "等保 2.0 三级 §8.1.4.1.d：资金类操作需先通过 MFA 验证，已阻断并留痕"
+                  },
+                  "type": "set"
+                }
+              ],
+              "on_true": [
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.request.gate_decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  },
+                  "type": "set"
+                }
+              ]
+            },
+            "type": "branch"
+          }
+        ]
+      },
+      "type": "branch"
+    }
+  ]
+}

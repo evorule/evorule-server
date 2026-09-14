@@ -8,51 +8,63 @@
   "entry_files": [
     {
       "entry_id": "rule-audit-alert",
-      "file": "rule-audit-alert.json"
+      "file": "rule-audit-alert.json",
+      "content_hash": "blake3:b54b83ffe864fbca39d7b5a3a49d35a295f18758d7fbfb87d3b9c8773d29e9fa"
     },
     {
       "entry_id": "rule-audit-compactor",
-      "file": "rule-audit-compactor.json"
+      "file": "rule-audit-compactor.json",
+      "content_hash": "blake3:0df6cff6a03ab5ac71951c903604e125eaede11d8c22dd684eadee68fe7e0c01"
     },
     {
       "entry_id": "rule-compute-ik",
-      "file": "rule-compute-ik.json"
+      "file": "rule-compute-ik.json",
+      "content_hash": "blake3:1f83a4373436dac1156382d5ddb3991d8482798cc7f402de783b751fe056a9d4"
     },
     {
       "entry_id": "rule-evolution-scanner",
-      "file": "rule-evolution-scanner.json"
+      "file": "rule-evolution-scanner.json",
+      "content_hash": "blake3:0a98840009ae2f91126cc5aae278eed7e31028ef1f9b4dd9651d4e2d4bb45716"
     },
     {
       "entry_id": "rule-generate-patch",
-      "file": "rule-generate-patch.json"
+      "file": "rule-generate-patch.json",
+      "content_hash": "blake3:0283792aecf7795b893b479499b4fc824d8d3339c28f4d6ba523954ef513571b"
     },
     {
       "entry_id": "rule-hotload-patch",
-      "file": "rule-hotload-patch.json"
+      "file": "rule-hotload-patch.json",
+      "content_hash": "blake3:0721d053af134923fc67be86936ece90a8712f0459d3518950dc3972c4a2e4d0"
     },
     {
       "entry_id": "rule-robot-move",
-      "file": "rule-robot-move.json"
+      "file": "rule-robot-move.json",
+      "content_hash": "blake3:12d0d72f5049f881a36fafdebb08861e0f99302577459b58495f969957648648"
     },
     {
       "entry_id": "rule-safety-rollback",
-      "file": "rule-safety-rollback.json"
+      "file": "rule-safety-rollback.json",
+      "content_hash": "blake3:06089abeb067fc0ce50df1f77a01f7d85e8fc77cee63ae998255bee262e10d53"
     },
     {
       "entry_id": "rule-sampling-decider",
-      "file": "rule-sampling-decider.json"
+      "file": "rule-sampling-decider.json",
+      "content_hash": "blake3:c54779fe9984268bedeebd5d75417771792b41db405157f080fc310616b2be5d"
     },
     {
       "entry_id": "rule-sandbox-validate",
-      "file": "rule-sandbox-validate.json"
+      "file": "rule-sandbox-validate.json",
+      "content_hash": "blake3:22d1573ade7194ba44ef557882d4550dd11ae3a54bd75a622d861ae2a6398b7f"
     },
     {
       "entry_id": "rule-shadow-validate",
-      "file": "rule-shadow-validate.json"
+      "file": "rule-shadow-validate.json",
+      "content_hash": "blake3:2f4e579d930eb4e676c20ff29a0aee0bf251512fe44324cdae7632fb907a6529"
     },
     {
       "entry_id": "rule-validate-precision",
-      "file": "rule-validate-precision.json"
+      "file": "rule-validate-precision.json",
+      "content_hash": "blake3:2b8028346fd58098b0932b59e1640986811bc2ec99aeae21c57de05ec8d9b623"
     }
   ]
 }

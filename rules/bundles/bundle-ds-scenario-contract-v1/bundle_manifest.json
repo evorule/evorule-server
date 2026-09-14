@@ -8,7 +8,8 @@
   "entry_files": [
     {
       "entry_id": "scenario.contract_payment_guard",
-      "file": "scenario.contract_payment_guard.json"
+      "file": "scenario.contract_payment_guard.json",
+      "content_hash": "blake3:bd86147d77999099d9e3cfd12bf5d3911a06242054d1a4fcf1fd32a321081ae2"
     }
   ]
 }

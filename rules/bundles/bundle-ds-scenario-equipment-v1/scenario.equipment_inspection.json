@@ -1,89 +1,105 @@
-[
-  {
-    "params": {
-      "domain": {
-        "instruction_type": "equipment_inspection_check",
-        "type": "instruction"
-      },
-      "on_true": [
-        {
-          "params": {
-            "attr": "data",
-            "operation": "set",
-            "value": "__exec__.instruction.params"
-          },
-          "type": "set"
-        },
-        {
-          "params": {
-            "domain": {
-              "path": "__exec__.payload.data.sensor.temperature",
-              "type": "lt",
-              "value": 80
-            },
-            "on_false": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.inspection.alarm_level",
-                  "operation": "set",
-                  "value": "escalate"
-                },
-                "type": "set"
-              },
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.inspection.escalate_to",
-                  "operation": "set",
-                  "value": "值班主管工单队列"
-                },
-                "type": "set"
-              }
-            ],
-            "on_true": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.inspection.alarm_level",
-                  "operation": "set",
-                  "value": "normal"
-                },
-                "type": "set"
-              }
-            ]
-          },
-          "type": "branch"
-        },
-        {
-          "params": {
-            "domain": {
-              "path": "__exec__.payload.data.sensor.vibration",
-              "type": "lt",
-              "value": 5
-            },
-            "on_false": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.inspection.vibration_status",
-                  "operation": "set",
-                  "value": "abnormal"
-                },
-                "type": "set"
-              }
-            ],
-            "on_true": [
-              {
-                "params": {
-                  "attr": "__exec__.payload.data.inspection.vibration_status",
-                  "operation": "set",
-                  "value": "normal"
-                },
-                "type": "set"
-              }
-            ]
-          },
-          "type": "branch"
-        }
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.bundle.bundle_ds_scenario_equipment_v1.scenario.equipment_inspection",
+  "version": "1.0.0",
+  "metadata": {
+    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
+    "license": "AGPL-3.0-or-later",
+    "provenance": {
+      "source": "derived",
+      "derived_from": [
+        "scenario.equipment_inspection.json"
       ]
-    },
-    "type": "branch"
-  }
-]
+    }
+  },
+  "transform": [
+    {
+      "params": {
+        "domain": {
+          "instruction_type": "equipment_inspection_check",
+          "type": "instruction"
+        },
+        "on_true": [
+          {
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            },
+            "type": "set"
+          },
+          {
+            "params": {
+              "domain": {
+                "path": "__exec__.payload.data.sensor.temperature",
+                "type": "lt",
+                "value": 80
+              },
+              "on_false": [
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.inspection.alarm_level",
+                    "operation": "set",
+                    "value": "escalate"
+                  },
+                  "type": "set"
+                },
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.inspection.escalate_to",
+                    "operation": "set",
+                    "value": "值班主管工单队列"
+                  },
+                  "type": "set"
+                }
+              ],
+              "on_true": [
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.inspection.alarm_level",
+                    "operation": "set",
+                    "value": "normal"
+                  },
+                  "type": "set"
+                }
+              ]
+            },
+            "type": "branch"
+          },
+          {
+            "params": {
+              "domain": {
+                "path": "__exec__.payload.data.sensor.vibration",
+                "type": "lt",
+                "value": 5
+              },
+              "on_false": [
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.inspection.vibration_status",
+                    "operation": "set",
+                    "value": "abnormal"
+                  },
+                  "type": "set"
+                }
+              ],
+              "on_true": [
+                {
+                  "params": {
+                    "attr": "__exec__.payload.data.inspection.vibration_status",
+                    "operation": "set",
+                    "value": "normal"
+                  },
+                  "type": "set"
+                }
+              ]
+            },
+            "type": "branch"
+          }
+        ]
+      },
+      "type": "branch"
+    }
+  ]
+}
