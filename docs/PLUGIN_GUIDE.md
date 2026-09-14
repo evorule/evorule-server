@@ -341,7 +341,7 @@ Linux/容器部署无 PowerShell 依赖时，用编排层等价物达到同样�
 
 ## 十二、声明式资产包（Plugin Contract v1）
 
-> 定位：**零进程零代码**的资产包——把领域知识打包成「场景 + 规则模板」，用户在 console 通用表单页选场景字段、填表单值，server 以**纯函数**生成规则 JSON 草稿。草稿不落库，生效仍走既有 Draft→Publish 治理链。
+> 定位：**零进程零代码**的资产包——把领域知识打包成「场景 + 规则模板」，项目方在 console 通用表单页选场景字段、填表单值，server 以**纯函数**生成规则 JSON 草稿。草稿不落库，生效仍走既有 Draft→Publish 治理链。
 > 契约 SSOT：Plugin Contract v1（MAJOR 不符拒载）；范本：[`plugins/finance-pack/`](../plugins/finance-pack/)。
 
 ### 12.1 目录形态
@@ -369,7 +369,7 @@ finance-pack/                  ← pack 根目录（目录名建议 = pack id）
 
 ### 12.3 场景资产（scene）
 
-给模板表单提供「字段下拉」来源，用户不记字段名。示例（范本 `assets/scenes/expense.json`）：
+给模板表单提供「字段下拉」来源，项目方不记字段名。示例（范本 `assets/scenes/expense.json`）：
 
 ```jsonc
 {
@@ -449,8 +449,8 @@ finance-pack/                  ← pack 根目录（目录名建议 = pack id）
 | 红线 | 内容 | 校验点 |
 |------|------|--------|
 | R1 确定性 | 同（模板字节, 表单值）→ 字节级同输出；零随机/零时钟/零 IO | 随仓门禁测试 `finance_pack_reference_impl_loads_and_generates` |
-| R2 结构不可达 | 用户值只落**值位**（value/prompt/role/description 等），永远填不进结构键；`.path` 取值域锁定 | scene_field 裸用（不带 `.path`）拒载；非 scene_field 用 `.path` 拒载；**键内占位符拒载** |
-| R3 draft-only | 生成不落库不进治理状态；草稿生效必须经用户确认走既有 Draft→Publish 链 | generate 端点纯内存返回 |
+| R2 结构不可达 | 项目方值只落**值位**（value/prompt/role/description 等），永远填不进结构键；`.path` 取值域锁定 | scene_field 裸用（不带 `.path`）拒载；非 scene_field 用 `.path` 拒载；**键内占位符拒载** |
+| R3 draft-only | 生成不落库不进治理状态；草稿生效必须经项目方确认走既有 Draft→Publish 链 | generate 端点纯内存返回 |
 | R5 locale 纯展示 | display_name 双语字段仅为展示数据，不进事实/命令 | 装载期校验 {zh,en} 字符串对象 |
 
 ### 12.6 API 面（受认证保护，与业务 API 同门禁）
@@ -491,7 +491,7 @@ POST /api/plugins/flows/{pack_id}/{flow_id}/compile           流程编译代理
 
 1. **拷贝目录、改清单**：复制 pack 目录，改 `pack.json` 的 `id`/`version`/`description`（id 全局唯一，小写字母/数字/连字符；`contract_version` 保持 `"1.0"`）。
 2. **换场景**：改 `scene_id` 与业务对象字段——**字段必须带 `path`** 才能被 `scene_field` 参数引用（`.path` 取值域锁定的来源，R2）；`path` 指向运行时事实路径（如 `__exec__.payload.days`）。
-3. **换模板语义**：只动三处值域——展示文案（display_name/prompt/description）、枚举选项（options）、默认值（default）+ `scene_ref` 指向新场景；**结构键一律不碰**（结构键是预先写死的机器形态，用户值永远落值位，R2 的结构性保证）。
+3. **换模板语义**：只动三处值域——展示文案（display_name/prompt/description）、枚举选项（options）、默认值（default）+ `scene_ref` 指向新场景；**结构键一律不碰**（结构键是预先写死的机器形态，项目方值永远落值位，R2 的结构性保证）。
 4. **加随仓门禁测试**：镜像 `hr_pack_replication_loads_and_generates`（装载校验 + 逐模板确定性生成 + provenance 断言）——领域包从此进回归闸门，改坏即红。
 5. **登记与验证**：plugin_manifest.json 加 pack 条目（§四）→ 重启 → 启动日志出现 `插件契约 pack: {id} 装载` + `GET /api/plugins` 可见。
 

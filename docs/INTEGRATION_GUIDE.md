@@ -282,7 +282,7 @@ GET /api/sessions/1/audit/causal/10000
 }
 ```
 
-`cause` 字段层层回溯到根因（`cause: null` 的用户 Command）。用于根因分析、合规追溯。
+`cause` 字段层层回溯到根因（`cause: null` 的项目方 Command）。用于根因分析、合规追溯。
 
 **注意**：`cause` 记录的是**逻辑因果**，不是时序相邻——IoRequest 的 cause 直接指向 Command，跳过中间的 StateTransition。
 
@@ -320,7 +320,7 @@ Content-Type: application/gzip
 
 ### 4.1 meta 指令
 
-evorule TCB 有 **4 种合法 meta 指令**（0.6.0 起；0.3.2~0.5.x 曾有 `collect`/`merge` 两种 ReAct 编排元指令，已随 0.6.0 的 69 号清理退役——多工具扇出与结果回环编排由应用层 runner 负责）：
+evorule TCB 有 **5 种合法 meta 指令**（0.6.0 起；0.3.2~0.5.x 曾有 `collect`/`merge` 两种 ReAct 编排元指令，已随 0.6.0 的 69 号清理退役——多工具扇出与结果回环编排由应用层 runner 负责）：
 
 | 指令 | 用途 | 示例 |
 |------|------|------|
@@ -328,6 +328,7 @@ evorule TCB 有 **4 种合法 meta 指令**（0.6.0 起；0.3.2~0.5.x 曾有 `co
 | `push` | 入队业务指令 | `{"type":"push","params":{"instruction":{...}}}` |
 | `branch` | 条件分支 | `{"type":"branch","params":{"domain":{...},"on_true":[...],"on_false":[...]}}` |
 | `io_request` | 发起 I/O | `{"type":"io_request","params":{"io_type":"call_service",...}}` |
+| `enforce` | 强制执行（元规则层强制原语，仅 meta-tier 规则可用，由 governance tier 门禁控制） | — |
 
 **任何其他 `type` 都不是 meta 指令**，会被当作业务指令 push 到队列。
 
@@ -658,7 +659,7 @@ GET /api/permissions?subject=user:alice&resource=session:1&action=read
 ```
 
 ```json
-{"verdict": "Allow", "matched_rule": "rule-123", "reason": "用户是 session 所有者"}
+{"verdict": "Allow", "matched_rule": "rule-123", "reason": "项目方是 session 所有者"}
 ```
 
 ### 7.3 管理权限条目

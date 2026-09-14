@@ -68,7 +68,7 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 **仅用于本地开发**：patch 段把 crates.io 依赖覆盖为本地 path 源码（核心仓开发迭代时用，
 如 0.3.0 开发期用本地 0.3.2 开发版）。**发布前必须移除**——`scripts/validate-release.ps1`
 会检测 `[patch.crates-io]` 段，存在则发布检查 FAIL（见 [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md)）。
-用户 clone 时若保留未移除的 patch 段，path 不存在会被 Cargo 静默忽略并回退 crates.io 版本；
+项目方 clone 时若保留未移除的 patch 段，path 不存在会被 Cargo 静默忽略并回退 crates.io 版本；
 但未发布的 crate（如 evorule-bundle）无法回退，会导致构建失败，因此**严禁带 patch 段发布**。
 
 ### 2.3 其他依赖(直接用 crates.io)
@@ -101,7 +101,7 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 | 阶段 | 频率 | 说明 |
 |---|---|---|
 | v0.1.x | 2-4 周/版本 | 内部基线期,频繁小修 |
-| 0.3.0 | 6-8 周 | 第一批用户反馈后,加实用功能 |
+| 0.3.0 | 6-8 周 | 第一批项目方反馈后,加实用功能 |
 | v0.x.0 → v1.0.0 | 3-6 个月 | API 锁定 + 安全审计 + 文档完善 |
 | v1.0.0 之后 | 6-8 周/版本 | 正式 release,严格 semver |
 

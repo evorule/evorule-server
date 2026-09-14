@@ -33,7 +33,7 @@
 
 **"EvoRule"** 名称、徽标和品牌资产是 EvoRule Project 的**商标**。
 
-虽然 EvoRule 代码在 **AGPL-3.0-or-later 许可证**下开源,但**商标被保留**以确保质量一致并防止用户混淆。
+虽然 EvoRule 代码在 **AGPL-3.0-or-later 许可证**下开源,但**商标被保留**以确保质量一致并防止项目方混淆。
 
 本政策说明**哪些使用是允许的**,**哪些需要事先许可**。
 
@@ -63,7 +63,7 @@ EvoRule Project 拥有以下商标(统称"EvoRule 商标"):
 - "本站点使用 EvoRule 反应式执行引擎驱动"
 - "本文介绍如何用 EvoRule 解决 XX 问题"
 - "EvoRule 中文社区"
-- "EvoRule 用户大会"
+- "EvoRule 项目方大会"
 
 ### 2. 兼容性声明(Compatibility)
 

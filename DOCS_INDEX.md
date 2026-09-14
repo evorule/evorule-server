@@ -17,7 +17,7 @@
 
 | 文档 | 用途 | 一句话说明 |
 |:---|:---|:---|
-| [README.md](README.md) | 项目总览 | evorule-server 是什么、快速开始、架构概览、API 概览 — **新用户首读** |
+| [README.md](README.md) | 项目总览 | evorule-server 是什么、快速开始、架构概览、API 概览 — **新项目方首读** |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 | 如何提交 issue / PR / 编译 / 测试 / 提 PR 检查清单 — **贡献者首读** |
 | [SECURITY.md](SECURITY.md) | 安全报告 | 漏洞披露流程 + 安全联系人 + 本仓特有安全关注点 |
 

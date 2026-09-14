@@ -96,7 +96,7 @@ scope: 模块名,如 `core/auth` / `evorule-server` / `docs`
 ```
 feat(core/time-machine): add fork API for branching at historical state
 
-Allow users to fork a session at any historical state, creating
+Allow project owners to fork a session at any historical state, creating
 a new session with the same facts but independent evolution.
 
 Closes #123

@@ -29,7 +29,7 @@
 
 ### 🆕 新增
 
-- **插件契约 v1:声明式资产包(declarative pack)** — 插件形态新增"零代码零进程"资产包:把领域知识打包成「场景 + 规则模板」,server 启动期从 pack 目录读盘装载(fail-fast:未知顶层字段/未知能力/未知控件词表/id 漂移/契约 MAJOR 不符/场景与模板 id 重复/glob 无匹配/资产形态漂移任一命中即拒绝装载),运行期只读。模板表单支持 v1 固定控件词表(text/textarea/number/currency/date/boolean/enum/scene_field);草稿生成是纯函数,生成语言 v1 只有 `{{form.X}}`/`{{pack}}`/`{{template}}` 无逻辑替换,未知占位符装载期即拒绝。四条红线落地:R1 确定性(同输入字节级同输出,零随机/零时钟/零 IO)、R2 结构不可达(用户值只落值位,scene_field 仅可作 `{{form.X.path}}` 且取值域锁定为场景已注册 path 字段,键内占位符拒载)、R3 draft-only(生成不落库,生效仍走既有 Draft→Publish 链)、R5 locale 纯展示(display_name 双语字段不进事实/命令)
+- **插件契约 v1:声明式资产包(declarative pack)** — 插件形态新增"零代码零进程"资产包:把领域知识打包成「场景 + 规则模板」,server 启动期从 pack 目录读盘装载(fail-fast:未知顶层字段/未知能力/未知控件词表/id 漂移/契约 MAJOR 不符/场景与模板 id 重复/glob 无匹配/资产形态漂移任一命中即拒绝装载),运行期只读。模板表单支持 v1 固定控件词表(text/textarea/number/currency/date/boolean/enum/scene_field);草稿生成是纯函数,生成语言 v1 只有 `{{form.X}}`/`{{pack}}`/`{{template}}` 无逻辑替换,未知占位符装载期即拒绝。四条红线落地:R1 确定性(同输入字节级同输出,零随机/零时钟/零 IO)、R2 结构不可达(项目方值只落值位,scene_field 仅可作 `{{form.X.path}}` 且取值域锁定为场景已注册 path 字段,键内占位符拒载)、R3 draft-only(生成不落库,生效仍走既有 Draft→Publish 链)、R5 locale 纯展示(display_name 双语字段不进事实/命令)
 - **插件资产面 API** — `GET /api/plugins`(已装载 pack 清单)、`GET /api/plugins/{pack_id}/assets/{kind}`(场景/模板资产只读面,kind ∈ scenes|templates)、`POST /api/plugins/templates/{pack_id}/{template_id}/generate`(草稿生成纯函数面:响应含 `rule_draft` + `provenance` 来源标记,校验失败 400 显式错误,未知 pack/模板 404);三端点受认证保护与业务 API 同门禁
 - **服务调用操作者身份透传** — REST 直调路径经 task-local 操作者上下文向下游服务注入 `X-Evorule-Actor-Type` / `X-Evorule-Actor-Id` 动态头:or_insert 合并语义保证注册表条目头 > 动态头 > params 头,规则/params 永远无法伪造身份头;会话 io_request 链不受影响(审计归因走 Fact 链,不靠头)
 - **finance-pack 参考包** — 财务域声明式资产包范本(1 场景 + 2 模板:金额阈值审批/报销材料完整性检查),演示参数级与模板级 scene_ref 两种解析形态与嵌套 branch/exists 域函数;随仓门禁测试锁定"参考包必须始终通过装载校验且生成确定性"
@@ -49,11 +49,11 @@
 
 ### 🐛 修复
 
-- **分发包启动体验 — 端口占用预检与启动失败提示** — `dist/start-evorule.bat` 启动前先检测 18080/18081 是否已被占用:命中则弹出可视化提示框并停止启动,不再静默一闪而过;主服务启动后轮询探测就绪状态,失败时弹窗提示并直接打开错误日志,引导用户自行纠错(对应消费者体验全链路整改的首批可代码化项)
+- **分发包启动体验 — 端口占用预检与启动失败提示** — `dist/start-evorule.bat` 启动前先检测 18080/18081 是否已被占用:命中则弹出可视化提示框并停止启动,不再静默一闪而过;主服务启动后轮询探测就绪状态,失败时弹窗提示并直接打开错误日志,引导项目方自行纠错(对应消费者体验全链路整改的首批可代码化项)
 
 ### 📚 文档
 
-- `dist/README-STARTUP.txt` 同步分发包版本号至 v0.5.2,补充端口占用自动检测提示;「插件看门狗」章节开头声明普通用户可忽略,降低认知负担
+- `dist/README-STARTUP.txt` 同步分发包版本号至 v0.5.2,补充端口占用自动检测提示;「插件看门狗」章节开头声明普通项目方可忽略,降低认知负担
 
 ## [0.5.1] - 2026-09-10
 
@@ -124,7 +124,7 @@
 
 ### 📚 文档
 
-- README Docker 示例补 `-e EVORULE_AUTH_TOKEN=<your-secret>`(与 B3 fail-closed 行为一致,避免用户按旧示例启动即被拒)
+- README Docker 示例补 `-e EVORULE_AUTH_TOKEN=<your-secret>`(与 B3 fail-closed 行为一致,避免项目方按旧示例启动即被拒)
 
 ## [0.4.1] - 2026-09-02
 
@@ -171,7 +171,7 @@
 - **SharedFactsLog 恢复失败拒绝启动（fail-fast）**
 - **宪法 `resources/core_eval.json` v0.3.1 → v0.4.2** — 同步核心仓最小评估集（ReAct 应用剧本迁出至消费方自持）+ 补回 call_external/call_service 会话桥接指令规则（v0.4.1，HTTP 会话为平台消费面无法自持剧本）+ call_service 触发域 service_name 门禁（v0.4.2，兼容 bundle 落地规则硬编码路由）+ server 启动期校验宪法含 call_external 规则否则拒绝启动并给自诊断指引
 - **运维件** — 备份/恢复演练脚本（四场景 19 断言：备份→清空→恢复→审计档案回放 / WAL 损坏三级处置）+ VERSION_STRATEGY 精简落地版（WAL/SQLite/宪法三层兼容契约）
-- **实战检验件** — 负载演练脚本 `load-drill.ps1`（会话生命周期闭环 + 错误分类统计 + 用户节奏 + 端口监听者 pid 防呆）+ bench 三件（determinism/throughput/long_session）性能现实适配
+- **实战检验件** — 负载演练脚本 `load-drill.ps1`（会话生命周期闭环 + 错误分类统计 + 项目方节奏 + 端口监听者 pid 防呆）+ bench 三件（determinism/throughput/long_session）性能现实适配
 - **AGPL + 商业双许可体系** — 新增 `DUAL_LICENSE.md`(双轨许可说明 + Server 特有白标授权边界)、`COMMERCIAL_LICENSE.md`(商业许可协议模板)、`FREE_COMMERCIAL_LICENSE.md`(政府/学术界/非营利免费豁免)、`CLA-individual.md`(个人贡献者许可,赋能双许可可执行);对齐 evorule 核心仓双许可体系
 - **`CONTRIBUTING.md` 补充双许可声明与 CLA 必要性** — `协议` 扩为 `协议与 CLA`
 
@@ -274,7 +274,7 @@
   - 现在需要 `Authorization: Bearer <token>` 头，无认证返回 401
 - **无认证 + 非 loopback 地址时 fail-closed 拒绝启动**
   - `evorule-server/src/main.rs` 无 token 且绑定非 loopback 地址时 `error!` + `exit(1)`
-  - 旧实现仅 `warn!` 不阻止启动，公网部署时若用户漏看日志，所有 session 数据完全暴露
+  - 旧实现仅 `warn!` 不阻止启动，公网部署时若项目方漏看日志，所有 session 数据完全暴露
   - loopback 地址（127.0.0.1 / [::1]）仍允许无认证启动供本地开发；地址解析失败视为非 loopback（安全侧失败）
 
 ### 🆕 新增
@@ -314,7 +314,7 @@
 - **核心 workspace 加 utoipa 依赖** — `core/workspace/Cargo.toml`: 标注模型
   用于 OpenAPI 导出 (`utoipa = { version = "5", features = ["axum_extras", "chrono"] }`)
 - **移除 `[patch.crates-io]` 段** — 根 `Cargo.toml` 之前为本地开发覆盖 evorule-*
-  路径的 `[patch.crates-io]` 段移除, release 用户不再误用本地路径
+  路径的 `[patch.crates-io]` 段移除, release 项目方不再误用本地路径
 - **内部 crate 版本号统一 workspace 继承** — 9 个内部 crate（auth / debug_control / hot_reload / io_handlers / metrics / rule_tools / semantic_invariants / time_machine / evorule-server）的 `version = "0.1.0"` 改为 `version.workspace = true`，统一继承 workspace.package.version = 0.2.0，以后 bump 一处即可
 - **workspace Cargo.toml 注册新成员** — 根 `Cargo.toml` `[workspace].members` 新增 `core/workspace`
 - **gitee 仓 owner 迁移** — `evo-rule-lab` → `evorule`:
@@ -338,7 +338,7 @@
 
 ### ✅ 向后兼容
 
-- **S1: hot_reload 删除事件语义说明** — `core/hot_reload/src/lib.rs` 检测到 `ChangeType::Remove` 时输出 `warn!` 日志，明确告知"hot_reload 仅支持增量添加规则，删除文件不会从 server 移除已有规则，如需清除旧规则请重启 session"。旧实现删除文件时静默无提示，用户误以为规则已被移除
+- **S1: hot_reload 删除事件语义说明** — `core/hot_reload/src/lib.rs` 检测到 `ChangeType::Remove` 时输出 `warn!` 日志，明确告知"hot_reload 仅支持增量添加规则，删除文件不会从 server 移除已有规则，如需清除旧规则请重启 session"。旧实现删除文件时静默无提示，项目方误以为规则已被移除
 - **S2: /metrics 端点可选认证** — `evorule-server/src/main.rs` 新增 `--metrics-auth` / `EVORULE_METRICS_AUTH` CLI 参数；`api/server.rs` `GovernanceServer` 新增 `metrics_requires_auth` 字段，独立构建 `metrics_router`，启用时挂载 `auth_middleware`。默认关闭（Prometheus scraper 通常不带 token），启用后 `/metrics` 也需 `Authorization: Bearer <token>` 头
 - **S3: CORS 通配符 origin 检测** — `evorule-server/src/api/server.rs` `build_router` 检测 `allowed_origins` 包含 `"*"` 时输出 `warn!`，提示"CORS 规范禁止通配符 + credentials 组合，浏览器会拒绝此响应，请使用精确 Origin 列表替代"
 - **S4: time_machine 版本间隙测试覆盖** — `core/time_machine/src/lib.rs` 新增 9 个测试覆盖版本间隙（version gap）场景：首条记录前间隙、Command 被忽略产生间隙、ST 与 IoResponse 间间隙、多间隙全返回 None、间隙边界返回 Some、local_diff 间隙版本退化为空对象、build_version_tree 稀疏版本 total_versions 正确性、build_batch_diff 跨间隙配对
