@@ -10,6 +10,13 @@ target/
 **/Cargo.lock
 !/Cargo.lock
 
+# 例外：脱离 workspace 的独立插件包（Cargo.toml 内声明空 [workspace] 表）
+# **不共享**顶层 lock，其 Cargo.lock 是该包唯一的版本锁 —— 必须提交，
+# 否则传递依赖（wasmtime 依赖树 100+ crate）完全不锁，只能靠 Cargo.toml 的
+# 直接依赖 pin 兜底，无法满足"安全边界组件防静默漂移"要求（ADR-0001 §后果 1）。
+!plugins/wasm-host/Cargo.lock
+!plugins/ai-plugin/Cargo.lock
+
 # === 环境变量(可能含密钥) ===
 .env
 .env.*

@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-wasm-host"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "WASM UDF 宿主进程（wasmtime，零能力 + fuel 计量）；以 external 插件身份经 HTTP 接入 evorule-server（77 号阶段 2 / ADR-0001）"
+repository = "https://gitee.com/evorule/evorule-server"
+publish = false
+
+# MSRV：由 wasmtime 48 决定（crates.io 实测 rust_version = 1.95.0）。
+# 本包为独立项目（见下方 [workspace]），故 **evorule-server workspace 的 rust-version=1.74 不受影响**。
+rust-version = "1.95"
+
+# 显式脱离任何上层 workspace（独立插件包：独立版本独立演进，随包装卸）
+# —— 与 plugins/ai-plugin 同一模式。此声明同时保证 wasmtime 依赖树
+#    不进入 evorule-server 的 Cargo.lock（ADR-0001 决策 1：控制 server 膨胀）。
+[workspace]
+
+[dependencies]
+# 安全边界组件：**精确 pin**（等号前缀）。升级必须是显式 diff，禁止 cargo update 静默漂移。
+# 升级前必查：RUSTSEC advisory + Bytecode Alliance 安全通告（见 77 号 §5.1 升级纪律）。
+wasmtime = { version = "=48.0.2", default-features = false, features = [
+    "runtime",      # 最小运行时（不含 wasi / component-model，保持零能力基线）
+    "cranelift",    # 编译后端
+] }
+
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
