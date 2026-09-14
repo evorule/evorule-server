@@ -18,6 +18,9 @@
 #   - over budget the watchdog stops attempting and emits an ESCALATION log line
 #     (system-only path)
 #   - the escalation latch clears automatically once the plugin is seen online
+#   - optional self-guard (batch H / legacy L3): -InstallSelfGuard registers a
+#     current-user ONLOGON scheduled task (hidden) so the watchdog itself comes
+#     back after reboot; -UninstallSelfGuard removes the task
 #   - actions append to data\watchdog.log; the log rotates at 5 MB into
 #     watchdog.log.old (single generation) (batch F)
 #   - the audit-facing trail stays in the server (plugin_offline /
@@ -27,7 +30,12 @@
 # ASCII-only on purpose: avoid codepage-sensitive output on any host.
 
 param(
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    # UV-182 batch H (legacy L3): optional self-guard management. The watchdog
+    # is a plain process - if it dies, nothing revives it. The self-guard is a
+    # current-user scheduled task that starts it (hidden) at every logon.
+    [switch]$InstallSelfGuard,
+    [switch]$UninstallSelfGuard
 )
 
 $ErrorActionPreference = "Continue"
@@ -51,6 +59,29 @@ function Write-Log([string]$Level, [string]$Msg) {
         }
         Add-Content -Path $logPath -Value $line -Encoding ASCII
     } catch {}
+}
+
+# UV-182 batch H: self-guard management. Handled BEFORE the single-instance
+# mutex so registration works while another instance is already running.
+# schtasks quoting: inner quotes are pre-escaped as \" for the native call
+# (PowerShell 5.1 native argument passing).
+$taskName = "evorule-plugin-watchdog"
+if ($InstallSelfGuard -or $UninstallSelfGuard) {
+    if ($UninstallSelfGuard) {
+        schtasks /Delete /TN $taskName /F | Out-Null
+        Write-Log "INFO" ("self-guard: scheduled task '{0}' deleted (or not present)" -f $taskName)
+    }
+    if ($InstallSelfGuard) {
+        $self = Join-Path $PSScriptRoot "watchdog-plugins.ps1"
+        $action = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $self + '\"'
+        schtasks /Create /F /TN $taskName /SC ONLOGON /RL LIMITED /TR $action | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "INFO" ("self-guard: scheduled task '{0}' registered (hidden, current user, at logon); watchdog survives reboot" -f $taskName)
+        } else {
+            Write-Log "ERROR" ("self-guard: task registration failed (schtasks exit {0}); watchdog stays manual" -f $LASTEXITCODE)
+        }
+    }
+    exit 0
 }
 
 # single-instance guard (per logon session)

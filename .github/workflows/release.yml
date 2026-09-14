@@ -289,6 +289,15 @@ jobs:
           printf '{ "plugins": { "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" } } }\n' > "${PKG}/plugin_manifest.json"
           cp dist/start-evorule.sh "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
+          # UV-182 补遗I(遗留L1): linux 包同 win64 语义携带可选插件看门狗
+          # (python3 实现);配置已出库,缺省由 example 模板生成
+          cp dist/start-watchdog.sh dist/watchdog-plugins.py "${PKG}/"
+          chmod +x "${PKG}/start-watchdog.sh"
+          if [ -f dist/plugins-watchdog.json ]; then
+            cp dist/plugins-watchdog.json "${PKG}/"
+          else
+            cp dist/plugins-watchdog.example.json "${PKG}/plugins-watchdog.json"
+          fi
           cd "${PKG}"
           sha256sum evorule-server evorule-rule-serve plugins/ai-plugin/evorule-ai-plugin > sha256-checks.txt
           cd ..

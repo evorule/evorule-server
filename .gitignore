@@ -42,6 +42,7 @@ desktop.ini
 *.log
 *.bak
 *~
+__pycache__/
 logs/
 
 # === Windows 构建产物 ===
@@ -84,3 +85,6 @@ installer/payload/
 
 # === 看门狗守护配置（UV-182 批次E 出库:部署侧可能写入真实 token env,防误提交;模板 = plugins-watchdog.example.json 入库）===
 dist/plugins-watchdog.json
+
+# === console-cloud 构建产物镜像（prepare-payload 从 evorule-console-cloud build/ 汇集;源仓重建,不入库）===
+web/

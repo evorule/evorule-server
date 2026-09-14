@@ -11,5 +11,7 @@ start "evorule-watchdog" /min powershell -NoProfile -ExecutionPolicy Bypass -Fil
 echo Watchdog started in a minimized window ("evorule-watchdog").
 echo Log: data\watchdog.log
 echo To stop: close the minimized "evorule-watchdog" window.
+echo Optional auto-start at logon (survives reboot):
+echo   powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0watchdog-plugins.ps1" -InstallSelfGuard
 echo.
 pause

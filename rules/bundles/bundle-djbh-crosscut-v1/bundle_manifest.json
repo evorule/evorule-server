@@ -1,0 +1,30 @@
+{
+  "bundle_id": "bundle-djbh-crosscut-v1",
+  "dataset_id": "ds-djbh-crosscut",
+  "source_version": "v1",
+  "selection_mode": "auto_by_effective_date",
+  "effective_from": "2026-01-01",
+  "content_hash": "",
+  "entry_files": [
+    {
+      "entry_id": "djbh.mfa",
+      "file": "djbh_mfa.json",
+      "content_hash": "blake3:8ff167b9e3461055ec42c7d214ea5a247fe28a8fdea40c472e8b1e71a34673f2"
+    },
+    {
+      "entry_id": "djbh.access_control",
+      "file": "djbh_access.json",
+      "content_hash": "blake3:c59bce36a50a0018892e0edcead188c67cd264283deacb303a14e86e3ad01247"
+    },
+    {
+      "entry_id": "djbh.audit",
+      "file": "djbh_audit.json",
+      "content_hash": "blake3:30416665c87a3d6c5666190c716ac18be4191f6449858d3190d5c446f667f303"
+    },
+    {
+      "entry_id": "djbh.confidentiality",
+      "file": "djbh_confidentiality.json",
+      "content_hash": "blake3:b77de3cd4a7f081148d3df7b6fb4c2d8ddd926419e75801f6cde874b5813f336"
+    }
+  ]
+}

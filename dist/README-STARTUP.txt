@@ -124,6 +124,11 @@ service_registry.json,可自行扩展为真实 HTTP 服务端点。
    - 未实现 /health 探针的插件如实跳过,不误动作
 4. 日志见 data\watchdog.log;关闭看门狗:关闭最小化的
    "evorule-watchdog" 窗口
+5. (可选)Windows 开机自启看门狗(命令行运行,登记当前用户登录自启的
+   隐藏计划任务;撤销把 -InstallSelfGuard 换成 -UninstallSelfGuard):
+   powershell -NoProfile -ExecutionPolicy Bypass -File watchdog-plugins.ps1 -InstallSelfGuard
+6. Linux 版包:运行 ./start-watchdog.sh(需 python3;日志同上,停止:
+   kill $(cat data/watchdog.pid));无 python3 时用下方 systemd 方案
 
 不启用看门狗完全不影响主服务运行;Linux 部署可用 systemd
 (Restart=always)或容器编排的自动重启策略达到同等效果。
@@ -144,6 +149,8 @@ service_registry.json,可自行扩展为真实 HTTP 服务端点。
 - start-evorule.sh         一键启动脚本(Linux 版包内)
 - start-watchdog.bat       插件看门狗启动脚本(可选,Windows 版包内)
 - watchdog-plugins.ps1     看门狗主体(读 /api/health,离线自动拉起插件)
+- start-watchdog.sh        插件看门狗启动脚本(可选,Linux 版包内,需 python3)
+- watchdog-plugins.py      看门狗主体(Linux 版包内,语义与 ps1 版一致)
 - plugins-watchdog.json    看门狗配置(缺省已预登记 ai-plugin;未启用该
                            插件时看门狗不会动作;其余插件按需登记)
 - plugins\ai-plugin\       AI 插件(evorule-ai-plugin.exe + plugin.json

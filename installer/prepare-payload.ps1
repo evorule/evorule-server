@@ -52,7 +52,7 @@ Copy-Item (RequireFile (Join-Path $ServerRepo "service_registry.json")) $payload
 
 # 5. 启动脚本与说明（与 dist/ 一致）
 $dist = Join-Path $ServerRepo "dist"
-foreach ($f in @("start-evorule.bat","start-evorule.sh","start-watchdog.bat","watchdog-plugins.ps1","README-STARTUP.txt")) {
+foreach ($f in @("start-evorule.bat","start-evorule.sh","start-watchdog.bat","watchdog-plugins.ps1","start-watchdog.sh","watchdog-plugins.py","README-STARTUP.txt")) {
     Copy-Item (RequireFile (Join-Path $dist $f)) $payload
 }
 # UV-182 批次E：plugins-watchdog.json 已移出版本库（部署侧可能写入真实

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.bundle.bundle_djbh_crosscut_v1.djbh.mfa",
+  "version": "1.0.0",
+  "metadata": {
+    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
+    "license": "AGPL-3.0-or-later",
+    "provenance": {
+      "source": "derived",
+      "derived_from": [
+        "djbh_mfa.json"
+      ]
+    }
+  },
+  "transform": [
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "djbh_mfa_check"
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.operation_risk",
+                    "value": "high"
+                  },
+                  {
+                    "type": "lt",
+                    "path": "__exec__.payload.data.mfa_factor_count",
+                    "value": 2
+                  }
+                ]
+              },
+              "on_true": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "等保2.0三级 §8.1.4.1.d：高风险操作需双因子认证"
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    }
+  ]
+}

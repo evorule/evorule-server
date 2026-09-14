@@ -1,0 +1,266 @@
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.demo.finance",
+  "rule_id": "finance.rules",
+  "version": "0.1.0",
+  "description": "财务域演示规则集（6条）：报销限额、分级审批、发票合规、拆单检测、预算占用、存储加密门禁",
+  "metadata": {
+    "author": "EvoRule Project",
+    "license": "AGPL-3.0-or-later",
+    "domain": "finance",
+    "authority_ref": "财会〔2008〕7号《企业内部控制基本规范》第二十/二十二条；《发票管理办法》(2023修订)第二十/二十一条；GB/T 22239-2019 §8.1.4.8.b",
+    "note": "金额以整数表达（TCB 无 Float）；>= 用 not(lt) 嵌套；无算术原语，预算合计由调用方预置 projected_total 字段"
+  },
+  "transform": [
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "finance_expense_limit_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "eq", "path": "__exec__.payload.data.expense.type", "value": "travel" },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.expense.amount", "value": 3000 } },
+                    "on_true": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "差旅报销超限额3000元" } }
+                    ],
+                    "on_false": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": { "type": "eq", "path": "__exec__.payload.data.expense.type", "value": "meal" },
+                    "on_true": [
+                      {
+                        "type": "branch",
+                        "params": {
+                          "domain": { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.expense.amount", "value": 1500 } },
+                          "on_true": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "餐饮报销超限额1500元" } }
+                          ],
+                          "on_false": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                          ]
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "branch",
+                        "params": {
+                          "domain": { "type": "eq", "path": "__exec__.payload.data.expense.type", "value": "office" },
+                          "on_true": [
+                            {
+                              "type": "branch",
+                              "params": {
+                                "domain": { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.expense.amount", "value": 800 } },
+                                "on_true": [
+                                  { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                                  { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "办公用品报销超限额800元" } }
+                                ],
+                                "on_false": [
+                                  { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                                ]
+                              }
+                            }
+                          ],
+                          "on_false": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "finance_approval_routing_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "lt", "path": "__exec__.payload.data.expense.amount", "value": 500 },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "auto_approved" } }
+              ],
+              "on_false": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": { "type": "lt", "path": "__exec__.payload.data.expense.amount", "value": 5000 },
+                    "on_true": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "manager_approval" } },
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.escalate_to", "operation": "set", "value": "部门经理" } }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "branch",
+                        "params": {
+                          "domain": { "type": "lt", "path": "__exec__.payload.data.expense.amount", "value": 30000 },
+                          "on_true": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "director_approval" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.escalate_to", "operation": "set", "value": "分管副总" } }
+                          ],
+                          "on_false": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "collective_approval" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.escalate_to", "operation": "set", "value": "总经理办公会集体审批" } }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "finance_invoice_compliance_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "not",
+                "inner": {
+                  "type": "has_fields",
+                  "path": "__exec__.payload.data.invoice",
+                  "fields": ["invoice_no", "buyer_name", "buyer_tax_id", "amount", "date"]
+                }
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "rejected" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "发票缺少必填字段（发票号码/购买方名称/纳税人识别号/金额/开票日期至少一项缺失）" } }
+              ],
+              "on_false": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": { "type": "eq", "path": "__exec__.payload.data.invoice.buyer_tax_id", "value": "" },
+                    "on_true": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "rejected" } },
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "纳税人识别号格式不符（应为15/17/18/20位字母数字，此处为空）" } }
+                    ],
+                    "on_false": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "compliant" } }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "finance_expense_split_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "eq",
+                "path": "__exec__.payload.data.split_suspected",
+                "value": true
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "split_detected" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "疑似拆单：同供应商同日多笔合计超5000元（分组聚合由上游预算/报销服务完成，本规则编码处置策略）" } }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "no_split" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "finance_budget_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "eq", "path": "__exec__.payload.data.budget.within_budget", "value": true },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.remaining", "operation": "set", "value": "__exec__.payload.data.budget.remaining" } }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "超预算：科目余额不足" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "finance_storage_encryption_gate" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  { "type": "exists", "path": "__exec__.payload.data.operation.fields.id_card" },
+                  { "type": "eq", "path": "__exec__.payload.data.encryption", "value": "none" }
+                ]
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.8.b：敏感数据未加密存储，已阻断并留痕" } }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    }
+  ]
+}

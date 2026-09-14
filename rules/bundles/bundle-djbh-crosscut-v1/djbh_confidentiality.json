@@ -1,0 +1,86 @@
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.bundle.bundle_djbh_crosscut_v1.djbh.confidentiality",
+  "version": "1.0.0",
+  "metadata": {
+    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
+    "license": "AGPL-3.0-or-later",
+    "provenance": {
+      "source": "derived",
+      "derived_from": [
+        "djbh_confidentiality.json"
+      ]
+    }
+  },
+  "transform": [
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "djbh_confidentiality_check"
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.data_classification",
+                    "value": "sensitive"
+                  },
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.encryption",
+                    "value": "none"
+                  }
+                ]
+              },
+              "on_true": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "等保2.0三级 §8.1.4.8.b：敏感数据存储需加密"
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    }
+  ]
+}

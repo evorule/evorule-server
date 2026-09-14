@@ -1,0 +1,139 @@
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.demo.djbh",
+  "rule_id": "djbh.crosscut",
+  "version": "0.1.0",
+  "description": "等保2.0三级横切规则集（4条）：双因子认证、最小权限、安全审计覆盖、数据保密性",
+  "metadata": {
+    "author": "EvoRule Project",
+    "license": "AGPL-3.0-or-later",
+    "domain": "djbh",
+    "authority_ref": "GB/T 22239-2019 §8.1.4.1.d / §8.1.4.2.d / §8.1.4.3.a,c / §8.1.4.8.b",
+    "note": "D2 最小权限与权限分离同句同列 d 项（非 c/e）；D3 的审计覆盖即 evorule append-only+BLAKE3 审计链自身实现"
+  },
+  "transform": [
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "djbh_mfa_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  { "type": "eq", "path": "__exec__.payload.data.operation_risk", "value": "high" },
+                  { "type": "lt", "path": "__exec__.payload.data.mfa_factor_count", "value": 2 }
+                ]
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.1.d：高风险操作需双因子认证" } }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "djbh_access_control_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  { "type": "eq", "path": "__exec__.payload.data.requested_permission", "value": "admin" },
+                  { "type": "not", "inner": { "type": "eq", "path": "__exec__.payload.data.user_role", "value": "admin" } }
+                ]
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.2.d：最小权限原则，非管理员不得请求管理员权限" } }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "djbh_audit_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "eq", "path": "__exec__.payload.data.audit_enabled", "value": false },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.3.a：安全审计未启用" } }
+              ],
+              "on_false": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": { "type": "eq", "path": "__exec__.payload.data.audit_log_protected", "value": false },
+                    "on_true": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "warning" } },
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.3.c：审计记录未受保护" } }
+                    ],
+                    "on_false": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "compliant" } }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "djbh_confidentiality_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  { "type": "eq", "path": "__exec__.payload.data.data_classification", "value": "sensitive" },
+                  { "type": "eq", "path": "__exec__.payload.data.encryption", "value": "none" }
+                ]
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.8.b：敏感数据存储需加密" } }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    }
+  ]
+}

@@ -383,6 +383,12 @@ Two layers, usable separately or combined:
 - All auth events land in audit fact chain, queryable via `/api/audit/platform-events`
 - `/metrics` can independently require auth (`--metrics-auth`)
 
+> ⚠️ **No-auth mode (`--insecure-serve` / `EVORULE_INSECURE_SERVE=1`)**: ALL protected
+> endpoints (including write and marketplace APIs) become anonymously reachable. The
+> acknowledgment is accepted on loopback binds only — a non-loopback bind without
+> `--auth-token` is rejected at startup (fail-closed). Never expose a no-auth instance
+> beyond the local machine; production deployments must enable one of the auth layers above.
+
 ---
 
 ## Configuration
@@ -396,6 +402,7 @@ Config loading priority: **CLI args > env vars (prefix `EVORULE_`) > JSON config
 | `EVORULE_CONFIG` | `--config` | (none) | JSON config file path |
 | `EVORULE_ADDR` | `--addr` | `0.0.0.0:18080` | Listen address |
 | `EVORULE_AUTH_TOKEN` | `--auth-token` | (empty) | Bearer token (empty = auth off, dev only) |
+| `EVORULE_INSECURE_SERVE` | `--insecure-serve` | (empty) | Explicit no-auth acknowledgment (set to `1`; loopback binds only — non-loopback without token is rejected at startup) |
 | `EVORULE_SERVICE_TOKEN` | `--service-token` | (empty) | Trusted service pipe token (service identity, can write to protected domains `stable.llm`/`stable.system`; only effective when auth enabled) |
 | `EVORULE_CORE_EVAL` | `--core-eval` | `./resources/server_eval.json` | Constitution file path (not hot-reloadable) |
 | `EVORULE_RULES_DIR` | `--rules-dir` | `./rules` | Business rules directory (hot-reload monitored) |
@@ -980,6 +987,10 @@ evorule_rules_zero_hits
 - 认证事件全部落审计事实链,可经 `/api/audit/platform-events` 报表查询
 - `/metrics` 可独立要求认证(`--metrics-auth`)
 
+> ⚠️ **无认证模式(`--insecure-serve` / `EVORULE_INSECURE_SERVE=1`)**:所有受保护端点
+> (含写接口/市场接口)匿名可达。该豁免仅回环绑定可声明——非 loopback + 无 token 一律
+> 启动期拒绝(fail-closed)。无认证实例绝不暴露到本机之外;正式部署必须启用上述任一认证层。
+
 ---
 
 ## 配置
@@ -993,6 +1004,7 @@ evorule_rules_zero_hits
 | `EVORULE_CONFIG`          | `--config`          | (无)                         | JSON 配置文件路径                       |
 | `EVORULE_ADDR`            | `--addr`            | `0.0.0.0:18080`              | 监听地址                                |
 | `EVORULE_AUTH_TOKEN`      | `--auth-token`      | (空)                         | Bearer token(留空 = 关闭认证,仅 dev) |
+| `EVORULE_INSECURE_SERVE`  | `--insecure-serve`  | (空)                         | 无认证显式豁免声明(设为 `1`;仅回环绑定可声明——非 loopback + 无 token 启动期拒绝) |
 | `EVORULE_SERVICE_TOKEN`   | `--service-token`   | (空)                         | 受信服务管道 token(service 身份,可写受保护域 `stable.llm`/`stable.system`;仅认证启用时生效) |
 | `EVORULE_CORE_EVAL`       | `--core-eval`       | `./resources/server_eval.json` | 宪法文件路径(不可热重载)              |
 | `EVORULE_RULES_DIR`       | `--rules-dir`       | `./rules`                    | 业务规则目录(热重载监听)              |

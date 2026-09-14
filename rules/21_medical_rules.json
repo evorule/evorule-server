@@ -1,0 +1,274 @@
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.demo.medical",
+  "rule_id": "medical.rules",
+  "version": "0.1.0",
+  "description": "医疗域演示规则集（6条）：抗菌药物分级、用药指征、过敏禁忌、越级补办、分诊阈值、病历读取MFA门禁",
+  "metadata": {
+    "author": "EvoRule Project",
+    "license": "AGPL-3.0-or-later",
+    "domain": "medical",
+    "authority_ref": "卫生部令84号《抗菌药物临床应用管理办法》第六/二十七/二十八/三十一条；国卫办医发〔2015〕43号《抗菌药物临床应用指导原则(2015年版)》；GB/T 22239-2019 §8.1.4.1.d",
+    "note": "温度以摄氏十分之几整数表达（temperature_tenths，TCB无Float）；>= 用 not(lt)；过敏史由上游归一为布尔 has_penicillin_allergy；M5为临床经验阈值示例"
+  },
+  "transform": [
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "medical_antibiotic_tier_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  { "type": "eq", "path": "__exec__.payload.data.prescription.antibiotic_tier", "value": "special" },
+                  { "type": "eq", "path": "__exec__.payload.data.visit.type", "value": "outpatient" }
+                ]
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "特殊使用级抗菌药物不得在门诊使用（卫生部令84号第二十七条）" } }
+              ],
+              "on_false": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": {
+                      "type": "all",
+                      "inner": [
+                        { "type": "eq", "path": "__exec__.payload.data.prescription.antibiotic_tier", "value": "restricted" },
+                        { "type": "not", "inner": { "type": "eq", "path": "__exec__.payload.data.prescriber.title", "value": "attending" } },
+                        { "type": "not", "inner": { "type": "eq", "path": "__exec__.payload.data.prescriber.title", "value": "chief" } }
+                      ]
+                    },
+                    "on_true": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "限制使用级需主治医师及以上处方权（卫生部令84号第二十四条）" } }
+                    ],
+                    "on_false": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "medical_drug_indication_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "eq", "path": "__exec__.payload.data.diagnosis.type", "value": "viral" },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "病毒性感染无抗菌药物使用指征（2015指导原则：病毒性感染者均无应用抗菌药物指征）" } }
+              ],
+              "on_false": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": { "type": "eq", "path": "__exec__.payload.data.diagnosis.type", "value": "bacterial" },
+                    "on_true": [
+                      {
+                        "type": "branch",
+                        "params": {
+                          "domain": { "type": "eq", "path": "__exec__.payload.data.lab.has_drug_sensitivity", "value": true },
+                          "on_true": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                          ],
+                          "on_false": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "warning" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "建议完善药敏试验（卫生部令84号第三十一条）" } }
+                          ]
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "need_more_info" } }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "medical_drug_allergy_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  { "type": "eq", "path": "__exec__.payload.data.patient.has_penicillin_allergy", "value": true },
+                  { "type": "eq", "path": "__exec__.payload.data.prescription.drug_class", "value": "penicillin" }
+                ]
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "青霉素过敏者禁用青霉素类药物（药品说明书禁忌）" } }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "medical_antibiotic_override_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": { "type": "eq", "path": "__exec__.payload.data.prescription.is_emergency_override", "value": true },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": { "type": "eq", "path": "__exec__.payload.data.prescription.paperwork_filed", "value": true },
+                    "on_true": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "branch",
+                        "params": {
+                          "domain": { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.prescription.hours_since_prescription", "value": 25 } },
+                          "on_true": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "越级使用超24小时未补办手续（卫生部令84号第二十八条）" } }
+                          ],
+                          "on_false": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "急诊越级使用，须于24小时内补办手续（卫生部令84号第二十八条）" } }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "medical_triage_check" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.patient.age", "value": 65 } },
+                  { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.patient.temperature_tenths", "value": 385 } }
+                ]
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "urgent" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "高龄高热（≥65岁且≥38.5℃），优先分诊" } }
+              ],
+              "on_false": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.patient.temperature_tenths", "value": 395 } },
+                    "on_true": [
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "urgent" } },
+                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "高热≥39.5℃，优先分诊" } }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "branch",
+                        "params": {
+                          "domain": {
+                            "type": "all",
+                            "inner": [
+                              { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.lab.wbc", "value": 15000 } },
+                              { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.lab.crp", "value": 50 } }
+                            ]
+                          },
+                          "on_true": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "urgent" } },
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "感染指标显著升高（WBC≥15000且CRP≥50）" } }
+                          ],
+                          "on_false": [
+                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "routine" } }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "medical_mfa_gate" },
+        "on_true": [
+          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "all",
+                "inner": [
+                  { "type": "eq", "path": "__exec__.payload.data.operation.type", "value": "read_medical_record" },
+                  { "type": "eq", "path": "__exec__.payload.data.auth.mfa_verified", "value": false }
+                ]
+              },
+              "on_true": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.1.d：病历读取需双因子认证，已阻断并留痕" } }
+              ],
+              "on_false": [
+                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+              ]
+            }
+          }
+        ],
+        "on_false": []
+      }
+    }
+  ]
+}

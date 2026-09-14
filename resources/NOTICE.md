@@ -14,7 +14,7 @@
 
 ## 包含内容
 
-- `server_eval.json` —— EvoRule server 业务规则集("宪法"):最小评估集(元指令 set/push/branch/io_request/collect/merge + 域类型 eq/lt/gt/exists/instruction/all/has_fields/not/any)+ 会话桥接规则(call_external/call_service 单发桥接,自 v0.4.1)。
+- `server_eval.json` —— EvoRule server 业务规则集("宪法"):最小评估集(元指令 branch/set/push/io_request/enforce + 域类型 eq/lt/gt/exists/instruction/all/has_fields/not/any;`collect`/`merge` 已于 v0.6.0 退役,多轮编排由应用层 runner 实现)+ 会话桥接规则(call_external/call_service 单发桥接,自 v0.4.1)。
 
 ## 协议
 
