@@ -17,6 +17,12 @@ target/
 !plugins/wasm-host/Cargo.lock
 !plugins/ai-plugin/Cargo.lock
 !plugins/wasm-host/examples/*/Cargo.lock
+!plugins/wasm-host/tests/*/*/Cargo.lock
+
+# === Node / AssemblyScript（UDF 示例工具链） ===
+# 依赖按 package.json 的精确 pin 重装，产物 .wasm 提交进 plugins/wasm/
+node_modules/
+plugins/wasm-host/examples/*/build/
 
 # === 环境变量(可能含密钥) ===
 .env

@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# 负面 fixture：死循环 UDF（沙箱应以 fuel 中断，不得挂死宿主）
+[package]
+name = "negative-infinite-loop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "负面测试 fixture：永不返回的 UDF，fuel 计量必须中断它且宿主存活"
+
+# 脱离上层 workspace（同 examples/udf-finance-tax-calc 模式）
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

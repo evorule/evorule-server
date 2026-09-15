@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# 负面 fixture：含 WASI import 的模块（沙箱应于链接期拒绝）
+[package]
+name = "negative-wasi-import"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "负面测试 fixture：企图调用 WASI fd_write 的 UDF，零能力沙箱必须在链接期拒绝加载"
+
+# 脱离上层 workspace（同 examples/udf-finance-tax-calc 模式）
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

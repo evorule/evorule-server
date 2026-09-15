@@ -4,8 +4,11 @@
 //! WASM 执行引擎：零能力 + fuel 计量 + 内存上限 + **每次调用独立 Store**。
 //!
 //! # 安全模型（ADR-0001 / 77 号 V2–V3）
-//! - **零能力**：`Linker` 不定义任何 host function。模块若含 WASI / env import，
-//!   链接期即失败（fail-fast），不是运行时才暴露。
+//! - **零能力（两道独立检查）**：
+//!   ① 加载期 —— `load` 枚举 `Module::imports()`，非空即拒（fail-fast，
+//!      点名依赖），不依赖链接器行为；
+//!   ② 调用期 —— `Linker` 不定义任何 host function，实例化未授权 import 必失败。
+//!   注：wasmtime 的编译阶段不解析 import，故 ① 是必需的显式补强（T4 实证）。
 //! - **fuel**：`Config::consume_fuel(true)` + 每次调用设预算；耗尽 → trap。
 //! - **内存上限**：`ResourceLimiter` 在增长时拦截，超限 → alloc 失败而非 host OOM。
 //!
@@ -82,9 +85,33 @@ impl UdfRuntime {
     }
 
     /// 从文件编译模块（编译一次，多次调用复用）
+    ///
+    /// # 为什么这里要显式枚举 import（T4 实证补强）
+    /// `Module::from_file` **只做编译，不解析 import** —— wasmtime 在
+    /// `Linker::instantiate` 时才解析（见下方 `call`）。若不在此主动检查，
+    /// 含 WASI/env import 的模块会「装载成功、首次调用才报错」：
+    /// 恶意模块多存活一整段时间，且失败时机偏离 fail-fast 承诺。
+    ///
+    /// 故此处直接枚举 import 集合，**非空即拒**并点名缺失依赖。
+    /// 下方 `call` 里的 `Linker`（零注册）作为第二道防线保留：
+    /// 两道检查独立，任一生效都不足以让 import 被执行到。
     pub fn load(&self, path: &std::path::Path) -> Result<Module, String> {
-        Module::from_file(&self.engine, path)
-            .map_err(|e| format!("WASM 模块编译失败 {}: {e}", path.display()))
+        let module = Module::from_file(&self.engine, path)
+            .map_err(|e| format!("WASM 模块编译失败 {}: {e}", path.display()))?;
+        let imports: Vec<String> = module
+            .imports()
+            .map(|i| format!("{}.{}", i.module(), i.name()))
+            .collect();
+        if !imports.is_empty() {
+            return Err(format!(
+                "模块声明了 {} 个 import: [{}] —— 零能力沙箱只接受**无任何 import** 的模块\
+                 （WASI / env / 内存导入均拒）。需要外部能力的 UDF 应改写为纯计算，\
+                 或走显式审批的独立通道，不得借 import 提权",
+                imports.len(),
+                imports.join(", ")
+            ));
+        }
+        Ok(module)
     }
 
     /// 执行一次 UDF：`input` 为入参 JSON 字节，返回出参 JSON 字节。
