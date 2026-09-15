@@ -152,12 +152,14 @@ pub struct LlmConfigInput {
 
 thread_local! {
     /// 单实例对话框的控件句柄与结果（安装器 UI 单线程，thread_local 安全）。
-    static DLG: RefCell<DlgState> = RefCell::new(DlgState {
-        edit_endpoint: 0,
-        edit_model: 0,
-        edit_key: 0,
-        result: None,
-    });
+    static DLG: RefCell<DlgState> = const {
+        RefCell::new(DlgState {
+            edit_endpoint: 0,
+            edit_model: 0,
+            edit_key: 0,
+            result: None,
+        })
+    };
 }
 
 struct DlgState {
@@ -232,6 +234,8 @@ struct Msg {
 const COLOR_BTNFACE: isize = 15;
 
 /// 创建子控件的小工具（都带默认 GUI 字体）。
+// 参数即 Win32 CreateWindowExW 形态，参数数由 API 决定不减。
+#[allow(clippy::too_many_arguments)]
 unsafe fn create_control(
     class: *const u16,
     text: *const u16,
@@ -265,12 +269,49 @@ unsafe fn create_control(
 }
 
 /// 宽字符窗口类/控件名常量。
-const CLASS_NAME: &[u16] = &[b'E' as u16, b'v' as u16, b'o' as u16, b'S' as u16, b'e' as u16, b't' as u16, b'u' as u16, b'p' as u16, b'L' as u16, b'l' as u16, b'm' as u16, b'D' as u16, b'l' as u16, b'g' as u16, 0];
-const STATIC_CLASS: &[u16] = &[b'S' as u16, b't' as u16, b'a' as u16, b't' as u16, b'i' as u16, b'c' as u16, 0];
+const CLASS_NAME: &[u16] = &[
+    b'E' as u16,
+    b'v' as u16,
+    b'o' as u16,
+    b'S' as u16,
+    b'e' as u16,
+    b't' as u16,
+    b'u' as u16,
+    b'p' as u16,
+    b'L' as u16,
+    b'l' as u16,
+    b'm' as u16,
+    b'D' as u16,
+    b'l' as u16,
+    b'g' as u16,
+    0,
+];
+const STATIC_CLASS: &[u16] = &[
+    b'S' as u16,
+    b't' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'i' as u16,
+    b'c' as u16,
+    0,
+];
 const EDIT_CLASS: &[u16] = &[b'E' as u16, b'd' as u16, b'i' as u16, b't' as u16, 0];
-const BUTTON_CLASS: &[u16] = &[b'B' as u16, b'u' as u16, b't' as u16, b't' as u16, b'o' as u16, b'n' as u16, 0];
+const BUTTON_CLASS: &[u16] = &[
+    b'B' as u16,
+    b'u' as u16,
+    b't' as u16,
+    b't' as u16,
+    b'o' as u16,
+    b'n' as u16,
+    0,
+];
 
-unsafe extern "system" fn dlg_wnd_proc(hwnd: isize, msg: u32, wParam: usize, lParam: isize) -> isize {
+unsafe extern "system" fn dlg_wnd_proc(
+    hwnd: isize,
+    msg: u32,
+    wParam: usize,
+    lParam: isize,
+) -> isize {
     match msg {
         WM_COMMAND => {
             let id = (wParam & 0xFFFF) as isize;
@@ -332,7 +373,10 @@ unsafe fn read_ctrl(hwnd: isize) -> String {
 /// 三条目 LLM 配置对话框（API Key 掩码）。
 /// 返回 Some = 用户点了「保存并启用」；None = 跳过/关闭。
 /// 预填值由调用方传入（分发默认 = config.example 同源）。
-///
+//
+// Win32 模态对话框过程（注册窗口类 + 消息泵）单一连续体；拆分会引入
+// 跨段状态传递与消息序回归风险，故整体保留。
+#[allow(clippy::too_many_lines)]
 pub fn ask_llm_config(endpoint_default: &str, model_default: &str) -> Option<LlmConfigInput> {
     DLG.with(|s| {
         *s.borrow_mut() = DlgState {
@@ -386,21 +430,117 @@ pub fn ask_llm_config(endpoint_default: &str, model_default: &str) -> Option<Llm
         // 控件布局（客户区手工坐标）
         DLG.with(|s| {
             let mut st = s.borrow_mut();
-            create_control(STATIC_CLASS.as_ptr(), wide("LLM API 端点 (OpenAI 兼容)").as_ptr(), SS_LEFT, 20, 20, 340, 20, hwnd, 301, font);
-            st.edit_endpoint = create_control(EDIT_CLASS.as_ptr(), wide(endpoint_default).as_ptr(), ES_AUTOHSCROLL | WS_GROUP, 20, 44, 340, 24, hwnd, ID_EDIT_ENDPOINT as i32, font);
-            create_control(STATIC_CLASS.as_ptr(), wide("模型名").as_ptr(), SS_LEFT, 20, 82, 340, 20, hwnd, 302, font);
-            st.edit_model = create_control(EDIT_CLASS.as_ptr(), wide(model_default).as_ptr(), ES_AUTOHSCROLL, 20, 106, 340, 24, hwnd, ID_EDIT_MODEL as i32, font);
-            create_control(STATIC_CLASS.as_ptr(), wide("API Key（仅保存在你电脑上的本机文件,不会上传）").as_ptr(), SS_LEFT, 20, 144, 340, 20, hwnd, 303, font);
-            st.edit_key = create_control(EDIT_CLASS.as_ptr(), wide("").as_ptr(), ES_AUTOHSCROLL | ES_PASSWORD, 20, 168, 340, 24, hwnd, ID_EDIT_KEY as i32, font);
-            create_control(BUTTON_CLASS.as_ptr(), wide("跳过").as_ptr(), BS_PUSHBUTTON, 200, 210, 84, 30, hwnd, IDCANCEL as i32, font);
-            create_control(BUTTON_CLASS.as_ptr(), wide("保存并启用").as_ptr(), BS_DEFPUSHBUTTON, 292, 210, 94, 30, hwnd, ID_SAVE as i32, font);
+            create_control(
+                STATIC_CLASS.as_ptr(),
+                wide("LLM API 端点 (OpenAI 兼容)").as_ptr(),
+                SS_LEFT,
+                20,
+                20,
+                340,
+                20,
+                hwnd,
+                301,
+                font,
+            );
+            st.edit_endpoint = create_control(
+                EDIT_CLASS.as_ptr(),
+                wide(endpoint_default).as_ptr(),
+                ES_AUTOHSCROLL | WS_GROUP,
+                20,
+                44,
+                340,
+                24,
+                hwnd,
+                ID_EDIT_ENDPOINT as i32,
+                font,
+            );
+            create_control(
+                STATIC_CLASS.as_ptr(),
+                wide("模型名").as_ptr(),
+                SS_LEFT,
+                20,
+                82,
+                340,
+                20,
+                hwnd,
+                302,
+                font,
+            );
+            st.edit_model = create_control(
+                EDIT_CLASS.as_ptr(),
+                wide(model_default).as_ptr(),
+                ES_AUTOHSCROLL,
+                20,
+                106,
+                340,
+                24,
+                hwnd,
+                ID_EDIT_MODEL as i32,
+                font,
+            );
+            create_control(
+                STATIC_CLASS.as_ptr(),
+                wide("API Key（仅保存在你电脑上的本机文件,不会上传）").as_ptr(),
+                SS_LEFT,
+                20,
+                144,
+                340,
+                20,
+                hwnd,
+                303,
+                font,
+            );
+            st.edit_key = create_control(
+                EDIT_CLASS.as_ptr(),
+                wide("").as_ptr(),
+                ES_AUTOHSCROLL | ES_PASSWORD,
+                20,
+                168,
+                340,
+                24,
+                hwnd,
+                ID_EDIT_KEY as i32,
+                font,
+            );
+            create_control(
+                BUTTON_CLASS.as_ptr(),
+                wide("跳过").as_ptr(),
+                BS_PUSHBUTTON,
+                200,
+                210,
+                84,
+                30,
+                hwnd,
+                IDCANCEL as i32,
+                font,
+            );
+            create_control(
+                BUTTON_CLASS.as_ptr(),
+                wide("保存并启用").as_ptr(),
+                BS_DEFPUSHBUTTON,
+                292,
+                210,
+                94,
+                30,
+                hwnd,
+                ID_SAVE as i32,
+                font,
+            );
         });
 
         ShowWindow(hwnd, SW_SHOW);
         SetFocus(DLG.with(|s| s.borrow().edit_key));
 
         // 消息循环（对话框关闭即退出）
-        let mut msg = Msg { hwnd: 0, message: 0, wParam: 0, lParam: 0, time: 0, pt_x: 0, pt_y: 0 };
+        let mut msg = Msg {
+            hwnd: 0,
+            message: 0,
+            wParam: 0,
+            lParam: 0,
+            time: 0,
+            pt_x: 0,
+            pt_y: 0,
+        };
         while GetMessageW(&mut msg, 0, 0, 0) > 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

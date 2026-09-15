@@ -276,7 +276,7 @@ POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留�
   "offline_threshold": 3,         // 连续 N 个周期 offline 才拉起（防抖）
   "max_restarts_per_hour": 5,     // 每插件每小时自动拉起上限（成功与失败尝试均计入）
   "fetch_timeout_secs": 5,        // 健康读取超时
-  "health_fail_threshold": 3,     // server 健康连续 N 轮不可读才整轮跳过（容错，UV-182 批次C）
+  "health_fail_threshold": 3,     // server 健康连续 N 轮不可读才整轮跳过（容错）
   "plugins": {
     "finance-config": {
       "command": "plugins\\finance-config\\evorule-finance-config-plugin.exe",
@@ -295,11 +295,11 @@ POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留�
 ### 10.2 行为语义
 
 - **只对真正离线动作**：`status == "offline"`（连接失败/超时/5xx/非 2xx）才计入；`no_probe`（未实现 `/health`，404/405）与未挂载插件**如实跳过、不误动作**；
-- **`unauthorized` 永不动作（UV-182 批次A）**：401/403 = 进程活着但鉴权被拒（凭据/配置问题），看门狗**响亮报告但绝不拉起**——重启无效，需人工核对 token 配置；server 侧同步落 `plugin_unauthorized` 平台事件；
+- **`unauthorized` 永不动作**：401/403 = 进程活着但鉴权被拒（凭据/配置问题），看门狗**响亮报告但绝不拉起**——重启无效，需人工核对 token 配置；server 侧同步落 `plugin_unauthorized` 平台事件；
 - **防抖**：连续 `offline_threshold` 个周期 offline 才执行拉起，单次探测抖动不动作；
-- **健康读取容错（UV-182 批次C）**：server 健康不可读或返回空（含 PS 5.1 非 JSON 塌缩为空表）连续不足 `health_fail_threshold` 轮时整轮跳过且只 WARN；达阈值起升级 ERROR——server 重启窗口/瞬时抖动不再触发误判空转；
-- **升级（系统独占路径）**：每插件每小时拉起次数达 `max_restarts_per_hour` 后停止拉起，日志输出 `ESCALATION` 升级告警，等人工介入；**拉起尝试失败同样计入预算（UV-182 批次D）**——command 配错不再每周期无限重试，预算耗尽闩锁收敛；插件重新被观测到 `online` 后闩锁自动解除（人工修复场景）；
-- **留痕分工**：拉起动作写 `data\watchdog.log`（部署侧；达 5MB 自动轮转为 `watchdog.log.old`，单代保留，UV-182 批次F）；`plugin_offline`/`plugin_unauthorized`/`plugin_online` 报警与关警事件在 server 审计面全量（`/api/audit/platform-events` 可查）——部署侧日志与审计面各司其职，不重复建设。
+- **健康读取容错**：server 健康不可读或返回空（含 PS 5.1 非 JSON 塌缩为空表）连续不足 `health_fail_threshold` 轮时整轮跳过且只 WARN；达阈值起升级 ERROR——server 重启窗口/瞬时抖动不再触发误判空转；
+- **升级（系统独占路径）**：每插件每小时拉起次数达 `max_restarts_per_hour` 后停止拉起，日志输出 `ESCALATION` 升级告警，等人工介入；**拉起尝试失败同样计入预算**——command 配错不再每周期无限重试，预算耗尽闩锁收敛；插件重新被观测到 `online` 后闩锁自动解除（人工修复场景）；
+- **留痕分工**：拉起动作写 `data\watchdog.log`（部署侧；达 5MB 自动轮转为 `watchdog.log.old`，单代保留）；`plugin_offline`/`plugin_unauthorized`/`plugin_online` 报警与关警事件在 server 审计面全量（`/api/audit/platform-events` 可查）——部署侧日志与审计面各司其职，不重复建设。
 
 ### 10.3 非 Windows 部署形态
 

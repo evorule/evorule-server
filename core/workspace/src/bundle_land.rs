@@ -127,6 +127,7 @@ impl BundleManifest {
 /// 从盘面读取 bundle_manifest.json，重算 `landed_content_hash` 并与记录值比对：
 /// - manifest 未记录该字段（旧存量，零迁移）→ `Ok(())`（跳过，不追溯）；
 /// - 记录值 ≠ 重算值 → `Err`（调用方 fail-closed 处置，如拒载该 bundle 全部条目）。
+///
 /// 口径与落盘侧 `compute_landed_hash` 同源。
 pub fn verify_bundle_landed_hash(dir: &Path) -> Result<(), String> {
     let raw = std::fs::read_to_string(dir.join(evorule_bundle::BUNDLE_MANIFEST_FILE))
@@ -416,7 +417,13 @@ mod landed_hash_tests {
         // 模拟盘面：序列化 → 解析 → 重算（口径必须对 serde 往返稳定）
         let raw = serde_json::to_string(&m).map_err(|e| e.to_string())?;
         let parsed: BundleManifest = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-        assert_eq!(parsed.landed_content_hash, m.landed_content_hash);
+        // Result 返回型测试：断言失败走 Err（clippy panic_in_result_fn 门禁 C5）
+        if parsed.landed_content_hash != m.landed_content_hash {
+            return Err(format!(
+                "serde 往返后 landed_content_hash 不一致: {:?} != {:?}",
+                parsed.landed_content_hash, m.landed_content_hash
+            ));
+        }
         verify_landed_hash_recorded(&parsed)
     }
 

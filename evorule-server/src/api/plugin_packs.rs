@@ -430,9 +430,10 @@ fn load_pack_with_ports(
                     ));
                 }
             }
-            let u = so.get("base_url").and_then(Value::as_str).ok_or_else(|| {
-                format!("pack {id} service.base_url 必须是非空字符串")
-            })?;
+            let u = so
+                .get("base_url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("pack {id} service.base_url 必须是非空字符串"))?;
             Some(validate_loopback_base_url(&id, u, allowed_ports)?)
         }
         None => {
@@ -449,7 +450,11 @@ fn load_pack_with_ports(
     for k in obj.keys() {
         if !matches!(
             k.as_str(),
-            "id" | "contract_version" | "version" | "description" | "capabilities" | "assets"
+            "id" | "contract_version"
+                | "version"
+                | "description"
+                | "capabilities"
+                | "assets"
                 | "service"
         ) {
             return Err(format!(
@@ -537,8 +542,8 @@ fn str_field(
 
 fn read_json(pack_id: &str, kind: &str, path: &FsPath) -> Result<Value, String> {
     // UV-181 批次B：单资产文件字节上限（防超大资产拖垮装载/内存）
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("资产文件读取失败 {}: {e}", path.display()))?;
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("资产文件读取失败 {}: {e}", path.display()))?;
     if meta.len() > ASSET_FILE_MAX_BYTES {
         return Err(format!(
             "pack {pack_id} assets.{kind} 单文件超限: {}（{} 字节 > 上限 \
@@ -844,12 +849,15 @@ fn validate_params_form(
             .map(String::from);
         // scene_field 的有效 scene_ref：参数级 > 层级回退（解析后存值，生成期直接用）
         let effective_scene_ref = if ftype == "scene_field" {
-            let sr = pf_scene_ref.as_deref().or(default_scene_ref).ok_or_else(|| {
-                format!(
-                    "pack {pack_id} {ctx} 参数 {field_id} type=scene_field \
+            let sr = pf_scene_ref
+                .as_deref()
+                .or(default_scene_ref)
+                .ok_or_else(|| {
+                    format!(
+                        "pack {pack_id} {ctx} 参数 {field_id} type=scene_field \
                      必须带 scene_ref（自身或层级回退）"
-                )
-            })?;
+                    )
+                })?;
             if !scene_fields.contains_key(sr) {
                 return Err(format!(
                     "pack {pack_id} {ctx} 参数 {field_id} scene_ref='{sr}' \
@@ -992,7 +1000,11 @@ fn validate_node_type(
     for k in obj.keys() {
         if !matches!(
             k.as_str(),
-            "node_type" | "display_name" | "description" | "params_form" | "compile_hint"
+            "node_type"
+                | "display_name"
+                | "description"
+                | "params_form"
+                | "compile_hint"
                 | "out_guards"
         ) {
             return Err(fail(format!("未知顶层字段 '{k}'（契约 §4.4 钉死）")));
@@ -1061,12 +1073,11 @@ fn validate_node_type(
             .as_array()
             .ok_or_else(|| fail(format!("节点类型 {node_type} out_guards 必须是数组")))?;
         for g in og {
-            let gs = g
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    fail(format!("节点类型 {node_type} out_guards 成员必须是非空字符串"))
-                })?;
+            let gs = g.as_str().filter(|s| !s.is_empty()).ok_or_else(|| {
+                fail(format!(
+                    "节点类型 {node_type} out_guards 成员必须是非空字符串"
+                ))
+            })?;
             if gs != FLOW_GUARD_APPROVED {
                 return Err(fail(format!(
                     "节点类型 {node_type} out_guards 成员 '{gs}' 不在 v0 guard 词表 \
@@ -1131,7 +1142,9 @@ fn validate_flow(
         .and_then(Value::as_i64)
         .ok_or_else(|| fail("缺 version（必须是整数）".to_string()))?;
     if version != 1 {
-        return Err(fail(format!("version={version} 不被支持（flow v0 仅 version=1）")));
+        return Err(fail(format!(
+            "version={version} 不被支持（flow v0 仅 version=1）"
+        )));
     }
     let nodes = obj
         .get("nodes")
@@ -1150,13 +1163,17 @@ fn validate_flow(
     let mut starts = 0usize;
     let mut ends = 0usize;
     for n in nodes {
-        let n = n.as_object().ok_or_else(|| fail("nodes 元素必须是 object".to_string()))?;
+        let n = n
+            .as_object()
+            .ok_or_else(|| fail("nodes 元素必须是 object".to_string()))?;
         for k in n.keys() {
             if !matches!(
                 k.as_str(),
                 "node_id" | "node_type" | "params" | "form_ref" | "threshold"
             ) {
-                return Err(fail(format!("节点存在未知字段 '{k}'（契约 v1.1 §4.6 钉死）")));
+                return Err(fail(format!(
+                    "节点存在未知字段 '{k}'（契约 v1.1 §4.6 钉死）"
+                )));
             }
         }
         let node_id = n
@@ -1193,7 +1210,9 @@ fn validate_flow(
                     .get(k)
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
-                    .ok_or_else(|| fail(format!("审批节点 {node_id} params.{k} 必须是非空字符串")))?;
+                    .ok_or_else(|| {
+                        fail(format!("审批节点 {node_id} params.{k} 必须是非空字符串"))
+                    })?;
                 let _ = s;
             }
             let fr = n
@@ -1263,7 +1282,9 @@ fn validate_flow(
     // out: from → (to, guard)
     let mut out: BTreeMap<&str, (&str, Option<&str>)> = BTreeMap::new();
     for e in edges {
-        let e = e.as_object().ok_or_else(|| fail("edges 元素必须是 object".to_string()))?;
+        let e = e
+            .as_object()
+            .ok_or_else(|| fail("edges 元素必须是 object".to_string()))?;
         for k in e.keys() {
             if !matches!(k.as_str(), "from" | "to" | "guard") {
                 return Err(fail(format!("边存在未知字段 '{k}'（v0 仅 from|to|guard）")));
@@ -1734,12 +1755,13 @@ pub async fn plugin_assets_handler(
     State(api): State<SessionApi>,
     Path((pack_id, kind)): Path<(String, String)>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !matches!(kind.as_str(), "scenes" | "templates" | "flows" | "node_types") {
+    if !matches!(
+        kind.as_str(),
+        "scenes" | "templates" | "flows" | "node_types"
+    ) {
         return Err(api_err(
             StatusCode::NOT_FOUND,
-            format!(
-                "未知资产 kind '{kind}'（合法集: scenes | templates | flows | node_types）"
-            ),
+            format!("未知资产 kind '{kind}'（合法集: scenes | templates | flows | node_types）"),
         ));
     }
     let Some(pack) = api.plugin_packs().get(&pack_id) else {
@@ -1805,7 +1827,15 @@ pub async fn generate_template_handler(
 const R2_TRANSFORM_TYPES: &[&str] = &["branch", "set", "push", "io_request"];
 
 /// 内核域函数词表（对齐 evorule-tcb domain 7 域类型）
-const R2_DOMAIN_TYPES: &[&str] = &["eq", "lt", "exists", "instruction", "all", "not", "has_fields"];
+const R2_DOMAIN_TYPES: &[&str] = &[
+    "eq",
+    "lt",
+    "exists",
+    "instruction",
+    "all",
+    "not",
+    "has_fields",
+];
 
 /// 编译服务调用超时（设计期操作，非运行时链路；固定值不配置化，契约钉死）
 const COMPILE_TIMEOUT_SECS: u64 = 10;
@@ -1873,9 +1903,10 @@ fn resolve_flow_refs(pack: &PluginPack, flow: &Value) -> Result<Value, String> {
             continue;
         }
         let (scene, field) = {
-            let fr = n.get("form_ref").and_then(Value::as_object).ok_or_else(|| {
-                format!("flow {flow_id} 审批节点缺 form_ref（装载校验缺陷）")
-            })?;
+            let fr = n
+                .get("form_ref")
+                .and_then(Value::as_object)
+                .ok_or_else(|| format!("flow {flow_id} 审批节点缺 form_ref（装载校验缺陷）"))?;
             let s = fr
                 .get("scene")
                 .and_then(Value::as_str)
@@ -1914,10 +1945,7 @@ fn resolve_flow_refs(pack: &PluginPack, flow: &Value) -> Result<Value, String> {
 /// 响应 = `{ "rule_draft": <规则草稿>, "compiler_version": "<semver>" }`。
 /// 传输/超时/解析失败全部显式 Err（调用方映射 502 + 自诊断），不静默。
 /// 重定向不跟随（P0-1/UV-180：SSRF 防线，对齐 io_handlers B1 修复）——3xx 按显式错误透传。
-async fn compile_via_service(
-    base_url: &str,
-    flow: &Value,
-) -> Result<(Value, String), String> {
+async fn compile_via_service(base_url: &str, flow: &Value) -> Result<(Value, String), String> {
     let url = format!("{}/v1/compile", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(COMPILE_TIMEOUT_SECS))
@@ -1938,9 +1966,10 @@ async fn compile_via_service(
             )
         })?;
     let status = resp.status();
-    let body: Value = resp.json().await.map_err(|e| {
-        format!("编译服务响应非 JSON（HTTP {status}）: {e}")
-    })?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("编译服务响应非 JSON（HTTP {status}）: {e}"))?;
     if !status.is_success() {
         let msg = body
             .get("error")
@@ -2581,7 +2610,11 @@ mod tests {
             .iter()
             .filter_map(|v| v.get("node_type").and_then(Value::as_str))
             .collect();
-        assert_eq!(nt_ids, vec!["approval", "end", "start"], "glob 装载序需确定");
+        assert_eq!(
+            nt_ids,
+            vec!["approval", "end", "start"],
+            "glob 装载序需确定"
+        );
         assert_eq!(
             pack.base_url.as_deref(),
             Some("http://127.0.0.1:9120"),
@@ -2677,9 +2710,10 @@ mod tests {
     #[test]
     fn flow_rejects_multiple_outgoing_edges() {
         let mut f = flow_value();
-        f["edges"].as_array_mut().unwrap().push(
-            json!({ "from": "n2", "to": "n3", "guard": "approved" }),
-        );
+        f["edges"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "from": "n2", "to": "n3", "guard": "approved" }));
         let err = validate_flow("p", &f, &flow_scene()).unwrap_err();
         assert!(err.contains("多条出边"), "got: {err}");
     }
@@ -2981,12 +3015,13 @@ mod tests {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
         let flow = flow_value();
-        let (draft, ver) =
-            compile_via_service(&format!("http://127.0.0.1:{}", addr.port()), &flow)
-                .await
-                .unwrap();
+        let (draft, ver) = compile_via_service(&format!("http://127.0.0.1:{}", addr.port()), &flow)
+            .await
+            .unwrap();
         assert_eq!(ver, "0.1.0");
         assert_eq!(draft["id"], json!("expense_approval_flow"));
         assert!(r2_gate(&draft).is_ok(), "合法产物必须通过 R2 门禁");
@@ -2998,12 +3033,17 @@ mod tests {
         let app = axum::Router::new().route(
             "/v1/compile",
             axum::routing::post(|| async {
-                (axum::http::StatusCode::BAD_REQUEST, Json(json!({ "error": "flow 缺 nodes" })))
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "flow 缺 nodes" })),
+                )
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
         let err = compile_via_service(&format!("http://127.0.0.1:{}", addr.port()), &flow_value())
             .await
             .unwrap_err();
@@ -3039,7 +3079,9 @@ mod tests {
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
         let err = compile_via_service(
             &format!("http://127.0.0.1:{}/rd", addr.port()),
             &flow_value(),
@@ -3084,9 +3126,14 @@ mod tests {
     #[test]
     fn node_type_rejects_unknown_top_field() {
         let mut v = node_type_approval();
-        v.as_object_mut().unwrap().insert("icon".to_string(), json!("shield"));
+        v.as_object_mut()
+            .unwrap()
+            .insert("icon".to_string(), json!("shield"));
         let err = validate_node_type("p", &v, &flow_scene()).unwrap_err();
-        assert!(err.contains("未知顶层字段") && err.contains("icon"), "got: {err}");
+        assert!(
+            err.contains("未知顶层字段") && err.contains("icon"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -3096,7 +3143,10 @@ mod tests {
             "display_name": { "zh": "会签", "en": "Counter-sign" }
         });
         let err = validate_node_type("p", &v, &flow_scene()).unwrap_err();
-        assert!(err.contains("counter_sign") && err.contains("契约演进"), "got: {err}");
+        assert!(
+            err.contains("counter_sign") && err.contains("契约演进"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -3120,7 +3170,10 @@ mod tests {
         let mut v = node_type_approval();
         v["params_form"][1]["scene_ref"] = json!("unregistered_scene");
         let err = validate_node_type("p", &v, &flow_scene()).unwrap_err();
-        assert!(err.contains("未在 pack 场景中注册") && err.contains("R2"), "got: {err}");
+        assert!(
+            err.contains("未在 pack 场景中注册") && err.contains("R2"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -3269,7 +3322,10 @@ mod tests {
         let pack = hr_pack();
         let body = json!({ "something": 1 });
         let err = resolve_compile_source(&pack, "x", Some(&body)).unwrap_err();
-        assert!(err.contains("必须为空") && err.contains("flow 键"), "got: {err}");
+        assert!(
+            err.contains("必须为空") && err.contains("flow 键"),
+            "got: {err}"
+        );
     }
 
     #[test]

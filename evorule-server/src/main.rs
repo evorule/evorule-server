@@ -811,9 +811,11 @@ struct ExternalPluginMounted {
 /// fail-fast（三拒绝扩展）：plugin.json 不可读 / JSON 非法 / id 漂移 / 空服务集 /
 /// base_url 非法 / 服务名冲突（进程内插件全集 ∪ 注册表 ∪ 已装载外部包）——
 /// 均启动报错附自诊断指引，不静默装载任何条目。
-// UV-181 批次F 增补 contract_version 校验后超阈值（28/25）；拆子函数会切断
-// 错误信息中的 fail-fast 上下文，按仓库先例豁免（同 load_pack）。
+// UV-181 批次F 增补 contract_version 校验后超阈值（28/25）；UV-183 批次A 增补
+// admin token env 撞名校验后行数 156/150；拆子函数会切断错误信息中的 fail-fast
+// 上下文，按仓库先例豁免（同 load_pack）。
 #[allow(clippy::cognitive_complexity)]
+#[allow(clippy::too_many_lines)]
 fn load_external_plugins(
     path: Option<&PathBuf>,
     registry: &mut ServiceRegistry,
@@ -842,7 +844,8 @@ fn load_external_plugins(
     // 会直连 HTTP 注册表回落，外部包占用同名会造成挂载态静默切换路由，禁止）
     let mut taken: std::collections::BTreeSet<String> = builtin_names.iter().cloned().collect();
     // UV-183 批次A（P1-10 折叠撞名）: 已占用 admin token env 名 → 首个插件 id
-    let mut env_taken: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut env_taken: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     let mut out = Vec::new();
     for (id, entry) in &manifest.plugins {
         let Some(rel) = entry.manifest.as_ref() else {
@@ -2449,7 +2452,10 @@ mod tests {
             let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
                 .unwrap_err();
             assert!(err.contains("撞名"), "got: {err}");
-            assert!(err.contains("finance-config") && err.contains("finance_config"), "got: {err}");
+            assert!(
+                err.contains("finance-config") && err.contains("finance_config"),
+                "got: {err}"
+            );
             assert!(
                 err.contains("EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG"),
                 "got: {err}"

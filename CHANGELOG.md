@@ -25,16 +25,6 @@
 
 ---
 
-## [Unreleased]
-
-### 🔒 安全
-
-- **bundle 落盘完整性哈希（存量豁免清零 L2，2026-09-15）** — `bundle_manifest.json` 新增 `landed_content_hash` 字段：落盘时对 manifest 自身（除本字段）紧凑 serde 序列化经 evorule-hash 计算 blake3 写入（`compute_landed_hash`，落盘与复验同源防口径漂移）；reload 防篡改收集（`collect_tampered_bundle_files`）在条目哈希复验前先做落盘完整性比对，失配 → fail-closed 拒载该 bundle 全部条目（封堵「条目文件与 manifest 记录被同步篡改」绕过条目哈希的路径）。旧 manifest 缺字段 → 跳过（零迁移，与批次F 条目哈希同策略）；`content_hash`（导入时溯源哈希）语义不变、分工不混用。新增 3 个单元测试（盘面往返一致 / 篡改失配 / 旧存量跳过），clippy 门禁绿
-
-### 🔄 变更
-
-- **存量 bundle 规则带壳整改（存量豁免清零 2026-09-15）** — `rules/bundles/` 6 包 20 个条目由 v0.3.1 时代裸数组升级为 rule_set v1.0 带壳形态（`$schema/kind/id/version/metadata/transform`，零语义变更，引擎仍取 transform）；manifest 逐条目补 UV-183 批次F `content_hash`（blake3:hex over 落盘字节）使 reload 复验基线对存量生效；manifest 顶层 `content_hash` 保留为导入时溯源记录（语义见 04-governance-scope 豁免表）。扫描门禁 server 侧 53 违规 → 0
-
 ## [0.6.0] - 2026-09-11
 
 ### 🆕 新增

@@ -10436,10 +10436,19 @@ mod tests {
     /// 不同 env 名 / 同一 id → false（装载期 fail-fast 的纯函数判定基座）
     #[test]
     fn test_plugin_admin_token_env_collision() {
-        assert!(plugin_admin_token_env_collides("finance-config", "finance_config"));
+        assert!(plugin_admin_token_env_collides(
+            "finance-config",
+            "finance_config"
+        ));
         assert!(plugin_admin_token_env_collides("a.b", "a-b"));
-        assert!(!plugin_admin_token_env_collides("finance-config", "finance-config2"));
-        assert!(!plugin_admin_token_env_collides("finance-config", "finance-config"));
+        assert!(!plugin_admin_token_env_collides(
+            "finance-config",
+            "finance-config2"
+        ));
+        assert!(!plugin_admin_token_env_collides(
+            "finance-config",
+            "finance-config"
+        ));
         assert!(!plugin_admin_token_env_collides("a", "b"));
     }
 
@@ -10479,7 +10488,10 @@ mod tests {
             ),
             "上游请求失败"
         );
-        assert_eq!(classify_upstream_error("service chain 未装配"), "上游请求失败");
+        assert_eq!(
+            classify_upstream_error("service chain 未装配"),
+            "上游请求失败"
+        );
     }
 
     /// approver 强制注入:AuthedActor 存在取注入值,缺失（认证关闭）记 anonymous;

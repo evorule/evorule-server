@@ -465,7 +465,11 @@ mod tests {
         let bundle = valid_bundle(schema_valid_body());
 
         api.import_bundle(&bundle, false).await.unwrap();
-        assert_eq!(api.core_eval_len(), 3, "导入后 bundle 条目应被加载（宪法 2 + 条目 1）");
+        assert_eq!(
+            api.core_eval_len(),
+            3,
+            "导入后 bundle 条目应被加载（宪法 2 + 条目 1）"
+        );
 
         // 落盘 manifest 记录条目哈希（blake3:hex over 文件字节,SSOT 口径）
         let bundle_dir = tmp.path().join("rules/bundles/bundle-ds-tax-2024-v1");
@@ -488,7 +492,11 @@ mod tests {
         let mut tampered: Value =
             serde_json::from_str(&std::fs::read_to_string(&entry_path).unwrap()).unwrap();
         tampered["transform"][0]["params"]["service_name"] = Value::from("tampered_svc");
-        std::fs::write(&entry_path, serde_json::to_string_pretty(&tampered).unwrap()).unwrap();
+        std::fs::write(
+            &entry_path,
+            serde_json::to_string_pretty(&tampered).unwrap(),
+        )
+        .unwrap();
         api.reload_from_disk().await.unwrap();
         assert_eq!(
             api.core_eval_len(),
@@ -556,7 +564,11 @@ mod tests {
         .unwrap();
         let merged = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)
             .expect("复验拒载不构成装载失败（其余规则照常）");
-        assert_eq!(merged.len(), 2, "manifest 非法 → 该目录条目 fail-closed 拒载");
+        assert_eq!(
+            merged.len(),
+            2,
+            "manifest 非法 → 该目录条目 fail-closed 拒载"
+        );
     }
 
     #[tokio::test]

@@ -110,26 +110,27 @@ fn install(silent: bool, dir_override: Option<String>) -> i32 {
     //    Key 仅落本机 plugins\ai-plugin\ai-plugin.json（用户目录隔离,README 有保管警告）;
     //    写配置成功才翻转 plugin_manifest.json 的 enabled 开关。
     let mut ai_note = String::from("AI 助手未配置（可稍后在浏览器「设置」中配置）");
-    if !silent && ffi::ask_yes_no(&format!(
-        "是否现在配置 AI 助手？（可选，跳过完全不影响使用）\n\n\
-         需要一个 OpenAI 兼容的 LLM API Key。Key 只保存在你电脑上的\n\
-         plugins\\ai-plugin\\ai-plugin.json 文件中，不会上传给任何第三方。\n\n\
-         没有也没关系：稍后可在浏览器「设置 → LLM 配置」中随时配置。"
-    )) {
+    if !silent
+        && ffi::ask_yes_no(
+            "是否现在配置 AI 助手？（可选，跳过完全不影响使用）\n\n\
+             需要一个 OpenAI 兼容的 LLM API Key。Key 只保存在你电脑上的\n\
+             plugins\\ai-plugin\\ai-plugin.json 文件中，不会上传给任何第三方。\n\n\
+             没有也没关系：稍后可在浏览器「设置 → LLM 配置」中随时配置。",
+        )
+    {
         match ffi::ask_llm_config(DEFAULT_LLM_ENDPOINT, DEFAULT_LLM_MODEL) {
             Some(cfg) => match write_ai_plugin_config(&target, &cfg) {
-                Ok(()) => {
-                    match enable_ai_plugin_manifest(&target) {
-                        Ok(()) => {
-                            log.push("ai-plugin configured + enabled".to_string());
-                            ai_note = "AI 助手已配置（启动后自动生效）".to_string();
-                        }
-                        Err(e) => {
-                            log.push(format!("ai-plugin manifest enable failed: {e}"));
-                            ai_note = "AI 助手凭据已写入,但插件开关未打开(见 README 手工启用)".to_string();
-                        }
+                Ok(()) => match enable_ai_plugin_manifest(&target) {
+                    Ok(()) => {
+                        log.push("ai-plugin configured + enabled".to_string());
+                        ai_note = "AI 助手已配置（启动后自动生效）".to_string();
                     }
-                }
+                    Err(e) => {
+                        log.push(format!("ai-plugin manifest enable failed: {e}"));
+                        ai_note =
+                            "AI 助手凭据已写入,但插件开关未打开(见 README 手工启用)".to_string();
+                    }
+                },
                 Err(e) => {
                     log.push(format!("ai-plugin config write failed: {e}"));
                     ffi::error(&format!(
@@ -171,7 +172,8 @@ fn extract(target: &std::path::Path, log: &mut Vec<String>) -> Result<usize, Str
             Some(p) => p,
             None => return Err(format!("无效的载荷路径: {rel}")),
         };
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败 {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录失败 {}: {e}", parent.display()))?;
         std::fs::write(&dest, bytes).map_err(|e| friendly_io(&dest, &e))?;
         count += 1;
     }
@@ -254,8 +256,8 @@ fn write_ai_plugin_config(
 /// 防御:若形态漂移（找不到目标子串）则报错交人工处理,不做盲目改写。
 fn enable_ai_plugin_manifest(target: &std::path::Path) -> Result<(), String> {
     let path = target.join("plugin_manifest.json");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取失败 {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("读取失败 {}: {e}", path.display()))?;
     if text.contains("\"enabled\": true") {
         return Ok(()); // 已启用,幂等
     }
@@ -277,8 +279,14 @@ fn write_shortcuts(target: &std::path::Path) -> Result<(), String> {
         .join("Start Menu")
         .join("Programs");
     let dir = target.to_string_lossy().replace('\'', "''");
-    let bat = target.join("start-evorule.bat").to_string_lossy().replace('\'', "''");
-    let icon = target.join("evorule-server.exe").to_string_lossy().replace('\'', "''");
+    let bat = target
+        .join("start-evorule.bat")
+        .to_string_lossy()
+        .replace('\'', "''");
+    let icon = target
+        .join("evorule-server.exe")
+        .to_string_lossy()
+        .replace('\'', "''");
     let mut ps = String::from("$ws = New-Object -ComObject WScript.Shell; ");
     for lnk_dir in [desktop, start_menu.to_string_lossy().to_string()] {
         ps.push_str(&format!(
@@ -287,8 +295,11 @@ fn write_shortcuts(target: &std::path::Path) -> Result<(), String> {
              $s.IconLocation = '{icon},0'; $s.Save(); "
         ));
     }
-    run_quiet("powershell", &["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps])
-        .map_err(|e| format!("创建快捷方式失败: {e}"))
+    run_quiet(
+        "powershell",
+        &["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps],
+    )
+    .map_err(|e| format!("创建快捷方式失败: {e}"))
 }
 
 fn register_uninstall(target: &std::path::Path) -> Result<(), String> {
@@ -298,17 +309,17 @@ fn register_uninstall(target: &std::path::Path) -> Result<(), String> {
         ("DisplayVersion", VERSION.to_string()),
         ("Publisher", "EvoRule Project".to_string()),
         ("InstallLocation", target.to_string_lossy().to_string()),
-        ("UninstallString", format!("\"{}\" --uninstall", setup.display())),
+        (
+            "UninstallString",
+            format!("\"{}\" --uninstall", setup.display()),
+        ),
         ("DisplayIcon", format!("{},0", setup.display())),
         ("NoModify", "1".to_string()),
         ("NoRepair", "1".to_string()),
     ];
     for (name, value) in values {
-        run_quiet(
-            "reg",
-            &["add", REG_KEY, "/v", name, "/d", &value, "/f"],
-        )
-        .map_err(|e| format!("注册卸载信息失败({name}): {e}"))?;
+        run_quiet("reg", &["add", REG_KEY, "/v", name, "/d", &value, "/f"])
+            .map_err(|e| format!("注册卸载信息失败({name}): {e}"))?;
     }
     Ok(())
 }
@@ -396,7 +407,10 @@ fn fail(silent: bool, target: &std::path::Path, msg: &str) -> i32 {
         let _ = std::fs::write(std::env::temp_dir().join("evorule-setup.log"), log);
         return 1;
     }
-    ffi::error(&format!("安装失败：{msg}\n\n安装目标：{}", target.display()));
+    ffi::error(&format!(
+        "安装失败：{msg}\n\n安装目标：{}",
+        target.display()
+    ));
     1
 }
 
@@ -422,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn write_ai_plugin_config_wears_batch_b_file_key_shape() {
+    fn write_ai_plugin_config_wears_batch_b_file_key_shape() -> Result<(), String> {
         let dir =
             std::env::temp_dir().join(format!("evorule-setup-test-{}-cfg", std::process::id()));
         let cfg = ffi::LlmConfigInput {
@@ -430,37 +444,66 @@ mod tests {
             model: "MiniMax-Text-01".to_string(),
             key: "k\"ey\\with-special".to_string(),
         };
-        write_ai_plugin_config(&dir, &cfg).expect("write ai-plugin.json");
+        write_ai_plugin_config(&dir, &cfg).map_err(|e| format!("write ai-plugin.json: {e}"))?;
         let text =
             std::fs::read_to_string(dir.join("plugins").join("ai-plugin").join("ai-plugin.json"))
-                .expect("read back");
+                .map_err(|e| format!("read back: {e}"))?;
         // 字段与 config.example.json 同构;Key 明文落本机 = 批次B 既有兼容形态
-        assert!(text.contains("\"listen_addr\": \"127.0.0.1:9130\""));
-        assert!(text.contains("\"server_base_url\": \"http://127.0.0.1:18080\""));
-        assert!(text.contains("\"llm_endpoint\": \"https://api.minimaxi.com/v1\""));
-        assert!(text.contains("\"llm_api_key\": \"k\\\"ey\\\\with-special\""));
-        assert!(text.contains("\"llm_model\": \"MiniMax-Text-01\""));
+        // （Result 返回型测试：断言失败走 Err，workspace lints G1 panic deny）
+        for (needle, what) in [
+            ("\"listen_addr\": \"127.0.0.1:9130\"", "listen_addr"),
+            (
+                "\"server_base_url\": \"http://127.0.0.1:18080\"",
+                "server_base_url",
+            ),
+            (
+                "\"llm_endpoint\": \"https://api.minimaxi.com/v1\"",
+                "llm_endpoint",
+            ),
+            (
+                "\"llm_api_key\": \"k\\\"ey\\\\with-special\"",
+                "llm_api_key",
+            ),
+            ("\"llm_model\": \"MiniMax-Text-01\"", "llm_model"),
+        ] {
+            if !text.contains(needle) {
+                return Err(format!(
+                    "ai-plugin.json 缺 {what} 形态字段: {needle}\ntext:\n{text}"
+                ));
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]
-    fn enable_manifest_is_idempotent_and_detects_shape_drift() {
-        let dir =
-            std::env::temp_dir().join(format!("evorule-setup-test-{}-manifest", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create dir: {e}"));
+    fn enable_manifest_is_idempotent_and_detects_shape_drift() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!(
+            "evorule-setup-test-{}-manifest",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create dir: {e}"))?;
         let path = dir.join("plugin_manifest.json");
         // 1) 正常翻转
-        std::fs::write(&path, r#"{ "plugins": { "ai-plugin": { "enabled": false } } }"#)
-            .unwrap_or_else(|e| panic!("seed manifest: {e}"));
-        enable_ai_plugin_manifest(&dir).expect("enable");
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read: {e}"));
-        assert!(text.contains("\"enabled\": true"));
+        std::fs::write(
+            &path,
+            r#"{ "plugins": { "ai-plugin": { "enabled": false } } }"#,
+        )
+        .map_err(|e| format!("seed manifest: {e}"))?;
+        enable_ai_plugin_manifest(&dir).map_err(|e| format!("enable: {e}"))?;
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read: {e}"))?;
+        if !text.contains("\"enabled\": true") {
+            return Err(format!("manifest 未翻转 enabled: text:\n{text}"));
+        }
         // 2) 幂等(已启用再跑不报错不改写)
-        enable_ai_plugin_manifest(&dir).expect("idempotent");
+        enable_ai_plugin_manifest(&dir).map_err(|e| format!("idempotent: {e}"))?;
         // 3) 形态漂移 → 报错交人工,不盲目改写
         std::fs::write(&path, r#"{ "plugins": { "ai-plugin": { "on": false } } }"#)
-            .unwrap_or_else(|e| panic!("drift manifest: {e}"));
-        assert!(enable_ai_plugin_manifest(&dir).is_err());
+            .map_err(|e| format!("drift manifest: {e}"))?;
+        if enable_ai_plugin_manifest(&dir).is_ok() {
+            return Err("形态漂移应报错交人工,实际未报错".to_string());
+        }
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 }

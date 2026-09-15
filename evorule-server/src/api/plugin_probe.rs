@@ -207,7 +207,10 @@ fn liveness_entry(
 pub fn spawn_probe_task(targets: Vec<ProbeTarget>, interval: Duration, shared: SharedFactsLog) {
     // UV-182 批次B:并发探测句柄(目标 + join 句柄,按原序聚合结果);
     // 函数级类型别名化解 clippy::type_complexity
-    type ProbeHandle = (ProbeTarget, tokio::task::JoinHandle<(ProbeStatus, Option<String>)>);
+    type ProbeHandle = (
+        ProbeTarget,
+        tokio::task::JoinHandle<(ProbeStatus, Option<String>)>,
+    );
     if targets.is_empty() {
         return;
     }
@@ -230,15 +233,17 @@ pub fn spawn_probe_task(targets: Vec<ProbeTarget>, interval: Duration, shared: S
             // UV-182 批次B:并发探测(tokio::spawn 逐目标并发,reqwest::Client
             // 内部 Arc 廉价克隆)——多插件慢/超时不再串行拖长整轮;结果按
             // 原序聚合,落链/快照次序与旧实现一致(不涉确定性面)
-            let handles: Vec<ProbeHandle> =
-                targets
-                    .iter()
-                    .map(|t| {
-                        let client = client.clone();
-                        let base_url = t.base_url.clone();
-                        (t.clone(), tokio::spawn(async move { probe_once(&client, &base_url).await }))
-                    })
-                    .collect();
+            let handles: Vec<ProbeHandle> = targets
+                .iter()
+                .map(|t| {
+                    let client = client.clone();
+                    let base_url = t.base_url.clone();
+                    (
+                        t.clone(),
+                        tokio::spawn(async move { probe_once(&client, &base_url).await }),
+                    )
+                })
+                .collect();
             for (t, handle) in handles {
                 let (status, err) = match handle.await {
                     Ok(pair) => pair,
@@ -366,7 +371,10 @@ mod tests {
             vec!["plugin_online"]
         );
         // 持续 unauthorized 不重复报警
-        assert!(transition_alert(Some(&ProbeStatus::Unauthorized), &ProbeStatus::Unauthorized).is_empty());
+        assert!(
+            transition_alert(Some(&ProbeStatus::Unauthorized), &ProbeStatus::Unauthorized)
+                .is_empty()
+        );
     }
 
     #[test]
