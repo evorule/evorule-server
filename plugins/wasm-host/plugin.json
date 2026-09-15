@@ -2,7 +2,7 @@
   "id": "wasm-host",
   "contract_version": "1.2",
   "version": "0.1.0",
-  "description": "WASM UDF 宿主（77 号阶段 2 / ADR-0001 进程外方案）：在 wasmtime 沙箱内执行 plugins/wasm/*.wasm UDF。零能力（Linker 不注册任何 host function，含 WASI）+ fuel 计量防死循环 + 内存上限 + 每次调用新建 Store 保证确定性",
+  "description": "WASM UDF 宿主（77 号阶段 2 / ADR-0001 进程外方案）：在 wasmtime 沙箱内执行 plugins/wasm/*.wasm UDF。零能力（Linker 不注册任何 host function，含 WASI）+ fuel 计量防死循环 + 内存上限 + 每次调用新建 Store 保证确定性。探活语义：/health 为 200 表示「声明与实载一致」；若 0 个模块加载 / 声明了但未加载 / 加载了但未声明，则返回 503 → server 判 offline 并告警（探活 2xx 不再等同于服务可用）",
   "base_url": "http://127.0.0.1:9140",
   "services": [
     {

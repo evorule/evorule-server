@@ -16,6 +16,17 @@
 //! | GET | `/health` | 探活（57 号契约：2xx + JSON，否则判 Offline 并告警） |
 //! | POST | `/services/{name}` | 执行 UDF，body = 入参 JSON；200 成功 / 404 未知 UDF / 422 执行失败 |
 //!
+//! **`/health` 的两档语义（探活可信度补强，见 `declaration` 模块）**：
+//! - 声明与实载一致 → **200** → server 判 `online`；
+//! - 可判定的不一致（0 个模块 / 声明了但未加载 / 加载了但未声明）→ **503**
+//!   → server 判 `offline` 并记 `platform.event.plugin_offline` 告警。
+//!
+//! 为何必须落在状态码上：server 侧 `plugin_probe::classify_response` 只看
+//! 「状态码是否 2xx」+「body 是否 JSON」，body 里写再多诊断也改变不了判定。
+//! 若这里恒返 200，则「探活 online」只能证明**进程存活**，不能证明**服务可用**。
+//! 无法对账（找不到 plugin.json）时维持 200 但 body 显式标注 `unavailable`——
+//! 把"无法判定"当故障会制造假警（详见 `declaration` 模块头的取舍说明）。
+//!
 //! **路径为何是 `/services/{name}`（契约 v1.2 硬性）**：server 装载外部插件包时按
 //! `base_url + /services/{name}` 派生路由（`main.rs::load_external_plugins`），
 //! 是本进程唯一会被调用的 URI 形态。此处不提供第二形态（如 `/udf/{name}`）——
@@ -38,10 +49,14 @@
 //!
 //! # 配置（环境变量）
 //! - `WASM_HOST_ADDR` 监听地址，默认 `127.0.0.1:9140`
-//! - `WASM_HOST_DIR`  `.wasm` 目录，默认 `../wasm`（相对本包目录即 `plugins/wasm`）
+//! - `WASM_HOST_DIR`  `.wasm` 目录，默认 `../wasm`（相对本包目录即 `plugins/wasm`）；
+//!   **目录不存在即拒绝启动**（fail-fast，不再带 0 个 UDF 静默运行）
+//! - `WASM_HOST_PLUGIN_JSON` 声明文件位置，缺省按
+//!   `<WASM_HOST_DIR>/../wasm-host/plugin.json` 探测（不认 cwd，见 `declaration` 模块）
 //! - `WASM_HOST_FUEL` fuel 预算，默认 `100_000_000`
 //! - `WASM_HOST_MAX_MEM` 单模块内存上限字节，默认 `16777216`（16 MiB）
 
+mod declaration;
 mod engine;
 mod registry;
 
@@ -85,7 +100,11 @@ async fn main() {
         }
     };
 
-    let registry = match UdfRegistry::load_dir(Arc::clone(&runtime), std::path::Path::new(&dir)) {
+    let registry = match UdfRegistry::load_dir(
+        Arc::clone(&runtime),
+        std::path::Path::new(&dir),
+        std::env::var("WASM_HOST_PLUGIN_JSON").ok().as_deref(),
+    ) {
         Ok(r) => Arc::new(r),
         Err(e) => {
             eprintln!("evorule-wasm-host: UDF 加载失败（fail-fast）: {e}");
@@ -98,6 +117,27 @@ async fn main() {
         registry.len(),
         registry.names()
     );
+
+    // 声明对账：结论决定 /health 是 200 还是 503，故必须在启动期就喊清楚，
+    // 不能等运维去 curl 才发现。
+    {
+        let rec = registry.reconciliation();
+        match rec.state {
+            crate::declaration::ReconciliationState::Ok => tracing::info!(
+                "声明对账一致: plugin.json({}) × 实载 {} 个服务",
+                rec.source.as_deref().unwrap_or("(未知来源)"),
+                rec.loaded.len()
+            ),
+            crate::declaration::ReconciliationState::Degraded => tracing::error!(
+                "声明对账不一致 → /health 将返回 503（server 侧会判 offline 并告警）: {}",
+                rec.reason.as_deref().unwrap_or("(未给原因)")
+            ),
+            crate::declaration::ReconciliationState::Unavailable => tracing::warn!(
+                "声明对账跳过（无法判定，不判 degraded）: {}",
+                rec.reason.as_deref().unwrap_or("(未给原因)")
+            ),
+        }
+    }
 
     let app = Router::new()
         .route("/health", get(health))
@@ -119,14 +159,30 @@ async fn main() {
     }
 }
 
-/// 探活：`{base_url}/health` 必须 2xx + JSON（57 号 plugin_probe 契约）
-async fn health(State(reg): State<Arc<UdfRegistry>>) -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "service": "evorule-wasm-host",
-        "modules": reg.len(),
-        "udfs": reg.names(),
-    }))
+/// 探活：`{base_url}/health` 必须 2xx + JSON（57 号 plugin_probe 契约）。
+///
+/// **状态码即结论**：`degraded` → 503（server 判 offline 并告警）；
+/// `ok` / `unavailable` → 200（后者在 body 里显式标注"未对账"）。
+/// `unavailable` 不判 503 的理由见 `declaration` 模块头（拒绝假警）。
+async fn health(State(reg): State<Arc<UdfRegistry>>) -> (StatusCode, Json<Value>) {
+    let rec = reg.reconciliation();
+    let code = if rec.is_degraded() {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    let status = if rec.is_degraded() { "degraded" } else { "ok" };
+    (
+        code,
+        Json(json!({
+            "status": status,
+            "service": "evorule-wasm-host",
+            "modules": reg.len(),
+            "udfs": reg.names(),
+            // 探活可信度：可服务性对账（声明 × 实载）。字段含义见 declaration 模块。
+            "reconciliation": rec.to_json(),
+        })),
+    )
 }
 
 /// 执行 UDF。body 原样透传给 guest（host 不解析入参，保持 ABI 中立）。
