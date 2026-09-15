@@ -1,0 +1,12 @@
+{
+  "name": "udf-finance-tax-calc-as",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AssemblyScript UDF 示例（77 号阶段 2 · T7）：与 Rust 版同语义、同字节输出，证明 UDF ABI 语言无关",
+  "scripts": {
+    "build": "asc assembly/index.ts --outFile build/udf_finance_tax_calc_as.wasm --optimize --runtime stub --use abort= --noAssert"
+  },
+  "devDependencies": {
+    "assemblyscript": "0.28.20"
+  }
+}
