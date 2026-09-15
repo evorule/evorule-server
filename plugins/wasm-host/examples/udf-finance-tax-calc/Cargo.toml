@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "udf-finance-tax-calc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rust UDF 示例（77 号阶段 2 V4）：金融税额计算，供 evorule-wasm-host 加载"
+
+# 脱离上层 workspace（与 plugins/ai-plugin 同一模式）
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde_json = "1"
+
+# 产物越小越好（UDF 会被频繁加载）
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
