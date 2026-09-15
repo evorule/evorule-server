@@ -5,7 +5,7 @@
 //!
 //! **服务名 = `.wasm` 文件名（去扩展名）**，对齐 67 号 `udf_finance_tax_calc` 口径。
 //!
-//! 用 `BTreeMap` 而非 `HashMap`：加载顺序与 `/udf` 列表顺序**确定性**
+//! 用 `BTreeMap` 而非 `HashMap`：加载顺序与 `/health` 的 UDF 列表顺序**确定性**
 //! （本项目全局确定性纪律：键序不应随运行时哈希种子变化）。
 
 use std::collections::BTreeMap;

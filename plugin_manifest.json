@@ -1,7 +1,11 @@
 {
   "plugins": {
+    "demo-services": { "enabled": true },
+    "physics-services": { "enabled": true },
+    "indicator-services": { "enabled": true },
     "finance-pack": { "enabled": true, "pack": "plugins/finance-pack/pack.json" },
     "hr-pack": { "enabled": true, "pack": "plugins/hr-pack/pack.json" },
-    "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" }
+    "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" },
+    "wasm-host": { "enabled": true, "manifest": "plugins/wasm-host/plugin.json" }
   }
 }

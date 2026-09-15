@@ -14,7 +14,19 @@
 //! | 方法 | 路径 | 说明 |
 //! |---|---|---|
 //! | GET | `/health` | 探活（57 号契约：2xx + JSON，否则判 Offline 并告警） |
-//! | POST | `/udf/{name}` | 执行 UDF，body = 入参 JSON；200 成功 / 404 未知 UDF / 422 执行失败 |
+//! | POST | `/services/{name}` | 执行 UDF，body = 入参 JSON；200 成功 / 404 未知 UDF / 422 执行失败 |
+//!
+//! **路径为何是 `/services/{name}`（契约 v1.2 硬性）**：server 装载外部插件包时按
+//! `base_url + /services/{name}` 派生路由（`main.rs::load_external_plugins`），
+//! 是本进程唯一会被调用的 URI 形态。此处不提供第二形态（如 `/udf/{name}`）——
+//! 双入口必然漂移，且未被调用的那个永远是死代码。
+//!
+//! **入参形态**：server 的 `service_registry` 把规则侧 `params.args` 序列化为
+//! HTTP body（`{"amount":1000,...}`）并置 `Content-Type: application/json`，
+//! 故 guest 收到的即原始入参 JSON，host 不包装、不解析。
+//!
+//! **调用出口语义**：非 2xx 会被 server 侧 `http_handler` 转为 `Err`（消息含
+//! status + 响应体截断），因此本进程的 404/422 在规则侧表现为显式失败而非静默。
 //!
 //! # UDF ABI（guest 必须导出）
 //! - `memory`：线性内存
@@ -89,7 +101,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/udf/{name}", post(call_udf))
+        .route("/services/{name}", post(call_udf))
         .with_state(registry);
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {

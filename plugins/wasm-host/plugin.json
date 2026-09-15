@@ -1,0 +1,29 @@
+{
+  "id": "wasm-host",
+  "contract_version": "1.2",
+  "version": "0.1.0",
+  "description": "WASM UDF 宿主（77 号阶段 2 / ADR-0001 进程外方案）：在 wasmtime 沙箱内执行 plugins/wasm/*.wasm UDF。零能力（Linker 不注册任何 host function，含 WASI）+ fuel 计量防死循环 + 内存上限 + 每次调用新建 Store 保证确定性",
+  "base_url": "http://127.0.0.1:9140",
+  "services": [
+    {
+      "name": "udf_finance_tax_calc",
+      "sensitive": false,
+      "description": "税额计算 UDF 示例（Rust guest，整数定点）：入参 {amount_cents, rate_bp} → {amount_cents, rate_bp, tax_cents, total_cents}。缺参/越界/内部错误 → 422，server 侧 http_handler 转为显式 Err。⚠️ ①入参必须整数——TCB JsonValue 无 Float 变体，浮点会被降级成字符串而到不了 UDF；②本插件服务名单需与 plugins/wasm/ 目录同步：新增 .wasm 必须在此追加同名 service 声明并重启 server（契约 v1.2 为静态声明制）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "amount_cents": {
+            "type": "integer",
+            "description": "计税金额，单位：分（例 100000 = 1000.00 元）"
+          },
+          "rate_bp": {
+            "type": "integer",
+            "description": "税率，单位：基点（600 = 6%；合法区间 [0,10000]）"
+          }
+        },
+        "required": ["amount_cents", "rate_bp"]
+      },
+      "timeout_ms": 10000
+    }
+  ]
+}
