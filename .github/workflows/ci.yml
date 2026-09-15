@@ -38,7 +38,11 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy --workspace
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # --exclude evorule-setup: installer 的 build.rs 在 payload/ 缺失时
+        # compile_error!（payload=发版机汇集产物, gitignore 不入库, CI 无法生成,
+        # 见 installer/prepare-payload.ps1——依赖本地 release exe/console-cloud 构建）。
+        # CI 无产物环境不编译安装器, 其构建与测试验证在发版机本地执行。
+        run: cargo clippy --workspace --exclude evorule-setup --all-targets -- -D warnings
 
   # ===== 文档安全 + 版本一致性（各仓独立发布 · 强阻塞）=====
   docs-check:
@@ -122,7 +126,8 @@ jobs:
         # UV-100: 去掉 --all-features —— full-chain-tests 门控的三个跨仓集成
         # 测试依赖兄弟仓 evorule-rule（git rev dev-dep），CI 默认布局不启用该
         # feature（required-features 未满足不编译）；本地联测见 Cargo.toml 注释
-        run: cargo test --workspace
+        # --exclude evorule-setup: 同 clippy job 注释（payload 门禁, CI 无法编译 installer）
+        run: cargo test --workspace --exclude evorule-setup
 
   # ===== Release build =====
   build:
