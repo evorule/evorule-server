@@ -79,7 +79,9 @@ jobs:
       # 文档安全 + 引用完整性 + 基调合规（强阻塞）
       # 7 类检查：R-门控1 staged文档泄露 / R3 L1私有路径泄露 / L1不提L2L3 / R-兄弟仓零谈论 / R-agent身份零泄露 / 交叉引用完整性 / DOCS_INDEX索引存在性
       - name: check_doc_safety.py
-        run: python3 scripts/check_doc_safety.py --skip-git
+        # --self 本仓名：兄弟仓规则豁免自我引用（本仓文档提 evorule-server 属正常自指，
+        # 不豁免会被当「谈论兄弟仓」整仓误报——首次带本仓文档跑 CI 实测）
+        run: python3 scripts/check_doc_safety.py --skip-git --self evorule-server
 
   # ===== 原生服务声明漂移检查（UV-180/P0-2 · 零 cargo 依赖）=====
   # SSOT = 本仓 plugins/*/official_native_services.json；
