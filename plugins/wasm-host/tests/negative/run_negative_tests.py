@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-"""WASM 沙箱负面测试（77 号阶段 2 · T4）
+"""WASM 沙箱负面测试（77 号阶段 2 · T4 / V3）
 
-把「零能力」与「fuel 中断」从**设计声明**变成**可复现实证**。
+把「零能力」「fuel 中断」「内存上限」从**设计声明**变成**可复现实证**。
 
 断言：
   ① 含 WASI import 的模块 → 宿主加载期拒绝（fail-fast，非运行时才发现）；
@@ -11,6 +11,8 @@
   ② 死循环模块 → 被 fuel 中断，返回 422 且错误含 fuel 提示；
      响应耗时远小于超时上限（证明是中断而非等待超时）。
   ③ 中断之后宿主仍 2xx 存活（死循环未拖垮进程，也未泄漏实例状态）。
+  ④ 内存超限模块（企图分配 64 MiB > 16 MiB 上限）→ ResourceLimiter 拦截，
+     返回 422 结构化错误（alloc 失败语义），宿主存活而非 host OOM。
 
 用法：
     python run_negative_tests.py [--keep]
@@ -45,6 +47,7 @@ TARGET = "wasm32-unknown-unknown"
 FIXTURES = {
     "negative_wasi_import": HERE / "wasi-import",
     "negative_infinite_loop": HERE / "infinite-loop",
+    "negative_memory_hog": HERE / "memory-hog",
 }
 
 _failures: list[str] = []
@@ -215,6 +218,50 @@ def scenario_infinite_loop(wasm: dict[str, Path], work: Path) -> None:
         proc.wait(timeout=10)
 
 
+# --------------------------------------------------------------------------
+# 场景 ④：内存超限必须被 ResourceLimiter 拦截（alloc 失败，非 host OOM）
+# --------------------------------------------------------------------------
+def scenario_memory_limit(wasm: dict[str, Path], work: Path) -> None:
+    print("\n[场景 ④] 内存超限 UDF → alloc 失败（422 结构化错误），宿主存活")
+    d = stage(wasm, work / "mem", ["negative_memory_hog"])
+    proc = start_host(d, 19143)
+    try:
+        if not wait_health(19143):
+            check(False, "宿主就绪", "15s 内 /health 未 2xx（合法模块本应正常加载）")
+            return
+        check(True, "宿主就绪（合法模块正常加载）")
+
+        status, body, elapsed = post(19143, "negative_memory_hog", {}, timeout=60)
+        check(
+            status == 422,
+            "内存超限 → 422 结构化错误（非 500/连接断/挂起）",
+            f"status={status} body={body[:120]}",
+        )
+        blob = body.lower()
+        check(
+            "unreachable" in blob or "memory" in blob or "trap" in blob or "alloc" in blob,
+            "错误语义可诊断（trap/alloc/memory）",
+            body[:160],
+        )
+        check(
+            elapsed < 10.0,
+            "失败即时返回（非等待超时）",
+            f"{elapsed:.2f}s（请求超时 60s）",
+        )
+
+        # ④ 之后宿主仍存活 —— 64 MiB 的请求没有真实吃进宿主内存
+        try:
+            with _OPENER.open("http://127.0.0.1:19143/health", timeout=3) as r:
+                alive = r.status == 200
+                info = json.loads(r.read().decode())
+        except Exception as e:  # pragma: no cover
+            alive, info = False, {"error": str(e)}
+        check(alive, "内存超限后宿主仍存活（非 host OOM）", f"/health={info.get('status')}")
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="保留临时目录（排查用）")
@@ -224,13 +271,14 @@ def main() -> int:
         print(f"宿主二进制缺失: {EXE}\n先执行: cargo build（在 plugins/wasm-host）")
         return 1
 
-    print("WASM 沙箱负面测试（77 号阶段 2 · T4）")
+    print("WASM 沙箱负面测试（77 号阶段 2 · T4 / V3）")
     wasm = build_fixtures()
 
     work = Path(tempfile.mkdtemp(prefix="evorule-wasm-negative-"))
     try:
         scenario_wasi_import(wasm, work)
         scenario_infinite_loop(wasm, work)
+        scenario_memory_limit(wasm, work)
     finally:
         if args.keep:
             print(f"\n临时目录保留: {work}")

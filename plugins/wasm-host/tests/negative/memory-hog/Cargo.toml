@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# 负面 fixture：内存超限 UDF（沙箱应以 ResourceLimiter 拦截，不得 host OOM）
+[package]
+name = "negative-memory-hog"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "负面测试 fixture：企图一次性分配远超上限的内存，宿主必须以结构化错误拒绝且进程存活"
+
+# 脱离上层 workspace（同 examples/udf-finance-tax-calc 模式）
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

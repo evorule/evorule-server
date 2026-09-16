@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "negative-infinite-loop"
+name = "negative-memory-hog"
 version = "0.1.0"
 
 [[patch.unused]]
