@@ -54,6 +54,7 @@
 | [docs/PITFALLS.md](docs/PITFALLS.md) | 已知坑 — 开发/部署中遇到的陷阱及解决方案 |
 | [docs/PITFALLS.json](docs/PITFALLS.json) | 已知坑(机器可读格式) — 供工具消费的结构化版本 |
 | [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md) | 发布流程 — 发布前就绪检查、打 tag、Docker 镜像构建、回滚流程 |
+| [docs/WASM_UDF_GUIDE.md](docs/WASM_UDF_GUIDE.md) | WASM UDF 编写指南 — Guest ABI/沙箱约束/整数定点契约/部署启停/探活对账 |
 
 ---
 
