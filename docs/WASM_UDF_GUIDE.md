@@ -137,14 +137,26 @@ cargo build --release --target wasm32-unknown-unknown
 
 ## 五、部署与启停
 
-### 5.1 上线一个新 UDF（四步）
+### 5.1 上线一个新 UDF（两种模式）
+
+**静态声明制（缺省，四步）**：
 
 1. **放置模块**：`.wasm` 复制到 `plugins/wasm/`。**服务名 = 文件名去扩展名**（如 `udf_fx_spot_rate.wasm` → 服务名 `udf_fx_spot_rate`）；
 2. **登记声明**：`plugins/wasm-host/plugin.json` 的 `services[]` 追加同名条目（`name`/`description`/`parameters` 参数契约/`sensitive`），字段规范同 [PLUGIN_GUIDE §三](PLUGIN_GUIDE.md#三pluginjson-规范插件包-ssot)；
 3. **重启 host**：模块清单在启动期扫描，运行期不热加载；含坏模块（非法 wasm / 带 import）宿主**拒绝启动**并点名（fail-fast，不会带病运行）；
 4. **重启 server**：plugin.json 变更需重新装载清单生效。
 
-> 注意：声明制是**静态**的——plugin.json 里声明的服务必须与 `plugins/wasm/` 实际模块一一对应。声明了但无模块（或反之）不会静默：宿主 `/health` 对账判 503（§六），server 探活随即报警。
+**自动发现模式（`plugin.json` 声明 `"auto_discover": true`，两步）**：
+
+1. **放置模块**：`.wasm` 复制到 `plugins/wasm/`（服务名 = 文件名去扩展名，同上）；
+2. **重启 host 与 server**（先 host 后 server）——server 装载期自动拉取 host 实载清单（`GET /services`）合入，plugin.json 零改动。
+
+> 自动发现模式下 `services[]` 降级为**可选策略表**：默认策略 `sensitive:false` +
+> 缺省超时（启动日志逐条明示）；需要敏感守卫或参数契约的服务，在策略表里**显式声明**
+> （显式声明永远优先，不被自动发现覆盖）。完整语义（发现/合入/失败降级/loopback 约束）
+> 见 [PLUGIN_GUIDE §3.3](PLUGIN_GUIDE.md#33-auto_discover自动发现策略表模式)。
+
+> 静态声明制的注意点：声明是**静态**的——plugin.json 里声明的服务必须与 `plugins/wasm/` 实际模块一一对应。声明了但无模块（或反之）不会静默：宿主 `/health` 对账判 503（§六），server 探活随即报警。auto_discover 模式下「实载有、策略表无」是合法形态（自动发现接管），仅「策略表声明了但实载没有」仍判 503。
 
 ### 5.2 启停顺序：先 host，后 server
 
@@ -181,6 +193,8 @@ wasm-host 的 `/health` 不是简单的"进程活着"：
 |---------|---------|----------------|
 | plugin.json 声明与实载模块一致 | **200** | `online` |
 | 可判定的不一致（0 个模块 / 声明了但未加载 / 加载了但未声明） | **503** | `offline` → 记 `plugin_offline` 报警事件（控制台自诊断 + 审计链留痕） |
+| auto_discover 模式：策略表声明了但实载没有 | **503** | `offline`（策略表 = 超集校验，声明必在实载内） |
+| auto_discover 模式：实载有、策略表没有 | 200（body `undeclared` 留痕） | `online`（合法形态：目录 = 身份事实源，自动发现接管） |
 | 找不到 plugin.json 无法对账 | 200（body 标注未对账） | `online`（拒绝假警：无法判定不当故障） |
 
 **host 掉线时的调用方语义**（均有端到端验证）：直调 `POST /api/services/{名}/invoke` 返回 **502 + 「上游连接失败（服务不可达）」**（秒级返回，不悬挂；响应不泄漏内网拓扑，细节只进服务端日志）；`GET /api/health` 的 `plugins` 节该插件 `status=offline` 并附 `last_error`。恢复后探活自动翻转 `online` 并记 `plugin_online` 关警。
@@ -222,7 +236,7 @@ python plugins/wasm-host/tests/verify_t6_sensitive_guard.py
 | 直调 422「UDF 执行超出 fuel 预算」 | 计算量超过 fuel 预算（死循环或大循环） | 优化算法或降低规模；重任务改走外部插件包 |
 | 直调 422 且报分配/内存相关 trap | 分配超过 16 MiB 内存上限 | 缩小内存足迹；大输入拆批 |
 | 直调 422「返回值不是合法 JSON」 | 出参字节非法（AS 中文字符未做 UTF-8 编码是典型） | 见范本 `put()` 的编码处理 |
-| `GET /api/services` 有服务但 `/health` 报 503 | plugin.json 声明与 `plugins/wasm/` 实际模块不同步 | 补齐缺失侧（放模块或删声明），重启 host |
+| `GET /api/services` 有服务但 `/health` 报 503 | plugin.json 声明与 `plugins/wasm/` 实际模块不同步 | 静态制：补齐缺失侧（放模块或删声明），重启 host；auto_discover 模式：仅「策略表声明了但实载没有」会 503，按 reason 自诊断补齐 |
 | server 起来后没有该插件 | 未传 `--plugins`（显式安装语义） | 启动命令补 `--plugins plugin_manifest.json` |
 
 ---

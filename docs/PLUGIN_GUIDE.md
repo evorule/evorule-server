@@ -60,9 +60,10 @@ my-plugin/                    ← 插件包根目录（目录名建议 = 插件 
 | `contract_version` |  | string | **契约版本（v1.2 可选增补）**：缺省 = 兼容（存量零迁移）；声明时 MAJOR 须为 `1`（如 `"1.2"`），否则启动期拒绝装载（与 pack.json 同纪律） |
 | `description` |  | string | 插件包描述，透传至对账清单与启动日志 |
 | `base_url` | ✅ | string | 服务进程根地址（`http://` 或 `https://` 前缀必检）；路由 = `base_url + /services/{name}`；**本地插件用 `127.0.0.1` 需 server 以 `--allow-loopback` 启动** |
-| `services` | ✅ | array | 服务声明集（**不得为空**——要停用请在挂载清单置 `enabled:false`） |
+| `auto_discover` |  | bool | **自动发现开关（缺省 false = 静态声明制，存量零迁移）**。`true` 时 `services[]` 降级为**策略表**（可选）：server 装载期拉取 `GET {base_url}/services` 实载清单，把策略表未覆盖的服务按默认策略合入（`sensitive:false` + 缺省超时，启动日志逐条明示）。失败语义：host 未起 / 拉取失败 → 显式告警，增量不注册、不崩 server；loopback 地址未开 `--allow-loopback` 时拒绝拉取（与调用链 SSRF 语义对齐）。见 §3.3 |
+| `services` | ✅ | array | 服务声明集（**不得为空**——要停用请在挂载清单置 `enabled:false`；`auto_discover:true` 时空表 = 全量自动发现，合法） |
 
-`services[]` 每项：
+`services[]` 每项（`auto_discover:false` 时为**静态声明**——name 集合即服务身份；`auto_discover:true` 时为**策略表**——只覆盖要特殊对待的服务）：
 
 | 字段 | 必填 | 类型 | 说明 |
 |------|------|------|------|
@@ -112,6 +113,35 @@ my-plugin/                    ← 插件包根目录（目录名建议 = 插件 
 ```
 
 > **参数契约归属原则**：参数 schema 由**服务提供方**（插件包）声明为 SSOT——server 只透传不解释，消费方只消费不定义。native/registry 来源无此声明时消费方降级空 schema。
+
+### 3.3 auto_discover：自动发现（策略表模式）
+
+静态声明制下新增服务 = 「放文件 + 手改 plugin.json + 重启」，其中手改配置漏掉时
+症状是调用 404 而非显式报错。`auto_discover: true` 把**身份**交还给服务进程自报，
+plugin.json 降级为**策略表**——职责分离后新增服务 = 放文件 + 重启，plugin.json 零改动：
+
+```
+职责            静态声明制（缺省）          auto_discover 策略表模式
+身份（有哪些）  plugin.json services[]     服务进程 GET /services 实载自报（单一事实源）
+策略（怎么对待）plugin.json services[]     plugin.json 策略表（可选覆盖）+ 默认策略
+```
+
+- **发现与合入**：server 装载期拉取 `GET {base_url}/services`，响应须为
+  `{"services": ["非空名", ...]}`；策略表未覆盖的名字按**默认策略**合入：
+  `sensitive:false`、缺省超时、无描述/参数契约——启动日志逐条明示。
+- **安全默认值（重要）**：自动发现的服务默认 `sensitive:false`（可用性优先）。
+  需要敏感守卫的服务，请在策略表**显式声明** `sensitive: true`——显式声明永远
+  优先于自动发现，不会被合入覆盖。
+- **探活对账语义演进**：`auto_discover:true` 时对账按「目录 = 身份事实源，
+  策略表 = 超集校验」——策略表声明了但实载没有 → 仍判 503（server 已照策略表
+  注册路由，调用必 404）；实载有但策略表没有 → **不再报 503**（这正是自动发现
+  的合法形态，body `undeclared` 数组留痕供核对）。缺省（静态制）行为不变。
+- **失败语义**：host 未起 / 拉取失败 / 响应不合法 → 显式告警，增量不注册、
+  不崩 server；策略表显式声明的服务照常注册。发现是启动期一次性 GET（10s 超时），
+  不做热加载——服务清单变化后须重启 server（先 host 后 server）。
+- **loopback 约束**：`base_url` 为本地地址（127.0.0.1/localhost/[::1]）而 server
+  未开 `--allow-loopback` 时拒绝拉取——与调用链 SSRF 语义对齐（现在能发现、
+  将来也调不通，干脆不发现）。
 
 ---
 
