@@ -417,7 +417,11 @@ mod tests {
         let dir = std::env::temp_dir().join("evorule-decl-bad-xyz");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("plugin.json");
-        std::fs::write(&p, r#"{"services":[{"name":"udf_a"},{"name":"udf_ghost"}]}"#).unwrap();
+        std::fs::write(
+            &p,
+            r#"{"services":[{"name":"udf_a"},{"name":"udf_ghost"}]}"#,
+        )
+        .unwrap();
         let rec = Reconciliation::run(&dir, Some(p.to_str().unwrap()), &s(&["udf_a"]));
         assert_eq!(rec.state, ReconciliationState::Degraded);
         assert!(rec.is_degraded());

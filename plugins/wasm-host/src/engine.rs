@@ -5,8 +5,7 @@
 //!
 //! # 安全模型（ADR-0001 / 77 号 V2–V3）
 //! - **零能力（两道独立检查）**：
-//!   ① 加载期 —— `load` 枚举 `Module::imports()`，非空即拒（fail-fast，
-//!      点名依赖），不依赖链接器行为；
+//!   ① 加载期 —— `load` 枚举 `Module::imports()`，非空即拒（fail-fast，点名依赖），不依赖链接器行为；
 //!   ② 调用期 —— `Linker` 不定义任何 host function，实例化未授权 import 必失败。
 //!   注：wasmtime 的编译阶段不解析 import，故 ① 是必需的显式补强（T4 实证）。
 //! - **fuel**：`Config::consume_fuel(true)` + 每次调用设预算；耗尽 → trap。
@@ -140,7 +139,8 @@ impl UdfRuntime {
         let udf = udf_fn(&mut store, &instance)?;
 
         // 1) 在 guest 内存中分配输入空间
-        let in_len = i32::try_from(input.len()).map_err(|_| "输入过长（> i32::MAX）".to_string())?;
+        let in_len =
+            i32::try_from(input.len()).map_err(|_| "输入过长（> i32::MAX）".to_string())?;
         let in_ptr = alloc
             .call(&mut store, in_len)
             .map_err(|e| format!("guest alloc 失败: {e}"))?;
@@ -165,8 +165,7 @@ impl UdfRuntime {
         if out_ptr == 0 {
             return Err("UDF 返回空指针".to_string());
         }
-        let out_len_usize =
-            usize::try_from(out_len).map_err(|_| "UDF 返回长度非法".to_string())?;
+        let out_len_usize = usize::try_from(out_len).map_err(|_| "UDF 返回长度非法".to_string())?;
 
         let mut buf = vec![0u8; out_len_usize];
         memory
@@ -177,7 +176,10 @@ impl UdfRuntime {
 }
 
 /// 取 guest 导出的 `memory`
-fn memory_of(store: &mut Store<StoreData>, instance: &wasmtime::Instance) -> Result<Memory, String> {
+fn memory_of(
+    store: &mut Store<StoreData>,
+    instance: &wasmtime::Instance,
+) -> Result<Memory, String> {
     instance
         .get_memory(store, "memory")
         .ok_or_else(|| "模块未导出 memory（UDF ABI 要求）".to_string())
