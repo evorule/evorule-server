@@ -3,13 +3,15 @@
 # =============================================================================
 # check_doc_safety.py — EvoRule 文档安全与引用完整性检查器
 #
-# 覆盖规则（治理方案 048 v1.0 §阶段 3.1 + AGENTS.md 内部约定）：
+# 覆盖规则（治理方案 048 v1.0 §阶段 3.1 + AGENTS.md 内部约定 + CHANGELOG-GOVERNANCE-20260916.md）：
 #   R-门控1 : git staged 文件不得包含「文档/」路径（禁止仓内共享/私有文档 commit）
 #   R3-引用合规零容忍：L1 公开文档禁止出现私有集合路径/文件名字面量
 #                      （_PRIVATE_zh_docs / 常见私有文件名片段）
 #   R-交叉引用完整性：L1 文档中指向同层 L1 的链接必须真实存在
 #   R-索引存在性：DOCS_INDEX.md 列出的 L1 路径必须存在（单向存在性检查）
 #   R-L1不提L2/L3：L1 公开文档禁止链接到 文档/design|implement|benchmarks|archive/
+#   R-CHANGELOG内容治理：CHANGELOG 只记录功能实现/变动；六类黑名单
+#                      （A 内部编号 / B 过程语言 / C 未发布计划 / D 商业策略 / E 私有仓名 / F 内部流程）
 #
 # 用法：
 #   python scripts/check_doc_safety.py                 # 默认 = --strict（全项 + 有违规 exit 1）
@@ -159,6 +161,60 @@ L1_EXCLUDE_DIRS = {'.git', 'target', 'node_modules', '.build', '.trae', '.gitee-
 
 # R-交叉引用：匹配 Markdown 链接 [text](path) 中相对/绝对路径（不含 http(s): mailto: #anchor）
 MD_LINK_RE = re.compile(r'\[[^\]]*\]\(([^)]+)\)')
+
+# ---------------------------------------------------------------------------
+# R-CHANGELOG内容治理（CHANGELOG-GOVERNANCE-20260916.md v1.0）
+# 铁律：CHANGELOG 只记录"与系统功能实现/变动直接相关"的内容。
+# 六类黑名单模式均为高置信（对已清洗内容零误报）；命中即计入违规（--warn 降级为提示）。
+# ---------------------------------------------------------------------------
+# A 类内部编号
+CL_A_INTERNAL_IDS = [
+    re.compile(r'TCB-2026-\d+'),
+    re.compile(r'CR-2026\d{6}-\d{3}'),
+    re.compile(r'69 号'),
+    re.compile(r'决策点\s*[①-⑨]'),
+    re.compile(r'设计稿\s*\d+\s*号'),
+    re.compile(r'UV-\d{2,3}'),
+    re.compile(r'裁定[①-⑨]'),
+    re.compile(r'45 号'),
+    re.compile(r'T[78]\s*(?:缓办|调查报告)'),
+    re.compile(r'债务\s*D2|D2\s*闭合|A3[）):：]'),
+]
+# B 类过程语言
+# 注意：中文无词边界，"整治"加后置边界防跨界误报（"调整治理服务"会拼出"整治"）
+CL_B_PROCESS = [
+    re.compile(r'战地脚本|误下沉|止血|堵死|豁免清零|维持挂账|清偿|整改|反馈集中|专项同步|专项登记|批准删除'),
+    re.compile(r'整治(?![\u4e00-\u9fffA-Za-z0-9_])'),
+]
+# C 类未发布/计划声明
+CL_C_UNRELEASED = [
+    re.compile(r'##\s*\[未发布\]'),
+    re.compile(r'起草中'),
+    re.compile(r'\bDeferred\b'),
+    re.compile(r'计划[（(](?:短期|中期|长期)'),
+]
+# D 类商业策略（仅内部动机措辞；"双轨许可"作为公开 License 事实放行，须带"兜底"等内部词才报）
+CL_D_COMMERCIAL = [
+    re.compile(r'灰色通道|许可档位|双轨许可兜底|MIT SDK|防绕过'),
+]
+# E 类私有仓名（公开文档 L1 禁入；仅注册表"可见性"列可提）
+CL_E_PRIVATE_REPO = [
+    re.compile(r'evorule-agent'),
+    re.compile(r'evorule-application'),
+]
+# F 类内部流程引用
+CL_F_INTERNAL = [
+    re.compile(r'内部协作区|项目方体验反馈|发布材料经审批|决策过程记录'),
+]
+
+CL_PATTERNS: List[Tuple[str, List]] = [
+    ('A-内部编号', CL_A_INTERNAL_IDS),
+    ('B-过程语言', CL_B_PROCESS),
+    ('C-未发布/计划', CL_C_UNRELEASED),
+    ('D-商业策略', CL_D_COMMERCIAL),
+    ('E-私有仓名', CL_E_PRIVATE_REPO),
+    ('F-内部流程', CL_F_INTERNAL),
+]
 
 
 def run(cmd: List[str], cwd: Path) -> Tuple[str, str, int]:
@@ -368,6 +424,40 @@ def check_agent_identity_leak(docs: List[Path], root: Path) -> List[Tuple[Path, 
 
 
 # ---------------------------------------------------------------------------
+# R-CHANGELOG内容治理：扫描本仓 CHANGELOG.md（含一层子目录如 evorule-cli/）
+# 六类黑名单高置信模式；命中即违规。诚实注记（内部基线/勘误）不在模式内，不误报。
+# ---------------------------------------------------------------------------
+
+def check_changelog_governance(root: Path) -> List[Tuple[Path, int, str, str]]:
+    """返回 [(path, lineno, category:pattern, snippet)]"""
+    violations: List[Tuple[Path, int, str, str]] = []
+    candidates = [root / 'CHANGELOG.md']
+    if root.is_dir():
+        for d in sorted(root.iterdir()):
+            if d.is_dir() and d.name not in L1_EXCLUDE_DIRS:
+                candidates.append(d / 'CHANGELOG.md')
+    seen = set()
+    for f in candidates:
+        if not f.exists():
+            continue
+        fp = f.resolve()
+        if fp in seen:
+            continue
+        seen.add(fp)
+        try:
+            lines = f.read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for i, line in enumerate(lines, 1):
+            for cat, pats in CL_PATTERNS:
+                for pat in pats:
+                    if pat.search(line):
+                        violations.append((fp, i, f'{cat}:{pat.pattern}', line.strip()))
+                        break
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # R-交叉引用完整性：L1 文档中的 md 链接（指向仓内非 http）必须存在
 # ---------------------------------------------------------------------------
 
@@ -514,6 +604,7 @@ def collect_all(root: Path, skip_git: bool, self_name: str = '') -> Dict[str, An
         'l1_mentions_l2l3': [],
         'sibling_mention_l1': [],
         'agent_identity_leak_l1': [],
+        'changelog_governance': [],
         'cross_ref_l1': [],
         'docs_index_exist': [],
     }
@@ -551,6 +642,12 @@ def collect_all(root: Path, skip_git: bool, self_name: str = '') -> Dict[str, An
             'file': str(p.relative_to(root)),
             'line': ln, 'pattern': pat, 'snippet': snip,
         })
+    # R-CHANGELOG内容治理
+    for (p, ln, cat, snip) in check_changelog_governance(root):
+        result['changelog_governance'].append({
+            'file': str(p.relative_to(root)), 'line': ln,
+            'category': cat, 'snippet': snip,
+        })
     # 交叉引用
     for (p, ln, raw, tgt) in check_cross_refs(docs, root):
         result['cross_ref_l1'].append({
@@ -572,7 +669,7 @@ def any_violation(r: Dict[str, Any]) -> bool:
     if not gs.get('ok', True):
         return True
     for k in ('private_leak_l1', 'l1_mentions_l2l3', 'sibling_mention_l1',
-              'agent_identity_leak_l1', 'cross_ref_l1', 'docs_index_exist'):
+              'agent_identity_leak_l1', 'changelog_governance', 'cross_ref_l1', 'docs_index_exist'):
         if r.get(k):
             return True
     return False
@@ -619,6 +716,13 @@ def print_human(r: Dict[str, Any]):
     else:
         for v in r['agent_identity_leak_l1']:
             print(f"   ✗ {v['file']}:{v['line']}  pattern={v['pattern']}  {v['snippet']}", file=sys.stderr)
+
+    hr('R-CHANGELOG内容治理（六类黑名单）')
+    if not r['changelog_governance']:
+        print('✓ CHANGELOG 未命中内部编号/过程语言/未发布计划/商业策略/私有仓名/内部流程')
+    else:
+        for v in r['changelog_governance']:
+            print(f"   ✗ {v['file']}:{v['line']}  [{v['category']}]  {v['snippet']}", file=sys.stderr)
 
     hr('L1 交叉引用完整性')
     if not r['cross_ref_l1']:
