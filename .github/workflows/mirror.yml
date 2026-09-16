@@ -1,11 +1,19 @@
-﻿name: Mirror from Gitee
+name: Mirror from Gitee
 
-# 鐢熸€佺粺涓€闀滃儚妯℃澘 v1 (2026-09-16): Gitee(涓讳粨) 鈫?GitHub(闀滃儚)銆?# 瀹氭椂(UTC 00:00 = 鍖椾含鏃堕棿 08:00)灏?Gitee 鐨勫叏閮ㄥ垎鏀笌 tag 寮哄埗鍚屾鍒?GitHub,
-# 鎵嬪姩瑙﹀彂瑙?workflow_dispatch銆?#
-# 鍓嶇疆: 鍦?GitHub 浠撳簱 Settings 鈫?Secrets and variables 鈫?Actions 閰嶇疆
-#   GITEE_TOKEN (Gitee 涓汉浠ょ墝, 鍕鹃€?repos + projects 鏉冮檺) 鐢ㄤ簬閴存潈鎺ㄩ€併€?#   娉ㄦ剰: 涓嬫柟 fetch 鐢ㄥ尶鍚?https 鍙鎷夊彇鍗冲彲, 鎺ㄩ€佸埌 GitHub 鐢ㄥ唴缃?GITHUB_TOKEN銆?#
-# 鏉冮檺璇存槑: contents:write 渚涢暅鍍忔帹閫併€?#   闄烽槺璁板綍: permissions 涓嶆敮鎸?`workflows` 閿€斺€旀湰 workflow 鏇句互 job 绾?
-#   workflow 绾у０鏄?workflows:write, GitHub 瑙ｆ瀽鍣ㄥ潎鍒ゆ棤鏁?#   ("Unexpected value 'workflows'", 2026-09-15 dispatch 瀹炴祴), 琛ㄧ幇涓?#   schedule 瑙﹀彂澶辨晥 + 姣忔 push 浜х敓闆?job 澶辫触 run (09-13~15 瀹炴祴)銆?
+# 生态统一镜像模板 v1 (2026-09-16): Gitee(主仓) → GitHub(镜像)。
+# 定时(UTC 00:00 = 北京时间 08:00)将 Gitee 的全部分支与 tag 强制同步到 GitHub,
+# 手动触发见 workflow_dispatch。
+#
+# 前置: 在 GitHub 仓库 Settings → Secrets and variables → Actions 配置
+#   GITEE_TOKEN (Gitee 个人令牌, 勾选 repos + projects 权限) 用于鉴权推送。
+#   注意: 下方 fetch 用匿名 https 只读拉取即可, 推送到 GitHub 用内置 GITHUB_TOKEN。
+#
+# 权限说明: contents:write 供镜像推送。
+#   陷阱记录: permissions 不支持 `workflows` 键——本 workflow 曾以 job 级/
+#   workflow 级声明 workflows:write, GitHub 解析器均判无效
+#   ("Unexpected value 'workflows'", 2026-09-15 dispatch 实测), 表现为
+#   schedule 触发失效 + 每次 push 产生零 job 失败 run (09-13~15 实测)。
+
 on:
   schedule:
     - cron: '0 0 * * *'
@@ -23,11 +31,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 閰嶇疆 Gitee remote (甯﹂壌鏉?
+      - name: 配置 Gitee remote (带鉴权)
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
-          if [ -z "$GITEE_TOKEN" ]; then echo "ERROR: 缂?GITEE_TOKEN"; exit 1; fi
+          if [ -z "$GITEE_TOKEN" ]; then echo "ERROR: 缺 GITEE_TOKEN"; exit 1; fi
           git remote add gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/evorule/${{ github.event.repository.name }}.git" \
             || git remote set-url gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/evorule/${{ github.event.repository.name }}.git"
 
@@ -35,27 +43,29 @@ jobs:
         run: |
           git fetch gitee --tags --prune --force
 
-      # 瀹归敊閫?ref 鎺ㄩ€? 鍗曚釜 ref 琚嫆(濡?ref 鍚?workflow 鏂囦欢鍙樻洿鑰?      # GITHUB_TOKEN 鏃?workflows 鏉冮檺鈥斺€擥itHub 闄愬埗, 瑙佷笂鏂归櫡闃辫褰?
-      # 鍙 warning 璺宠繃, 涓嶉樆濉炲叾浣?ref 鐨勯暅鍍忋€?      - name: Mirror branches to GitHub (閫愬垎鏀閿?
+      # 容错逐 ref 推送: 单个 ref 被拒(如 ref 含 workflow 文件变更而
+      # GITHUB_TOKEN 无 workflows 权限——GitHub 限制, 见上方陷阱记录)
+      # 只记 warning 跳过, 不阻塞其余 ref 的镜像。
+      - name: Mirror branches to GitHub (逐分支容错)
         run: |
           failed=0
           for branch in $(git for-each-ref --format='%(refname:strip=3)' refs/remotes/gitee/); do
             [ -z "$branch" ] && continue
             [ "$branch" = "HEAD" ] && continue
             if ! git push origin "refs/remotes/gitee/$branch:refs/heads/$branch" --force; then
-              echo "::warning:: 鍒嗘敮 $branch 鎺ㄩ€佽鎷? 璺宠繃 (甯歌鍘熷洜: 鍚?workflow 鏂囦欢鍙樻洿)"
+              echo "::warning:: 分支 $branch 推送被拒, 跳过 (常见原因: 含 workflow 文件变更)"
               failed=$((failed+1))
             fi
           done
-          echo "鍒嗘敮闀滃儚瀹屾垚: 澶辫触 $failed 涓?
+          echo "分支镜像完成: 失败 $failed 个"
 
-      - name: Mirror tags to GitHub (閫?tag 瀹归敊)
+      - name: Mirror tags to GitHub (逐 tag 容错)
         run: |
           failed=0
           for tag in $(git tag --list); do
             if ! git push origin "refs/tags/$tag" --force; then
-              echo "::warning:: tag $tag 鎺ㄩ€佽鎷? 璺宠繃"
+              echo "::warning:: tag $tag 推送被拒, 跳过"
               failed=$((failed+1))
             fi
           done
-          echo "tag 闀滃儚瀹屾垚: 澶辫触 $failed 涓?
+          echo "tag 镜像完成: 失败 $failed 个"
