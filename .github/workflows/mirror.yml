@@ -1,10 +1,15 @@
-name: Mirror from Gitee
+﻿name: Mirror from Gitee
 
+# 鐢熸€佺粺涓€闀滃儚妯℃澘 v1 (2026-09-16): Gitee(涓讳粨) 鈫?GitHub(闀滃儚)銆?# 瀹氭椂(UTC 00:00 = 鍖椾含鏃堕棿 08:00)灏?Gitee 鐨勫叏閮ㄥ垎鏀笌 tag 寮哄埗鍚屾鍒?GitHub,
+# 鎵嬪姩瑙﹀彂瑙?workflow_dispatch銆?#
+# 鍓嶇疆: 鍦?GitHub 浠撳簱 Settings 鈫?Secrets and variables 鈫?Actions 閰嶇疆
+#   GITEE_TOKEN (Gitee 涓汉浠ょ墝, 鍕鹃€?repos + projects 鏉冮檺) 鐢ㄤ簬閴存潈鎺ㄩ€併€?#   娉ㄦ剰: 涓嬫柟 fetch 鐢ㄥ尶鍚?https 鍙鎷夊彇鍗冲彲, 鎺ㄩ€佸埌 GitHub 鐢ㄥ唴缃?GITHUB_TOKEN銆?#
+# 鏉冮檺璇存槑: contents:write 渚涢暅鍍忔帹閫併€?#   闄烽槺璁板綍: permissions 涓嶆敮鎸?`workflows` 閿€斺€旀湰 workflow 鏇句互 job 绾?
+#   workflow 绾у０鏄?workflows:write, GitHub 瑙ｆ瀽鍣ㄥ潎鍒ゆ棤鏁?#   ("Unexpected value 'workflows'", 2026-09-15 dispatch 瀹炴祴), 琛ㄧ幇涓?#   schedule 瑙﹀彂澶辨晥 + 姣忔 push 浜х敓闆?job 澶辫触 run (09-13~15 瀹炴祴)銆?
 on:
   schedule:
-    # 每 24 小时同步一次：UTC 00:00 = 北京时间 08:00
     - cron: '0 0 * * *'
-  workflow_dispatch: # 支持手动触发
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,22 +19,43 @@ jobs:
     name: Mirror branches and tags from Gitee
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
+      - name: 閰嶇疆 Gitee remote (甯﹂壌鏉?
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then echo "ERROR: 缂?GITEE_TOKEN"; exit 1; fi
+          git remote add gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/evorule/${{ github.event.repository.name }}.git" \
+            || git remote set-url gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/evorule/${{ github.event.repository.name }}.git"
+
       - name: Fetch from Gitee
         run: |
-          git remote add gitee https://gitee.com/evorule/evorule-server.git
           git fetch gitee --tags --prune --force
 
-      - name: Mirror branches to GitHub
+      # 瀹归敊閫?ref 鎺ㄩ€? 鍗曚釜 ref 琚嫆(濡?ref 鍚?workflow 鏂囦欢鍙樻洿鑰?      # GITHUB_TOKEN 鏃?workflows 鏉冮檺鈥斺€擥itHub 闄愬埗, 瑙佷笂鏂归櫡闃辫褰?
+      # 鍙 warning 璺宠繃, 涓嶉樆濉炲叾浣?ref 鐨勯暅鍍忋€?      - name: Mirror branches to GitHub (閫愬垎鏀閿?
         run: |
-          # 将 Gitee 上的每个分支强制同步到 GitHub 同名分支（完全镜像对齐）
+          failed=0
           for branch in $(git for-each-ref --format='%(refname:strip=3)' refs/remotes/gitee/); do
             [ -z "$branch" ] && continue
-            git push origin "refs/remotes/gitee/$branch:refs/heads/$branch" --force
+            [ "$branch" = "HEAD" ] && continue
+            if ! git push origin "refs/remotes/gitee/$branch:refs/heads/$branch" --force; then
+              echo "::warning:: 鍒嗘敮 $branch 鎺ㄩ€佽鎷? 璺宠繃 (甯歌鍘熷洜: 鍚?workflow 鏂囦欢鍙樻洿)"
+              failed=$((failed+1))
+            fi
           done
+          echo "鍒嗘敮闀滃儚瀹屾垚: 澶辫触 $failed 涓?
 
-      - name: Mirror tags to GitHub
-        run: git push origin --tags --force
+      - name: Mirror tags to GitHub (閫?tag 瀹归敊)
+        run: |
+          failed=0
+          for tag in $(git tag --list); do
+            if ! git push origin "refs/tags/$tag" --force; then
+              echo "::warning:: tag $tag 鎺ㄩ€佽鎷? 璺宠繃"
+              failed=$((failed+1))
+            fi
+          done
+          echo "tag 闀滃儚瀹屾垚: 澶辫触 $failed 涓?

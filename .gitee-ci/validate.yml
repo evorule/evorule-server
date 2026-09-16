@@ -1,4 +1,4 @@
-# Gitee Go pipeline for evorule-server
+﻿# Gitee Go pipeline for evorule-server
 # Parity with .github/workflows/ci.yml
 #
 # Gitee Go does not support actions/checkout, so we use git clone explicitly.
@@ -43,7 +43,7 @@ validate-pr:
 # === 1. Clippy + fmt ===
 lint:
   stage: lint
-  image: rust:1.92-slim
+  image: rust:1.97.1-slim
   script:
     - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
     - cargo fmt --all -- --check
@@ -58,7 +58,7 @@ lint:
 # === 2. Rust tests ===
 test:
   stage: test
-  image: rust:1.92-slim
+  image: rust:1.97.1-slim
   script:
     - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
     - cargo test --workspace --all-features
@@ -71,7 +71,7 @@ test:
 # === 3. Release build ===
 build:
   stage: build
-  image: rust:1.92-slim
+  image: rust:1.97.1-slim
   script:
     - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
     - cargo build --release --bin evorule-server
