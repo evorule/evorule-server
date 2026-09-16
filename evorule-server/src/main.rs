@@ -730,7 +730,20 @@ fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, Plugi
             }
         }
     }
-    Ok(mounts)
+    // 清单未提及的进程内插件 = All(缺省全启,存量零迁移;对齐本函数 doc 与
+    // PluginMount::All 的承诺)——按登记表声明序补全,防止「清单存在时未提及
+    // 的插件静默掉线」(无路由/无健康节/无对账条目且零日志的回归形态)。
+    // 整体按声明序输出:声明序 = 挂载序与回落链序(登记表注释承诺;清单
+    // BTreeMap 迭代序为字典序,与声明序不一致,故不直接沿用循环累积序)。
+    let mut ordered: Vec<(&'static str, PluginMount)> = Vec::with_capacity(PLUGIN_DEFS.len());
+    for def in PLUGIN_DEFS {
+        let mount = mounts
+            .iter()
+            .find(|(id, _)| *id == def.id)
+            .map_or(PluginMount::All, |(_, m)| m.clone());
+        ordered.push((def.id, mount));
+    }
+    Ok(ordered)
 }
 
 // ============================================================================
@@ -2804,6 +2817,9 @@ mod tests {
                 "llm_advisor".to_string()
             ])
         );
+        // 未提及的 indicator-services = 缺省全启;结果覆盖登记表全量
+        assert_eq!(mount_of(&mounts, "indicator-services"), &PluginMount::All);
+        assert_eq!(mounts.len(), PLUGIN_DEFS.len());
     }
 
     #[test]
@@ -2833,6 +2849,33 @@ mod tests {
             mount_of(&mounts, "physics-services"),
             &PluginMount::Subset(vec!["physics_simulate".to_string()])
         );
+        // 未提及插件一律缺省全启,结果覆盖登记表全量(回归锁定:
+        // 修复前未提及插件不在挂载结果中,静默掉线)
+        assert_eq!(mount_of(&mounts, "demo-services"), &PluginMount::All);
+        assert_eq!(mount_of(&mounts, "indicator-services"), &PluginMount::All);
+        assert_eq!(mounts.len(), PLUGIN_DEFS.len());
+    }
+
+    #[test]
+    fn test_plugin_mount_unmentioned_defaults_all_with_external_entries() {
+        // 回归锁定(清单存在但只含 external 条目的事故形态):manifest/pack
+        // 条目不进进程内挂载链,但未提及的进程内插件必须缺省全启——
+        // 修复前返回空挂载表,全部进程内插件静默掉线且零日志。
+        let dir = TempDir::new().unwrap();
+        let p = write_manifest(
+            &dir,
+            r#"{ "plugins": {
+                "finance-pack": { "enabled": true, "pack": "plugins/finance-pack/pack.json" },
+                "wasm-host": { "enabled": true, "manifest": "plugins/wasm-host/plugin.json" }
+            } }"#,
+        );
+        let mounts = load_plugin_mounts(Some(&p)).unwrap();
+        assert_eq!(mounts.len(), PLUGIN_DEFS.len());
+        assert!(mounts.iter().all(|(_, m)| m == &PluginMount::All));
+        // 声明序锁定(声明序 = 挂载序与回落链序)
+        let ids: Vec<&str> = mounts.iter().map(|(id, _)| *id).collect();
+        let expected: Vec<&str> = PLUGIN_DEFS.iter().map(|d| d.id).collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]
