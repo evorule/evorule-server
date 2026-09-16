@@ -33,6 +33,19 @@
 //! 注：plugin.json 解析失败同样归 `Unavailable` 而非 `Degraded`——
 //! 该文件是 server 侧 `load_external_plugins` 的 fail-fast 输入，
 //! 它坏掉时 server 根本起不来，重复报警无增量信息。
+//!
+//! # auto_discover 模式（79 号）：目录 = 身份事实源，策略表 = 超集校验
+//! plugin.json 声明 `"auto_discover": true` 时，`services[]` 降级为**策略表**
+//! （server 侧拉取 `GET /services` 实载清单合入未声明增量，plugin.json 不再
+//! 承载身份），对账语义随之演进——**只换声明源，不换机制**：
+//! - **missing（策略表有、实载无）仍是 `Degraded`**：server 已照策略表注册路由，
+//!   调用必 404，与静态制同罪；
+//! - **undeclared（实载有、策略表无）不再是故障**：这正是自动发现的合法形态
+//!   （「放 .wasm + 重启即可用」的判定依据），仅在 body `undeclared` 数组中
+//!   留痕供核对（谁被默认策略接管，一眼可查）；
+//! - **零模块仍是 `Degraded`**：与声明模式无关，进程存活但能力为零。
+//!
+//! 不开启（缺省）时一切如旧——存量行为逐字节不变。
 
 use std::path::{Path, PathBuf};
 
@@ -62,6 +75,9 @@ impl ReconciliationState {
 pub struct Declaration {
     pub source: PathBuf,
     pub services: Vec<String>,
+    /// 79 号自动发现开关：true 时 `services[]` 是策略表（超集校验），
+    /// 身份以实载清单为准；缺省 false = 静态声明制（行为逐字节不变）。
+    pub auto_discover: bool,
 }
 
 impl Declaration {
@@ -69,6 +85,10 @@ impl Declaration {
     ///
     /// 服务名取 `services[].name`——与 server 侧 `ExternalPluginManifest`
     /// 派生路由用的是同一个字段，**同一事实源**，不另立口径。
+    ///
+    /// `auto_discover` 取 `auto_discover` 布尔字段，**缺省/类型错一律 false**：
+    /// 该开关决定对账严格度，宁可保守回退到静态制（多报一次 degraded），
+    /// 也不让一个写错的值静默放宽安全检查。
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
@@ -84,9 +104,15 @@ impl Declaration {
             .map(str::to_string)
             .collect::<Vec<_>>();
 
+        let auto_discover = value
+            .get("auto_discover")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         Ok(Self {
             source: path.to_path_buf(),
             services,
+            auto_discover,
         })
     }
 }
@@ -134,9 +160,12 @@ pub fn diff(declared: &[String], loaded: &[String]) -> (Vec<String>, Vec<String>
 }
 
 /// 判定（纯函数）：`(状态, 原因)`。`declared = None` = 无法对账。
+///
+/// `declared.auto_discover` 为 true 时 `services[]` 按**策略表**校验
+/// （missing 报警、undeclared 合法）；false 时按静态声明制双向校验（79 号）。
 pub fn evaluate(
     loaded: &[String],
-    declared: Option<&[String]>,
+    declared: Option<&Declaration>,
 ) -> (ReconciliationState, Option<String>) {
     if loaded.is_empty() {
         return (
@@ -144,11 +173,21 @@ pub fn evaluate(
             Some(ZERO_MODULE_REASON.to_string()),
         );
     }
-    let Some(declared) = declared else {
+    let Some(decl) = declared else {
         return (ReconciliationState::Unavailable, None);
     };
-    let (missing, undeclared) = diff(declared, loaded);
+    let (missing, undeclared) = diff(&decl.services, loaded);
     if !missing.is_empty() {
+        if decl.auto_discover {
+            return (
+                ReconciliationState::Degraded,
+                Some(format!(
+                    "策略表声明了但未加载: {missing:?} —— server 已照策略表注册路由，\
+                     调用这些服务必 404（auto_discover 模式下策略表为超集校验，\
+                     声明的服务必须在实载清单内）"
+                )),
+            );
+        }
         return (
             ReconciliationState::Degraded,
             Some(format!(
@@ -157,12 +196,13 @@ pub fn evaluate(
             )),
         );
     }
-    if !undeclared.is_empty() {
+    if !undeclared.is_empty() && !decl.auto_discover {
         return (
             ReconciliationState::Degraded,
             Some(format!(
                 "已加载但 plugin.json 未声明: {undeclared:?} —— 服务名对不上号，\
-                 这些模块永远不可达（补声明并重启 server，或从目录移除）"
+                 这些模块永远不可达（补声明并重启 server，或从目录移除；\
+                 或在 plugin.json 开启 auto_discover 交给自动发现接管）"
             )),
         );
     }
@@ -179,8 +219,10 @@ pub struct Reconciliation {
     pub loaded: Vec<String>,
     /// 声明有、实载无 → 调用必 404
     pub missing: Vec<String>,
-    /// 实载有、声明无 → 永远不可达
+    /// 实载有、声明无 → 静态制=永远不可达（degraded）；auto_discover=默认策略接管（合法，留痕核对）
     pub undeclared: Vec<String>,
+    /// 对账模式（Declaration.auto_discover 透传；无法对账时为 false）
+    pub auto_discover: bool,
     /// degraded 的故障原因 / unavailable 的跳过原因
     pub reason: Option<String>,
 }
@@ -219,6 +261,7 @@ impl Reconciliation {
                 loaded: loaded.to_vec(),
                 missing: Vec::new(),
                 undeclared: Vec::new(),
+                auto_discover: false,
                 reason,
             };
         };
@@ -233,12 +276,13 @@ impl Reconciliation {
                     loaded: loaded.to_vec(),
                     missing: Vec::new(),
                     undeclared: Vec::new(),
+                    auto_discover: false,
                     reason: Some(format!("声明不可用: {e}")),
                 }
             }
         };
 
-        let (state, reason) = evaluate(loaded, Some(&declared.services));
+        let (state, reason) = evaluate(loaded, Some(&declared));
         let (missing, undeclared) = diff(&declared.services, loaded);
         Self {
             state,
@@ -247,6 +291,7 @@ impl Reconciliation {
             loaded: loaded.to_vec(),
             missing,
             undeclared,
+            auto_discover: declared.auto_discover,
             reason,
         }
     }
@@ -261,6 +306,7 @@ impl Reconciliation {
         serde_json::json!({
             "state": self.state.as_str(),
             "declaration_source": self.source,
+            "auto_discover": self.auto_discover,
             "declared": self.declared,
             "declared_count": self.declared.len(),
             "loaded_count": self.loaded.len(),
@@ -278,6 +324,24 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// 静态声明制 Declaration（缺省 auto_discover=false）
+    fn decl(v: &[&str]) -> Declaration {
+        Declaration {
+            source: PathBuf::from("plugin.json"),
+            services: s(v),
+            auto_discover: false,
+        }
+    }
+
+    /// auto_discover 策略表 Declaration
+    fn decl_auto(v: &[&str]) -> Declaration {
+        Declaration {
+            source: PathBuf::from("plugin.json"),
+            services: s(v),
+            auto_discover: true,
+        }
     }
 
     // ===== diff：双向差集 =====
@@ -300,7 +364,7 @@ mod tests {
     #[test]
     fn test_evaluate_zero_modules_is_degraded_even_without_declaration() {
         // 零模块是**可判定**故障：即便没有声明也必须报（这是本次修复的主目标）
-        let (state, reason) = evaluate(&[], Some(&s(&["a"])));
+        let (state, reason) = evaluate(&[], Some(&decl(&["a"])));
         assert_eq!(state, ReconciliationState::Degraded);
         assert!(reason.unwrap().contains("未加载任何 UDF"));
         let (state, _) = evaluate(&[], None);
@@ -309,7 +373,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_matched_is_ok() {
-        let (state, reason) = evaluate(&s(&["a", "b"]), Some(&s(&["a", "b"])));
+        let (state, reason) = evaluate(&s(&["a", "b"]), Some(&decl(&["a", "b"])));
         assert_eq!(state, ReconciliationState::Ok);
         assert!(reason.is_none());
     }
@@ -317,7 +381,7 @@ mod tests {
     #[test]
     fn test_evaluate_declared_but_not_loaded_is_degraded() {
         // 声明悬空：server 照声明路由 → 调用必 404
-        let (state, reason) = evaluate(&s(&["a"]), Some(&s(&["a", "b"])));
+        let (state, reason) = evaluate(&s(&["a"]), Some(&decl(&["a", "b"])));
         assert_eq!(state, ReconciliationState::Degraded);
         let r = reason.unwrap();
         assert!(r.contains("未加载") && r.contains("404"));
@@ -326,7 +390,7 @@ mod tests {
     #[test]
     fn test_evaluate_loaded_but_not_declared_is_degraded() {
         // 实载悬空：模块静默失效，永远不可达
-        let (state, reason) = evaluate(&s(&["a", "b"]), Some(&s(&["a"])));
+        let (state, reason) = evaluate(&s(&["a", "b"]), Some(&decl(&["a"])));
         assert_eq!(state, ReconciliationState::Degraded);
         assert!(reason.unwrap().contains("未声明"));
     }
@@ -337,6 +401,33 @@ mod tests {
         let (state, reason) = evaluate(&s(&["a"]), None);
         assert_eq!(state, ReconciliationState::Unavailable);
         assert!(reason.is_none());
+    }
+
+    // ===== evaluate：auto_discover 策略表模式（79 号）=====
+
+    #[test]
+    fn test_evaluate_auto_discover_undeclared_is_ok() {
+        // 实载有、策略表无 → 自动发现的合法形态（F1 判定依据），不再 degraded
+        let (state, reason) = evaluate(&s(&["a", "new_udf"]), Some(&decl_auto(&["a"])));
+        assert_eq!(state, ReconciliationState::Ok);
+        assert!(reason.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_auto_discover_missing_is_still_degraded() {
+        // 策略表声明了但未加载 → 仍 degraded（server 照策略表注册了路由，调用必 404）
+        let (state, reason) = evaluate(&s(&["a"]), Some(&decl_auto(&["a", "ghost"])));
+        assert_eq!(state, ReconciliationState::Degraded);
+        let r = reason.unwrap();
+        assert!(r.contains("策略表") && r.contains("404"));
+    }
+
+    #[test]
+    fn test_evaluate_auto_discover_zero_modules_still_degraded() {
+        // 零模块与声明模式无关
+        let (state, reason) = evaluate(&[], Some(&decl_auto(&["a"])));
+        assert_eq!(state, ReconciliationState::Degraded);
+        assert!(reason.unwrap().contains("未加载任何 UDF"));
     }
 
     // ===== Reconciliation::run 集成（真实读盘）=====
@@ -443,6 +534,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ===== auto_discover：load 解析 + run 集成（79 号）=====
+
+    #[test]
+    fn test_load_auto_discover_flag_variants() {
+        let dir = std::env::temp_dir().join("evorule-decl-autodiscover-xyz");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // ① 显式 true
+        let p = dir.join("on.json");
+        std::fs::write(&p, r#"{"services":[],"auto_discover":true}"#).unwrap();
+        assert!(Declaration::load(&p).unwrap().auto_discover);
+
+        // ② 缺省 false（存量零迁移）
+        let p = dir.join("default.json");
+        std::fs::write(&p, r#"{"services":[]}"#).unwrap();
+        assert!(!Declaration::load(&p).unwrap().auto_discover);
+
+        // ③ 类型错（字符串 "true"）→ 保守回退 false：宁可多报一次 degraded，
+        //    不让写错的值静默放宽校验
+        let p = dir.join("wrongtype.json");
+        std::fs::write(&p, r#"{"services":[],"auto_discover":"true"}"#).unwrap();
+        assert!(!Declaration::load(&p).unwrap().auto_discover);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_run_auto_discover_undeclared_is_ok_not_degraded() {
+        // F1 判定依据：目录=身份事实源——实载超出策略表是自动发现的合法形态
+        let dir = std::env::temp_dir().join("evorule-decl-ad-run-xyz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("plugin.json");
+        std::fs::write(
+            &p,
+            r#"{"services":[{"name":"udf_a"}],"auto_discover":true}"#,
+        )
+        .unwrap();
+        let rec = Reconciliation::run(&dir, Some(p.to_str().unwrap()), &s(&["udf_a", "udf_new"]));
+        assert_eq!(rec.state, ReconciliationState::Ok);
+        assert!(!rec.is_degraded());
+        assert!(rec.auto_discover);
+        // 留痕仍在：undeclared 数组如实呈现，供核对谁被默认策略接管
+        assert_eq!(rec.undeclared, s(&["udf_new"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_run_auto_discover_missing_still_degraded() {
+        // 策略表=超集校验：声明的服务必须在实载清单内，缺失仍是 degraded
+        let dir = std::env::temp_dir().join("evorule-decl-ad-miss-xyz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("plugin.json");
+        std::fs::write(
+            &p,
+            r#"{"services":[{"name":"udf_a"},{"name":"udf_ghost"}],"auto_discover":true}"#,
+        )
+        .unwrap();
+        let rec = Reconciliation::run(&dir, Some(p.to_str().unwrap()), &s(&["udf_a"]));
+        assert_eq!(rec.state, ReconciliationState::Degraded);
+        assert_eq!(rec.missing, s(&["udf_ghost"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn test_explicit_env_path_missing_falls_back_to_none_not_panic() {
         let dir = std::env::temp_dir().join("evorule-decl-envmiss-xyz");
@@ -460,6 +614,7 @@ mod tests {
             loaded: s(&["a"]),
             missing: s(&["b"]),
             undeclared: Vec::new(),
+            auto_discover: false,
             reason: Some("测试".to_string()),
         };
         let v = rec.to_json();
@@ -468,6 +623,7 @@ mod tests {
         assert_eq!(v["loaded_count"], 1);
         assert_eq!(v["missing"][0], "b");
         assert_eq!(v["declaration_source"], "plugins/wasm-host/plugin.json");
+        assert_eq!(v["auto_discover"], false);
         assert_eq!(v["reason"], "测试");
     }
 }

@@ -14,6 +14,7 @@
 //! | 方法 | 路径 | 说明 |
 //! |---|---|---|
 //! | GET | `/health` | 探活（57 号契约：2xx + JSON，否则判 Offline 并告警） |
+//! | GET | `/services` | 实载清单自报（79 号自动发现：server 侧 `auto_discover` 装载时拉取） |
 //! | POST | `/services/{name}` | 执行 UDF，body = 入参 JSON；200 成功 / 404 未知 UDF / 422 执行失败 |
 //!
 //! **`/health` 的两档语义（探活可信度补强，见 `declaration` 模块）**：
@@ -123,11 +124,25 @@ async fn main() {
     {
         let rec = registry.reconciliation();
         match rec.state {
-            crate::declaration::ReconciliationState::Ok => tracing::info!(
-                "声明对账一致: plugin.json({}) × 实载 {} 个服务",
-                rec.source.as_deref().unwrap_or("(未知来源)"),
-                rec.loaded.len()
-            ),
+            crate::declaration::ReconciliationState::Ok => {
+                if rec.auto_discover {
+                    tracing::info!(
+                        "声明对账一致（auto_discover: 目录=身份事实源, 策略表超集校验）: \
+                         plugin.json({}) 策略覆盖 {} / 实载 {} 个服务\
+                        （未覆盖 {} 个按默认策略接管）",
+                        rec.source.as_deref().unwrap_or("(未知来源)"),
+                        rec.declared.len(),
+                        rec.loaded.len(),
+                        rec.undeclared.len()
+                    );
+                } else {
+                    tracing::info!(
+                        "声明对账一致: plugin.json({}) × 实载 {} 个服务",
+                        rec.source.as_deref().unwrap_or("(未知来源)"),
+                        rec.loaded.len()
+                    );
+                }
+            }
             crate::declaration::ReconciliationState::Degraded => tracing::error!(
                 "声明对账不一致 → /health 将返回 503（server 侧会判 offline 并告警）: {}",
                 rec.reason.as_deref().unwrap_or("(未给原因)")
@@ -141,6 +156,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/services", get(list_services))
         .route("/services/{name}", post(call_udf))
         .with_state(registry);
 
@@ -183,6 +199,23 @@ async fn health(State(reg): State<Arc<UdfRegistry>>) -> (StatusCode, Json<Value>
             "reconciliation": rec.to_json(),
         })),
     )
+}
+
+/// 实载清单自报（79 号自动发现 · 路线 A：host 自报 + server 拉取合入）。
+///
+/// **身份与可服务性分端点回答**：本端点只答「实载了哪些服务」（身份，永远如实
+/// 200），可服务性对账（声明 × 实载 → 503 语义）仍由 `/health` 承担——
+/// 两问一答会互相污染语义：若这里随对账降级，server 侧「拉取失败」与
+/// 「host 不健康」两种故障就会混为同一个信号，违反单一职责。
+///
+/// 服务名口径与 `/health` 的 `udfs`、`POST /services/{name}` 路由一致
+/// （BTreeMap 确定性键序），server 侧以本清单为**身份单一事实源**合入注册表。
+async fn list_services(State(reg): State<Arc<UdfRegistry>>) -> Json<Value> {
+    Json(json!({
+        "service": "evorule-wasm-host",
+        "count": reg.len(),
+        "services": reg.names(),
+    }))
 }
 
 /// 执行 UDF。body 原样透传给 guest（host 不解析入参，保持 ABI 中立）。
