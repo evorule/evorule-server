@@ -10,7 +10,11 @@
 
 <div align="center">
 
-# EvoRule Server
+# EvoRule Server
+
+> **仓库角色**：本仓库是 **GitHub 镜像**。权威源（primary repo）在 **Gitee**：[https://gitee.com/evorule/evorule-server](https://gitee.com/evorule/evorule-server)。
+> Issue / PR 请提交到 Gitee，GitHub 侧仅供镜像与推广展示。
+
 
 **The official HTTP service entry for the EvoRule engine**
 

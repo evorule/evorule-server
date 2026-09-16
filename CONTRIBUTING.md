@@ -104,6 +104,12 @@ Closes #123
 
 ---
 
+## 📜 License 政策（生态级）
+
+- **默认**：生态内所有仓采用 **AGPL-3.0-or-later**（双许可架构，闭源/商业条款见各仓 DUAL_LICENSE.md）。
+- **例外（设计选择）**：`evorule-sdk` 使用 **Apache-2.0** —— 为便于多语言客户端集成而刻意采用宽松许可，非许可漂移（见 sdk 仓 README 说明）。
+- 各仓 LICENSE 与 SPDX 头一致；发现“许可不一致”前，先读对应仓 README 的 License 段。
+
 ## 协议与 CLA
 
 提交 PR 即表示您同意按 AGPL-3.0-or-later 协议贡献代码。
