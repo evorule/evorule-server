@@ -779,6 +779,12 @@ struct ExternalPluginManifest {
     /// 服务进程根地址（路由 = base_url + /services/{name}；本地插件用
     /// 127.0.0.1 需 server 侧 --allow-loopback）
     base_url: String,
+    /// 79 号自动发现开关（opt-in，缺省 false=存量零迁移）：true 时 `services`
+    /// 降级为**策略表**（sensitive/timeout/description/parameters 逐服务覆盖），
+    /// 身份以 host 实载清单为单一事实源——装载期拉取 `GET {base_url}/services`
+    /// 把策略表未覆盖的增量按默认策略合入注册表（sensitive=false + 启动日志明示）。
+    #[serde(default)]
+    auto_discover: bool,
     services: Vec<ExternalServiceDecl>,
 }
 
@@ -818,6 +824,109 @@ struct ExternalPluginMounted {
     infos: Vec<evorule_server::api::server::BoundServiceInfo>,
 }
 
+/// auto_discover 拉取超时（79 号）：发现是一次启动期 GET，需给 host 留出
+/// 编译/装载窗口，但不允许无限等待拖死 server 启动（失败走 F5 显式告警）。
+const AUTO_DISCOVER_FETCH_TIMEOUT_MS: u64 = 10_000;
+
+/// base_url 是否指向 loopback（127.0.0.0/8 / ::1 / localhost）。
+///
+/// 用于 auto_discover 拉取与调用链 SSRF 语义**对齐**：本地插件地址须
+/// `--allow-loopback`（HttpHandler 同口径）。只做 host 字符串级判断、不做
+/// DNS——plugin.json 的 base_url 是运维显式配置（非规则运行时输入），
+/// 拉取目标与注册路由目标同源，不存在「校验过一个、调用的另一个」的绕过面。
+fn base_url_is_loopback(base_url: &str) -> bool {
+    let Some(rest) = base_url
+        .strip_prefix("http://")
+        .or_else(|| base_url.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = if let Some(stripped) = authority.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or("") // IPv6 字面量 [::1]:9140
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// 拉取 host 实载服务清单（79 号自动发现 · 路线 A：host 自报 + server 拉取合入）。
+///
+/// 响应契约（host 侧 `GET /services`）：`{"service": ..., "count": N,
+/// "services": [非空字符串, ...]}`。只认 `services` 字符串数组；缺失 /
+/// 元素类型错 / 空名 = 拉取失败（显式 Err，由调用方 error 告警后跳过增量合入，
+/// 不崩 server）。顺序保持 + 去重（同一实载名重复自报按一条算）。
+async fn fetch_host_services(base_url: &str) -> Result<Vec<String>, String> {
+    let url = format!("{}/services", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(
+            AUTO_DISCOVER_FETCH_TIMEOUT_MS,
+        ))
+        // 与 HttpHandler 同口径（B1）：禁重定向——原始 URL 校验后跟 302
+        // 是经典 SSRF 绕过面，这里禁掉而不是解析重定向链
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("HTTP 客户端构建失败: {e}"))?;
+    let resp =
+        client.get(&url).send().await.map_err(|e| {
+            format!("GET {url} 失败: {e}（host 未启动？启动顺序须先 host 后 server）")
+        })?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("GET {url} 返回 HTTP {status}"));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("GET {url} 响应不是合法 JSON: {e}"))?;
+    let arr = body
+        .get("services")
+        .and_then(|s| s.as_array())
+        .ok_or_else(|| format!("GET {url} 响应缺 services 数组（契约见 host GET /services）"))?;
+    let mut names: Vec<String> = Vec::new();
+    for item in arr {
+        let Some(n) = item.as_str() else {
+            return Err(format!("GET {url} services 元素非字符串: {item}"));
+        };
+        if n.is_empty() {
+            return Err(format!("GET {url} services 含空服务名"));
+        }
+        if !names.iter().any(|x| x == n) {
+            names.push(n.to_string());
+        }
+    }
+    Ok(names)
+}
+
+/// `fetch_host_services` 的阻塞包装。
+///
+/// `load_external_plugins` 是同步装载链（十余处单测直调，启动期仅此一跳），
+/// 刻意不改 async——以临时线程 + current_thread runtime 执行一次 GET，
+/// channel 回收结果。仅对 `auto_discover: true` 的插件触发，启动期成本可忽略。
+fn fetch_host_services_blocking(base_url: &str) -> Result<Vec<String>, String> {
+    let url = base_url.trim_end_matches('/').to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("auto-discover-fetch".to_string())
+        .spawn(move || {
+            let result = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(fetch_host_services(&url)),
+                Err(e) => Err(format!("临时 runtime 构建失败: {e}")),
+            };
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("自动发现线程启动失败: {e}"))?;
+    rx.recv()
+        .map_err(|e| format!("自动发现线程异常退出: {e}"))?
+}
+
 /// 装载外部插件包：读各 plugin.json → 校验 → 派生路由条目合入服务注册表
 ///（与 registry 文件条目同管道）→ 返回对账/健康呈现数据。
 ///
@@ -833,6 +942,7 @@ fn load_external_plugins(
     path: Option<&PathBuf>,
     registry: &mut ServiceRegistry,
     builtin_names: &[String],
+    allow_loopback: bool,
 ) -> Result<Vec<ExternalPluginMounted>, String> {
     let Some(p) = path else {
         return Ok(Vec::new()); // 未配置清单 → 外部插件不装载（显式安装语义，与进程内"缺省全启"相反）
@@ -917,9 +1027,12 @@ fn load_external_plugins(
                 ));
             }
         }
-        if m.services.is_empty() {
+        // 静态声明制：空 services = 疑似漏配（fail-fast 语义保留）；auto_discover
+        // 模式下 services[] 是可选策略表，空表 = 全量自动发现，合法（79 号）
+        if m.services.is_empty() && !m.auto_discover {
             return Err(format!(
-                "外部插件包 {id} services 为空 — 若要停用请直接 \"enabled\": false（{rel}）"
+                "外部插件包 {id} services 为空 — 若要停用请直接 \"enabled\": false；\
+                 若要全量自动发现请在 plugin.json 声明 \"auto_discover\": true（{rel}）"
             ));
         }
         if !m.base_url.starts_with("http://") && !m.base_url.starts_with("https://") {
@@ -986,6 +1099,82 @@ fn load_external_plugins(
                 parameters: s.parameters.clone(),
             });
         }
+        // 79 号自动发现（opt-in）：`auto_discover: true` 时 services[] 降级为
+        // 策略表，身份以 host 实载清单为单一事实源——拉取 GET {base_url}/services
+        // 合入策略表未覆盖的增量（默认策略 + 启动日志明示）。
+        // 失败语义（F5）：任何失败只显式 error/warn + 跳过增量合入——不崩 server、
+        // 不静默；策略表显式声明的服务不受影响（显式永远优先于自动化）。
+        let mut discovered: Vec<String> = Vec::new();
+        if m.auto_discover {
+            if !allow_loopback && base_url_is_loopback(&m.base_url) {
+                error!(
+                    "外部插件包: {id} auto_discover 拉取被拒: base_url {} 为 loopback 且 \
+                     server 未开 --allow-loopback（与调用链 SSRF 语义对齐——现在能发现、\
+                     将来也调不通）。策略表显式声明的 {} 个服务照常注册",
+                    m.base_url,
+                    declared.len()
+                );
+            } else {
+                match fetch_host_services_blocking(&m.base_url) {
+                    Ok(names) => {
+                        for n in names {
+                            // 策略表已覆盖 → 保留显式策略（F2：sensitive 覆盖不被自动化吞掉）
+                            if declared.contains(&n) {
+                                continue;
+                            }
+                            if !taken.insert(n.clone()) {
+                                warn!(
+                                    "外部插件包: {id} 自动发现服务 '{n}' 与既有服务名冲突，\
+                                     跳过（不 fail-fast：撞名不属本包可控故障，显式留痕即可）"
+                                );
+                                continue;
+                            }
+                            let url =
+                                format!("{}/services/{}", m.base_url.trim_end_matches('/'), n);
+                            let mut headers = std::collections::BTreeMap::new();
+                            headers.insert("X-Source".to_string(), "evorule-server".to_string());
+                            registry.insert(
+                                n.clone(),
+                                evorule_io_handlers::ServiceEntry {
+                                    url,
+                                    method: "POST".to_string(),
+                                    headers,
+                                    timeout_ms: Some(EXTERNAL_SERVICE_TIMEOUT_DEFAULT_MS),
+                                    version: Some(m.version.clone()),
+                                    description: None,
+                                },
+                            );
+                            infos.push(evorule_server::api::server::BoundServiceInfo {
+                                name: n.clone(),
+                                source: "plugin".to_string(),
+                                version: Some(m.version.clone()),
+                                description: None,
+                                plugin: Some(id.clone()),
+                                sensitive: false,
+                                parameters: None,
+                            });
+                            discovered.push(n);
+                        }
+                        // D-2：默认策略必须启动日志明示（可用性优先；敏感守卫靠策略表显式声明）
+                        info!(
+                            "外部插件包: {id} auto_discover 合入 {} 个服务: [{}]（默认策略: \
+                             sensitive=false, timeout={}ms — 需敏感守卫请在 plugin.json \
+                             策略表显式声明 sensitive: true）",
+                            discovered.len(),
+                            discovered.join(", "),
+                            EXTERNAL_SERVICE_TIMEOUT_DEFAULT_MS
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "外部插件包: {id} auto_discover 拉取失败 → 增量服务不注册\
+                             （策略表显式声明的 {} 个服务照常注册; 先 host 后 server）: {e}",
+                            declared.len()
+                        );
+                    }
+                }
+            }
+        }
         info!(
             "外部插件包: {id} 装载（{} 个服务: [{}]）{}",
             declared.len(),
@@ -995,10 +1184,14 @@ fn load_external_plugins(
                 .map(|d| format!("— {d}"))
                 .unwrap_or_default()
         );
+        // 健康节/对账清单呈现须含自动发现增量（与实际可路由集合同一口径）；
+        // 装载日志保持策略表口径，增量名单已在 auto_discover 日志单独留痕
+        let mut all_services = declared;
+        all_services.extend(discovered);
         out.push(ExternalPluginMounted {
             id: id.clone(),
             base_url: m.base_url.clone(),
-            services: declared,
+            services: all_services,
             infos,
         });
     }
@@ -1508,8 +1701,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .flat_map(|d| plugin_service_names(d).into_iter().map(String::from))
         .collect();
-    let external_mounted =
-        load_external_plugins(cfg.plugins.as_ref(), &mut registry, &builtin_service_names)?;
+    let external_mounted = load_external_plugins(
+        cfg.plugins.as_ref(),
+        &mut registry,
+        &builtin_service_names,
+        cfg.allow_loopback,
+    )?;
 
     // 插件契约 v1：声明式 pack 装载（02-Plugin-Contract-v1.md §2.4）。
     // 资产面 SSOT = pack 目录文件；fail-fast：任何校验失败拒绝启动。
@@ -2412,7 +2609,8 @@ mod tests {
             );
             let mut registry = ServiceRegistry::empty();
             let out =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap();
             assert_eq!(out.len(), 1, "contract_version=1.2 必须可装载");
         }
 
@@ -2431,8 +2629,9 @@ mod tests {
                 r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap_err();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
             assert!(err.contains("contract_version"), "got: {err}");
             assert!(err.contains("MAJOR 不符"), "got: {err}");
         }
@@ -2462,8 +2661,9 @@ mod tests {
                                "finance_config":{"enabled":true,"manifest":"b.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap_err();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
             assert!(err.contains("撞名"), "got: {err}");
             assert!(
                 err.contains("finance-config") && err.contains("finance_config"),
@@ -2497,7 +2697,8 @@ mod tests {
             );
             let mut registry = ServiceRegistry::empty();
             let out =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap();
             assert_eq!(out.len(), 1, "停用条目不参与撞名判定");
         }
 
@@ -2512,7 +2713,8 @@ mod tests {
             );
             let mut registry = ServiceRegistry::empty();
             let out =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap();
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].id, "finance-config");
             assert_eq!(
@@ -2574,7 +2776,8 @@ mod tests {
             );
             let mut registry = ServiceRegistry::empty();
             let _out =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap();
             assert_eq!(
                 registry.get("ai_plugin_chat").unwrap().timeout_ms,
                 Some(30000),
@@ -2603,8 +2806,9 @@ mod tests {
                 r#"{"plugins":{"z":{"enabled":true,"manifest":"plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap_err();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
             assert!(err.contains("timeout_ms 非法"), "{err}");
             let _ = dir;
         }
@@ -2619,8 +2823,9 @@ mod tests {
                 r#"{"plugins":{"other-id":{"enabled":true,"manifest":"plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap_err();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
             assert!(err.contains("id 漂移"), "{err}");
         }
 
@@ -2640,8 +2845,9 @@ mod tests {
                 r#"{"plugins":{"evil":{"enabled":true,"manifest":"plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap_err();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
             assert!(err.contains("服务名冲突"), "{err}");
         }
 
@@ -2666,8 +2872,9 @@ mod tests {
                                "y":{"enabled":true,"manifest":"badurl.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap_err();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
             assert!(err.contains("services 为空"), "{err}");
 
             write_file(
@@ -2675,8 +2882,9 @@ mod tests {
                 "empty.json",
                 r#"{"id":"x","version":"1.0","base_url":"http://127.0.0.1:1","services":[{"name":"svc_x"}]}"#,
             );
-            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap_err();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
             assert!(err.contains("base_url 非法"), "{err}");
         }
 
@@ -2692,7 +2900,8 @@ mod tests {
             );
             let mut registry = ServiceRegistry::empty();
             let out =
-                load_external_plugins(Some(&manifest), &mut registry, &builtin_names()).unwrap();
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap();
             assert!(out.is_empty(), "enabled=false 的外部包不装载");
             assert!(registry.is_empty(), "不产生任何路由条目");
         }
@@ -2706,16 +2915,215 @@ mod tests {
                 r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"nope/plugin.json"}}}"#,
             );
             let mut registry = ServiceRegistry::empty();
-            let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names())
-                .unwrap_err();
+            let err =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
             assert!(err.contains("外部插件清单读取失败"), "{err}");
         }
 
         #[test]
         fn no_manifest_path_means_no_external_plugins() {
             let mut registry = ServiceRegistry::empty();
-            let out = load_external_plugins(None, &mut registry, &builtin_names()).unwrap();
+            let out = load_external_plugins(None, &mut registry, &builtin_names(), false).unwrap();
             assert!(out.is_empty());
+        }
+
+        // ============ 79 号 auto_discover：host 自报 + server 拉取合入 ============
+
+        /// 极简一次性 HTTP mock：accept 一条连接 → 读掉请求 → 回固定 JSON body。
+        /// auto_discover 每插件装载期只拉一次，单连接足够；返回监听端口。
+        fn spawn_one_shot_http(body: &'static str) -> u16 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    use std::io::{Read, Write};
+                    let mut buf = [0u8; 2048];
+                    let _ = stream.read(&mut buf);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+            });
+            port
+        }
+
+        #[test]
+        fn base_url_is_loopback_covers_local_forms() {
+            assert!(base_url_is_loopback("http://127.0.0.1:9140"));
+            assert!(base_url_is_loopback("http://localhost:9140"));
+            assert!(base_url_is_loopback("http://[::1]:9140"));
+            assert!(base_url_is_loopback("https://127.0.0.1"));
+            assert!(!base_url_is_loopback("http://example.com"));
+            assert!(!base_url_is_loopback("http://10.0.0.1:8080"));
+            assert!(
+                !base_url_is_loopback("ftp://127.0.0.1"),
+                "非 http(s) 不判 loopback"
+            );
+        }
+
+        #[test]
+        fn auto_discover_merge_adds_discovered_with_default_policy() {
+            // F1+D-2+F2：增量按默认策略（sensitive=false）合入；策略表已声明的
+            // 服务不被自动化吞掉（sensitive=true 覆盖保留）
+            let port = spawn_one_shot_http(
+                r#"{"service":"mock-host","count":3,"services":["udf_new_a","udf_new_b","finance_config_get"]}"#,
+            );
+            let dir = TempDir::new().unwrap();
+            let pj = format!(
+                r#"{{"id":"ad-host","version":"0.1.0","base_url":"http://127.0.0.1:{port}",
+                    "auto_discover":true,
+                    "services":[{{"name":"finance_config_get","sensitive":true,"description":"策略覆盖"}}]}}"#
+            );
+            write_file(dir.path(), "plugin.json", &pj);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"ad-host":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out = load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), true)
+                .unwrap();
+            assert_eq!(out.len(), 1);
+            let names = registry.service_names();
+            assert!(names.contains(&"udf_new_a".to_string()), "{names:?}");
+            assert!(names.contains(&"udf_new_b".to_string()), "{names:?}");
+            assert!(
+                names.contains(&"finance_config_get".to_string()),
+                "{names:?}"
+            );
+            assert_eq!(names.len(), 3, "策略表 1 + 发现增量 2: {names:?}");
+            // F2：策略表 sensitive 覆盖保留；D-2：增量默认 false
+            let infos = &out[0].infos;
+            assert!(
+                infos
+                    .iter()
+                    .find(|i| i.name == "finance_config_get")
+                    .unwrap()
+                    .sensitive
+            );
+            assert!(
+                !infos
+                    .iter()
+                    .find(|i| i.name == "udf_new_a")
+                    .unwrap()
+                    .sensitive
+            );
+            // 健康节呈现 = 策略表 ∪ 增量（与可路由集合同口径）
+            assert_eq!(out[0].services.len(), 3);
+        }
+
+        #[test]
+        fn auto_discover_fetch_failure_keeps_policy_services() {
+            // F5：host 未起 → 拉取失败显式告警，不崩、不静默；策略表显式服务照常注册
+            let dir = TempDir::new().unwrap();
+            write_file(
+                dir.path(),
+                "plugin.json",
+                r#"{"id":"ad-host","version":"0.1.0","base_url":"http://127.0.0.1:1",
+                    "auto_discover":true,
+                    "services":[{"name":"policy_only","sensitive":false}]}"#,
+            );
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"ad-host":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out = load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), true)
+                .unwrap();
+            let names = registry.service_names();
+            assert_eq!(
+                names,
+                vec!["policy_only".to_string()],
+                "拉取失败只保留策略表: {names:?}"
+            );
+            assert_eq!(out[0].services, vec!["policy_only".to_string()]);
+        }
+
+        #[test]
+        fn auto_discover_loopback_rejected_without_flag() {
+            // SSRF 语义对齐：loopback base_url + 未开 --allow-loopback → 拉取被拒，
+            // 策略表照常（现在能发现将来也调不通，干脆不发现）
+            let dir = TempDir::new().unwrap();
+            write_file(
+                dir.path(),
+                "plugin.json",
+                r#"{"id":"ad-host","version":"0.1.0","base_url":"http://127.0.0.1:9140",
+                    "auto_discover":true,
+                    "services":[{"name":"policy_only","sensitive":false}]}"#,
+            );
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"ad-host":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out =
+                load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap();
+            assert_eq!(
+                registry.service_names(),
+                vec!["policy_only".to_string()],
+                "未开 --allow-loopback 不拉取，策略表照常"
+            );
+            assert_eq!(out[0].services, vec!["policy_only".to_string()]);
+        }
+
+        #[test]
+        fn auto_discover_collision_skipped_with_warning() {
+            // 撞既有服务名 → warn + 跳过该名（不 fail-fast），其余增量正常合入
+            let port = spawn_one_shot_http(
+                r#"{"service":"mock-host","count":2,"services":["collide_me","fresh_one"]}"#,
+            );
+            let dir = TempDir::new().unwrap();
+            let pj = format!(
+                r#"{{"id":"ad-host","version":"0.1.0","base_url":"http://127.0.0.1:{port}",
+                    "auto_discover":true,"services":[]}}"#
+            );
+            write_file(dir.path(), "plugin.json", &pj);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"ad-host":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let taken = vec!["collide_me".to_string()];
+            let out = load_external_plugins(Some(&manifest), &mut registry, &taken, true).unwrap();
+            let names = registry.service_names();
+            assert!(!names.contains(&"collide_me".to_string()), "{names:?}");
+            assert!(names.contains(&"fresh_one".to_string()), "{names:?}");
+            assert_eq!(out[0].services, vec!["fresh_one".to_string()]);
+        }
+
+        #[test]
+        fn auto_discover_malformed_body_fails_explicitly() {
+            // F5：body 缺 services 数组 → 显式失败，增量不注册、不崩、策略表保留
+            let port = spawn_one_shot_http(r#"{"no_services_here": true}"#);
+            let dir = TempDir::new().unwrap();
+            let pj = format!(
+                r#"{{"id":"ad-host","version":"0.1.0","base_url":"http://127.0.0.1:{port}",
+                    "auto_discover":true,
+                    "services":[{{"name":"policy_only","sensitive":false}}]}}"#
+            );
+            write_file(dir.path(), "plugin.json", &pj);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"ad-host":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            let out = load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), true)
+                .unwrap();
+            assert_eq!(
+                registry.service_names(),
+                vec!["policy_only".to_string()],
+                "解析失败增量不注册"
+            );
+            assert_eq!(out[0].services, vec!["policy_only".to_string()]);
         }
     }
 
