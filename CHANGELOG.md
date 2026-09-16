@@ -37,7 +37,7 @@
 
 ### 🔄 变更
 
-- **核心依赖升级 0.4.3 → 0.6.0（补齐发版线，2026-09-14）** — 6 个 Cargo.toml 的 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 依赖从 0.4.3 提升至 0.6.0（crates.io 补发 0.6.0 后）：引擎元指令白名单随 TCB 0.6.0 收窄为 5 种（`collect`/`merge` 已退役，69 号清理），与本仓 schema 双副本对齐（`2b0b2c4`）消除「引擎 6 种旧口径 vs 校验层 5 种」的分裂；workspace 全量编译回归通过（`cargo check --workspace --all-targets`，1m28s）
+- **核心依赖升级 0.4.3 → 0.6.0（补齐发版线，2026-09-14）** — 6 个 Cargo.toml 的 `evorule-tcb` / `evorule-reactor` / `evorule-governance` 依赖从 0.4.3 提升至 0.6.0（crates.io 补发 0.6.0 后）：引擎元指令白名单随 TCB 0.6.0 收窄为 5 种（`collect`/`merge` 已退役），与本仓 schema 双副本对齐（`2b0b2c4`）消除「引擎 6 种旧口径 vs 校验层 5 种」的分裂；workspace 全量编译回归通过（`cargo check --workspace --all-targets`，1m28s）
 
 ### 🐛 修复
 
