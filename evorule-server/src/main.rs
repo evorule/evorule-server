@@ -1892,7 +1892,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             entry.updated_by = "bootstrap".to_string();
             match PermissionTable::store_entry(&shared_facts, &entry, 0) {
                 Ok(_) => info!("已写入默认 Human I/O 放行权限条目（id={}）", ENTRY_ID),
-                Err(e) => warn!("默认 Human I/O 权限种子写入失败（入口仲裁将 fail-closed）: {e}"),
+                Err(e) => warn!(
+                    "默认 Human I/O 权限种子写入失败（入口仲裁将 fail-closed）: {e}"
+                ),
             }
         }
     }
@@ -2062,6 +2064,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 创建 readiness flag（优雅退出时设为 false）
     let readiness: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
+
 
     // 插件探活: external 插件运行时存活探测(状态翻转报警 + /api/health 存活呈现)。
     // 周期 --plugin-probe-interval 缺省 30s,0 = 显式关闭;无 external 插件不 spawn。
