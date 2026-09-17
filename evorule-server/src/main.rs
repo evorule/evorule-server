@@ -43,7 +43,7 @@ use evorule_server::api::server::{AppState, GovernanceApi, GovernanceServer, Ses
 use evorule_server::auth::AuthConfig;
 use evorule_server::input_sanitizer::InputSanitizer;
 // H5: IoDispatcher/IoSubscriber 来自 evorule-governance(机制层)
-use evorule_governance::{IoDispatcher, IoSubscriber};
+use evorule_governance::{IoDispatcher, IoSubscriber, PermissionGate};
 // H5: 具体 handler 实现来自 evorule-io-handlers(应用层,从 evorule-governance 迁出)
 use evorule_io_handlers::{
     DbHandler, HttpHandler, MemoryHandler, ServiceRegistry, ServiceRegistryHandler,
@@ -1836,6 +1836,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // /: 注入插件健康快照 → /api/health 的 plugins 节(启动后不可变)。
     // 按登记表逐插件如实呈现运行时挂载事实,键序 = 插件登记声明序。
     evorule_server::api::server::set_plugin_health(serde_json::Value::Object(plugin_health));
+    // 跨会话共享事实存储（上移至 I/O 分发器之前创建，供全局与 per-session IoSubscriber 注入权限门）
+    // 当 wal_dir 配置时，从 WAL + metadata 恢复历史共享事实；否则纯内存模式
+    // AUDIT-A1 同款修复（2026-08-27）：恢复失败时拒绝启动而非静默降级
+    let shared_facts = if let Some(wal_dir) = &cfg.wal_dir {
+        let shared_wal = wal_dir.join("shared_facts.wal");
+        let shared_meta = wal_dir.join("shared_facts_meta.json");
+        match SharedFactsLog::recover(&shared_wal, &shared_meta) {
+            Ok(log) => {
+                info!(
+                    "共享事实 WAL 已恢复：{}（metadata: {}）",
+                    shared_wal.display(),
+                    shared_meta.display()
+                );
+                log
+            }
+            Err(e) => {
+                error!(
+                    "共享事实 WAL 恢复失败，拒绝启动（请检查磁盘/权限或备份后清理 wal_dir）：{}",
+                    e
+                );
+                return Err(format!("shared facts WAL recovery failed: {e}").into());
+            }
+        }
+    } else {
+        SharedFactsLog::new()
+    };
+
+    // 启动种子：默认放行 Human 的全部 I/O（LLM/Unknown 仍走 fail-closed 默认 Deny）。幂等。
+    {
+        use evorule_governance::permission::entry::{
+            Effect, PermissionEntry, PermissionState, Resource, ResourceType, Subject, SubjectType,
+        };
+        use evorule_governance::permission::PermissionTable;
+        const ENTRY_ID: &str = "default-human-allow-io";
+        // 幂等：条目已存在则跳过。快照重建失败按「不存在」处理（照常尝试写种子，
+        // store_entry 失败仅告警不阻断——默认策略仍兜底 Human 放行）
+        let seed_exists = PermissionTable::snapshot_at(&shared_facts, shared_facts.version())
+            .map(|t| t.get(ENTRY_ID).is_some())
+            .unwrap_or(false);
+        if !seed_exists {
+            let mut entry = PermissionEntry::new(
+                ENTRY_ID,
+                Subject {
+                    subject_type: SubjectType::User,
+                    id: "human".to_string(),
+                },
+                Resource {
+                    resource_type: ResourceType::IoAction,
+                    path: "io:*".to_string(),
+                },
+                Effect::Allow,
+            );
+            entry.state = PermissionState::Active;
+            entry.updated_by = "bootstrap".to_string();
+            match PermissionTable::store_entry(&shared_facts, &entry, 0) {
+                Ok(_) => info!("已写入默认 Human I/O 放行权限条目（id={}）", ENTRY_ID),
+                Err(e) => warn!("默认 Human I/O 权限种子写入失败（入口仲裁将 fail-closed）: {e}"),
+            }
+        }
+    }
+
     let dispatcher = IoDispatcher::builder()
         .register(IoType::call_external(), call_handler.clone())
         .register(IoType::http_get(), http.clone())
@@ -1874,7 +1935,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_metrics(metrics.clone())
         .with_skip(Arc::new(
             evorule_server::api::server::is_external_executor_request,
-        ));
+        ))
+        .with_permission_gate(PermissionGate::new(Arc::new(shared_facts.clone())));
+
+    // C6 装配可观测信号（DEV-5：ASSURANCE.md §3.6 条款 5）：主干 I/O 分发路径已注入
+    // PermissionGate，标记 true 使外部可通过 GET /api/health 的 guard_assembled 区分
+    // "已装配 / 未装配"，避免 fail-open 静默失效不可被外部发现。
+    evorule_server::api::server::mark_guard_assembled();
+    info!(
+        "入口守卫（PermissionGate）已装配：主干 I/O 分发路径启用 fail-closed 入口仲裁 \
+         （LLM/Unknown 无权限条目即拒绝；Human 经启动种子 default-human-allow-io 放行）"
+    );
 
     // 5. 创建单反应器（GovernanceApi 向后兼容路由用）
     // 单反应器模式也启用 WAL 持久化（与多会话一样，保证重启后可回放审计链）
@@ -1992,34 +2063,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 readiness flag（优雅退出时设为 false）
     let readiness: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
 
-    // 创建跨会话共享事实存储
-    // 当 wal_dir 配置时，从 WAL + metadata 恢复历史共享事实；否则纯内存模式
-    // AUDIT-A1 同款修复（2026-08-27）：恢复失败时拒绝启动而非静默降级——
-    // 共享事实是跨会话审计链的一部分，残缺状态下继续服务会破坏可回放性承诺。
-    let shared_facts = if let Some(wal_dir) = &cfg.wal_dir {
-        let shared_wal = wal_dir.join("shared_facts.wal");
-        let shared_meta = wal_dir.join("shared_facts_meta.json");
-        match SharedFactsLog::recover(&shared_wal, &shared_meta) {
-            Ok(log) => {
-                info!(
-                    "共享事实 WAL 已恢复：{}（metadata: {}）",
-                    shared_wal.display(),
-                    shared_meta.display()
-                );
-                log
-            }
-            Err(e) => {
-                error!(
-                    "共享事实 WAL 恢复失败，拒绝启动（请检查磁盘/权限或备份后清理 wal_dir）：{}",
-                    e
-                );
-                return Err(format!("shared facts WAL recovery failed: {e}").into());
-            }
-        }
-    } else {
-        SharedFactsLog::new()
-    };
-
     // 插件探活: external 插件运行时存活探测(状态翻转报警 + /api/health 存活呈现)。
     // 周期 --plugin-probe-interval 缺省 30s,0 = 显式关闭;无 external 插件不 spawn。
     // 报警事件走 platform.event.* → SharedFactsLog(console 平台事件报表自动可见)。
@@ -2065,7 +2108,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace_db = Arc::new(workspace_db);
     // T5: 把 workspace 元数据库注入 SessionApi，使 bundle 导入时写入审计溯源（bundle_imports 表，
     // 管理元数据墙钟旁路，不参与 fact/哈希/审计验证链）。须在 workspace_db 创建后、AppState 组装前注入。
-    let mut session_api = session_api.with_workspace_db(workspace_db.clone());
+    let mut session_api = session_api
+        .with_workspace_db(workspace_db.clone())
+        .with_shared_facts(shared_facts.clone());
     // 插件审批代理装配:external 插件 id → 管理面端点(base_url + env admin token)。
     // token env 约定 EVORULE_PLUGIN_ADMIN_TOKEN__<ID 大写下划线>,部署侧同一 token 值
     // 同时配给插件进程与 server 两侧(密钥零落盘);未配置 → None(代理 503 fail-fast,

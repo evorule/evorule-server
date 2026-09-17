@@ -43,7 +43,7 @@ use evorule_governance::session;
 
 use evorule_governance::shared_facts_log::SharedFactsLog;
 
-use evorule_governance::{IoDispatcher, IoSubscriber};
+use evorule_governance::{permission::PermissionGate, IoDispatcher, IoSubscriber};
 
 use evorule_reactor::{Fact, FactId, FactSender, FactsLog, IoType};
 
@@ -289,9 +289,16 @@ pub struct SessionApi {
 
     /// workspace 元数据库（bundle 导入审计溯源 bundle_imports 表）
     ///
-    /// 仅用于写入/查询**管理元数据**（墙钟旁路），绝不参与 fact / 内容哈希 / 审计验证链。
+    /// 仅用于管理元数据旁路（bundle_imports 表），不参与 fact / 哈希 / 审计验证链。
     /// 未接线（None）时不记录 bundle 导入溯源（如单元测试环境）。
     workspace_db: Option<Arc<evorule_workspace::WorkspaceDb>>,
+
+    /// 跨会话共享事实存储（C6 入口守卫判定源，D8 版本域）
+    ///
+    /// 默认内存新建（无历史条目 → 判定走默认策略）；main.rs 启动期经
+    /// `with_shared_facts` 注入 WAL 恢复实例，供全部 per-session
+    /// `IoSubscriber` 的 `PermissionGate` 判定使用（与全局分发路径同一实例）。
+    shared_facts: SharedFactsLog,
 
     /// 执行侧已绑定服务名集合（阻断项 ①：import_bundle 服务绑定核对）
     ///
@@ -578,6 +585,8 @@ impl SessionApi {
 
             dispatcher: None,
 
+            shared_facts: SharedFactsLog::new(),
+
             workspace_db: None,
 
             // 默认绑定 = 原生叶子能力（Phase 1 demo-services 是二进制硬依赖，始终可路由）
@@ -722,6 +731,17 @@ impl SessionApi {
     /// 仅用于管理元数据旁路（bundle_imports 表），不参与 fact / 哈希 / 审计链。
     pub fn with_workspace_db(mut self, workspace_db: Arc<evorule_workspace::WorkspaceDb>) -> Self {
         self.workspace_db = Some(workspace_db);
+
+        self
+    }
+
+    /// 注入跨会话共享事实存储（builder 模式，C6 入口守卫判定源）
+    ///
+    /// main.rs 启动期把 WAL 恢复（或内存新建）的 shared_facts 注入 SessionApi，
+    /// 供全部 per-session `IoSubscriber` 的 `PermissionGate` 判定使用；与全局
+    /// 分发路径共用同一实例（权限条目/版本域一致，D8）。
+    pub fn with_shared_facts(mut self, shared_facts: SharedFactsLog) -> Self {
+        self.shared_facts = shared_facts;
 
         self
     }
@@ -2072,7 +2092,10 @@ impl evorule_workspace::SessionOps for SessionApi {
                         let command_tx = session.command_tx.clone();
 
                         let subscriber = IoSubscriber::new(dispatcher.clone())
-                            .with_skip(Arc::new(is_external_executor_request));
+                            .with_skip(Arc::new(is_external_executor_request))
+                            .with_permission_gate(PermissionGate::new(Arc::new(
+                                self.shared_facts.clone(),
+                            )));
 
                         tokio::spawn(async move {
                             if let Err(e) = subscriber.run(event_rx, command_tx).await {
@@ -2740,6 +2763,23 @@ pub fn set_plugin_health(v: serde_json::Value) {
     let _ = PLUGIN_HEALTH.set(v);
 }
 
+/// 入口守卫（PermissionGate）装配状态信号（DEV-5：对应 [ASSURANCE.md](ASSURANCE.md) §3.6 条款 5 的可观测义务）。
+///
+/// server 启动并完成**全部** I/O 分发路径的 `with_permission_gate` 注入后，由 main 调用
+/// [`mark_guard_assembled`] 置 `true`；外部可通过 `GET /api/health` 的 `guard_assembled`
+/// 字段区分"守卫已装配 / 未装配"——避免 fail-open 静默失效不可被外部发现。
+static GUARD_ASSEMBLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 标记入口守卫已装配（main 在完成全部分发路径注入后调用一次）
+pub fn mark_guard_assembled() {
+    GUARD_ASSEMBLED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 读取入口守卫装配状态（供 `GET /api/health` 呈现）
+pub fn is_guard_assembled() -> bool {
+    GUARD_ASSEMBLED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// 插件运行时存活状态快照（探活任务每轮更新；键=external 插件 id）。
 /// 与 PLUGIN_HEALTH（启动期挂载事实,OnceLock 不可变）分离——挂载事实与
 /// 运行时存活是两类语义,health handler 合并呈现于 external 插件节。
@@ -2817,6 +2857,12 @@ pub struct HealthResponse {
     /// 插件健康快照
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugins: Option<serde_json::Value>,
+
+    /// 入口守卫（PermissionGate）装配状态（C6 装配可观测信号，见 ASSURANCE.md §3.6 条款 5）
+    ///
+    /// `true` = 全部 I/O 分发路径已注入守卫，入口仲裁生效（fail-closed）；
+    /// `false` = 服务启动未启用守卫，I/O 走 fail-open（应由运维纠正）。
+    pub guard_assembled: bool,
 }
 
 /// PayloadUpdate 请求体
@@ -3759,6 +3805,8 @@ async fn health() -> Json<HealthResponse> {
 
         // :插件健康快照(未配置清单 → 省略该节)
         plugins,
+        // C6 装配可观测信号（DEV-5）：外部据此区分守卫已装配 / 未装配
+        guard_assembled: is_guard_assembled(),
     })
 }
 
@@ -4348,7 +4396,10 @@ async fn create_session(
 
                     let subscriber = IoSubscriber::new(dispatcher.clone())
                         .with_metrics(metrics.clone())
-                        .with_skip(Arc::new(is_external_executor_request));
+                        .with_skip(Arc::new(is_external_executor_request))
+                        .with_permission_gate(PermissionGate::new(Arc::new(
+                            api.shared_facts.clone(),
+                        )));
 
                     tokio::spawn(async move {
                         if let Err(e) = subscriber.run(event_rx, command_tx).await {
