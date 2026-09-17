@@ -1,4 +1,4 @@
-﻿﻿# evorule-setup 安装器载荷填充脚本
+﻿# evorule-setup 安装器载荷填充脚本
 # 将分发包内容汇集到 installer/payload/（build.rs 会整树内嵌进单文件安装器）。
 # 来源与 release.yml win64 打包步骤保持一致：
 #   - evorule-server.exe        <- 本仓 target/release
@@ -9,6 +9,7 @@
 #   - rules/                    <- console-cloud assets/evorule-rules/*.json + 本仓 rules/10_role13_demo.json
 #   - resources/server_eval.json / service_registry.json / dist 启动脚本与说明
 # 防御性排除 data/、logs/、*.log（build.rs 亦有同样排除）。
+# 默认来源路径适配当前发版机布局（RuleRepo/ConsoleRepo 为绝对盘符默认值）；换机发版请显式传参（-RuleRepo / -ConsoleRepo）。
 param(
     [string]$ServerRepo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$RuleRepo = "D:\evorule-rule",

@@ -86,6 +86,8 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 - [ ] `cargo build --workspace` 0 error
 - [ ] `cargo test --workspace` 0 failed
 - [ ] `cargo clippy --workspace --all-targets` 0 error
+- [ ] `cargo clippy -p evorule-setup --all-targets` 0 error（installer 不在 CI 内:payload 产物 gitignore 不入库,`build.rs` 的 `compile_error!` 门禁在无产物环境刻意必挂——发版机本地必跑）
+- [ ] `cargo test -p evorule-setup` 0 failed（同上,installer 无 CI 覆盖,发版机本地必跑）
 - [ ] `cargo fmt --all -- --check` 通过
 - [ ] `CHANGELOG.md` 加新版本段(🆕/🔄/🐛/🔒)
 - [ ] `README.md` 的"已知限制"段更新
@@ -93,6 +95,8 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 - [ ] `git tag vX.Y.Z` + `git push --tags`
 - [ ] Gitee Release 描述复制 `CHANGELOG.md` 的 [X.Y.Z] 段
 - [ ] Docker image 重新构建并测试(如果有)
+
+> **CHANGELOG 维护纪律**：开发期**不维护** `CHANGELOG.md`（禁止 `[Unreleased]` 段——`scripts/validate-changelog.ps1` 对此红线强制）；变更摘要留存于 commit message,发版时按本清单首项一次性汇总写入。
 
 ---
 
