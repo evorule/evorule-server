@@ -43,7 +43,7 @@ use evorule_governance::session;
 
 use evorule_governance::shared_facts_log::SharedFactsLog;
 
-use evorule_governance::{IoDispatcher, IoSubscriber, permission::PermissionGate};
+use evorule_governance::{permission::PermissionGate, IoDispatcher, IoSubscriber};
 
 use evorule_reactor::{Fact, FactId, FactSender, FactsLog, IoType};
 
@@ -4397,7 +4397,9 @@ async fn create_session(
                     let subscriber = IoSubscriber::new(dispatcher.clone())
                         .with_metrics(metrics.clone())
                         .with_skip(Arc::new(is_external_executor_request))
-                        .with_permission_gate(PermissionGate::new(Arc::new(api.shared_facts.clone())));
+                        .with_permission_gate(PermissionGate::new(Arc::new(
+                            api.shared_facts.clone(),
+                        )));
 
                     tokio::spawn(async move {
                         if let Err(e) = subscriber.run(event_rx, command_tx).await {
