@@ -216,6 +216,104 @@ CL_PATTERNS: List[Tuple[str, List]] = [
     ('F-内部流程', CL_F_INTERNAL),
 ]
 
+# ---------------------------------------------------------------------------
+# R-CHANGELOG发布纪律（Keep a Changelog v1.1 §推荐 Unreleased 用法）
+# 铁律：发布 tag 时，必须把头部 `## [Unreleased]` 转成 `## [x.y.z] - 日期` 并清空，
+#       然后才打语义化版本 tag。两者是一体动作，不可只做一半。
+# 硬检查（FAIL）：最新语义化版本 tag 必须在 CHANGELOG 中有对应版本区块
+#       （`## [x.y.z]`，tag 的 v 前缀忽略）——发布时打了 tag 但忘了把 Unreleased
+#       转版本号 / 忘更 CHANGELOG，即被拦截。
+# 提示级（不 FAIL）：`## [Unreleased]` 区块有实质条目 = 开发期正常累积（Keep a
+#       Changelog 推荐结构：Unreleased 恒在顶部、其后是发布记录区块，勿误判为残留）。
+# ---------------------------------------------------------------------------
+UNRELEASED_HEADER = re.compile(r'^##\s*\[Unreleased\]', re.IGNORECASE)
+CL_VERSION_HEADER = re.compile(r'^##\s*[\[(]?v?(\d+\.\d+\.\d+)[\])]?\s*[-—]')
+VERSION_TAG_RE = re.compile(r'^v?(\d+\.\d+\.\d+)$')
+# 区块内非条目行：空行 / HTML 注释 / blockquote 引用说明（如「发布治理规则」）
+CL_NON_ENTRY_LINE = re.compile(r'^\s*(<!--|>|$)')
+
+
+def _latest_version_tag(root: Path) -> str | None:
+    """返回最新语义化版本 tag 的标准化版本号（v 前缀忽略），无 tag 返回 None。"""
+    out, _, rc = run(['git', 'tag', '--list'], root)
+    if rc != 0:
+        return None
+    versions = []
+    for t in out.splitlines():
+        m = VERSION_TAG_RE.match(t.strip())
+        if m:
+            versions.append(tuple(int(p) for p in m.group(1).split('.')))
+    if not versions:
+        return None
+    latest = max(versions)
+    return f'{latest[0]}.{latest[1]}.{latest[2]}'
+
+
+def check_changelog_release_alignment(root: Path) -> List[Tuple[Path, int, str, str]]:
+    """返回 [(path, lineno, category, snippet)]
+    规则：最新语义化版本 tag 必须在 CHANGELOG 有对应版本区块（## [x.y.z]）。
+    发布纪律：tag 与 CHANGELOG 是一体动作——打 tag 前须先把 Unreleased 转版本号并清空。
+    """
+    violations: List[Tuple[Path, int, str, str]] = []
+    latest = _latest_version_tag(root)
+    if latest is None:
+        return violations  # 从未发布，跳过
+    candidates = [root / 'CHANGELOG.md']
+    if root.is_dir():
+        for d in sorted(root.iterdir()):
+            if d.is_dir() and d.name not in L1_EXCLUDE_DIRS:
+                candidates.append(d / 'CHANGELOG.md')
+    seen = set()
+    for f in candidates:
+        if not f.exists():
+            continue
+        fp = f.resolve()
+        if fp in seen:
+            continue
+        seen.add(fp)
+        try:
+            lines = f.read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if any(CL_VERSION_HEADER.match(l) and CL_VERSION_HEADER.match(l).group(1) == latest for l in lines):
+            continue
+        violations.append((fp, 1, 'R-CHANGELOG-RELEASE:tag与CHANGELOG不对齐',
+                           f'最新版本 tag=v{latest} 在 CHANGELOG 无对应 [v?{latest}] 区块（发布时未把 Unreleased 转版本号并清空）'))
+    return violations
+
+
+def changelog_unreleased_notes(root: Path) -> List[Tuple[Path, int, str]]:
+    """提示级：Unreleased 区块有实质条目 = 开发期正常累积（非违规，仅提示）。"""
+    notes: List[Tuple[Path, int, str]] = []
+    candidates = [root / 'CHANGELOG.md']
+    if root.is_dir():
+        for d in sorted(root.iterdir()):
+            if d.is_dir() and d.name not in L1_EXCLUDE_DIRS:
+                candidates.append(d / 'CHANGELOG.md')
+    seen = set()
+    for f in candidates:
+        if not f.exists():
+            continue
+        fp = f.resolve()
+        if fp in seen:
+            continue
+        seen.add(fp)
+        try:
+            lines = f.read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for idx, line in enumerate(lines):
+            if not UNRELEASED_HEADER.match(line):
+                continue
+            has_content = any(
+                l.strip() and not CL_NON_ENTRY_LINE.match(l)
+                for l in lines[idx + 1:]
+                if not CL_VERSION_HEADER.match(l)
+            )
+            if has_content:
+                notes.append((fp, idx + 1, '开发期 Unreleased 累积中（发布时须转版本号并清空）'))
+    return notes
+
 
 def run(cmd: List[str], cwd: Path) -> Tuple[str, str, int]:
     try:
@@ -357,6 +455,9 @@ def check_sibling_mention(docs: List[Path], root: Path, self_name: str = '') -> 
         # 与 validate-version 跳过审计文档版本号检查一致;本仓当前安全状态见 docs/security/SECURITY_AUDIT_v0.1.0.md)
         # CHANGELOG 为历史发布记录:记录的是"已实现/已发布"的跨仓事实,同审计快照不深查待核实表述
         if doc.name.lower() == 'changelog.md':
+            continue
+        # REPO_REGISTRY.md 为生态仓登记表:登记兄弟仓 URL/名称是其职责本体(同 CHANGELOG 先例豁免)
+        if doc.name.upper() == 'REPO_REGISTRY.MD':
             continue
         if re.search(r'AUDIT|THREAT_MODEL', doc.name):
             continue
@@ -605,6 +706,8 @@ def collect_all(root: Path, skip_git: bool, self_name: str = '') -> Dict[str, An
         'sibling_mention_l1': [],
         'agent_identity_leak_l1': [],
         'changelog_governance': [],
+        'changelog_release_alignment': [],
+        'changelog_unreleased_notes': [],
         'cross_ref_l1': [],
         'docs_index_exist': [],
     }
@@ -648,6 +751,17 @@ def collect_all(root: Path, skip_git: bool, self_name: str = '') -> Dict[str, An
             'file': str(p.relative_to(root)), 'line': ln,
             'category': cat, 'snippet': snip,
         })
+    # R-CHANGELOG发布纪律（tag 与 CHANGELOG 对齐，硬检查）
+    for (p, ln, cat, snip) in check_changelog_release_alignment(root):
+        result['changelog_release_alignment'].append({
+            'file': str(p.relative_to(root)), 'line': ln,
+            'category': cat, 'snippet': snip,
+        })
+    # R-CHANGELOG Unreleased 累积提示（提示级，不进违规）
+    result['changelog_unreleased_notes'] = [
+        {'file': str(p.relative_to(root)), 'line': ln, 'note': note}
+        for (p, ln, note) in changelog_unreleased_notes(root)
+    ]
     # 交叉引用
     for (p, ln, raw, tgt) in check_cross_refs(docs, root):
         result['cross_ref_l1'].append({
@@ -669,7 +783,8 @@ def any_violation(r: Dict[str, Any]) -> bool:
     if not gs.get('ok', True):
         return True
     for k in ('private_leak_l1', 'l1_mentions_l2l3', 'sibling_mention_l1',
-              'agent_identity_leak_l1', 'changelog_governance', 'cross_ref_l1', 'docs_index_exist'):
+              'agent_identity_leak_l1', 'changelog_governance', 'changelog_release_alignment',
+              'cross_ref_l1', 'docs_index_exist'):
         if r.get(k):
             return True
     return False
@@ -723,6 +838,16 @@ def print_human(r: Dict[str, Any]):
     else:
         for v in r['changelog_governance']:
             print(f"   ✗ {v['file']}:{v['line']}  [{v['category']}]  {v['snippet']}", file=sys.stderr)
+
+    hr('R-CHANGELOG发布纪律（tag 与 CHANGELOG 对齐）')
+    if not r['changelog_release_alignment']:
+        print('✓ 最新语义化版本 tag 均在 CHANGELOG 有对应版本区块（发布时 Unreleased→版本号并清空）')
+    else:
+        for v in r['changelog_release_alignment']:
+            print(f"   ✗ {v['file']}:{v['line']}  [{v['category']}]  {v['snippet']}", file=sys.stderr)
+    if r.get('changelog_unreleased_notes'):
+        for v in r['changelog_unreleased_notes']:
+            print(f"   ℹ {v['file']}:{v['line']}  {v['note']}")
 
     hr('L1 交叉引用完整性')
     if not r['cross_ref_l1']:
