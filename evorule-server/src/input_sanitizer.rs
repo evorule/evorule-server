@@ -4,7 +4,7 @@
 //! 输入净化公共服务（Phase 1 第一层防御）
 //!
 //! 提供 HTTP API 入口层的正则匹配 + 静默改写能力，作为 Prompt 注入防御的
-//! 第一道防线。与 evorule-agent 侧的 `SafetyAuditor`（第二层，拒绝模式）互补：
+//! 第一道防线。与 agent 侧的 `SafetyAuditor`（第二层，拒绝模式）互补：
 //!
 //! - **本模块（L1）**：HTTP 入口静默改写 → 攻击内容替换为安全占位符，请求仍通过
 //! - **SafetyAuditor（L2）**：Prompt 组装阶段拒绝 → 漏网内容阻止 LLM 调用
