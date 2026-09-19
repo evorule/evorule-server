@@ -5,18 +5,18 @@
 #   - evorule-server-v{VER}-win64.zip    (server.exe + rule-serve.exe + web + rules + 启动脚本 + 中文说明)
 #   - evorule-server-v{VER}-linux64.tar.gz (同构 linux 包)
 #   - sha256-checks.txt + cosign .sig
-# 注: 经产品决策(2026-09-11)本仓不发 macOS 产物(定位 Windows 一键包 + Linux 服务)
-# 注(UV-178 批次A): 双包均内置 ai-plugin 分发件(plugins/ai-plugin/,缺省禁用:
+# 注: 本仓不发 macOS 产物(定位 Windows 一键包 + Linux 服务)
+# 注: 双包均内置 ai-plugin 分发件(plugins/ai-plugin/,缺省禁用:
 #   evorule-ai-plugin 二进制 + plugin.json + config.example.json;凭据文件
 #   ai-plugin.json 绝不入包;包内 plugin_manifest.json 预登记 enabled:false 条目)
 #
 # 设计说明:
 # - 与 evorule 仓同构: gitee 是主仓/发布主入口, github 是镜像(承担双平台
 #   构建并经 Gitee OpenAPI 回传附件, 幂等创建 Release)
-# - 方案 A(UV-100): rule-serve.exe 来自 evorule-rule 独立发版 Release
+# - rule-serve.exe 来自 evorule-rule 独立发版 Release
 #   (RULE_SERVE_VERSION 锁定配套版本), web 静态与业务场景规则来自
 #   console-cloud 镜像仓(CONSOLE_CLOUD_REF)现场构建, 两仓解耦
-# - TLS 后端为 rustls(UV-100), musl 静态构建无系统 OpenSSL 依赖
+# - TLS 后端为 rustls, musl 静态构建无系统 OpenSSL 依赖
 # - bat/说明模板在仓内 dist/ 目录(可审阅可版本化), 打包直拷
 # - 发布原始二进制由 cosign keyless (OIDC) 签名, .sig 随 Release 发布, 见 SIGNING.md
 

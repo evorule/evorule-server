@@ -175,7 +175,7 @@
 - **SharedFactsLog 恢复失败拒绝启动（fail-fast）**
 - **宪法 `resources/core_eval.json` v0.3.1 → v0.4.2** — 同步核心仓最小评估集（ReAct 应用剧本迁出至消费方自持）+ 补回 call_external/call_service 会话桥接指令规则（v0.4.1，HTTP 会话为平台消费面无法自持剧本）+ call_service 触发域 service_name 门禁（v0.4.2，兼容 bundle 落地规则硬编码路由）+ server 启动期校验宪法含 call_external 规则否则拒绝启动并给自诊断指引
 - **运维件** — 备份/恢复演练脚本（四场景 19 断言：备份→清空→恢复→审计档案回放 / WAL 损坏三级处置）+ VERSION_STRATEGY 精简落地版（WAL/SQLite/宪法三层兼容契约）
-- **实战检验件** — 负载演练脚本 `load-drill.ps1`（会话生命周期闭环 + 错误分类统计 + 项目方节奏 + 端口监听者 pid 防呆）+ bench 三件（determinism/throughput/long_session）性能现实适配
+- **实战检验件** — 负载演练脚本 `load-drill.ps1`（会话生命周期闭环 + 错误分类统计 + 可调节奏 + 端口监听者 pid 防呆）+ bench 三件（determinism/throughput/long_session）性能现实适配
 - **AGPL + 商业双许可体系** — 新增 `DUAL_LICENSE.md`(双轨许可说明 + Server 特有白标授权边界)、`COMMERCIAL_LICENSE.md`(商业许可协议模板)、`FREE_COMMERCIAL_LICENSE.md`(政府/学术界/非营利免费豁免)、`CLA-individual.md`(个人贡献者许可,赋能双许可可执行);对齐 evorule 核心仓双许可体系
 - **`CONTRIBUTING.md` 补充双许可声明与 CLA 必要性** — `协议` 扩为 `协议与 CLA`
 

@@ -56,9 +56,9 @@ $dist = Join-Path $ServerRepo "dist"
 foreach ($f in @("start-evorule.bat","start-evorule.sh","start-watchdog.bat","watchdog-plugins.ps1","start-watchdog.sh","watchdog-plugins.py","README-STARTUP.txt")) {
     Copy-Item (RequireFile (Join-Path $dist $f)) $payload
 }
-# UV-182 批次E：plugins-watchdog.json 已移出版本库（部署侧可能写入真实
+# plugins-watchdog.json 已移出版本库（部署侧可能写入真实
 # token 环境变量，防误提交）——优先用开发机本地文件；缺失时从 example
-# 模板生成（UV-178 批次A payload 预登记链路保持可用，fresh clone 不挂）。
+# 模板生成（payload 预登记链路保持可用，fresh clone 不挂）。
 $wdCfg = Join-Path $dist "plugins-watchdog.json"
 if (Test-Path $wdCfg) {
     Copy-Item $wdCfg $payload
