@@ -273,3 +273,17 @@ jobs:
             exit 1
           fi
           docker stop evorule-smoke || true
+
+  # ==========================================================================
+  # public-face-scan：公开面矩阵扫描 (与主仓 CI 同型)。
+  # 词表五类: AI 身份 / 厂商名 / 内部批次编号 / 私有路径仓名 / 治理语境。
+  # 本 job 对 A1(AI 身份) 与 B(内部编号) 计入退出码即红; C/D 类复核项不阻断。
+  # ==========================================================================
+  public-face-scan:
+    name: public face scan (A1/B blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 公开面矩阵扫描 (AI 身份 + 内部编号阻断)
+        run: python3 scripts/scan_public_face.py --fail-on A1 --fail-on B
