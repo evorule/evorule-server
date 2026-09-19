@@ -200,10 +200,10 @@
 
 | 版本 | 日期 | 主要变化 |
 |---|---|---|
-| 1.0 | 2026-07-19 | 初版,基于 evorule-core-backup v0.2.0-beta 的 CLA-individual 适配 |
+| 1.0 | 2026-07-19 | 初版,基于项目既有 CLA 文本适配 |
 
 ---
 
-**本 CLA 遵循 evorule-core-backup 的发布原则,采用 Contributor License Agreement 标准结构。**
+**本 CLA 采用 Contributor License Agreement 标准结构。**
 
 **本文件不是法律建议。实际签署前,建议咨询专业律师。**
