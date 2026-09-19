@@ -98,14 +98,21 @@ try {
         }
     }
 
-    # 4. [patch.crates-io] 段检测 —— 发布前必须移除（RELEASE_PROCESS.md §1.2 第 5 项）
+    # 4. [patch.crates-io] 段检测 —— path 形态覆盖不得进入发布包（RELEASE_PROCESS.md §1.2 第 5 项）
     # 本地开发 path 覆盖（evorule-tcb/reactor/governance/bundle）不得进入发布包；
     # 用户 clone 后 path 不存在会静默回退到 crates.io 版本，但 evorule-bundle 等从未发布，
-    # 会导致构建失败。发布前必须移除 patch 段，依赖全部来自 crates.io。
+    # 会导致构建失败——path 形态存在即 FAIL。
+    # git 形态覆盖（git = "https://..."）指向公开仓，任何人可拉取、clone 后可构建，
+    # 属上游新 API 尚未发上 crates.io 期间的合法过渡形态，允许存在；发版联动时应删除。
     $cargoToml = Get-Content "Cargo.toml" -Raw
-    if ($cargoToml -match '\[patch\.crates-io\]') {
-        Write-Host "[FAIL] Cargo.toml 含 [patch.crates-io] 段 — 本地开发 path 覆盖不得进入发布包, 发布前必须移除该段" -ForegroundColor Red
-        $failed = $true
+    $patchSeg = [regex]::Match($cargoToml, '(?ms)\[patch\.crates-io\](.*?)(?=\r?\n\[|\z)')
+    if ($patchSeg.Success) {
+        if ($patchSeg.Groups[1].Value -match '\bpath\s*=') {
+            Write-Host "[FAIL] Cargo.toml [patch.crates-io] 含 path 形态覆盖 — 本地开发 path 覆盖不得进入发布包, 发布前必须移除" -ForegroundColor Red
+            $failed = $true
+        } else {
+            Write-Host "[OK]   Cargo.toml [patch.crates-io] 仅含 git 形态覆盖（公开仓过渡形态; 发版联动时应删除）" -ForegroundColor Green
+        }
     } else {
         Write-Host "[OK]   Cargo.toml 无 [patch.crates-io] 段（发布依赖全部来自 crates.io）" -ForegroundColor Green
     }
