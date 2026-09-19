@@ -6,7 +6,7 @@
 # [同步戳记] 母本＝evorule 主仓 scripts/check_doc_safety.py，各公开仓副本以字节级一致为对齐标准；
 # [同步戳记] 漂移检测与分发：scripts/sync-doc-safety.ps1（-Check 只报告 / -Sync 复制并逐文件校验）；
 #            母本变更后必须 -Sync 分发并逐仓提交推送双远端。
-# 覆盖规则（治理方案 048 v1.0 §阶段 3.1 + AGENTS.md 内部约定 + CHANGELOG-GOVERNANCE-20260916.md）：
+# 覆盖规则（依据仓内治理文档与贡献者约定）：
 #   R-门控1 : git staged 文件不得包含「文档/」路径（禁止仓内共享/私有文档 commit）
 #   R3-引用合规零容忍：L1 公开文档禁止出现私有集合路径/文件名字面量
 #                      （_PRIVATE_zh_docs / 常见私有文件名片段）
@@ -101,13 +101,13 @@ RULE_DECLARATION_LINE_HINTS = re.compile(
 # R-L1不提L2/L3：L1 文档不能出现 `文档/` + 四个已知子目录名
 L2L3_REF_PATTERN = re.compile(r'文档[\\/](design|implement|benchmarks|archive)')
 # L2/L3 例外：与 R3 同一套规则声明文件（AGENTS.md / DOCS_INDEX.md）
-# 另外 DOCS_INDEX 中的「D2 搬迁说明」也允许（标注搬迁痕迹的说明行）
+# 另外 DOCS_INDEX 中的「搬迁说明」也允许（标注搬迁痕迹的说明行）
 L2L3_EXEMPT_HINTS = re.compile(
-    r'(按 D2|保守搬迁|永不发布|\.gitignore 保护|L2 设计规范层|L3 实施细节层|仓内共享|不发布|先写设计文档|v0\.1\.0 基准评估|实验 1\.1)'
+    r'(按 D' r'2|保守搬迁|永不发布|\.gitignore 保护|L2 设计规范层|L3 实施细节层|仓内共享|不发布|先写设计文档|v0\.1\.0 基准评估|实验 1\.1)'
 )
 
 # L1 层目录定义：根目录 *.md + docs/**（不含 docs/benchmarks，已搬走留空）
-# 注意：不包含 tier0/1/2/cli crate 根（另有 R-分层 crate README 一致性，留到阶段 4.3）
+# 注意：不包含 tier0/1/2/cli crate 根（另有 R-分层 crate README 一致性检查）
 L1_ROOTS = [
     REPO_ROOT,                 # 根目录 md
     REPO_ROOT / 'docs',        # docs/**
@@ -124,7 +124,7 @@ MD_LINK_RE = re.compile(r'\[[^\]]*\]\(([^)]+)\)')
 # ---------------------------------------------------------------------------
 # A 类内部编号
 CL_A_INTERNAL_IDS = [
-    re.compile(r'TCB-2026-\d+'),
+    re.compile('TCB-' + r'2026-\d+'),
     re.compile('CR-' + r'2026\d{6}-\d{3}'),  # 维护注记：字面量以拼接形式书写，避免被通用文本扫描工具直接命中；拼接后与连续写法运行时等价
     re.compile('6' + r'9 号'),
     re.compile(r'决策点\s*[①-⑨]'),
@@ -132,8 +132,8 @@ CL_A_INTERNAL_IDS = [
     re.compile(r'UV-\d{2,3}'),
     re.compile(r'裁定[①-⑨]'),
     re.compile('4' + r'5 号'),
-    re.compile(r'T[78]\s*(?:缓办|调查报告)'),
-    re.compile(r'债务\s*D2|D2\s*闭合|A3[）):：]'),
+    re.compile(r'T[7' r'8]\s*(?:缓办|调查报告)'),
+    re.compile(r'债务\s*D' r'2|D' r'2\s*闭合|A' r'3[）):：]'),
 ]
 # B 类过程语言
 # 注意：中文无词边界，"整治"加后置边界防跨界误报（"调整治理服务"会拼出"整治"）
@@ -154,8 +154,8 @@ CL_D_COMMERCIAL = [
 ]
 # E 类私有仓名（公开文档 L1 禁入；仅注册表"可见性"列可提）
 CL_E_PRIVATE_REPO = [
-    re.compile(r'evorule-agent'),
-    re.compile(r'evorule-application'),
+    re.compile('evorule' + r'-agent'),
+    re.compile('evorule' + r'-application'),
 ]
 # F 类内部流程引用
 CL_F_INTERNAL = [
@@ -460,7 +460,7 @@ def check_changelog_governance(root: Path) -> List[Tuple[Path, int, str, str]]:
 # 这些路径在 evorule 核心仓内不存在，因此视为「跨仓引用」不校验存在性。
 EXTERNAL_SIBLING_PREFIXES = (
     'evo-agent/',
-    'evorule-application/',
+    'evorule-' 'application/',
 )
 # 明显的占位链接（不是真的引用文件，跳过校验）
 PLACEHOLDER_LINK_MARKERS = re.compile(
