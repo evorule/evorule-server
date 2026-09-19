@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 快照包导入端点（· 36 号 集成契约 / 44 号 bundles）
+//! 快照包导入端点（·历史批次 集成契约 / 历史批次 bundles）
 //!
 //! - `POST /api/bundles/import`：6 项硬校验 + 逐条 Schema 门禁 + 原子落盘 + 触发 reload；
 //! - `POST /api/bundles/import/dry-run`：只跑校验链，不落盘不 reload。
 //!
 //! 框架层无 RBAC（D12：审批权威留在治理层 evorule-rule），此处仅要求有效 token（受保护路由）。
-//! 校验失败一律 400 显式错误（不静默降级，35 号 §9 / T0）。
+//! 校验失败一律 400 显式错误（不静默降级，设计文档 §9 / T0）。
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -46,7 +46,7 @@ pub struct ImportResponse {
     pub dataset_id: String,
     pub activated_version: String,
     pub entry_count: usize,
-    /// 硬失败原则：缺失服务已在校验链以显式错误拦截，成功导入即无缺失（35 号 §9）
+    /// 硬失败原则：缺失服务已在校验链以显式错误拦截，成功导入即无缺失（设计文档 §9）
     pub missing_services: Vec<String>,
 }
 
@@ -93,7 +93,7 @@ pub struct ActiveBundlesResponse {
 
 /// POST /api/bundles/import —— 导入快照包并激活
 ///
-/// 请求体为治理层 `DatasetBundle` 快照包 JSON（36 号 §2）。6 项校验链任一失败
+/// 请求体为治理层 `DatasetBundle` 快照包 JSON（设计文档 §2）。6 项校验链任一失败
 /// → 400 显式 `BundleError`（不静默）；成功 → 201 返回导入结果。
 #[utoipa::path(
     post,
@@ -454,9 +454,9 @@ mod tests {
         assert!(api.core_eval_len() >= 1);
     }
 
-    // ============ UV-183 批次F: bundle 条目 reload blake3 复验 ============
+    // ============ 批次F: bundle 条目 reload blake3 复验 ============
 
-    /// UV-183 批次F: 导入落盘 manifest 记录条目文件哈希;落盘内容被篡改 →
+    /// 批次F: 导入落盘 manifest 记录条目文件哈希;落盘内容被篡改 →
     /// reload 时该条目 fail-fast 拒载（其余规则不受影响,ERROR 不静默）。
     #[tokio::test]
     async fn bundle_entry_tamper_rejected_on_reload() {
@@ -505,7 +505,7 @@ mod tests {
         );
     }
 
-    /// UV-183 批次F: 旧格式 manifest（条目无 content_hash 字段）→ 条目照常加载
+    /// 批次F: 旧格式 manifest（条目无 content_hash 字段）→ 条目照常加载
     /// （防护不追溯存量,零迁移）。
     #[tokio::test]
     async fn bundle_legacy_manifest_without_entry_hashes_still_loads() {
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(merged.len(), 3, "宪法 2 + 旧 manifest 条目 1（不追溯拒载）");
     }
 
-    /// UV-183 批次F: manifest 在但不可解析 → 无法证明条目未篡改 →
+    /// 批次F: manifest 在但不可解析 → 无法证明条目未篡改 →
     /// fail-closed 拒载该目录全部条目（ERROR 留痕,不静默）。
     #[tokio::test]
     async fn bundle_manifest_illegal_refuses_whole_dir() {

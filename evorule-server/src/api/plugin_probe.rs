@@ -6,7 +6,7 @@
 //! 职责边界:
 //! - 探测 = GET `{base_url}/health`(超时 3s):2xx 且 JSON 可解析 = online,
 //!   404/405 = no_probe(未实现探活端点,不报警),
-//!   401/403 = unauthorized(UV-182 批次A:进程活着但鉴权被拒,告警语义=凭据/配置
+//!   401/403 = unauthorized(批次A:进程活着但鉴权被拒,告警语义=凭据/配置
 //!   问题,重启无效——与 offline「进程死了」区分,看门狗侧对 unauthorized 不动作),
 //!   其余(超时/连接拒绝/5xx/非 JSON)= offline
 //! - 状态翻转即报(报警权系统独占,无条件行使):进入 offline 记
@@ -49,7 +49,7 @@ pub enum ProbeStatus {
     Offline,
     /// /health 返回 404/405——插件进程可达但未实现探活端点(不报警)
     NoProbe,
-    /// /health 返回 401/403——进程活着但鉴权被拒(UV-182 批次A):
+    /// /health 返回 401/403——进程活着但鉴权被拒(批次A):
     /// 告警语义=凭据/配置问题,重启无效;与 offline(进程死了)区分,
     /// 看门狗侧不动作(5xx 维持 offline 不细分,Q7 裁定)
     Unauthorized,
@@ -122,7 +122,7 @@ async fn probe_once(client: &reqwest::Client, base_url: &str) -> (ProbeStatus, O
                 return (ProbeStatus::NoProbe, None);
             }
             if code == 401 || code == 403 {
-                // UV-182 批次A:进程活着但鉴权被拒——凭据/配置问题,
+                // 批次A:进程活着但鉴权被拒——凭据/配置问题,
                 // 重启无效;与 offline(进程死了)区分,看门狗不动作
                 return (
                     ProbeStatus::Unauthorized,
@@ -205,7 +205,7 @@ fn liveness_entry(
 /// 任务随进程生存——server shutdown 即进程退出,无需独立取消句柄
 /// (与 log_cleanup_task 既有形态一致)。
 pub fn spawn_probe_task(targets: Vec<ProbeTarget>, interval: Duration, shared: SharedFactsLog) {
-    // UV-182 批次B:并发探测句柄(目标 + join 句柄,按原序聚合结果);
+    // 批次B:并发探测句柄(目标 + join 句柄,按原序聚合结果);
     // 函数级类型别名化解 clippy::type_complexity
     type ProbeHandle = (
         ProbeTarget,
@@ -230,7 +230,7 @@ pub fn spawn_probe_task(targets: Vec<ProbeTarget>, interval: Duration, shared: S
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            // UV-182 批次B:并发探测(tokio::spawn 逐目标并发,reqwest::Client
+            // 批次B:并发探测(tokio::spawn 逐目标并发,reqwest::Client
             // 内部 Arc 廉价克隆)——多插件慢/超时不再串行拖长整轮;结果按
             // 原序聚合,落链/快照次序与旧实现一致(不涉确定性面)
             let handles: Vec<ProbeHandle> = targets
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_classify_401_403_is_unauthorized() {
-        // UV-182 批次A:401/403 与 offline 分道——凭据/配置问题,重启无效
+        // 批次A:401/403 与 offline 分道——凭据/配置问题,重启无效
         assert_eq!(classify_response(401, true), ProbeStatus::Unauthorized);
         assert_eq!(classify_response(403, false), ProbeStatus::Unauthorized);
     }
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_first_probe_unauthorized_alerts() {
-        // UV-182 批次A:首轮即 unauthorized 同样报警(凭据问题不悬挂)
+        // 批次A:首轮即 unauthorized 同样报警(凭据问题不悬挂)
         assert_eq!(
             transition_alert(None, &ProbeStatus::Unauthorized),
             vec!["plugin_unauthorized"]
@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(ProbeStatus::Online.as_str(), "online");
         assert_eq!(ProbeStatus::Offline.as_str(), "offline");
         assert_eq!(ProbeStatus::NoProbe.as_str(), "no_probe");
-        // UV-182 批次A:unauthorized 为 /api/health status 新增值
+        // 批次A:unauthorized 为 /api/health status 新增值
         assert_eq!(ProbeStatus::Unauthorized.as_str(), "unauthorized");
     }
 

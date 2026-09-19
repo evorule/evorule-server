@@ -1,12 +1,12 @@
 ﻿# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-# ai-plugin 脚本级 e2e（UV-172 DoD-①② + UV-174 P1-c 工具回路全链）：
+# ai-plugin 脚本级 e2e（回归验证 DoD-①② + 回归验证 P1-c 工具回路全链）：
 # 真实 evorule-server + 真实 ai-plugin 进程 + mock LLM。
 # 断言:
 #   ① REST invoke 链路 200，返回含 reply 与 session_id
 #   ② sidecar 会话审计链含两事实: call_external 命令(prompt 全文) + io_response(结果全文)
 #   ③ 失败路径: mock LLM 不可达 → invoke 显式 502，无静默
-#   ④ 工具回路（UV-174）: NL 请求触发 tools.enabled 白名单工具调用 → 审计链含
+#   ④ 工具回路（回归验证）: NL 请求触发 tools.enabled 白名单工具调用 → 审计链含
 #      call_service+tool_name 命令事实、多轮 call_external、多轮 IoRequest、
 #      io_response 工具结果全文、最终回复；消费方收到 reply+session_id
 # 用法: powershell -ExecutionPolicy Bypass -File e2e.ps1
@@ -201,7 +201,7 @@ try {
     Remove-Item -Recurse -Force $Tmp2 -ErrorAction SilentlyContinue
 }
 
-# ---------- 8. 工具回路全链 e2e（UV-174 P1-c: tools.enabled + 多轮审计链） ----------
+# ---------- 8. 工具回路全链 e2e（回归验证 P1-c: tools.enabled + 多轮审计链） ----------
 # 独立环境: 状态化 mock LLM（第 1 次调用回 rules_list 工具请求 JSON，第 2 次
 # 回最终答复），插件配置授权 tools.enabled=["rules_list"] → 全链:
 # call_external(0) → call_service(rules_list) → 插件自执行 GET /api/rules →

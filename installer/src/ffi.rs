@@ -1,6 +1,6 @@
 //! Win32 FFI（零第三方依赖）：MessageBoxW + SHGetKnownFolderPath + 自绘输入对话框。
 //!
-//! 输入对话框（ask_llm_config）为批次D（UV-179）新增：三条目表单
+//! 输入对话框（ask_llm_config）为批次D（回归验证）新增：三条目表单
 //! （LLM 端点/模型名/API Key），Key 用 ES_PASSWORD 掩码显示；
 //! 零第三方依赖，控件全部 CreateWindowExW 手工布局。
 
@@ -111,7 +111,7 @@ pub fn desktop_dir() -> Result<String, String> {
 }
 
 // ============================================================
-// 自绘输入对话框（UV-179 批次D：AI 助手可选配置）
+// 自绘输入对话框（批次D：AI 助手可选配置）
 // ============================================================
 
 use std::cell::RefCell;

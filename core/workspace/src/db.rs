@@ -409,7 +409,7 @@ fn migrate_v4(conn: &Connection) -> WorkspaceResult<()> {
     record_migration(conn, 4)
 }
 
-/// v5 迁移: 元规则晋升通道 (UV-145 W3, publish_queue 扩展)
+/// v5 迁移: 元规则晋升通道 (批次 W3, publish_queue 扩展)
 ///
 /// - `kind`: 队列项类型 (normal / meta_promotion), 存量行默认 normal 零影响;
 /// - `meta_rule_content`: 转写后的元规则内容 (仅 meta_promotion 非空),
@@ -2320,7 +2320,7 @@ fn row_to_production_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Producti
 /// 4=test_report_sandbox_id 5=submitted_by 6=submitted_at
 /// 7=reviewed_by 8=reviewed_at 9=review_comment
 /// 10=published_version 11=published_at 12=status 13=description
-/// 14=kind 15=meta_rule_content (v5, UV-145 W3)
+/// 14=kind 15=meta_rule_content (v5, 批次 W3)
 fn row_to_publish_queue(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublishQueueItem> {
     let status_str: String = row.get(12)?;
     let status = PublishStatus::from_str(&status_str).unwrap_or(PublishStatus::Pending);

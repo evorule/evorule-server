@@ -111,7 +111,7 @@ struct FileServerConfig {
     max_rounds: Option<usize>,
     /// :演示登录入口开关（缺省 true；生产部署建议 false）
     demo_auth: Option<bool>,
-    /// UV-181 批次C：pack 编译服务 base_url 端口白名单（空/缺省 = 仅黑名单 18080/18081）
+    /// 批次C：pack 编译服务 base_url 端口白名单（空/缺省 = 仅黑名单 18080/18081）
     compile_allowed_ports: Option<Vec<u16>>,
 }
 
@@ -231,7 +231,7 @@ struct Cli {
     service_token: Option<String>,
 
     /// 显式豁免认证（仅限 loopback 绑定）：绑定回环地址且未设置 auth_token 时，
-    /// 必须显式声明本参数才允许无认证启动（显式豁免安全策略，UV-116）。
+    /// 必须显式声明本参数才允许无认证启动（显式豁免安全策略，回归验证）。
     ///
     /// 旧实现（0.4.x）：loopback + 无 token 隐式进入无认证模式（仅 info 日志），
     /// 漏配时全部受保护端点静默匿名可达（市场写接口实测匿名可写坐实风险）。
@@ -340,7 +340,7 @@ struct Cli {
 
     /// pack 编译服务 base_url 端口白名单（逗号分隔 u16；空 = 仅黑名单）
     ///
-    /// UV-181 批次C：黑名单（18080/18081，evorule 控制面自身端口）恒拒不可放开；
+    /// 批次C：黑名单（18080/18081，evorule 控制面自身端口）恒拒不可放开；
     /// 配置白名单后，pack.json service.base_url 的端口必须命中其一，否则拒绝装载。
     /// 例：--compile-allowed-ports 9120,9121
     #[arg(
@@ -451,7 +451,7 @@ struct ResolvedConfig {
     plugins: Option<PathBuf>,
     /// external 插件探活周期（秒；0 = 关闭；缺省 30）
     plugin_probe_interval: u64,
-    /// UV-181 批次C：pack 编译服务 base_url 端口白名单（空 = 仅黑名单）
+    /// 批次C：pack 编译服务 base_url 端口白名单（空 = 仅黑名单）
     compile_allowed_ports: Vec<u16>,
     /// CORS 白名单；若 CLI 指定了 "*" 则为全放行模式（仅限开发）
     allowed_origins: Vec<String>,
@@ -467,7 +467,7 @@ struct ResolvedConfig {
     web_dir: Option<PathBuf>,
     /// :演示登录入口开关（默认 true；CLI > env > file > default）
     demo_auth: bool,
-    /// 显式豁免认证（UV-116）：loopback+无 token 时须显式声明才允许无认证启动
+    /// 显式豁免认证（回归验证）：loopback+无 token 时须显式声明才允许无认证启动
     insecure_serve: bool,
     /// Workspace 元数据库路径 (P10, 默认 ./data/workspace.db)
     workspace_db: PathBuf,
@@ -538,7 +538,7 @@ impl ResolvedConfig {
             plugins: cli.plugins.or(file.paths.plugins),
             // external 插件探活周期（CLI/env > 缺省 30；0 = 关闭）
             plugin_probe_interval: cli.plugin_probe_interval.unwrap_or(30),
-            // UV-181 批次C：pack 编译端口白名单（CLI/env > file > 默认空 = 仅黑名单）
+            // 批次C：pack 编译端口白名单（CLI/env > file > 默认空 = 仅黑名单）
             compile_allowed_ports: if cli.compile_allowed_ports.is_empty() {
                 file.server.compile_allowed_ports.unwrap_or_default()
             } else {
@@ -767,19 +767,19 @@ struct ExternalPluginManifest {
     id: String,
     /// 插件包版本（独立演进，与 server 版本无关）
     ///
-    /// **定位澄清（UV-181 批次F）**：version 是展示位（透传对账/健康呈现），
+    /// **定位澄清（批次F）**：version 是展示位（透传对账/健康呈现），
     /// **不参与兼容判定**；兼容判定只看 `contract_version`（若声明）。
     version: String,
     #[serde(default)]
     description: Option<String>,
-    /// UV-181 批次F（契约 v1.2 MINOR 增补）：可选契约版本。
+    /// 批次F（契约 v1.2 MINOR 增补）：可选契约版本。
     /// 缺省 = 兼容（存量 plugin.json 零迁移）；声明时 MAJOR 须为 1（`starts_with("1.")`），
     /// 否则 fail-fast 拒载（与 pack.json 同纪律）。
     contract_version: Option<String>,
     /// 服务进程根地址（路由 = base_url + /services/{name}；本地插件用
     /// 127.0.0.1 需 server 侧 --allow-loopback）
     base_url: String,
-    /// 79 号自动发现开关（opt-in，缺省 false=存量零迁移）：true 时 `services`
+    /// 历史批次自动发现开关（opt-in，缺省 false=存量零迁移）：true 时 `services`
     /// 降级为**策略表**（sensitive/timeout/description/parameters 逐服务覆盖），
     /// 身份以 host 实载清单为单一事实源——装载期拉取 `GET {base_url}/services`
     /// 把策略表未覆盖的增量按默认策略合入注册表（sensitive=false + 启动日志明示）。
@@ -824,7 +824,7 @@ struct ExternalPluginMounted {
     infos: Vec<evorule_server::api::server::BoundServiceInfo>,
 }
 
-/// auto_discover 拉取超时（79 号）：发现是一次启动期 GET，需给 host 留出
+/// auto_discover 拉取超时（历史批次）：发现是一次启动期 GET，需给 host 留出
 /// 编译/装载窗口，但不允许无限等待拖死 server 启动（失败走 F5 显式告警）。
 const AUTO_DISCOVER_FETCH_TIMEOUT_MS: u64 = 10_000;
 
@@ -854,7 +854,7 @@ fn base_url_is_loopback(base_url: &str) -> bool {
             .unwrap_or(false)
 }
 
-/// 拉取 host 实载服务清单（79 号自动发现 · 路线 A：host 自报 + server 拉取合入）。
+/// 拉取 host 实载服务清单（历史批次自动发现 · 路线 A：host 自报 + server 拉取合入）。
 ///
 /// 响应契约（host 侧 `GET /services`）：`{"service": ..., "count": N,
 /// "services": [非空字符串, ...]}`。只认 `services` 字符串数组；缺失 /
@@ -933,7 +933,7 @@ fn fetch_host_services_blocking(base_url: &str) -> Result<Vec<String>, String> {
 /// fail-fast（三拒绝扩展）：plugin.json 不可读 / JSON 非法 / id 漂移 / 空服务集 /
 /// base_url 非法 / 服务名冲突（进程内插件全集 ∪ 注册表 ∪ 已装载外部包）——
 /// 均启动报错附自诊断指引，不静默装载任何条目。
-// UV-181 批次F 增补 contract_version 校验后超阈值（28/25）；UV-183 批次A 增补
+// 批次F 增补 contract_version 校验后超阈值（28/25）；批次A 增补
 // admin token env 撞名校验后行数 156/150；拆子函数会切断错误信息中的 fail-fast
 // 上下文，按仓库先例豁免（同 load_pack）。
 #[allow(clippy::cognitive_complexity)]
@@ -966,7 +966,7 @@ fn load_external_plugins(
     // 服务名占用核对集 = 进程内插件声明表全集（含停用插件——Off 的进程内服务名
     // 会直连 HTTP 注册表回落，外部包占用同名会造成挂载态静默切换路由，禁止）
     let mut taken: std::collections::BTreeSet<String> = builtin_names.iter().cloned().collect();
-    // UV-183 批次A（P1-10 折叠撞名）: 已占用 admin token env 名 → 首个插件 id
+    // 批次A（P1-10 折叠撞名）: 已占用 admin token env 名 → 首个插件 id
     let mut env_taken: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     let mut out = Vec::new();
@@ -978,7 +978,7 @@ fn load_external_plugins(
             info!("外部插件包: {id} enabled=false — 不装载（call_service 直连 HTTP 注册表）");
             continue;
         }
-        // UV-183 批次A（P1-10 折叠撞名）: 折叠把非字母数字统一映射 '_',不同 id
+        // 批次A（P1-10 折叠撞名）: 折叠把非字母数字统一映射 '_',不同 id
         // 可撞同一 EVORULE_PLUGIN_ADMIN_TOKEN__* env 名（如 "finance-config" 与
         // "finance_config"）——两插件共享同一 token 配置,审批代理归因不可分 →
         // fail-fast 拒载（最早的装载点,先于 plugin.json 读取）。
@@ -1017,7 +1017,7 @@ fn load_external_plugins(
                 m.id
             ));
         }
-        // UV-181 批次F（契约 v1.2）：可选 contract_version —— 缺省兼容（存量零迁移）；
+        // 批次F（契约 v1.2）：可选 contract_version —— 缺省兼容（存量零迁移）；
         // 声明时 MAJOR 须为 1，否则 fail-fast（与 pack.json 同纪律）
         if let Some(cv) = &m.contract_version {
             if !cv.starts_with("1.") {
@@ -1028,7 +1028,7 @@ fn load_external_plugins(
             }
         }
         // 静态声明制：空 services = 疑似漏配（fail-fast 语义保留）；auto_discover
-        // 模式下 services[] 是可选策略表，空表 = 全量自动发现，合法（79 号）
+        // 模式下 services[] 是可选策略表，空表 = 全量自动发现，合法（历史批次）
         if m.services.is_empty() && !m.auto_discover {
             return Err(format!(
                 "外部插件包 {id} services 为空 — 若要停用请直接 \"enabled\": false；\
@@ -1099,7 +1099,7 @@ fn load_external_plugins(
                 parameters: s.parameters.clone(),
             });
         }
-        // 79 号自动发现（opt-in）：`auto_discover: true` 时 services[] 降级为
+        // 历史批次自动发现（opt-in）：`auto_discover: true` 时 services[] 降级为
         // 策略表，身份以 host 实载清单为单一事实源——拉取 GET {base_url}/services
         // 合入策略表未覆盖的增量（默认策略 + 启动日志明示）。
         // 失败语义（F5）：任何失败只显式 error/warn + 跳过增量合入——不崩 server、
@@ -1465,7 +1465,7 @@ async fn log_cleanup_task(log_dir: PathBuf, max_days: u32, max_size_mb: u64) {
     }
 }
 
-/// 启动期认证策略校验（UV-116 显式豁免安全策略）。
+/// 启动期认证策略校验（回归验证 显式豁免安全策略）。
 ///
 /// 无 auth_token 时按"绑定地址 × 显式声明"二维判定：
 /// - 非 loopback（含地址解析失败，安全侧失败）：一律 fail-closed 拒绝
@@ -1541,7 +1541,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("规则目录: {}", cfg.rules_dir.display());
     info!("数据库: {}", cfg.db_path.display());
     info!("Memory 目录: {}", cfg.memory_dir.display());
-    // 1.5 认证策略早期预检（UV-116）：在 WAL/DB/会话等资源初始化之前 fail-fast，
+    // 1.5 认证策略早期预检（回归验证）：在 WAL/DB/会话等资源初始化之前 fail-fast，
     // 拒绝发生在毫秒级、零资源占用；step 8 构建处保留同一校验（防御纵深，届时必过）。
     if let Err(reason) =
         validate_auth_policy(cfg.auth_token.as_deref(), cfg.insecure_serve, &cfg.addr)
@@ -1641,7 +1641,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         step_start.elapsed().as_millis()
     );
 
-    // UV-145 W1：三层规则清单日志（分层=纯约定，语义见 60 号方案 §2.1；
+    // 批次 W1：三层规则清单日志（分层=纯约定，语义见 设计方案 §2.1；
     // 运维启动时一眼核对层级文件数是否符合预期，异常增量即篡改信号）
     let tiers = SessionApi::tier_inventory(&cfg.core_eval, &cfg.rules_dir);
     let tier_summary = tiers
@@ -2248,7 +2248,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // AppState 注入 metrics 和 readiness
     // H6: metrics 总是注入（PrometheusMetrics 实现 IoMetrics trait）
-    // 59 号 W1:快照任务需要 SharedFactsLog,先 clone 一份再 move 进 AppState
+    // 批次 W1:快照任务需要 SharedFactsLog,先 clone 一份再 move 进 AppState
     let quota_shared = shared_facts.clone();
     let state = AppState::new(
         api,
@@ -2262,7 +2262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // :演示登录入口开关注入（经 auth/status 公开下发）
     .with_demo_auth(cfg.demo_auth);
 
-    // 59 号 W1:应用配额快照后台任务(周期落 app_quota_snapshot 事件供重启
+    // 批次 W1:应用配额快照后台任务(周期落 app_quota_snapshot 事件供重启
     // 恢复;周期经 EVORULE_QUOTA_SNAPSHOT_SECS 配置,0=关闭;无配额应用时空跳)
     state.app_quota().spawn_snapshot_task(quota_shared);
 
@@ -2285,7 +2285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "EVORULE_SERVICE_TOKEN 已设置但认证未启用（无 auth_token），服务 token 被忽略"
                 );
             }
-            // UV-116 修复（显式豁免安全策略）：无 token 时按"绑定地址 × 显式声明"
+            // 回归验证 修复（显式豁免安全策略）：无 token 时按"绑定地址 × 显式声明"
             // 二维校验——非 loopback 一律 fail-closed（既有 B3 不放松）；loopback
             // 须显式 --insecure-serve 声明豁免，否则拒绝启动（旧实现隐式放行）。
             // 逻辑提取为 validate_auth_policy 以便四象限单测覆盖。
@@ -2637,7 +2637,7 @@ mod tests {
             ]
         }"#;
 
-        // UV-181 批次F：外部 plugin.json 可选 contract_version（契约 v1.2 MINOR 增补）
+        // 批次F：外部 plugin.json 可选 contract_version（契约 v1.2 MINOR 增补）
         #[test]
         fn contract_version_declared_v1_loads() {
             let dir = TempDir::new().unwrap();
@@ -2681,7 +2681,7 @@ mod tests {
             assert!(err.contains("MAJOR 不符"), "got: {err}");
         }
 
-        // UV-183 批次A（P1-10 折叠撞名）: 两个 id 折叠后映射到同一
+        // 批次A（P1-10 折叠撞名）: 两个 id 折叠后映射到同一
         // EVORULE_PLUGIN_ADMIN_TOKEN__* env 名 → 装载期 fail-fast 拒载
         #[test]
         fn admin_token_env_fold_collision_fails_fast() {
@@ -2724,7 +2724,7 @@ mod tests {
             assert!(registry.get("svc_b").is_none(), "撞名插件不得装载");
         }
 
-        // UV-183 批次A: 撞名判定只作用于装载面——enabled=false 的撞名条目不拒载
+        // 批次A: 撞名判定只作用于装载面——enabled=false 的撞名条目不拒载
         #[test]
         fn admin_token_env_collision_ignores_disabled_entries() {
             let dir = TempDir::new().unwrap();
@@ -2973,7 +2973,7 @@ mod tests {
             assert!(out.is_empty());
         }
 
-        // ============ 79 号 auto_discover：host 自报 + server 拉取合入 ============
+        // ============ 历史批次 auto_discover：host 自报 + server 拉取合入 ============
 
         /// 极简一次性 HTTP mock：accept 一条连接 → 读掉请求 → 回固定 JSON body。
         /// auto_discover 每插件装载期只拉一次，单连接足够；返回监听端口。
@@ -3172,7 +3172,7 @@ mod tests {
         }
     }
 
-    // ============ 启动期认证策略校验（UV-116 四象限 + 边界） ============
+    // ============ 启动期认证策略校验（回归验证 四象限 + 边界） ============
 
     #[test]
     fn auth_policy_token_provided_always_ok() {
@@ -3192,7 +3192,7 @@ mod tests {
 
     #[test]
     fn auth_policy_loopback_without_declaration_fails_fast() {
-        // UV-116 核心行为：loopback + 无 token + 未显式声明 → 拒绝启动（旧实现隐式放行）
+        // 回归验证 核心行为：loopback + 无 token + 未显式声明 → 拒绝启动（旧实现隐式放行）
         let err = validate_auth_policy(None, false, "127.0.0.1:18080").unwrap_err();
         assert!(err.contains("--insecure-serve"));
         assert!(err.contains("三选一")); // 自诊断指引完整性

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-"""WASM 沙箱负面测试（77 号阶段 2 · T4 / V3）
+"""WASM 沙箱负面测试（阶段 2 · T4 / V3）
 
 把「零能力」「fuel 中断」「内存上限」从**设计声明**变成**可复现实证**。
 
@@ -271,7 +271,7 @@ def main() -> int:
         print(f"宿主二进制缺失: {EXE}\n先执行: cargo build（在 plugins/wasm-host）")
         return 1
 
-    print("WASM 沙箱负面测试（77 号阶段 2 · T4 / V3）")
+    print("WASM 沙箱负面测试（阶段 2 · T4 / V3）")
     wasm = build_fixtures()
 
     work = Path(tempfile.mkdtemp(prefix="evorule-wasm-negative-"))

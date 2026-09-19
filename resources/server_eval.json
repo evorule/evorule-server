@@ -4,26 +4,26 @@
   "id": "org.evorule.core.eval",
   "rule_id": "core.eval",
   "version": "0.5.0",
-  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（2026-08-27），多轮编排由应用层 runner 负责（app.evoagent.agent v0.5.0 起同为单轮口径）；桥接规则修复(2026-09-01):HTTP 会话为平台消费面无法自持剧本,补回 call_external/call_service 会话桥接指令规则(v0.4.1)；v0.4.2:call_service 桥接规则触发域补 exists(params.service_name) 门禁——命令显式携带 service_name 才走宪法单发桥接,不携带时交由 bundle 落地规则硬编码路由(v0.4.1 缺该门禁致既有 bundle 工作流命令因必选路径解析失败而 Error,acceptance/binding e2e 回归发现)；v0.5.0(69 号清理):移除桥接规则内遗留 ReAct 循环段(collect 工具扇出/react_iteration+merge 回环),回归纯单发桥接,多轮编排由应用层 runner 负责)",
+  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（2026-08-27），多轮编排由应用层 runner 负责（app.evoagent.agent v0.5.0 起同为单轮口径）；桥接规则修复(2026-09-01):HTTP 会话为平台消费面无法自持剧本,补回 call_external/call_service 会话桥接指令规则(v0.4.1)；v0.4.2:call_service 桥接规则触发域补 exists(params.service_name) 门禁——命令显式携带 service_name 才走宪法单发桥接,不携带时交由 bundle 落地规则硬编码路由(v0.4.1 缺该门禁致既有 bundle 工作流命令因必选路径解析失败而 Error,acceptance/binding e2e 回归发现)；v0.5.0(规则清理):移除桥接规则内遗留 ReAct 循环段(collect 工具扇出/react_iteration+merge 回环),回归纯单发桥接,多轮编排由应用层 runner 负责)",
   "metadata": {
     "author": "evorule-core",
     "license": "CC0-1.0 Universal (Public Domain)",
     "public_domain_notice": "本文件(core_eval.json,即 EvoRule 宪法)以 CC0 1.0 公共领域奉献。任何人都可以自由使用、修改、再分发,无需保留版权声明。EvoRule 代码本身采用 AGPL-3.0-or-later,但本解释器规范是公共领域 —— 任何人都可以实现兼容的 EvoRule 引擎。",
     "spdx_license_id": "CC0-1.0",
     "provenance": {
-      "note": "v0.3.1 及此前版本含 ReAct 循环规则(call_external/call_service 剧本),2026-08-27 经专项迁出至消费方;机制层(6 元指令/9 指令类型/has_fields 等域函数)始终属于语言规范,不受本次迁出影响;2026-09-01 桥接规则修复:LLM 审计桥(audited-llm.ts)以 call_external 命令为平台契约,会话反应器 IoRequest 完全由宪法规则驱动,最小集缺该规则时命令被 all([]) 兜底静默 no-op(无 IoRequest 无 Error 事实,违反拒绝静默通过原则),故补回两条指令规则(单发桥接;ReAct init 规则仍属消费方剧本);v0.5.0(69 号清理 2026-09-14):移除桥接规则内遗留的 ReAct 循环段(call_external 消费段 collect 工具扇出/call_service 消费段 react_iteration+merge 结果回环)——collect/merge 元指令随 69 号清理自 TCB 退役,桥接规则回归纯单发语义,多轮编排由应用层 runner 编排"
+      "note": "v0.3.1 及此前版本含 ReAct 循环规则(call_external/call_service 剧本),2026-08-27 经专项迁出至消费方;机制层(6 元指令/9 指令类型/has_fields 等域函数)始终属于语言规范,不受本次迁出影响;2026-09-01 桥接规则修复:LLM 审计桥(audited-llm.ts)以 call_external 命令为平台契约,会话反应器 IoRequest 完全由宪法规则驱动,最小集缺该规则时命令被 all([]) 兜底静默 no-op(无 IoRequest 无 Error 事实,违反拒绝静默通过原则),故补回两条指令规则(单发桥接;ReAct init 规则仍属消费方剧本);v0.5.0(规则清理 2026-09-14):移除桥接规则内遗留的 ReAct 循环段(call_external 消费段 collect 工具扇出/call_service 消费段 react_iteration+merge 结果回环)——collect/merge 元指令随规则清理自 TCB 退役,桥接规则回归纯单发语义,多轮编排由应用层 runner 编排"
     },
     "sections": [
       "1. 原子计算指令: increment, decrement, set",
       "2. 控制流指令: sequence, conditional, while_loop",
       "3. 默认处理: all([]) 兜底规则",
-      "4. 会话桥接指令: call_external, call_service(单发桥接;多轮编排由应用层 runner 负责——v0.5.0 随 69 号清理移除宪法内 ReAct 循环残留)"
+      "4. 会话桥接指令: call_external, call_service(单发桥接;多轮编排由应用层 runner 负责——v0.5.0 随规则清理移除宪法内 ReAct 循环残留)"
     ],
     "constraints": [
       "每条 transform 规则中最多包含一个 io_request 元指令",
       "原因: __io_results__ 是按 io_type 隔离的字段，多个 io_request 会冲突",
       "io_request 必须是 branch 的叶子节点（on_false 分支），之前不能有 set/push 操作",
-      "v0.3.0 新增: has_fields 域类型（collect/merge 元指令已于 v0.5.0 随 69 号清理退役——LLM 循环机制下沉 TCB 属架构事故，多轮编排回归应用层）",
+      "v0.3.0 新增: has_fields 域类型（collect/merge 元指令已于 v0.5.0 随规则清理退役——LLM 循环机制下沉 TCB 属架构事故，多轮编排回归应用层）",
       "设计决策: fork-join 批处理聚合已整体移除——批处理策略违反 TCB 最小顺序语义，多工具的 token 聚合优化由 governance 层负责",
       "I/O 结果按类型隔离: __io_results__.{io_type}；消费后以 JSON null 清除（exists 将 null 视为不存在）",
       "v0.3.1: set 的 attr 引用 payload 内以 __ 开头的字段时必须写显式前缀（如 __exec__.payload.__io_results__.call_external），否则会被误判为状态根路径",

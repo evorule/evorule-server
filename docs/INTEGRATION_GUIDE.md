@@ -320,7 +320,7 @@ Content-Type: application/gzip
 
 ### 4.1 meta 指令
 
-evorule TCB 有 **5 种合法 meta 指令**（0.6.0 起；0.3.2~0.5.x 曾有 `collect`/`merge` 两种 ReAct 编排元指令，已随 0.6.0 的 69 号清理退役——多工具扇出与结果回环编排由应用层 runner 负责）：
+evorule TCB 有 **5 种合法 meta 指令**（0.6.0 起；0.3.2~0.5.x 曾有 `collect`/`merge` 两种 ReAct 编排元指令，已随 0.6.0 的规则清理退役——多工具扇出与结果回环编排由应用层 runner 负责）：
 
 | 指令 | 用途 | 示例 |
 |------|------|------|
@@ -636,7 +636,7 @@ bundle-ds-yuanze-01-v3/
 └── ... (最多 64 条规则，受 MAX_TRANSFORM_RULES 限制)
 ```
 
-> **注意**: 规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + 原子落盘机制（36 号集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。
+> **注意**: 规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + 原子落盘机制（跨仓集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。
 
 ---
 

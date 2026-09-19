@@ -22,7 +22,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $ServerExe) { $ServerExe = Join-Path (Split-Path -Parent $PSScriptRoot) 'target\release\evorule-server.exe' }
 if (-not $RepoRoot)  { $RepoRoot  = Split-Path -Parent $PSScriptRoot }
-$tmp = Join-Path $env:TEMP "uv032-drill-$(Get-Random)"
+$tmp = Join-Path $env:TEMP "reg032-drill-$(Get-Random)"
 New-Item -ItemType Directory -Path "$tmp\wal" -Force | Out-Null
 
 # ---- 拉起被测 server(独立端口+独立数据目录,不碰开发环境) ----

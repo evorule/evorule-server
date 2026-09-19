@@ -22,7 +22,7 @@ const APP_DIR_NAME: &str = "Evorule";
 const REG_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Evorule";
 const SHORTCUT_NAME: &str = "evorule 体验版";
 
-// AI 助手配置预填默认值(与 plugins/ai-plugin/config.example.json 同源,UV-179 批次D)
+// AI 助手配置预填默认值(与 plugins/ai-plugin/config.example.json 同源,批次D)
 const DEFAULT_LLM_ENDPOINT: &str = "https://api.minimaxi.com/v1";
 const DEFAULT_LLM_MODEL: &str = "MiniMax-Text-01";
 
@@ -69,7 +69,7 @@ fn install(silent: bool, dir_override: Option<String>) -> i32 {
     log.push(format!("evorule-setup v{VERSION}"));
 
     if !silent {
-        // UV-179 批次E:确认页升格「许可与隐私」语义——开源声明+数据本机+同意按钮
+        // 批次E:确认页升格「许可与隐私」语义——开源声明+数据本机+同意按钮
         let confirm = format!(
             "evorule 体验版 v{VERSION} 安装向导\n\n\
              将安装到：\n{target_str}\n\n\
@@ -106,7 +106,7 @@ fn install(silent: bool, dir_override: Option<String>) -> i32 {
         log.push("shortcuts + uninstall registry written".to_string());
     }
 
-    // 4. 可选:AI 助手配置（UV-179 批次D;跳过则零写入,不影响任何功能）
+    // 4. 可选:AI 助手配置（批次D;跳过则零写入,不影响任何功能）
     //    Key 仅落本机 plugins\ai-plugin\ai-plugin.json（用户目录隔离,README 有保管警告）;
     //    写配置成功才翻转 plugin_manifest.json 的 enabled 开关。
     let mut ai_note = String::from("AI 助手未配置（可稍后在浏览器「设置」中配置）");
@@ -149,7 +149,7 @@ fn install(silent: bool, dir_override: Option<String>) -> i32 {
         return 0;
     }
 
-    // UV-179 批次E:完成页指路浏览器内引导(/welcome 口径一致)
+    // 批次E:完成页指路浏览器内引导(/welcome 口径一致)
     let done = format!(
         "安装完成！已释放 {file_count} 个文件。{ai_note}\n\n\
          桌面与开始菜单已创建「{SHORTCUT_NAME}」快捷方式，\n\
@@ -207,7 +207,7 @@ fn default_install_dir() -> std::path::PathBuf {
     std::path::Path::new(&base).join(APP_DIR_NAME)
 }
 
-// ---------- AI 助手配置写入（UV-179 批次D） ----------
+// ---------- AI 助手配置写入（批次D） ----------
 
 /// JSON 字符串转义（零依赖;覆盖控制符/引号/反斜杠,凭据常见字符集足够）。
 fn json_escape(s: &str) -> String {
@@ -419,7 +419,7 @@ fn write_log(log: &[String]) {
     let _ = std::fs::write(std::env::temp_dir().join("evorule-setup.log"), text);
 }
 
-// ---------- 单测(UV-179 批次D:GUI 对话框外的纯文件逻辑) ----------
+// ---------- 单测(批次D:GUI 对话框外的纯文件逻辑) ----------
 
 #[cfg(test)]
 mod tests {

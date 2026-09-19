@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 声明 × 实载 **对账**（77 号阶段 2 · 探活可信度补强）。
+//! 声明 × 实载 **对账**（阶段 2 · 探活可信度补强）。
 //!
 //! # 为什么需要这个模块
-//! 57 号契约的探活只问一个问题：`/health` 是否 **2xx 且 JSON 可解析**。
+//! 跨仓契约的探活只问一个问题：`/health` 是否 **2xx 且 JSON 可解析**。
 //! 于是「进程活着但一个 UDF 都没加载」也会被判为 `online`——
 //! **探活只能证明进程存活，不能证明服务可用**。
 //!
@@ -34,7 +34,7 @@
 //! 该文件是 server 侧 `load_external_plugins` 的 fail-fast 输入，
 //! 它坏掉时 server 根本起不来，重复报警无增量信息。
 //!
-//! # auto_discover 模式（79 号）：目录 = 身份事实源，策略表 = 超集校验
+//! # auto_discover 模式（历史批次）：目录 = 身份事实源，策略表 = 超集校验
 //! plugin.json 声明 `"auto_discover": true` 时，`services[]` 降级为**策略表**
 //! （server 侧拉取 `GET /services` 实载清单合入未声明增量，plugin.json 不再
 //! 承载身份），对账语义随之演进——**只换声明源，不换机制**：
@@ -75,7 +75,7 @@ impl ReconciliationState {
 pub struct Declaration {
     pub source: PathBuf,
     pub services: Vec<String>,
-    /// 79 号自动发现开关：true 时 `services[]` 是策略表（超集校验），
+    /// 历史批次自动发现开关：true 时 `services[]` 是策略表（超集校验），
     /// 身份以实载清单为准；缺省 false = 静态声明制（行为逐字节不变）。
     pub auto_discover: bool,
 }
@@ -162,7 +162,7 @@ pub fn diff(declared: &[String], loaded: &[String]) -> (Vec<String>, Vec<String>
 /// 判定（纯函数）：`(状态, 原因)`。`declared = None` = 无法对账。
 ///
 /// `declared.auto_discover` 为 true 时 `services[]` 按**策略表**校验
-/// （missing 报警、undeclared 合法）；false 时按静态声明制双向校验（79 号）。
+/// （missing 报警、undeclared 合法）；false 时按静态声明制双向校验（历史批次）。
 pub fn evaluate(
     loaded: &[String],
     declared: Option<&Declaration>,
@@ -403,7 +403,7 @@ mod tests {
         assert!(reason.is_none());
     }
 
-    // ===== evaluate：auto_discover 策略表模式（79 号）=====
+    // ===== evaluate：auto_discover 策略表模式（历史批次）=====
 
     #[test]
     fn test_evaluate_auto_discover_undeclared_is_ok() {
@@ -534,7 +534,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ===== auto_discover：load 解析 + run 集成（79 号）=====
+    // ===== auto_discover：load 解析 + run 集成（历史批次）=====
 
     #[test]
     fn test_load_auto_discover_flag_variants() {

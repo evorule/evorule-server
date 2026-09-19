@@ -7,7 +7,7 @@
 //! Python 版手写了整套静态校验器（VALID_DOMAIN_TYPES / PATH_RE / 指令白名单等），
 //! 与固化 schema 存在漂移风险。本实现**直接复用 `evorule-rule-schema` 的
 //! `validate_transform_list`**：补丁规则必须是可热加载的 `transform_rule`
-//! （type ∈ 4 元指令 set/push/branch/io_request，schema 权威源；collect/merge 已退役，69 号），
+//! （type ∈ 4 元指令 set/push/branch/io_request，schema 权威源；collect/merge 已退役，历史批次），
 //! 与 submit_command 门禁同一校验器，彻底消除重复定义。
 //! 注：Python 版额外放行 sequence/conditional/while_loop 等指令层类型作为补丁，
 //! 但指令层非 transform（热加载后会 noop），本实现按 transform_rule 严格校验，更正确。

@@ -6,7 +6,7 @@ name = "udf-finance-tax-calc"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rust UDF 示例（77 号阶段 2 V4）：金融税额计算，供 evorule-wasm-host 加载"
+description = "Rust UDF 示例（阶段 2 V4）：金融税额计算，供 evorule-wasm-host 加载"
 
 # 脱离上层 workspace（与 plugins/ai-plugin 同一模式）
 [workspace]

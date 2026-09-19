@@ -579,7 +579,7 @@ impl PublishStatus {
     }
 }
 
-/// 发布队列项类型 (UV-145 W3 元规则晋升通道)
+/// 发布队列项类型 (批次 W3 元规则晋升通道)
 ///
 /// - Normal: 普通业务规则发布 (走 DatasetBundle 落盘 rules_dir/bundles/)
 /// - MetaPromotion: 业务规则 → L2 元规则晋升 (转写产物原子落盘 rules_dir 根目录
@@ -647,7 +647,7 @@ pub struct PublishQueueItem {
     pub status: PublishStatus,
     /// 发布说明
     pub description: Option<String>,
-    /// 队列项类型 (normal=普通发布 / meta_promotion=元规则晋升; UV-145 W3)
+    /// 队列项类型 (normal=普通发布 / meta_promotion=元规则晋升; 批次 W3)
     pub kind: PublishKind,
     /// 转写后的元规则内容 (JSON 字符串, 仅 meta_promotion 时非空)
     ///
@@ -916,7 +916,7 @@ pub struct SubmitPublishRequest {
     /// 发布说明
     #[serde(default)]
     pub description: Option<String>,
-    /// 队列项类型 (缺省 normal; UV-145 W3 元规则晋升通道)
+    /// 队列项类型 (缺省 normal; 批次 W3 元规则晋升通道)
     #[serde(default)]
     pub kind: PublishKind,
     /// 转写后的元规则内容 (JSON 字符串; 仅 kind=meta_promotion 时必填)

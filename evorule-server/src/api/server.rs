@@ -382,7 +382,7 @@ pub fn plugin_admin_token_env(id: &str) -> String {
     format!("EVORULE_PLUGIN_ADMIN_TOKEN__{folded}")
 }
 
-/// UV-183 批次A（P1-10 折叠撞名）: 两个不同插件 id 是否折叠映射到同一
+/// 批次A（P1-10 折叠撞名）: 两个不同插件 id 是否折叠映射到同一
 /// admin token env 名。折叠把非 ASCII 字母数字统一映射为 '_',不同 id 可撞
 /// 同一 env 名（如 "finance-config" 与 "finance_config"）——部署侧将无法
 /// 分别配置 admin token（一个值同时授权两个插件的审批代理,归因不可分）。
@@ -561,7 +561,7 @@ impl SessionApi {
             sessions: sessions.clone(),
 
             // fork-from-archive：归档链源目录（与 SessionManager/archive_cache 同源）
-            // 58 号 W2 顺带修复：wal_dir 同时供本字段与 archive_cache 消费，
+            // 批次 W2 顺带修复：wal_dir 同时供本字段与 archive_cache 消费，
             // 需 clone 一次否则双重 move 编译失败
             wal_dir: wal_dir.clone(),
 
@@ -1173,7 +1173,7 @@ impl SessionApi {
         // 完整路径字典序 = 确定性（bundles/ 子目录条目按路径自然归位）
         paths.sort();
 
-        // UV-183 批次F（P1-14 reload 防篡改）: bundle 条目 blake3 复验，
+        // 批次F（P1-14 reload 防篡改）: bundle 条目 blake3 复验，
         // 失配条目 fail-fast 拒载（ERROR 不静默；拒载原因在收集阶段明示）
         let tampered = Self::collect_tampered_bundle_files(rules_dir);
 
@@ -1224,7 +1224,7 @@ impl SessionApi {
         }
     }
 
-    /// UV-183 批次F（P1-14 reload 防篡改）: bundle 条目 blake3 复验收集。
+    /// 批次F（P1-14 reload 防篡改）: bundle 条目 blake3 复验收集。
     ///
     /// 扫描 `{rules_dir}/bundles/` 各 bundle 目录（带 `bundle_manifest.json`），
     /// 对 manifest 记录了 content_hash 的条目重算落盘文件哈希比对：
@@ -1265,7 +1265,7 @@ impl SessionApi {
                 Self::collect_json_files_recursive(&dir, &mut all);
                 for f in all {
                     tracing::error!(
-                        "bundle 条目拒载（UV-183 批次F）: {} — manifest 复验不可用（{reason}）,\
+                        "bundle 条目拒载（批次F）: {} — manifest 复验不可用（{reason}）,\
                          fail-closed 拒载;恢复方式: 重新导入该 bundle 或回滚文件",
                         f.display()
                     );
@@ -1296,7 +1296,7 @@ impl SessionApi {
             }
             for f in verify_bundle_entry_hashes(&dir, &manifest) {
                 tracing::error!(
-                    "bundle 条目拒载（UV-183 批次F 复验失配）: {} — 落盘内容与导入时 \
+                    "bundle 条目拒载（批次F 复验失配）: {} — 落盘内容与导入时 \
                      blake3 哈希不一致（疑似篡改/半成品）,fail-fast 拒载该条目;\
                      恢复方式: 重新导入该 bundle 或回滚文件",
                     dir.join(&f).display()
@@ -1307,7 +1307,7 @@ impl SessionApi {
         out
     }
 
-    /// 三层规则清单（UV-145 W1：层级可观测，60 号方案 §2.1）
+    /// 三层规则清单（批次 W1：层级可观测，设计方案 §2.1）
     ///
     /// 分层是**纯约定**（执行顺序由"core_eval 在前 + 完整路径字典序"保证，本函数不参与
     /// 加载路径，只做只读扫描）：
@@ -1333,7 +1333,7 @@ impl SessionApi {
         let (mut l2, mut l3): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         let mut all: Vec<std::path::PathBuf> = Vec::new();
         Self::collect_json_files_recursive(rules_dir, &mut all);
-        // UV-183 批次F: bundle 复验拒载的条目不计入清单（清单与实载一致的既有口径）
+        // 批次F: bundle 复验拒载的条目不计入清单（清单与实载一致的既有口径）
         let tampered = Self::collect_tampered_bundle_files(rules_dir);
         for p in all {
             if tampered.contains(&p) {
@@ -1388,7 +1388,7 @@ impl SessionApi {
     fn parse_rule_file(p: &std::path::Path, rules_dir: &std::path::Path) -> Option<Vec<JsonValue>> {
         let json = Self::load_rule_doc(p)?;
 
-        // UV-145 W1：tier 层级门禁（正向+反向，见 passes_tier_gate 注释）
+        // 批次 W1：tier 层级门禁（正向+反向，见 passes_tier_gate 注释）
         if !Self::passes_tier_gate(p, rules_dir, &json) {
             return None;
         }
@@ -1406,7 +1406,7 @@ impl SessionApi {
     ///   `metadata.tier == "meta"`——防裸文件冒充元规则。
     /// - **反向**：其余文件（根目录普通业务文件 / bundles/ 子目录条目）**禁止**声明
     ///   `tier == "meta"`——防 LLM 补丁伪造层级。
-    /// - **enforce 限定**（UV-147）：非 L2 文件禁止携带 `enforce` 强制原语——
+    /// - **enforce 限定**（回归验证）：非 L2 文件禁止携带 `enforce` 强制原语——
     ///   引擎级阻止权仅随治理链晋升的 L2 元规则下发，业务规则/LLM 补丁
     ///   私自获得阻止权 = 治理旁路。
     ///
@@ -1438,7 +1438,7 @@ impl SessionApi {
             }
             (false, _) => {}
         }
-        // enforce 层级限定（UV-147）：L2（根目录 00_meta_ + tier=meta）之外一律拒载
+        // enforce 层级限定（回归验证）：L2（根目录 00_meta_ + tier=meta）之外一律拒载
         if !is_root_meta_file && Self::contains_enforce_rule(json) {
             return Err(
                 "非元规则文件使用 enforce 强制原语（enforce 仅允许 L2 元规则文件，\
@@ -1472,7 +1472,7 @@ impl SessionApi {
             Ok(()) => true,
             Err(reason) => {
                 tracing::warn!(
-                    "规则文件 {} 未过层级门禁：{}，拒绝加载（UV-145）",
+                    "规则文件 {} 未过层级门禁：{}，拒绝加载（回归验证）",
                     p.display(),
                     reason
                 );
@@ -1551,7 +1551,7 @@ impl SessionApi {
     ///      报告文件缺失/损坏 → 拒收(fail-closed:校验层缺位即不通过,不静默)。
     /// human:<actor> 无需存在性校验(显式降级声明,人无表可查)。
     /// 跨环境信任(报告哈希/随包携带)登记为后续项——当前拒收符合
-    /// "不让未经验证的信息通过"(40 号 §6.1 阶段一)。
+    /// "不让未经验证的信息通过"(设计文档 §6.1 阶段一)。
     ///
     fn validate_test_evidence(&self, bundle: &evorule_bundle::DatasetBundle) -> Result<(), String> {
         if bundle.tests.verdict != evorule_bundle::TestVerdict::Pass {
@@ -1641,7 +1641,7 @@ impl SessionApi {
 
     /// ③ 第 8 项执行侧服务绑定核对（阻断项 ①）：bundle 声明的服务必须已绑定，
     /// 缺失 → **显式失败**（不静默）。防"治理侧声明 / 执行侧未绑定 → 运行时
-    /// unknown service_name"（35 号 三层绑定：执行侧 service_registry 绑定）。
+    /// unknown service_name"（历史批次 三层绑定：执行侧 service_registry 绑定）。
     /// 核对集 = 原生叶子能力 + service_registry.json（`with_bound_services` 注入）。
     /// C6（02 方案层 3）：sensitive=true 的服务必须**注册表显式绑定**。
     ///
@@ -1695,10 +1695,10 @@ impl SessionApi {
         Ok(())
     }
 
-    /// T2: 导入快照包（36 号 集成契约）—— 6 项硬校验 → 逐条 Schema 门禁 → 服务绑定核对
+    /// T2: 导入快照包（历史批次 集成契约）—— 6 项硬校验 → 逐条 Schema 门禁 → 服务绑定核对
     /// → 原子落盘 → 触发 reload。
     ///
-    /// - 任一硬校验失败 → `Err`（显式报错，不静默跳过，T0/35 号 §9）；
+    /// - 任一硬校验失败 → `Err`（显式报错，不静默跳过，T0/设计文档 §9）；
     /// - `dry_run=true` 只跑校验链（6 项 + Schema 门禁 + 服务绑定核对），不落盘不 reload；
     /// - 返回 [evorule_bundle::ImportResult]（校验通过后的运行配置）。
     pub async fn import_bundle(
@@ -1752,7 +1752,7 @@ impl SessionApi {
             }
         }
 
-        // ②.5 enforce 层级门禁（UV-147）：bundle 恒为 L3（落 rules_dir/bundles/），
+        // ②.5 enforce 层级门禁（回归验证）：bundle 恒为 L3（落 rules_dir/bundles/），
         // 携带 enforce 的规则导入期即硬拒收——不给"loader fail-soft 跳过"留口，
         // 治理语义：引擎级阻止权不随 bundle 分发，仅治理链晋升（meta_promotion）可达 L2。
         for entry in &bundle.entries {
@@ -1797,7 +1797,7 @@ impl SessionApi {
 
         // ⑥ T5 审计溯源：bundle 导入历史写入 workspace 元数据库（bundle_imports 表）。
         // 管理元数据（imported_at 墙钟旁路），绝不渗入 fact / 内容哈希 / 审计验证链。
-        // 写入失败 → 显式 Err（不静默掩盖审计缺失，35 号 §9）；bundle 落盘已完成但溯源
+        // 写入失败 → 显式 Err（不静默掩盖审计缺失，设计文档 §9）；bundle 落盘已完成但溯源
         // 未记录，调用方需知悉。溯源主体沿用治理侧导出者 exported_by（发布链发布者），
         // 缺省 fallback "system"。
         if let Some(ws_db) = &self.workspace_db {
@@ -1863,7 +1863,7 @@ impl SessionApi {
     /// T5: 列出 bundle 导入溯源记录（bundle_imports 表, 按导入时间倒序, 限制条数）。
     ///
     /// - workspace 元数据库未接线（None）→ 空列表（非错误，未启用溯源）；
-    /// - 查询失败 → **显式 Err**（不静默，35 号 §9）。
+    /// - 查询失败 → **显式 Err**（不静默，设计文档 §9）。
     pub fn list_bundle_imports(
         &self,
         limit: i64,
@@ -2518,7 +2518,7 @@ pub struct AppState {
     /// 模板市场目录句柄
     marketplace_dir: MarketplaceDir,
 
-    /// 59 号 W1:应用级配额限流管理器(per-app 速率+日配额;
+    /// 批次 W1:应用级配额限流管理器(per-app 速率+日配额;
     /// 创建时从最近快照恢复日计数,快照后台任务由 main 装配后 spawn)
     app_quota: std::sync::Arc<crate::api::app_quota::AppQuotaManager>,
 }
@@ -2542,7 +2542,7 @@ impl AppState {
         // W4：模板市场目录自 SessionApi 派生（rules_dir 父目录拼接）——
         // 同模块直读私有字段；先取路径再移动 sessions，避免 use-after-move
         let marketplace_dir = MarketplaceDir(sessions.marketplace_dir.clone());
-        // 59 号 W1:配额管理器随 AppState 创建(从最近快照恢复日计数);
+        // 批次 W1:配额管理器随 AppState 创建(从最近快照恢复日计数);
         // 快照后台任务在 main 装配完成后 spawn(需要 Arc,测试路径不 spawn)
         let app_quota = std::sync::Arc::new(crate::api::app_quota::AppQuotaManager::start_recover(
             &shared_facts,
@@ -2578,7 +2578,7 @@ impl AppState {
         self.demo_auth
     }
 
-    /// 59 号 W1:应用配额管理器(快照任务 spawn 用)
+    /// 批次 W1:应用配额管理器(快照任务 spawn 用)
     pub fn app_quota(&self) -> std::sync::Arc<crate::api::app_quota::AppQuotaManager> {
         self.app_quota.clone()
     }
@@ -3743,7 +3743,7 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
             );
         }
 
-        // enforce 强制拦截事实（UV-147，记录性事实，不推进版本）
+        // enforce 强制拦截事实（回归验证，记录性事实，不推进版本）
         Fact::Violation {
             id,
             cause,
@@ -4084,7 +4084,7 @@ async fn update_payload(
     // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
     // 身份由认证中间件注入：认证启用时必注入（User/Service/App）；identity 为 None
     // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
-    // 58 号 W2：App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
+    // 批次 W2：App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
     if requires_service_identity(&req.path)
         && matches!(
             identity,
@@ -6014,7 +6014,7 @@ async fn session_payload(
     // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
     // 身份由认证中间件注入：认证启用时必注入（User/Service/App）；identity 为 None
     // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
-    // 58 号 W2：App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
+    // 批次 W2：App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
     if requires_service_identity(&req.path)
         && matches!(
             identity,
@@ -6473,7 +6473,7 @@ pub enum FactEnvelope {
         /// 各规则命中归因（与合并规则列表等长，按执行顺序）
         rule_hits: Vec<TraceHitDto>,
     },
-    /// enforce 强制拦截（UV-147，记录性事实；不推进版本号）
+    /// enforce 强制拦截（回归验证，记录性事实；不推进版本号）
     Violation {
         /// Fact ID
         id: u64,
@@ -6576,7 +6576,7 @@ fn fact_to_envelope(fact: &Fact, version: u64) -> FactEnvelope {
                 })
                 .collect(),
         },
-        // enforce 强制拦截事实（UV-147，记录性事实，不推进版本）
+        // enforce 强制拦截事实（回归验证，记录性事实，不推进版本）
         Fact::Violation {
             id,
             cause,
@@ -8328,7 +8328,7 @@ impl GovernanceServer {
                 "/api/rules/hit-stats/{rule_key}",
                 get(hit_stats_rule_handler),
             )
-            // T2: 快照包导入端点（36 号 集成契约）——写 rules_dir 的运营操作，走受保护路由
+            // T2: 快照包导入端点（历史批次 集成契约）——写 rules_dir 的运营操作，走受保护路由
             .route(
                 "/api/bundles/import",
                 post(crate::api::bundles::import_bundle_handler),
@@ -8378,7 +8378,7 @@ impl GovernanceServer {
             // W2b:统一认证中间件(双凭据:静态 user/service token 或
             // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
             // 内部调用方沿用静态 service token,无需改造。
-            // 59 号 W1:State 增补 AppQuotaManager(per-app 配额检查)
+            // 批次 W1:State 增补 AppQuotaManager(per-app 配额检查)
             .layer(axum::middleware::from_fn_with_state(
                 (
                     auth,
@@ -8498,7 +8498,7 @@ impl GovernanceServer {
         let metrics_router = Router::<AppState>::new().route("/metrics", get(metrics_handler));
 
         let metrics_router = if self.metrics_requires_auth {
-            // 59 号 W1:State 增补 AppQuotaManager(与 protected_routes 同构)
+            // 批次 W1:State 增补 AppQuotaManager(与 protected_routes 同构)
             metrics_router.layer(axum::middleware::from_fn_with_state(
                 (
                     self.auth.clone(),
@@ -8625,7 +8625,7 @@ impl GovernanceServer {
 
 // ====================================================================
 
-/// 单层规则清单项（UV-145 W1：层级可观测，60 号方案 §2.1）
+/// 单层规则清单项（批次 W1：层级可观测，设计方案 §2.1）
 #[derive(Debug, Serialize, ToSchema)]
 
 pub struct RuleTierEntry {
@@ -8650,7 +8650,7 @@ pub struct RulesResponse {
     /// 当前生效的 transform 规则列表（core_eval）
     pub core_eval: Vec<serde_json::Value>,
 
-    /// 三层规则清单（UV-145 W1：L1 宪法 / L2 元规则 / L3 业务；分层为纯约定，执行顺序由"core_eval 在前 + 完整路径字典序"保证）
+    /// 三层规则清单（批次 W1：L1 宪法 / L2 元规则 / L3 业务；分层为纯约定，执行顺序由"core_eval 在前 + 完整路径字典序"保证）
     pub tiers: Vec<RuleTierEntry>,
 }
 
@@ -8677,7 +8677,7 @@ async fn get_rules(State(api): State<SessionApi>) -> Result<Json<RulesResponse>,
 
     let core_eval_serde: Vec<serde_json::Value> = core_eval.iter().map(tcb_to_serde).collect();
 
-    // UV-145 W1：三层清单随响应返回（只读扫描，运维一眼核对层级是否被篡改）
+    // 批次 W1：三层清单随响应返回（只读扫描，运维一眼核对层级是否被篡改）
     let tiers = SessionApi::tier_inventory(&api.core_eval_path, &api.rules_dir);
 
     Ok(Json(RulesResponse {
@@ -8907,7 +8907,7 @@ pub async fn invoke_service_handler(
     match result {
         Ok(result) => Ok(Json(tcb_to_serde(&result))),
         Err(e) => {
-            // UV-183 批次B（P1-11 错误脱敏）: 错误响应不再内嵌链路错误原文
+            // 批次B（P1-11 错误脱敏）: 错误响应不再内嵌链路错误原文
             // （reqwest Display/上游响应片段可携带内网 URL/端口/报文细节）。
             // 分类 → 通用文案回传;原始细节只进服务端日志。会话内 call_service
             // 路径（io_request Fact 入链）不经此处,错误串零改动。
@@ -8933,7 +8933,7 @@ fn proxy_err(status: StatusCode, msg: String) -> (StatusCode, Json<serde_json::V
     (status, Json(serde_json::json!({ "error": msg })))
 }
 
-/// UV-183 批次B（P1-11 错误脱敏）: 上游/链路错误字符串分类 → 通用文案。
+/// 批次B（P1-11 错误脱敏）: 上游/链路错误字符串分类 → 通用文案。
 ///
 /// invoke 直调与审批代理的错误响应不再内嵌 reqwest Display 或上游响应片段
 /// （可能携带内网 URL/端口/上游报文等内部拓扑细节）。本函数对最终错误串做
@@ -9018,7 +9018,7 @@ async fn proxy_plugin_admin(
         } else if e.is_connect() {
             "上游连接失败(插件进程未监听/端口不可达)".to_string()
         } else {
-            // UV-183 批次B: fallback 分支同口径——raw reqwest Display 不回传
+            // 批次B: fallback 分支同口径——raw reqwest Display 不回传
             // 客户端,分类通用文案 + 细节只进服务端日志
             tracing::warn!("插件审批代理转发失败: plugin={id} url={url} detail={e}");
             "上游请求失败（详情见服务端日志）".to_string()
@@ -9037,7 +9037,7 @@ async fn proxy_plugin_admin(
     let value: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(_) => {
-            // UV-183 批次B: 非 JSON 上游响应不再原样透传（raw 面收缩）——
+            // 批次B: 非 JSON 上游响应不再原样透传（raw 面收缩）——
             // 客户端只收通用文案,原文（截断）进服务端日志
             let snippet: String = text.chars().take(512).collect();
             tracing::warn!(
@@ -9167,7 +9167,7 @@ pub async fn plugin_admin_approve(
     identity: Option<Extension<CallerIdentity>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
     // 审批 = 人工治理动作,自动化凭据(service/app key)拒绝(人类在场语义;
-    // 58 号 W2:app key 通道同理 403)
+    // 批次 W2:app key 通道同理 403)
     if matches!(
         identity,
         Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
@@ -9224,7 +9224,7 @@ pub async fn plugin_admin_reject(
     body: Option<Json<serde_json::Value>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
     // 审批 = 人工治理动作,自动化凭据(service/app key)拒绝(人类在场语义;
-    // 58 号 W2:app key 通道同理 403)
+    // 批次 W2:app key 通道同理 403)
     if matches!(
         identity,
         Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
@@ -10483,7 +10483,7 @@ mod tests {
         assert_eq!(plugin_admin_token_env("a"), "EVORULE_PLUGIN_ADMIN_TOKEN__A");
     }
 
-    /// UV-183 批次A（P1-10 折叠撞名）: 不同 id 折叠撞同一 env 名 → true;
+    /// 批次A（P1-10 折叠撞名）: 不同 id 折叠撞同一 env 名 → true;
     /// 不同 env 名 / 同一 id → false（装载期 fail-fast 的纯函数判定基座）
     #[test]
     fn test_plugin_admin_token_env_collision() {
@@ -10503,7 +10503,7 @@ mod tests {
         assert!(!plugin_admin_token_env_collides("a", "b"));
     }
 
-    /// UV-183 批次B（P1-11 错误脱敏）: 链路错误串分类——timeout/connect 类
+    /// 批次B（P1-11 错误脱敏）: 链路错误串分类——timeout/connect 类
     /// 命中对应通用文案;含 URL/端口/响应片段的 raw Display 落"其他"通用文案
     /// （客户端永远只见分类文案,原文只进日志）
     #[test]
@@ -11472,7 +11472,7 @@ mod tests {
     /// ①a: reap_once 保活——生产会话被 touch,非生产会话 TTL 到期被回收。
     /// 内含对照组: 两会话同时创建同时到期,仅生产会话存活 ⇒ 存活来自保活而非 TTL 未到。
     #[tokio::test]
-    async fn test_uv079_reap_once_keeps_production_session_alive() {
+    async fn test_reg079_reap_once_keeps_production_session_alive() {
         let mut instr = std::collections::BTreeMap::new();
         instr.insert("type".to_string(), JsonValue::string("noop"));
         let core_eval = vec![JsonValue::Object(instr)];
@@ -11490,7 +11490,7 @@ mod tests {
         let other_id = sessions.lock().await.create_session().unwrap();
 
         let db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
-        db.update_production_state(prod_id as i64, 0, "", "test:uv079")
+        db.update_production_state(prod_id as i64, 0, "", "test:reg079")
             .unwrap();
 
         // 等待两会话空闲到期(150ms > 100ms TTL;reap_once 内 touch 会重置
@@ -11508,14 +11508,14 @@ mod tests {
     /// ①a: reap_once 自愈——幻影引用(current_session_id 指向不存在的
     /// 会话,原始形态)被检测并重建,版本/哈希保留。
     #[tokio::test]
-    async fn test_uv079_reap_once_recovers_phantom_production_reference() {
+    async fn test_reg079_reap_once_recovers_phantom_production_reference() {
         let (state, _) = make_test_state();
         let api = state.sessions.clone();
         let db = api.workspace_db.clone().unwrap();
         let sessions = api.sessions.clone();
 
         // 构造幻影: 引用不存在的会话 999,版本 5/哈希 hash-abc
-        db.update_production_state(999, 5, "hash-abc", "test:uv079")
+        db.update_production_state(999, 5, "hash-abc", "test:reg079")
             .unwrap();
 
         reap_once(&sessions, Some(&db), Some(&api)).await;
@@ -11536,7 +11536,7 @@ mod tests {
 
     /// ①b: DELETE 生产会话被 409 拒绝且会话存活;普通会话删除不受影响。
     #[tokio::test]
-    async fn test_uv079_close_production_session_rejected_409() {
+    async fn test_reg079_close_production_session_rejected_409() {
         let (state, _) = make_test_state();
         let router = make_test_router(&state);
         let api = state.sessions.clone();
@@ -11549,7 +11549,7 @@ mod tests {
             let o = mgr.create_session().unwrap();
             (p, o)
         };
-        db.update_production_state(prod_id as i64, 0, "", "test:uv079")
+        db.update_production_state(prod_id as i64, 0, "", "test:reg079")
             .unwrap();
 
         // 删除生产会话 → 409 拒绝(fail-fast,指引走治理流/重启)
@@ -12180,7 +12180,7 @@ mod tests {
         assert_eq!(json["success"], true);
     }
 
-    // --- 58 号 W2：应用级凭据（app key 通道端到端） ---
+    // --- 批次 W2：应用级凭据（app key 通道端到端） ---
 
     /// 在已启用认证的 router 上完成 bootstrap → login → 签发 app 凭据，
     /// 返回 (router, app_key, platform_token)。
@@ -12746,7 +12746,7 @@ mod tests {
     /// B2-形状: verdict=pass 但 subset 为空(零证据 pass)→ 显式拒绝,
     /// 封死绕过治理域手写伪造直 POST import 的路径。
     #[tokio::test]
-    async fn test_uv080_import_rejects_pass_without_traceable_subset() {
+    async fn test_reg080_import_rejects_pass_without_traceable_subset() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12769,9 +12769,9 @@ mod tests {
         );
 
         let mut bundle = q12_knowledge_bundle(
-            "bundle-uv080-shape",
-            "ds-uv080-shape",
-            "scn-uv080",
+            "bundle-reg080-shape",
+            "ds-reg080-shape",
+            "scn-reg080",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         // 零证据 pass: 空 subset
@@ -12796,7 +12796,7 @@ mod tests {
     /// resolver 环境与 test_knowledge_import_refresh 同构(schema URI 命中),
     /// 另接线 in-memory workspace_db(沙盒表为空)。
     #[tokio::test]
-    async fn test_uv080_import_rejects_phantom_sandbox_reference() {
+    async fn test_reg080_import_rejects_phantom_sandbox_reference() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12822,9 +12822,9 @@ mod tests {
         ));
 
         let mut bundle = q12_knowledge_bundle(
-            "bundle-uv080-ref",
-            "ds-uv080-ref",
-            "scn-uv080-ref",
+            "bundle-reg080-ref",
+            "ds-reg080-ref",
+            "scn-reg080-ref",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         // 引用不存在的沙盒 999
@@ -12848,7 +12848,7 @@ mod tests {
     /// B2-正路径: human:<actor> 显式人工背书 → 放行(无需存在性校验,
     /// 标记即显式降级声明)。
     #[tokio::test]
-    async fn test_uv080_import_allows_human_endorsement() {
+    async fn test_reg080_import_allows_human_endorsement() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12872,16 +12872,16 @@ mod tests {
 
         // q12_knowledge_bundle 的 subset 已是 human 背书形态
         let bundle = q12_knowledge_bundle(
-            "bundle-uv080-human",
-            "ds-uv080-human",
-            "scn-uv080-human",
+            "bundle-reg080-human",
+            "ds-reg080-human",
+            "scn-reg080-human",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         let result = sessions
             .import_bundle(&bundle, false)
             .await
             .expect("human 背书应放行(显式降级,无需存在性校验)");
-        assert_eq!(result.dataset_id, "ds-uv080-human");
+        assert_eq!(result.dataset_id, "ds-reg080-human");
         assert_eq!(result.entry_count, 1);
     }
 
@@ -12890,7 +12890,7 @@ mod tests {
     /// 在 in-memory db 造真实沙盒记录 + 磁盘报告文件(与 close_sandbox 落盘
     /// 同构:report_<facts basename>.json 于 SANDBOX_REPORT_DIR)。
     #[tokio::test]
-    async fn test_uv080_import_sandbox_reference_with_report_consistency() {
+    async fn test_reg080_import_sandbox_reference_with_report_consistency() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12921,13 +12921,13 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let ws_id = format!("ws-uv080-{ts}");
+        let ws_id = format!("ws-reg080-{ts}");
         {
             let now_dt = ws_db.get_production_state().unwrap().updated_at;
             let ws = evorule_workspace::models::WorkspaceRecord {
                 id: ws_id.clone(),
-                name: "ws-uv080".into(),
-                owner_id: "test:uv080".into(),
+                name: "ws-reg080".into(),
+                owner_id: "test:reg080".into(),
                 created_at: now_dt,
                 updated_at: now_dt,
                 archived_at: None,
@@ -12941,10 +12941,10 @@ mod tests {
         let facts_1 = format!("audit_sandbox_1_{ts}.json");
         let facts_2 = format!("audit_sandbox_2_{ts}.json");
         let sb_pass = ws_db
-            .insert_sandbox_session(None, &ws_id, 1, Some("hash-uv080"), 1, "test:uv080")
+            .insert_sandbox_session(None, &ws_id, 1, Some("hash-reg080"), 1, "test:reg080")
             .unwrap();
         let sb_fail = ws_db
-            .insert_sandbox_session(None, &ws_id, 1, Some("hash-uv080"), 1, "test:uv080")
+            .insert_sandbox_session(None, &ws_id, 1, Some("hash-reg080"), 1, "test:reg080")
             .unwrap();
         // insert 自增从 1 起;以实际返回 id 为准写报告与引用
         let export_1 = format!("{report_dir}/{facts_1}");
@@ -12965,9 +12965,9 @@ mod tests {
 
         // PASS 沙盒引用 → 放行
         let mut bundle = q12_knowledge_bundle(
-            "bundle-uv080-sb-pass",
-            "ds-uv080-sb-pass",
-            "scn-uv080-sb-pass",
+            "bundle-reg080-sb-pass",
+            "ds-reg080-sb-pass",
+            "scn-reg080-sb-pass",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         bundle.tests.subset = vec![format!("sandbox:{sb_pass}")];
@@ -12976,14 +12976,14 @@ mod tests {
             .import_bundle(&bundle, false)
             .await
             .expect("closed 沙盒 + PASS 报告引用应放行");
-        assert_eq!(result.dataset_id, "ds-uv080-sb-pass");
+        assert_eq!(result.dataset_id, "ds-reg080-sb-pass");
         assert_eq!(result.entry_count, 1);
 
         // FAIL 沙盒引用 → 拒收(报告一致性)
         let mut bundle = q12_knowledge_bundle(
-            "bundle-uv080-sb-fail",
-            "ds-uv080-sb-fail",
-            "scn-uv080-sb-fail",
+            "bundle-reg080-sb-fail",
+            "ds-reg080-sb-fail",
+            "scn-reg080-sb-fail",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         bundle.tests.subset = vec![format!("sandbox:{sb_fail}")];
@@ -13212,7 +13212,7 @@ mod tests {
     }
 
     // ====================================================================
-    // UV-145 W1：tier 层级门禁单测（正向 / 反向 / 缺声明 / 子目录不算 L2）
+    // 批次 W1：tier 层级门禁单测（正向 / 反向 / 缺声明 / 子目录不算 L2）
     // ====================================================================
 
     /// 构造临时规则文件并返回 (文件路径, 解析后 JSON)
@@ -13233,7 +13233,7 @@ mod tests {
     #[test]
     fn test_tier_gate_root_meta_with_decl_passes() {
         // 正向：根目录 00_meta_ 文件带 tier=meta → 放行
-        let dir = std::env::temp_dir().join("uv145_tier_gate_ok");
+        let dir = std::env::temp_dir().join("reg145_tier_gate_ok");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
             &dir,
@@ -13247,7 +13247,7 @@ mod tests {
     #[test]
     fn test_tier_gate_root_meta_without_decl_rejected() {
         // 缺声明：根目录 00_meta_ 文件无 tier → 拒载（防裸文件冒充元规则）
-        let dir = std::env::temp_dir().join("uv145_tier_gate_no_decl");
+        let dir = std::env::temp_dir().join("reg145_tier_gate_no_decl");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
             &dir,
@@ -13261,7 +13261,7 @@ mod tests {
     #[test]
     fn test_tier_gate_l3_with_meta_decl_rejected() {
         // 反向：bundles/ 子目录条目带 tier=meta → 拒载（防 LLM 补丁伪造层级）
-        let dir = std::env::temp_dir().join("uv145_tier_gate_forged");
+        let dir = std::env::temp_dir().join("reg145_tier_gate_forged");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
             &dir,
@@ -13275,7 +13275,7 @@ mod tests {
     #[test]
     fn test_tier_gate_subdir_meta_prefix_not_l2() {
         // 子目录内 00_meta_ 前缀不算 L2：带 tier=meta 同样按伪造拒载
-        let dir = std::env::temp_dir().join("uv145_tier_gate_subdir");
+        let dir = std::env::temp_dir().join("reg145_tier_gate_subdir");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
             &dir,
@@ -13289,7 +13289,7 @@ mod tests {
     #[test]
     fn test_tier_gate_root_business_file_untouched() {
         // 存量业务文件（根目录无前缀、无 tier 声明）→ 放行（兼容零影响）
-        let dir = std::env::temp_dir().join("uv145_tier_gate_biz");
+        let dir = std::env::temp_dir().join("reg145_tier_gate_biz");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
             &dir,
@@ -13302,8 +13302,8 @@ mod tests {
 
     #[test]
     fn test_tier_gate_enforce_in_l2_passes() {
-        // UV-147 正向：L2 元规则文件携带 enforce → 放行（强制原语唯一合法落点）
-        let dir = std::env::temp_dir().join("uv147_enforce_l2_ok");
+        // 回归验证 正向：L2 元规则文件携带 enforce → 放行（强制原语唯一合法落点）
+        let dir = std::env::temp_dir().join("reg147_enforce_l2_ok");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
             &dir,
@@ -13316,8 +13316,8 @@ mod tests {
 
     #[test]
     fn test_tier_gate_enforce_in_business_rejected() {
-        // UV-147 反向：业务文件携带 enforce → 拒载（防 LLM 补丁私自获得引擎级阻止权）
-        let dir = std::env::temp_dir().join("uv147_enforce_biz_rej");
+        // 回归验证 反向：业务文件携带 enforce → 拒载（防 LLM 补丁私自获得引擎级阻止权）
+        let dir = std::env::temp_dir().join("reg147_enforce_biz_rej");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
             &dir,
@@ -13330,8 +13330,8 @@ mod tests {
 
     #[test]
     fn test_tier_gate_enforce_in_subdir_meta_rejected() {
-        // UV-147 反向：子目录 00_meta_ 前缀不算 L2，携带 enforce 同样拒载
-        let dir = std::env::temp_dir().join("uv147_enforce_subdir_rej");
+        // 回归验证 反向：子目录 00_meta_ 前缀不算 L2，携带 enforce 同样拒载
+        let dir = std::env::temp_dir().join("reg147_enforce_subdir_rej");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
             &dir,

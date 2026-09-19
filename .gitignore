@@ -89,7 +89,7 @@ wendang/**
 test_api.ps1
 test_output.txt
 
-# 本地 cargo override（不进 CI，见 evorule-server/Cargo.toml UV-100 注释）
+# 本地 cargo override（不进 CI，见 evorule-server/Cargo.toml 回归验证 注释）
 .cargo/config.toml
 
 # === 安装器载荷（prepare-payload.ps1 生成,build.rs 整树内嵌;可随时重建,不入库）===
@@ -97,7 +97,7 @@ test_output.txt
 # （exe/web 静态/rules/资源）,由 prepare-payload.ps1 重建,exe 另受全局 *.exe 规则排除
 installer/payload/
 
-# === 看门狗守护配置（UV-182 批次E 出库:部署侧可能写入真实 token env,防误提交;模板 = plugins-watchdog.example.json 入库）===
+# === 看门狗守护配置（批次E 出库:部署侧可能写入真实 token env,防误提交;模板 = plugins-watchdog.example.json 入库）===
 dist/plugins-watchdog.json
 
 # === console-cloud 构建产物镜像（prepare-payload 从 evorule-console-cloud build/ 汇集;源仓重建,不入库）===

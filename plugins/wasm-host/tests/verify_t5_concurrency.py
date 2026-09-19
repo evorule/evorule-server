@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-"""T5 并发正确性端到端验证（77 号阶段 2 · T5）
+"""T5 并发正确性端到端验证（阶段 2 · T5）
 
 真实起进程（wasm-host + evorule-server），N 路并发直调 UDF，断言：
 
@@ -201,7 +201,7 @@ def main() -> int:
     host: subprocess.Popen | None = None
     try:
         print(
-            f"T5 并发正确性端到端验证（77 号阶段 2 · T5）"
+            f"T5 并发正确性端到端验证（阶段 2 · T5）"
             f"— {args.threads} 路 x {args.iters} 次 = {args.threads * args.iters} 请求"
         )
 

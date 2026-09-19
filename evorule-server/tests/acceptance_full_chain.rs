@@ -1,4 +1,4 @@
-//! 数据治理攻坚 总验收（13 号第三节端到端演练，段B 完成标准）
+//! 数据治理攻坚 总验收（历史批次第三节端到端演练，段B 完成标准）
 //!
 //! 单链全走真实 API（治理侧 axum router oneshot + 本地 mock evo-agent serve +
 //! 执行侧真实 SessionApi + 本地 echo 服务），非桩模拟：
@@ -7,7 +7,7 @@
 //! 平台层引导(org-b + 成员指派, B1)
 //!   → 双层租户隔离(org-a 用户不可见 org-b private 数据集)
 //!   → 科学家建数据集(rule_engineer, org-b)
-//!   → LLM 草稿(37 号 /llm/ops/draft_rule → mock evo-agent; 仅 Draft)
+//!   → LLM 草稿(历史批次 /llm/ops/draft_rule → mock evo-agent; 仅 Draft)
 //!   → 人工 gate two(条目 submit-candidate/approve + 数据集 lifecycle + 独立发布)
 //!   → 执行侧拉包直跑(快照包 → SessionApi import → call_service → echo 命中)
 //!   → 审计回放(auth/lifecycle/llm 三审计链可追溯)
@@ -262,7 +262,7 @@ fn build_gov(tmp: &std::path::Path, llm_base_url: &str) -> (axum::Router, Arc<Ru
 
 // ================= 总验收主链 =================
 
-// multi_thread：LLM 代理内 ureq 为阻塞调用（37 号同步主路径），单线程 runtime
+// multi_thread：LLM 代理内 ureq 为阻塞调用（历史批次同步主路径），单线程 runtime
 // 会被 oneshot 处理器饿死 mock evo-agent 任务 → 挂死；多 worker 下阻塞仅占一个 worker。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 // 总验收主链:治理→发布→导入→执行→审计单用例贯通,场景化测试不拆分
@@ -393,7 +393,7 @@ async fn acceptance_governance_to_execution_full_chain() {
         Some(json!({
             "dataset_id": "ds-acc",
             "name": "总验收规则集",
-            "description": "13 号第三节端到端演练",
+            "description": "历史批次第三节端到端演练",
             "domain": ["tax"],
             "visibility": "private",
             "law_ref": { "document_id": "acc-e2e", "effective_from": "2026-08-31" }
@@ -436,7 +436,7 @@ async fn acceptance_governance_to_execution_full_chain() {
     .await;
     assert_eq!(st, axum::http::StatusCode::OK, "声明数据依赖: {body}");
 
-    // ---------- 阶段 2：LLM 草稿（37 号，仅 Draft） ----------
+    // ---------- 阶段 2：LLM 草稿（历史批次，仅 Draft） ----------
     let (st, body) = send(
         &app,
         "POST",
@@ -538,7 +538,7 @@ async fn acceptance_governance_to_execution_full_chain() {
         "POST",
         "/v1/datasets/ds-acc/publish",
         Some(&approver),
-        Some(json!({ "confirm": true, "reason": "13 号第三节总验收发布" })),
+        Some(json!({ "confirm": true, "reason": "历史批次第三节总验收发布" })),
     )
     .await;
     assert_eq!(st, axum::http::StatusCode::OK, "独立发布审批: {body}");
@@ -656,7 +656,7 @@ async fn acceptance_governance_to_execution_full_chain() {
     );
     assert!(text.contains("Published"), "发布应入生命周期审计: {text}");
 
-    // LLM 操作审计（37 号 §8）：draft_rule completed 可溯源
+    // LLM 操作审计（设计文档 §8）：draft_rule completed 可溯源
     let (st, la) = send(&app, "GET", "/v1/llm/audits", Some(&root), None).await;
     assert_eq!(st, axum::http::StatusCode::OK);
     assert_eq!(

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-"""V6 离线语义端到端验证（77 号阶段 2 · V6 / T8 探活复用）
+"""V6 离线语义端到端验证（阶段 2 · V6 / T8 探活复用）
 
 全部真实起进程（wasm-host + evorule-server），断言四条：
 
@@ -10,7 +10,7 @@
   B. 停掉 host → 同一调用得到 **502 + 「上游连接失败（服务不可达）」**，秒级返回
      —— 非 hang、非 panic、非等待超时（错误脱敏口径，原始细节只进服务端日志）；
   C. 探活翻转 → GET /api/health 的 plugins["wasm-host"].liveness.status = "offline"
-     （57 号探活任务自动发现，无需人工干预）；
+     （历史批次探活任务自动发现，无需人工干预）；
   D. server 日志出现 plugin_offline 报警（error! 自诊断 + platform.event 入链留痕）。
 
 前置：
@@ -201,7 +201,7 @@ def main() -> int:
     host: subprocess.Popen | None = None
     server_log: Path | None = None
     try:
-        print("V6 离线语义端到端验证（77 号阶段 2 · V6 / T8）")
+        print("V6 离线语义端到端验证（阶段 2 · V6 / T8）")
 
         # ---- 场景 A：host 在线（对照组）----
         print("\n[场景 A] host 在线 → invoke 直调 200（对照组）")

@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 
 /**
- * AssemblyScript UDF 示例：`udf_finance_tax_calc_as`（77 号阶段 2 · T7）
+ * AssemblyScript UDF 示例：`udf_finance_tax_calc_as`（阶段 2 · T7）
  *
  * # 这条示例要证什么
  * UDF ABI 是**语言无关**的：同一份 host（`evorule-wasm-host`）既能跑

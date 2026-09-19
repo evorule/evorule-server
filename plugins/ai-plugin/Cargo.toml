@@ -6,7 +6,7 @@ name = "evorule-ai-plugin"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-description = "ai-plugin external plugin: 服务端驻留 LLM 执行者（服务面 + 自编排审计回路，契约 v1.2；UV-172 L1 地基）"
+description = "ai-plugin external plugin: 服务端驻留 LLM 执行者（服务面 + 自编排审计回路，契约 v1.2；回归验证 L1 地基）"
 repository = "https://gitee.com/evorule/evorule-server"
 publish = false
 

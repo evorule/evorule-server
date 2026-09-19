@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # watchdog-plugins.py - Deployment-side watchdog for external plugin processes
-# (Linux package; UV-182 legacy L1). Semantics mirror watchdog-plugins.ps1
+# (Linux package; 回归验证 legacy L1). Semantics mirror watchdog-plugins.ps1
 # (Windows) so both deployment sides behave identically:
 #   - acts only on plugins reported "offline" by GET /api/health
 #   - "unauthorized" (401/403) is surfaced loudly but NEVER acted on: the

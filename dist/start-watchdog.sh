@@ -1,6 +1,6 @@
 #!/bin/sh
 # start-watchdog.sh - Deployment-side plugin watchdog launcher (Linux package;
-# UV-182 legacy L1). Optional: only needed if you want external plugin
+# 回归验证 legacy L1). Optional: only needed if you want external plugin
 # processes auto-restarted. Requires python3; without it use systemd
 # Restart=always instead (see README-STARTUP.txt).
 cd "$(dirname "$0")" || exit 1

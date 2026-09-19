@@ -6,7 +6,7 @@ name = "evorule-wasm-host"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-description = "WASM UDF 宿主进程（wasmtime，零能力 + fuel 计量）；以 external 插件身份经 HTTP 接入 evorule-server（77 号阶段 2 / ADR-0001）"
+description = "WASM UDF 宿主进程（wasmtime，零能力 + fuel 计量）；以 external 插件身份经 HTTP 接入 evorule-server（阶段 2 / ADR-0001）"
 repository = "https://gitee.com/evorule/evorule-server"
 publish = false
 
@@ -21,7 +21,7 @@ rust-version = "1.95"
 
 [dependencies]
 # 安全边界组件：**精确 pin**（等号前缀）。升级必须是显式 diff，禁止 cargo update 静默漂移。
-# 升级前必查：RUSTSEC advisory + Bytecode Alliance 安全通告（见 77 号 §5.1 升级纪律）。
+# 升级前必查：RUSTSEC advisory + Bytecode Alliance 安全通告（见 设计文档 §5.1 升级纪律）。
 wasmtime = { version = "=48.0.2", default-features = false, features = [
     "runtime",      # 最小运行时（不含 wasi / component-model，保持零能力基线）
     "cranelift",    # 编译后端

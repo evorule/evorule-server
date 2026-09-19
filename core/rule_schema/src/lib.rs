@@ -243,7 +243,7 @@ pub fn validate_rule_input(input: &Value) -> SchemaReport {
 /// 校验 submit_command / session_command 提交的单条指令（线1 防御层，records/77，Opt3）。
 ///
 /// 双层语言（records/75）分派：
-/// - **元指令层类型**（set/push/branch/io_request；collect/merge 已退役，69 号清理计划）→
+/// - **元指令层类型**（set/push/branch/io_request；collect/merge 已退役，规则清理方案）→
 ///   按 `transform_rule` 严格
 ///   递归校验（含 domain 结构、path 语法、`__io_results__` 复数强制）——demos 08/012/013/014/016
 ///   的 `branch` 工作流走此路径，单数 `__io_result__` / 非法元指令在此被拦截。
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn retired_collect_merge_rejected() {
-        // 69 号清理计划（2026-09-14）：collect/merge 原语已退役，
+        // 规则清理方案（2026-09-14）：collect/merge 原语已退役，
         // schema 枚举移除后两类指令必须被拒（防事故回流）
         for ty in ["collect", "merge"] {
             let doc = rs(serde_json::json!([

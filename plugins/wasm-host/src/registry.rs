@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! UDF 模块注册表：扫描目录 → 编译 → 按服务名索引 → **声明对账**。
 //!
-//! **服务名 = `.wasm` 文件名（去扩展名）**，对齐 67 号 `udf_finance_tax_calc` 口径。
+//! **服务名 = `.wasm` 文件名（去扩展名）**，对齐历史批次 `udf_finance_tax_calc` 口径。
 //! 该口径必须与 `plugin.json` 的 `services[].name` 一致——由加载期对账强制
 //! （见 `declaration` 模块），不一致不再静默。
 //!

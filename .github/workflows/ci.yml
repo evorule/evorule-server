@@ -81,7 +81,7 @@ jobs:
       - name: check_doc_safety.py
         run: python3 scripts/check_doc_safety.py --skip-git
 
-  # ===== 原生服务声明漂移检查（UV-180/P0-2 · 零 cargo 依赖）=====
+  # ===== 原生服务声明漂移检查（回归验证/P0-2 · 零 cargo 依赖）=====
   # SSOT = 本仓 plugins/*/official_native_services.json；
   # 治理侧嵌入副本 = evorule-rule src/model/*.embedded.json。
   # fail-closed：漂移即红灯。修复 = 运行 scripts/sync-native-services.ps1
@@ -121,9 +121,9 @@ jobs:
         working-directory: plugins/wasm-host
         run: cargo audit
 
-  # ===== wasm-host 构建与测试（77 号遗-2 转立项 · 强阻塞）=====
+  # ===== wasm-host 构建与测试（历史遗留项 转立项 · 强阻塞）=====
   # wasm-host 是独立项目（不在 workspace），主 CI 的 lint/test/build 天然不覆盖；
-  # audit job 只扫 lock 不编译。本 job 补齐编译正确性与单测验证（78 号批次）。
+  # audit job 只扫 lock 不编译。本 job 补齐编译正确性与单测验证（历史批次）。
   # MSRV：rust-version = "1.95"（wasmtime 48）；stable 满足，字段本身 fail-fast 兜底。
   wasm-host:
     name: WASM host (fmt + clippy + test)
@@ -176,7 +176,7 @@ jobs:
           key: test-${{ hashFiles('**/Cargo.toml') }}
 
       - name: cargo test --workspace
-        # UV-100: 去掉 --all-features —— full-chain-tests 门控的三个跨仓集成
+        # 回归验证: 去掉 --all-features —— full-chain-tests 门控的三个跨仓集成
         # 测试依赖兄弟仓 evorule-rule（git rev dev-dep），CI 默认布局不启用该
         # feature（required-features 未满足不编译）；本地联测见 Cargo.toml 注释
         # --exclude evorule-setup: 同 clippy job 注释（payload 门禁, CI 无法编译 installer）

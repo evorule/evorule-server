@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! Rust UDF 示例：`udf_finance_tax_calc`（77 号阶段 2 · V4）
+//! Rust UDF 示例：`udf_finance_tax_calc`（阶段 2 · V4）
 //!
 //! # ABI（与 `evorule-wasm-host` 的约定）
 //! - `memory`：线性内存（cdylib 到 `wasm32-unknown-unknown` 时由工具链导出）

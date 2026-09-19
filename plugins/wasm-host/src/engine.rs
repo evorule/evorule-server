@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! WASM 执行引擎：零能力 + fuel 计量 + 内存上限 + **每次调用独立 Store**。
 //!
-//! # 安全模型（ADR-0001 / 77 号 V2–V3）
+//! # 安全模型（ADR-0001 / 历史批次 V2–V3）
 //! - **零能力（两道独立检查）**：
 //!   ① 加载期 —— `load` 枚举 `Module::imports()`，非空即拒（fail-fast，点名依赖），不依赖链接器行为；
 //!   ② 调用期 —— `Linker` 不定义任何 host function，实例化未授权 import 必失败。
@@ -11,7 +11,7 @@
 //! - **fuel**：`Config::consume_fuel(true)` + 每次调用设预算；耗尽 → trap。
 //! - **内存上限**：`ResourceLimiter` 在增长时拦截，超限 → alloc 失败而非 host OOM。
 //!
-//! # 确定性（77 号 V5）
+//! # 确定性（历史批次 V5）
 //! **每次调用新建 `Store`** —— 不复用实例、不跨调用保留状态，
 //! 且**不暴露**时间/随机/环境等 host function。相同输入 → 逐字节相同输出。
 

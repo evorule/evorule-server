@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 负面 fixture：**内存超限**的 UDF（77 号阶段 2 · V3 实证）
+//! 负面 fixture：**内存超限**的 UDF（阶段 2 · V3 实证）
 //!
 //! # 这条 fixture 要证什么
 //! 内存上限（`ResourceLimiter`，默认 16 MiB）的承诺是「超限 → 分配失败，

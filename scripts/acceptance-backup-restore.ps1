@@ -78,7 +78,7 @@ function Stop-Grace([object]$Proc) {
     }
 }
 
-$tmp = Join-Path $env:TEMP "uv031-backup-restore-$(Get-Random)"
+$tmp = Join-Path $env:TEMP "reg031-backup-restore-$(Get-Random)"
 New-Item -ItemType Directory -Path $tmp | Out-Null
 New-Item -ItemType Directory -Path "$tmp\run1\wal", "$tmp\run1\db", "$tmp\run1\memory", "$tmp\backup", "$tmp\rule" | Out-Null
 Write-Host "沙箱目录: $tmp"
@@ -108,7 +108,7 @@ if ($ok) {
     $sid = if ($resp.session_id) { [int]$resp.session_id } elseif ($resp.session_new) { [int]$resp.session_new } elseif ($resp.id) { [int]$resp.id } else { $null }
     Assert "S1 会话创建(返回会话 ID)" ($null -ne $sid) "响应: $($resp | ConvertTo-Json -Compress)"
 
-    $body = '{"instruction":{"type":"set","params":{"attr":"uv031_probe","operation":"set","value":42}}}'
+    $body = '{"instruction":{"type":"set","params":{"attr":"reg031_probe","operation":"set","value":42}}}'
     $null = Invoke-RestMethod -Uri "http://127.0.0.1:$PortServer/api/sessions/$sid/command" -Method Post -Body $body -ContentType 'application/json'
     Start-Sleep -Milliseconds 800
 
@@ -165,7 +165,7 @@ if ($sid) {
 
 # ============ 场景 2: 共享事实 WAL 损坏 -> 拒绝启动 ============
 Write-Host "`n===== 场景 2: 共享事实 WAL 乱码注入 -> 拒绝启动 ====="
-Set-Content -Path "$tmp\run1\wal\shared_facts.wal" -Value "CORRUPT-GARBAGE-LINE-UV031`nSECOND-GARBAGE-LINE" -Encoding ASCII
+Set-Content -Path "$tmp\run1\wal\shared_facts.wal" -Value "CORRUPT-GARBAGE-LINE-REG031`nSECOND-GARBAGE-LINE" -Encoding ASCII
 $p2 = Start-Process -FilePath $ServerExe -ArgumentList $baseArgs -WorkingDirectory $repoRoot `
     -WindowStyle Hidden -RedirectStandardOutput "$tmp\s2.out.log" -RedirectStandardError "$tmp\s2.err.log" -PassThru
 Start-Sleep -Seconds 8
@@ -227,9 +227,9 @@ Stop-Grace $p3
 
 # ============ 场景 4: rule.db 备份 -> 清空 -> 恢复 ============
 Write-Host "`n===== 场景 4: rule.db 备份恢复 ====="
-$ruleArgs = @('--db', "$tmp\rule\rule.db", '--port', "$PortRule", '--secret', 'uv031-test-secret',
-    '--admin-user', 'admin', '--admin-password', 'uv031-test')
-$loginBody = '{"tenant_id":"default","username":"admin","password":"uv031-test"}'
+$ruleArgs = @('--db', "$tmp\rule\rule.db", '--port', "$PortRule", '--secret', 'reg031-test-secret',
+    '--admin-user', 'admin', '--admin-password', 'reg031-test')
+$loginBody = '{"tenant_id":"default","username":"admin","password":"reg031-test"}'
 
 function Test-RuleLogin {
     try {

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-"""79 号 auto_discover 端到端实证（WASM 服务自动发现 · 路线 A）
+"""历史批次 auto_discover 端到端实证（WASM 服务自动发现 · 路线 A）
 
 临时改写 plugin.json（auto_discover 开启/策略表形态），真实起进程
-（wasm-host + evorule-server），按 79 号 §四 验收判据分三轮断言：
+（wasm-host + evorule-server），按 设计文档 §四 验收判据分三轮断言：
 
   轮 A（F5 失败语义）：auto_discover=true + 空 strategy 表 + **不启 host**
       → server 正常启动不崩；增量服务不注册；server.log 有显式「拉取失败」
@@ -186,7 +186,7 @@ def ad_doc(doc_version: int, services: list) -> dict:
         "id": "wasm-host",
         "contract_version": "1.2",
         "version": "0.1.0",
-        "description": f"79 号 auto_discover 端到端验证临时清单（轮 {doc_version}，验毕字节级还原）",
+        "description": f"历史批次 auto_discover 端到端验证临时清单（轮 {doc_version}，验毕字节级还原）",
         "base_url": f"http://127.0.0.1:{HOST_PORT}",
         "auto_discover": True,
         "services": services,
@@ -234,7 +234,7 @@ def main() -> int:
     server: subprocess.Popen | None = None
     host: subprocess.Popen | None = None
     try:
-        print("79 号 auto_discover 端到端实证（WASM 服务自动发现）")
+        print("历史批次 auto_discover 端到端实证（WASM 服务自动发现）")
 
         # ============ 轮 A：F5 失败语义（host 未起 + auto_discover 开启）============
         print("\n[轮 A] F5：host 未起时 auto_discover 拉取失败 → 显式告警、不崩、不静默")
@@ -271,7 +271,7 @@ def main() -> int:
                     {
                         "name": UDF_POLICY,
                         "sensitive": True,
-                        "description": "79 号验证：策略表覆盖（sensitive=true 应保留并 403）",
+                        "description": "历史批次验证：策略表覆盖（sensitive=true 应保留并 403）",
                     }
                 ],
             )

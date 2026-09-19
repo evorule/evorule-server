@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! `evorule-wasm-host` —— WASM UDF 宿主进程。
 //!
-//! # 定位（77 号阶段 2 / ADR-0001）
+//! # 定位（阶段 2 / ADR-0001）
 //! 以 **external 插件**身份经 HTTP 接入 `evorule-server`：
 //! server 侧 `call_service` → `service_registry` 查 URL → HTTP POST → 本进程执行 `.wasm`。
 //!
@@ -13,8 +13,8 @@
 //! # 端点
 //! | 方法 | 路径 | 说明 |
 //! |---|---|---|
-//! | GET | `/health` | 探活（57 号契约：2xx + JSON，否则判 Offline 并告警） |
-//! | GET | `/services` | 实载清单自报（79 号自动发现：server 侧 `auto_discover` 装载时拉取） |
+//! | GET | `/health` | 探活（跨仓契约：2xx + JSON，否则判 Offline 并告警） |
+//! | GET | `/services` | 实载清单自报（历史批次自动发现：server 侧 `auto_discover` 装载时拉取） |
 //! | POST | `/services/{name}` | 执行 UDF，body = 入参 JSON；200 成功 / 404 未知 UDF / 422 执行失败 |
 //!
 //! **`/health` 的两档语义（探活可信度补强，见 `declaration` 模块）**：
@@ -175,7 +175,7 @@ async fn main() {
     }
 }
 
-/// 探活：`{base_url}/health` 必须 2xx + JSON（57 号 plugin_probe 契约）。
+/// 探活：`{base_url}/health` 必须 2xx + JSON（历史批次 plugin_probe 契约）。
 ///
 /// **状态码即结论**：`degraded` → 503（server 判 offline 并告警）；
 /// `ok` / `unavailable` → 200（后者在 body 里显式标注"未对账"）。
@@ -201,7 +201,7 @@ async fn health(State(reg): State<Arc<UdfRegistry>>) -> (StatusCode, Json<Value>
     )
 }
 
-/// 实载清单自报（79 号自动发现 · 路线 A：host 自报 + server 拉取合入）。
+/// 实载清单自报（历史批次自动发现 · 路线 A：host 自报 + server 拉取合入）。
 ///
 /// **身份与可服务性分端点回答**：本端点只答「实载了哪些服务」（身份，永远如实
 /// 200），可服务性对账（声明 × 实载 → 503 语义）仍由 `/health` 承担——

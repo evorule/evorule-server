@@ -6,7 +6,7 @@
 #       Windows x86_64 二进制由 .github/workflows/release.yml 的 attach-gitee
 #       job 构建后经 Gitee OpenAPI 附加到同一 Release(幂等,不存在则创建)
 #
-# 备注(对齐 evorule 仓 UV-098 记录): Gitee Go 云端 agent 对当前账号不可用
+# 备注(对齐 evorule 仓 回归验证 记录): Gitee Go 云端 agent 对当前账号不可用
 # (agents not available,资源侧问题);本文件为 agent 就绪后的原生构建脚本,
 # 当前实际发版由 .github/workflows/release.yml 承担。
 #

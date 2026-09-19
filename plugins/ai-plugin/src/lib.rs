@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! ai-plugin 编译核 —— 服务端驻留 LLM 执行者（契约 v1.2；UV-172 L1 地基 + UV-174 L2 工具面）。
+//! ai-plugin 编译核 —— 服务端驻留 LLM 执行者（契约 v1.2；回归验证 L1 地基 + 回归验证 L2 工具面）。
 //!
 //! 自编排审计回路：服务端点收到调用后自建一次性 sidecar 审计会话，走
 //! `call_external → LLM(服务端托管凭据) → io_response` 完整回路再返回。
 //! prompt/结果全文照旧入审计链——与浏览器审计桥（console-cloud
 //! `audited-llm.ts`，对齐 evo-agent `audited_llm.rs` 协议契约）同协议位。
 //!
-//! L2 只读工具面（UV-174；07 立项 §2.1）：
+//! L2 只读工具面（回归验证；07 立项 §2.1）：
 //!   - 工具白名单**代码级**强制：工具表硬编码于本文件 `TOOLS` 常量
 //!     （tool_name → 固定 GET 端点），配置 `tools.enabled` 只能开关既有
 //!     工具，不可注入新工具/新路径/新方法（防配置注入面）；
@@ -21,11 +21,11 @@
 //!     模式，Finding 计数留日志；
 //!   - 工具循环轮次上限 `MAX_TOOL_ROUNDS`（代码级常量，配置不可调）；
 //!   - LLM provider usage 随每轮 io_response 入链（`usage`/累计
-//!     `usage_total`），非阻塞可见性（UV-081 报警面哲学）。
+//!     `usage_total`），非阻塞可见性（回归验证 报警面哲学）。
 //!
 //! 红线（插件红线清单条款，立项 05 文档 §2.1 + 07 文档 §三）：
 //!   - 本 crate 内 `call_llm` 是唯一 LLM 路径，且只允许在 sidecar 循环的
-//!     IoRequest 处理分支内被调用（防 UV-057 同型影子调用）；
+//!     IoRequest 处理分支内被调用（防 回归验证 同型影子调用）；
 //!   - 工具执行只经 `call_service` 事实对（`execute_tool` 仅在工具
 //!     IoRequest 分支内被调用）——插件进程内禁止回路外任何 server API
 //!     工具调用（影子扫描纪律扩展到工具面）；
@@ -53,7 +53,7 @@ pub const SIDECAR_WAIT_TIMEOUT_MS: u64 = 90_000;
 /// LLM 请求超时缺省（毫秒）
 pub const LLM_TIMEOUT_DEFAULT_MS: u64 = 60_000;
 
-/// 工具循环轮次上限（UV-174；代码级常量，配置不可调——防失控循环）
+/// 工具循环轮次上限（回归验证；代码级常量，配置不可调——防失控循环）
 pub const MAX_TOOL_ROUNDS: usize = 8;
 
 #[derive(Debug)]
@@ -118,9 +118,9 @@ pub struct PluginConfig {
     pub llm_temperature: f64,
     /// LLM 请求超时（毫秒）
     pub llm_timeout_ms: u64,
-    /// 已启用只读工具（UV-174；`tools.enabled` 配置，只能引用代码级
+    /// 已启用只读工具（回归验证；`tools.enabled` 配置，只能引用代码级
     /// 白名单 `TOOLS` 内的工具名——配置不可注入新工具；空 = 工具面关闭，
-    /// 行为与 UV-172 单轮回路完全一致）
+    /// 行为与 回归验证 单轮回路完全一致）
     pub tools_enabled: Vec<String>,
 }
 
@@ -148,7 +148,7 @@ fn optional_str(v: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 凭据脱敏：Debug 输出不含 llm_api_key/server_auth_token 明文（UV-178 批次B）。
+/// 凭据脱敏：Debug 输出不含 llm_api_key/server_auth_token 明文（批次B）。
 impl std::fmt::Debug for PluginConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginConfig")
@@ -433,7 +433,7 @@ pub fn next_sse_event(buffer: &mut String) -> Result<Option<SseEvent>, PluginErr
 
 /// HTTP 客户端（无全局超时：各等待点独立限时，SSE 长流不受限）
 ///
-/// 重定向不跟随（P0-1/UV-180：SSRF 防线，对齐 io_handlers http_handler B1 修复）：
+/// 重定向不跟随（P0-1/回归验证：SSRF 防线，对齐 io_handlers http_handler B1 修复）：
 /// reqwest 默认跟随重定向并可能复发 Authorization 头，302 可把出站请求
 /// （含 LLM Key）投递到任意主机。禁用后 3xx 原样返回，由调用方按错误处理。
 pub fn build_http_client() -> Result<reqwest::Client, PluginError> {
@@ -494,7 +494,7 @@ async fn assert_ok(
     )))
 }
 
-/// 只读工具定义（UV-174 代码级白名单条目）
+/// 只读工具定义（回归验证 代码级白名单条目）
 pub struct ToolDef {
     pub name: &'static str,
     /// 工具用途描述（进 LLM 系统提示；中文为展示层散文，非协议标识符）
@@ -652,7 +652,7 @@ pub fn extract_tool_call(text: &str) -> Option<(String, Value)> {
     last
 }
 
-/// 注入防御（UV-174 纪律 3；evo-agent safety_auditor L2 Strip 范式最小移植）：
+/// 注入防御（回归验证 纪律 3；evo-agent safety_auditor L2 Strip 范式最小移植）：
 /// 工具结果文本进 prompt 前剥离指令覆盖/聊天标记伪装类模式。
 /// 模式为代码级常量（纯 ASCII，大小写不敏感匹配）；Finding 计数由调用方留日志。
 const INJECTION_PATTERNS: &[&str] = &[
@@ -758,7 +758,7 @@ fn build_tool_path(name: &str, args: &Value) -> Result<String, String> {
     }
 }
 
-/// 执行只读工具（UV-174）。
+/// 执行只读工具（回归验证）。
 ///
 /// 白名单双闸：①注册表成员（未知工具显式拒绝并列出可用项）；
 /// ②部署配置 `tools.enabled` 授权（未启用显式拒绝）。
@@ -1035,7 +1035,7 @@ async fn run_loop(
                                 if let Some(u) = &usage {
                                     merge_usage(&mut usage_total, u);
                                 }
-                                // 工具请求解析（工具关闭 → 永不解析：单轮行为与 UV-172 一致）
+                                // 工具请求解析（工具关闭 → 永不解析：单轮行为与 回归验证 一致）
                                 pending_tool = if tools_on {
                                     extract_tool_call(&t)
                                 } else {
@@ -1477,7 +1477,7 @@ mod tests {
 
     // ---------- build_http_client：重定向门禁 ----------
 
-    /// P0-1（UV-180 批次 B）：出站客户端不跟随重定向——reqwest 默认跟随 3xx
+    /// P0-1（批次B）：出站客户端不跟随重定向——reqwest 默认跟随 3xx
     /// 且可能复发 Authorization 头，302 可把请求（含 LLM Key）投递到任意主机。
     /// 3xx 必须原样返回，重定向目标零命中。
     #[tokio::test]
@@ -1754,11 +1754,11 @@ mod tests {
         assert_eq!(ios[0]["error"], ios[0]["result"]["error"]);
     }
 
-    // ---------- 工具面（UV-174） ----------
+    // ---------- 工具面（回归验证） ----------
 
     #[tokio::test]
     async fn tools_disabled_ignores_tool_call_json() {
-        // 工具未启用：回复中的工具 JSON 原样返回（单轮行为与 UV-172 一致）
+        // 工具未启用：回复中的工具 JSON 原样返回（单轮行为与 回归验证 一致）
         let st = MockState::new(
             true,
             vec![tool_call_reply("rules_list", json!({}))],
@@ -2060,7 +2060,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.tools_enabled, vec!["rules_list", "list_packs"]);
-        // 无 tools 键 = 工具面关闭（向后兼容 UV-172 配置文件）
+        // 无 tools 键 = 工具面关闭（向后兼容 回归验证 配置文件）
         let cfg2 = PluginConfig::from_json_str(
             r#"{"server_base_url":"http://x","llm_endpoint":"http://x",
                 "llm_api_key":"k","llm_model":"m"}"#,

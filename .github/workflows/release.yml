@@ -208,7 +208,7 @@ jobs:
   # ==========================================================================
   # 4. 组装双平台零依赖分发包
   #    win64: zip (含 start-evorule.bat)  linux64: tar.gz (含 start-evorule.sh)
-  #    包结构对齐体验版 v0.2.0 形态 + UV-044 更名(server_eval.json)
+  #    包结构对齐体验版 v0.2.0 形态 + 回归验证 更名(server_eval.json)
   # ==========================================================================
   bundle:
     name: bundle
@@ -236,7 +236,7 @@ jobs:
           cp rules/10_role13_demo.json "${PKG}/rules/"
           cp resources/server_eval.json "${PKG}/resources/"
           cp service_registry.json "${PKG}/"
-          # ai-plugin 分发件(UV-178 批次A): 缺省禁用,启用引导见 README-STARTUP.txt;
+          # ai-plugin 分发件(批次A): 缺省禁用,启用引导见 README-STARTUP.txt;
           # 凭据文件 ai-plugin.json 绝不入包
           mkdir -p "${PKG}/plugins/ai-plugin"
           cp artifacts/evorule-server-windows-x86_64-ai-plugin/evorule-ai-plugin.exe "${PKG}/plugins/ai-plugin/"
@@ -249,7 +249,7 @@ jobs:
           cp dist/start-evorule.bat "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
           # deployment-side plugin watchdog (optional; windows package only)
-          # UV-182 批次E: plugins-watchdog.json 已出库（部署侧或含真实 token
+          # 批次E: plugins-watchdog.json 已出库（部署侧或含真实 token
           # env，防误提交）——CI 优先本地文件，缺失则由 example 模板生成
           cp dist/start-watchdog.bat "${PKG}/"
           cp dist/watchdog-plugins.ps1 "${PKG}/"
@@ -280,7 +280,7 @@ jobs:
           cp rules/10_role13_demo.json "${PKG}/rules/"
           cp resources/server_eval.json "${PKG}/resources/"
           cp service_registry.json "${PKG}/"
-          # ai-plugin 分发件(UV-178 批次A, musl 静态二进制): 同 win64 语义
+          # ai-plugin 分发件(批次A, musl 静态二进制): 同 win64 语义
           mkdir -p "${PKG}/plugins/ai-plugin"
           cp artifacts/evorule-server-linux-x86_64-ai-plugin/evorule-ai-plugin "${PKG}/plugins/ai-plugin/"
           chmod +x "${PKG}/plugins/ai-plugin/evorule-ai-plugin"
@@ -289,7 +289,7 @@ jobs:
           printf '{ "plugins": { "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" } } }\n' > "${PKG}/plugin_manifest.json"
           cp dist/start-evorule.sh "${PKG}/"
           cp dist/README-STARTUP.txt "${PKG}/"
-          # UV-182 补遗I(遗留L1): linux 包同 win64 语义携带可选插件看门狗
+          # 回归验证 补遗I(遗留L1): linux 包同 win64 语义携带可选插件看门狗
           # (python3 实现);配置已出库,缺省由 example 模板生成
           cp dist/start-watchdog.sh dist/watchdog-plugins.py "${PKG}/"
           chmod +x "${PKG}/start-watchdog.sh"
@@ -368,7 +368,7 @@ jobs:
   # ==========================================================================
   # 6. 分发包附加到 Gitee Release (gitee 是主仓/发布主入口)
   #    与 evorule / evorule-rule 仓同构: Gitee Go 云端 agent 对当前账号
-  #    不可用(agents not available,登记台账 UV-098),产物由本侧构建并经
+  #    不可用(agents not available,登记台账 回归验证),产物由本侧构建并经
   #    Gitee OpenAPI 附加;agent 就绪后可切回原生构建(.workflow/release.yml)。
   #    幂等: gitee release 不存在则创建,存在则复用。
   #    需在 github 仓库 Settings → Secrets and variables → Actions 配置 GITEE_TOKEN

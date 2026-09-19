@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-"""T6 敏感服务直调守卫端到端实证（77 号阶段 2 · T6）
+"""T6 敏感服务直调守卫端到端实证（阶段 2 · T6）
 
 临时把 plugin.json 中 udf_finance_tax_calc 的 sensitive 置 true，真实起进程
 （wasm-host + evorule-server），断言：
@@ -208,7 +208,7 @@ def main() -> int:
     server: subprocess.Popen | None = None
     host: subprocess.Popen | None = None
     try:
-        print("T6 敏感服务直调守卫端到端实证（77 号阶段 2 · T6）")
+        print("T6 敏感服务直调守卫端到端实证（阶段 2 · T6）")
 
         flip_sensitive_true()
         host = start_host(work)

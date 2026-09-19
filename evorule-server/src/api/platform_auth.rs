@@ -81,7 +81,7 @@ pub const PLATFORM_ACTIONS: &[&str] = &[
     "manage_users",
     "manage_roles",
     "view_users",
-    // 58 号专项 W2:应用级凭据管理(签发/列表/吊销)
+    // 专项 W2:应用级凭据管理(签发/列表/吊销)
     "manage_apps",
 ];
 
@@ -168,7 +168,7 @@ pub struct StoredSession {
     pub revoked: bool,
 }
 
-/// 应用级凭据(事实回放后的当前状态;58 号专项 W2)
+/// 应用级凭据(事实回放后的当前状态;专项 W2)
 ///
 /// 库中只存 key 哈希(`blake3:` 前缀,evorule-hash 纪律),明文仅签发时
 /// 一次性返回;吊销即时生效(状态位回放判定,无缓存延迟)。
@@ -180,9 +180,9 @@ pub struct PlatformApp {
     pub status: String, // ACTIVE | REVOKED
     pub description: String,
     pub created_at_ms: u64,
-    /// 59 号 W1:per-app 速率上限(次/秒;None=不限,缺省向后兼容)
+    /// 批次 W1:per-app 速率上限(次/秒;None=不限,缺省向后兼容)
     pub rate_limit_per_sec: Option<u64>,
-    /// 59 号 W1:每日请求总量预算(UTC 日窗口;None=不限)
+    /// 批次 W1:每日请求总量预算(UTC 日窗口;None=不限)
     pub daily_quota: Option<u64>,
 }
 
@@ -291,7 +291,7 @@ impl PlatformSnapshot {
                         description: jstr(v, "description"),
                         created_at_ms: v.get("created_at_ms").and_then(|n| n.as_i64()).unwrap_or(0)
                             as u64,
-                        // 59 号 W1:配额字段缺省 None(旧事实无此字段回放即"不限",
+                        // 批次 W1:配额字段缺省 None(旧事实无此字段回放即"不限",
                         // 向后兼容);Some(0) 由签发/更新端点校验拒绝,回放侧不二次判
                         rate_limit_per_sec: v
                             .get("rate_limit_per_sec")
@@ -339,14 +339,14 @@ impl PlatformSnapshot {
         Ok((u.username.clone(), perms))
     }
 
-    /// 58 号 W2:校验应用凭据哈希(已含 `blake3:` 前缀的存储形态)。
+    /// 批次 W2:校验应用凭据哈希(已含 `blake3:` 前缀的存储形态)。
     ///
     /// 快照按 app_id 键存储,key_hash 为值字段 → 线性扫描比对
     /// (应用数量级为个位~十位,MVP 可接受;命中且 ACTIVE → Ok(app_id);
     /// 不存在 → Err(Unknown)、已吊销 → Err(Revoked)。中间件对二者
     /// 统一 401 fail-fast,区分原因仅供审计事件如实留痕,不改响应语义)。
     ///
-    /// 59 号 W1:命中返回 [`AppCredentials`](含配额视图)——中间件据此执行
+    /// 批次 W1:命中返回 [`AppCredentials`](含配额视图)——中间件据此执行
     /// per-app 限流检查;None 维度=不限。
     pub fn validate_app_key(&self, key_hash: &str) -> Result<AppCredentials, AppKeyReject> {
         let mut found: Option<&PlatformApp> = None;
@@ -544,7 +544,7 @@ fn app_fact_path(app_id: &str) -> String {
     format!("{FACT_PREFIX}app.{app_id}")
 }
 
-/// 58 号 W2:应用凭据哈希(存储字段纪律,族 B)。
+/// 批次 W2:应用凭据哈希(存储字段纪律,族 B)。
 ///
 /// 只准 evorule-hash(禁自写 blake3):`prefixed(digest(key))` =
 /// `blake3:<64hex>` 自描述前缀,与治理层 bundle/entry 存储形态同源;
@@ -604,7 +604,7 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
 /// 在每个平台端点入口调用;并发首次调用可能重复追加同值事实,
 /// last-write-wins 回放下结果一致,无害。
 ///
-/// 58 号 W2 增补 administrator 权限集自愈:权限点注册表随专项演进
+/// 批次 W2 增补 administrator 权限集自愈:权限点注册表随专项演进
 /// (如新增 manage_apps),存量部署的 administrator 角色事实是旧权限集
 /// 快照,不会再走空库 seed → 缺新点导致管理端点 403。administrator
 /// 权限集代码内置且不可改(update_role 禁改),回填规范集是安全的;
@@ -694,10 +694,10 @@ pub struct ChangePasswordReq {
     pub new_password: String,
 }
 
-/// 58 号 W2:应用凭据签发请求(app_id 全局唯一,即使已吊销也不可复用——
+/// 批次 W2:应用凭据签发请求(app_id 全局唯一,即使已吊销也不可复用——
 /// 归因连续性优先;需要换钥请换新 app_id 重新登记外部应用)
 ///
-/// 59 号 W1:配额字段可选,缺省(缺字段/null)=不限,向后兼容;
+/// 批次 W1:配额字段可选,缺省(缺字段/null)=不限,向后兼容;
 /// Some(0) 非法(0 语义歧义,"不限"只用缺省表达)。
 #[derive(serde::Deserialize, ToSchema)]
 pub struct IssueAppReq {
@@ -712,7 +712,7 @@ pub struct IssueAppReq {
     pub daily_quota: Option<u64>,
 }
 
-/// 59 号 W1:应用配额更新请求(全量覆盖语义:两字段与签发同校验;
+/// 批次 W1:应用配额更新请求(全量覆盖语义:两字段与签发同校验;
 /// 已用量保留,不做清零——"调整配额"≠"重置用量")。
 #[derive(serde::Deserialize, ToSchema)]
 pub struct UpdateAppQuotaReq {
@@ -769,8 +769,8 @@ pub fn platform_auth_router() -> Router<AppState> {
             "/api/platform/roles/{name}",
             patch(update_role).delete(delete_role),
         )
-        // 58 号 W2:应用级凭据管理面(签发/列表/吊销;manage_apps 权限点)
-        // 59 号 W1:配额更新端点(调整速率/日预算,即时生效)
+        // 批次 W2:应用级凭据管理面(签发/列表/吊销;manage_apps 权限点)
+        // 批次 W1:配额更新端点(调整速率/日预算,即时生效)
         .route("/api/platform/apps", get(list_apps).post(issue_app))
         .route("/api/platform/apps/{id}/revoke", post(revoke_app))
         .route("/api/platform/apps/{id}/quota", post(update_app_quota))
@@ -964,7 +964,7 @@ pub struct AuthedActor(pub String);
 
 /// 业务 API 统一认证中间件(挂 protected_routes)。
 ///
-/// **三凭据语义**(58 号 W2 扩展;判定顺序 静态 token → 平台会话 → app key):
+/// **三凭据语义**(批次 W2 扩展;判定顺序 静态 token → 平台会话 → app key):
 ///
 /// 1. AuthConfig 未启用(开发模式)→ 放行,语义不变;
 /// 2. Bearer token 命中静态 user/service token → 放行并注入
@@ -981,7 +981,7 @@ pub struct AuthedActor(pub String);
 ///
 /// 403 语义由端点层自理:平台管理端点在 handler 内校验权限点。
 ///
-/// 59 号 W1:State 增补 `Arc<AppQuotaManager>`——通道三命中后执行 per-app
+/// 批次 W1:State 增补 `Arc<AppQuotaManager>`——通道三命中后执行 per-app
 /// 配额检查(速率+日配额;仅 App 身份,User/Service 直通),超限 429+Retry-After。
 ///
 /// (: 直返 `Response`——原 `Result<Response, Response>` 两分支都产出
@@ -1028,8 +1028,8 @@ pub async fn unified_auth_middleware(
     if let Ok((username, _perms)) = snap.validate_session(&token_hash, now_ms()) {
         req.extensions_mut()
             .insert(crate::auth::CallerIdentity::User);
-        // 58 号 W2 顺带修复:平台会话此前未注入 AuthedActor,审批代理
-        // approver 恒落 "anonymous"(57 号 W2 测试仅覆盖静态 token 通道)。
+        // 批次 W2 顺带修复:平台会话此前未注入 AuthedActor,审批代理
+        // approver 恒落 "anonymous"(批次 W2 测试仅覆盖静态 token 通道)。
         // 按 AuthedActor 契约补注入登录用户名。
         req.extensions_mut().insert(AuthedActor(username.clone()));
         tracing::debug!(username = %username, "平台会话认证通过");
@@ -1057,7 +1057,7 @@ pub async fn unified_auth_middleware(
             return unauthorized_response();
         }
     };
-    // 59 号 W1:per-app 配额检查(速率→日配额;None 维度不限)。
+    // 批次 W1:per-app 配额检查(速率→日配额;None 维度不限)。
     // 超限 → 429+Retry-After,聚合报警事件已在 check 内锁外落链;
     // 通过 → 注入 App 身份并落逐条归因(既有 58 W2 语义)。
     if let Some(resp) = app_quota_gate(&quota, &creds, &shared) {
@@ -1091,7 +1091,7 @@ fn inject_static_identity(req: &mut axum::extract::Request, identity: crate::aut
     req.extensions_mut().insert(identity);
 }
 
-/// 59 号 W1:per-app 配额门(通道三命中后调用)。
+/// 批次 W1:per-app 配额门(通道三命中后调用)。
 ///
 /// 通过 → `None`(调用方继续注入身份/归因);超限 → `Some(429 响应)`
 /// (聚合报警事件已在 [`AppQuotaManager::check`] 锁外落链)。
@@ -1104,7 +1104,7 @@ fn app_quota_gate(
     Some(quota_exceeded_response(retry_after, dimension))
 }
 
-/// 429 响应(59 号 W1:per-app 配额超限)。
+/// 429 响应(批次 W1:per-app 配额超限)。
 ///
 /// `Retry-After` 头(速率层=令牌恢复估算秒数;日配额层=到 UTC 次日零点秒数)
 /// 与统一 JSON 错误体。超限请求不落逐条 app_invoke 归因(防写放大;聚合报警
@@ -1890,7 +1890,7 @@ async fn delete_role(
 }
 
 // ---------------------------------------------------------------------------
-// 58 号 W2:应用级凭据管理(签发/列表/吊销;manage_apps 权限点)
+// 批次 W2:应用级凭据管理(签发/列表/吊销;manage_apps 权限点)
 // ---------------------------------------------------------------------------
 
 /// `POST /api/platform/apps` — 签发应用凭据。
@@ -1935,7 +1935,7 @@ async fn issue_app(
             "status": "ACTIVE",
             "description": req.description,
             "created_at_ms": created_at_ms,
-            // 59 号 W1:配额随签发落事实(None 序列化为 null,回放侧视为不限)
+            // 批次 W1:配额随签发落事实(None 序列化为 null,回放侧视为不限)
             "rate_limit_per_sec": req.rate_limit_per_sec,
             "daily_quota": req.daily_quota,
         }),
@@ -1992,7 +1992,7 @@ async fn list_apps(
                 "status": a.status,
                 "description": a.description,
                 "created_at_ms": a.created_at_ms,
-                // 59 号 W1:配额设定与今日已用量(null=不限)
+                // 批次 W1:配额设定与今日已用量(null=不限)
                 "rate_limit_per_sec": a.rate_limit_per_sec,
                 "daily_quota": a.daily_quota,
                 "today_usage": quota.today_usage(&a.app_id, now),
@@ -2005,7 +2005,7 @@ async fn list_apps(
     ))
 }
 
-/// `POST /api/platform/apps/{id}/quota` — 更新应用配额(59 号 W1,即时生效)。
+/// `POST /api/platform/apps/{id}/quota` — 更新应用配额(批次 W1,即时生效)。
 ///
 /// 全量覆盖语义:两字段与签发同校验(None=不限);已用量保留(调整配额≠重置
 /// 用量)。生效机制:事实 last-write-wins 回放 → 下次请求 `validate_app_key`
@@ -2104,7 +2104,7 @@ async fn revoke_app(
                 "status": "REVOKED",
                 "description": app.description,
                 "created_at_ms": app.created_at_ms,
-                // 59 号 W1:吊销事实保留配额字段(回放连续性)
+                // 批次 W1:吊销事实保留配额字段(回放连续性)
                 "rate_limit_per_sec": app.rate_limit_per_sec,
                 "daily_quota": app.daily_quota,
             }),
@@ -2114,7 +2114,7 @@ async fn revoke_app(
             "app_revoked",
             serde_json::json!({ "app_id": id, "by": caller }),
         );
-        // 59 号 W1:吊销清理限流内存态(limiter/日计数/报警状态)
+        // 批次 W1:吊销清理限流内存态(limiter/日计数/报警状态)
         quota.on_revoked(&id);
         tracing::info!("平台授权:应用凭据已吊销 {id}(by {caller})");
     }
@@ -2138,7 +2138,7 @@ mod tests {
         SharedFactsLog::new()
     }
 
-    /// 59 号 W1:管理端点新增 State<Arc<AppQuotaManager>> 参数的测试helper
+    /// 批次 W1:管理端点新增 State<Arc<AppQuotaManager>> 参数的测试helper
     /// (空管理器:today_usage 恒 0,不影响既有断言)
     fn quota_state() -> State<Arc<crate::api::app_quota::AppQuotaManager>> {
         State(Arc::new(crate::api::app_quota::AppQuotaManager::new()))
@@ -2598,7 +2598,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // ------------------------- 58 号 W2:应用级凭据 -------------------------
+    // ------------------------- 批次 W2:应用级凭据 -------------------------
 
     /// 哈希前缀纪律(族 B):app_key_hash 只准 evorule-hash,`blake3:` 前缀,
     /// 与黄金向量字节一致;与会话 token 的无前缀库存哈希形态区分。
@@ -2680,7 +2680,7 @@ mod tests {
         .expect_ok();
         let admin_h = auth_headers(&login_token(&shared, "root", "admin-pass-123").await);
 
-        // 签发成功:201,明文 key 仅此一次(59 号 W1:签发可携带配额)
+        // 签发成功:201,明文 key 仅此一次(批次 W1:签发可携带配额)
         let (_, Json(v)) = issue_app(
             State(shared.clone()),
             admin_h.clone(),
@@ -2839,7 +2839,7 @@ mod tests {
 
     /// 三通道判定矩阵 + app 归因事件 + AuthedActor 注入契约:
     /// - 静态 token → 200,AuthedActor="static-user",身份 User;
-    /// - 平台会话 → 200,AuthedActor=登录用户名(58 号 W2 顺带修复),身份 User;
+    /// - 平台会话 → 200,AuthedActor=登录用户名(批次 W2 顺带修复),身份 User;
     /// - app key → 200,无 AuthedActor,身份 App,落 app_invoke 归因事件;
     /// - 已吊销 app key → 401 + app_key_rejected(revoked)事件;
     /// - 未知 token → 401(无事件,写放大防护)。
@@ -3008,7 +3008,7 @@ mod tests {
         assert_eq!(v["identity"], "service");
     }
 
-    /// 59 号 W1:中间件配额集成——app key 超速 → 429+Retry-After,不落
+    /// 批次 W1:中间件配额集成——app key 超速 → 429+Retry-After,不落
     /// 逐条 app_invoke 归因(防写放大);User 通道直通不受 app 配额约束。
     #[tokio::test]
     async fn test_app_quota_429_integration() {
@@ -3091,7 +3091,7 @@ mod tests {
         );
     }
 
-    /// 59 号 W1:配额更新端点——更新后 validate_app_key 返回新配额视图
+    /// 批次 W1:配额更新端点——更新后 validate_app_key 返回新配额视图
     /// (last-write-wins 回放,即时生效);非法值 400;未知应用 409。
     #[tokio::test]
     async fn test_update_app_quota_endpoint() {

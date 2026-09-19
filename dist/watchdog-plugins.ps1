@@ -2,7 +2,7 @@
 # Watches the public GET /api/health external-plugin liveness section and
 # restarts configured plugin processes when they stay offline.
 #
-# Semantics (58 plan W1; UV-182 batches A/C/D/F):
+# Semantics (58 plan W1; 回归验证 batches A/C/D/F):
 #   - acts only on plugins present in /api/health with status == "offline"
 #   - "unauthorized" (401/403 credentials/config problem) is surfaced loudly but
 #     NEVER acted on: the process is alive, restarting does not help (batch A)
@@ -31,7 +31,7 @@
 
 param(
     [string]$ConfigPath = "",
-    # UV-182 batch H (legacy L3): optional self-guard management. The watchdog
+    # 回归验证 batch H (legacy L3): optional self-guard management. The watchdog
     # is a plain process - if it dies, nothing revives it. The self-guard is a
     # current-user scheduled task that starts it (hidden) at every logon.
     [switch]$InstallSelfGuard,
@@ -51,7 +51,7 @@ function Write-Log([string]$Level, [string]$Msg) {
     try {
         $dir = Split-Path $logPath -Parent
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        # UV-182 batch F: size-cap rotation - at 5 MB move to .old (single
+        # 回归验证 batch F: size-cap rotation - at 5 MB move to .old (single
         # generation; the current file is recreated on next append)
         if ((Test-Path $logPath) -and ((Get-Item $logPath).Length -ge 5242880)) {
             Move-Item -Path $logPath -Destination ($logPath + ".old") -Force
@@ -61,7 +61,7 @@ function Write-Log([string]$Level, [string]$Msg) {
     } catch {}
 }
 
-# UV-182 batch H: self-guard management. Handled BEFORE the single-instance
+# 回归验证 batch H: self-guard management. Handled BEFORE the single-instance
 # mutex so registration works while another instance is already running.
 # schtasks quoting: inner quotes are pre-escaped as \" for the native call
 # (PowerShell 5.1 native argument passing).
@@ -116,7 +116,7 @@ $threshold    = if ($cfg.offline_threshold)      { [int]$cfg.offline_threshold }
 $maxRestarts  = if ($cfg.max_restarts_per_hour)  { [int]$cfg.max_restarts_per_hour }  else { 5 }
 $fetchTimeout = if ($cfg.fetch_timeout_secs)     { [int]$cfg.fetch_timeout_secs }     else { 5 }
 $healthUrl    = if ($cfg.health_url)             { $cfg.health_url }                  else { "http://127.0.0.1:18080/api/health" }
-# UV-182 batch C: consecutive bad health cycles tolerated before the watchdog
+# 回归验证 batch C: consecutive bad health cycles tolerated before the watchdog
 # stops acting (server restart window / transient glitch); default 3
 $failTolerance = if ($cfg.health_fail_threshold) { [int]$cfg.health_fail_threshold }  else { 3 }
 
@@ -179,14 +179,14 @@ function Start-PluginProcess($Id, $P) {
     }
 }
 
-# UV-182 batch C: consecutive bad health cycle counter (unreachable OR empty
+# 回归验证 batch C: consecutive bad health cycle counter (unreachable OR empty
 # map - PS 5.1 non-JSON responses collapse to an empty map and count the same)
 $healthFails = 0
 
 while ($true) {
     $map = Get-StatusMap $healthUrl $fetchTimeout
     if ($null -eq $map -or $map.Count -eq 0) {
-        # UV-182 batch C: tolerate up to health_fail_threshold bad cycles
+        # 回归验证 batch C: tolerate up to health_fail_threshold bad cycles
         # (server restart window / transient glitch) before giving up acting;
         # every failure logs WARN, threshold-and-beyond escalates to ERROR
         $healthFails = $healthFails + 1
@@ -214,7 +214,7 @@ while ($true) {
                 continue
             }
             if ($status -eq "unauthorized") {
-                # UV-182 batch A alignment: 401/403 = credentials/config problem;
+                # 回归验证 batch A alignment: 401/403 = credentials/config problem;
                 # the process is alive, restarting would not help - surface
                 # loudly, never act
                 if ($offlineCount[$id] -ne 0) { Write-Log "WARN" ("{0}: status unauthorized (credentials/config problem); no action (restart would not help); check token env config" -f $id) }
@@ -245,7 +245,7 @@ while ($true) {
                 $restarts[$id].Add($now)
                 $offlineCount[$id] = 0
             } else {
-                # UV-182 batch D: a FAILED start also consumes the restart
+                # 回归验证 batch D: a FAILED start also consumes the restart
                 # budget so a misconfigured command converges to the escalation
                 # latch instead of retrying forever every cycle; the offline
                 # counter is NOT reset (the process is still down)

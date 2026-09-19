@@ -1,4 +1,4 @@
-//! 插件清单端到端验收（后端插件清单化，15 号实施计划 W4；泛化至双插件；
+//! 插件清单端到端验收（后端插件清单化，历史批次实施计划 W4；泛化至双插件；
 //! 泛化至三插件）
 //!
 //! 不新增机制，做**运行时闭环实证**——与 main.rs 生产装配同构（过滤路由器 +
@@ -227,7 +227,7 @@ async fn dual_plugin_demo_service_still_hit_through_physics_layer() {
     let r = router
         .execute(&svc_params(
             "config_persist",
-            JsonValue::object_from_pairs(&[("operation", JsonValue::string("uv035-dual-probe"))]),
+            JsonValue::object_from_pairs(&[("operation", JsonValue::string("reg035-dual-probe"))]),
         ))
         .await
         .unwrap();
@@ -328,7 +328,7 @@ async fn triple_plugin_demo_service_still_hit_through_indicator_layer() {
     let r = router
         .execute(&svc_params(
             "config_persist",
-            JsonValue::object_from_pairs(&[("operation", JsonValue::string("uv037-triple-probe"))]),
+            JsonValue::object_from_pairs(&[("operation", JsonValue::string("reg037-triple-probe"))]),
         ))
         .await
         .unwrap();

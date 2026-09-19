@@ -159,7 +159,7 @@ impl RollingSessionService {
         }
     }
 
-    /// 仅重载规则 (不 fork session / 不推版本号; UV-145 W3 元规则晋升通道)
+    /// 仅重载规则 (不 fork session / 不推版本号; 批次 W3 元规则晋升通道)
     ///
     /// 元规则晋升落盘 00_meta_ 文件后触发 SessionManager 重扫 rules_dir,
     /// 新会话携带新元规则 (会话程序为创建时快照, 存量会话不受影响——

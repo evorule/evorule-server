@@ -63,7 +63,7 @@ pub struct BundleManifest {
 pub struct EntryFileManifest {
     pub entry_id: String,
     pub file: String,
-    /// UV-183 批次F（reload 防篡改）: 条目文件内容哈希（`blake3:hex`，SSOT
+    /// 批次F（reload 防篡改）: 条目文件内容哈希（`blake3:hex`，SSOT
     /// 经 evorule-hash）。导入落盘时对文件字节计算；reload 时复验，失配
     /// fail-fast 拒载该条目。旧 manifest 缺字段 → None（serde default），
     /// 复验跳过——防护只对新增哈希生效，存量零迁移。
@@ -81,14 +81,14 @@ pub struct EntryFileManifest {
     pub tags: Vec<String>,
 }
 
-/// 条目文件哈希口径（UV-183 批次F，SSOT）：`blake3:hex` over 文件字节，
+/// 条目文件哈希口径（批次F，SSOT）：`blake3:hex` over 文件字节，
 /// 统一经 evorule-hash（族 B 哈希纪律，禁自写 blake3）。落盘写入与 reload
 /// 复验两侧共用同一函数，防口径漂移。
 pub fn entry_file_hash(bytes: &[u8]) -> String {
     evorule_hash::prefixed(&evorule_hash::digest(bytes))
 }
 
-/// UV-183 批次F（reload 防篡改）: bundle 目录条目文件 blake3 复验。
+/// 批次F（reload 防篡改）: bundle 目录条目文件 blake3 复验。
 ///
 /// 对 manifest.entry_files 中带 content_hash 的条目逐一重算落盘文件哈希并
 /// 比对，返回失配条目文件名列表（含 manifest 记录但磁盘缺失的条目）。
@@ -210,7 +210,7 @@ fn land_bundle_core(
 
     // 写入条目（任一失败 → 清理临时目录，不留半成品）
     let write_result = (|| -> Result<(), String> {
-        // UV-183 批次F: 逐条记录落盘文件哈希（与 entries 同序,reload 复验基线）
+        // 批次F: 逐条记录落盘文件哈希（与 entries 同序,reload 复验基线）
         let mut entry_hashes: Vec<String> = Vec::with_capacity(bundle.entries.len());
         for entry in &bundle.entries {
             if entry.entry_id.is_empty()
@@ -250,7 +250,7 @@ fn land_bundle_core(
                 .map(|(e, h)| EntryFileManifest {
                     entry_id: e.entry_id.clone(),
                     file: format!("{}.json", e.entry_id),
-                    // UV-183 批次F: reload 复验基线（blake3:hex over 落盘字节）
+                    // 批次F: reload 复验基线（blake3:hex over 落盘字节）
                     content_hash: Some(h.clone()),
                     schema_ref: if with_schema_ref {
                         Some(e.schema_ref.clone().unwrap_or_default())

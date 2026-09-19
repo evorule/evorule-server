@@ -75,12 +75,12 @@ pub const CONTROL_VOCAB: &[&str] = &[
 /// v1 已实现能力集（契约 §2.2）——声明即按对应能力面生效
 const IMPLEMENTED_CAPABILITIES: &[&str] = &["assets", "flow-compile"];
 
-/// UV-181 批次E 能力收口：v1 预留能力集（契约 §2.2 词表已知但 v1 未实现）。
+/// 批次E 能力收口：v1 预留能力集（契约 §2.2 词表已知但 v1 未实现）。
 /// 声明预留能力 = fail-fast 拒载（收口「声明 reserved 能力却被静默接受」的
 /// 过度承诺面；词表扩充/转正 = 契约演进事件）。
 const RESERVED_CAPABILITIES: &[&str] = &["services", "ai-assist"];
 
-/// UV-181 批次B：装载期资源上限（fail-fast，防恶意超大 pack 拖垮启动/内存）。
+/// 批次B：装载期资源上限（fail-fast，防恶意超大 pack 拖垮启动/内存）。
 /// 单个资产文件字节上限（2MB）
 const ASSET_FILE_MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// pack.json 字节上限（256KB）
@@ -88,7 +88,7 @@ const PACK_JSON_MAX_BYTES: u64 = 256 * 1024;
 /// 单 pack 单 kind 资产条目数上限（500）
 const ASSET_MAX_ENTRIES_PER_KIND: usize = 500;
 
-/// UV-181 批次C：pack 编译服务 base_url 端口黑名单——evorule 控制面自身端口。
+/// 批次C：pack 编译服务 base_url 端口黑名单——evorule 控制面自身端口。
 /// pack 编译服务指向 server 自身会造成控制面递归/自我调用，永远拒绝（不可配置放开）。
 const COMPILE_PORT_BLACKLIST: &[u16] = &[18080, 18081];
 
@@ -196,7 +196,7 @@ fn default_true() -> bool {
 /// 与 main.rs `load_external_plugins` 同读一份插件清单；pack 条目用 `pack` 键，
 /// 外部服务包用 `manifest` 键，二者同条目混用 → fail-fast。
 ///
-/// UV-181 批次C 端口治理入口：`allowed_ports` 空 = 仅黑名单（默认，控制面端口恒拒）；
+/// 批次C 端口治理入口：`allowed_ports` 空 = 仅黑名单（默认，控制面端口恒拒）；
 /// 非空 = 黑名单 + 白名单双收紧（部署方显式限定编译服务端口面）。
 pub fn load_plugin_packs(
     manifest_path: Option<&FsPath>,
@@ -276,7 +276,7 @@ fn load_pack_with_ports(
             pack_json_path.display()
         )
     })?;
-    // UV-181 批次B：pack.json 字节上限（防超大声明文件拖垮装载）
+    // 批次B：pack.json 字节上限（防超大声明文件拖垮装载）
     if raw.len() as u64 > PACK_JSON_MAX_BYTES {
         return Err(format!(
             "pack.json {} 超过大小上限: {} 字节 > {PACK_JSON_MAX_BYTES} — \
@@ -324,7 +324,7 @@ fn load_pack_with_ports(
         })
         .collect::<Result<Vec<String>, String>>()?;
     for c in &capabilities {
-        // UV-181 批次E：两级能力收口——未知与预留均 fail-fast，不静默接受
+        // 批次E：两级能力收口——未知与预留均 fail-fast，不静默接受
         if !IMPLEMENTED_CAPABILITIES.contains(&c.as_str()) {
             if RESERVED_CAPABILITIES.contains(&c.as_str()) {
                 return Err(format!(
@@ -481,7 +481,7 @@ fn load_pack_with_ports(
 /// v1.1 基地址校验：仅允许本地插件 `http://127.0.0.1:<port>`（SSRF 防线，契约钉死）。
 /// 返回去掉尾随 `/` 的规范化基地址。
 ///
-/// UV-181 批次C 端口治理（黑名单恒拒 + 白名单可选收紧）：
+/// 批次C 端口治理（黑名单恒拒 + 白名单可选收紧）：
 /// - 黑名单 [`COMPILE_PORT_BLACKLIST`]（evorule 控制面自身端口）永远拒绝——
 ///   pack 编译服务指向 server 自身会造成控制面递归/自我调用；
 /// - `allowed_ports` 非空时按白名单收紧（部署方可通过
@@ -541,7 +541,7 @@ fn str_field(
 }
 
 fn read_json(pack_id: &str, kind: &str, path: &FsPath) -> Result<Value, String> {
-    // UV-181 批次B：单资产文件字节上限（防超大资产拖垮装载/内存）
+    // 批次B：单资产文件字节上限（防超大资产拖垮装载/内存）
     let meta =
         std::fs::metadata(path).map_err(|e| format!("资产文件读取失败 {}: {e}", path.display()))?;
     if meta.len() > ASSET_FILE_MAX_BYTES {
@@ -560,7 +560,7 @@ fn read_json(pack_id: &str, kind: &str, path: &FsPath) -> Result<Value, String> 
 /// 极简 glob：仅支持 `*.json` 形态与显式相对路径（契约 §2.2；不引第三方 glob 依赖）。
 /// 模式 = 目录列表 + 前后缀匹配；结果按文件名排序（装载序确定性，R1）。
 ///
-/// UV-181 批次A 路径穿越防线（fail-fast）：
+/// 批次A 路径穿越防线（fail-fast）：
 /// ① component 级校验——拒绝绝对路径与 `..` 组件；
 /// ② canonicalize 后前缀校验——任何形式（含软链）逃逸 pack 目录即拒载；
 /// ③ glob 目录与其匹配文件逐一过 ②（pack 目录内的软链指向外部目标同样拒绝）。
@@ -650,7 +650,7 @@ fn resolve_globs(
             out.push(ensure_within_pack_dir(pack_id, kind, &canon_root, &full)?);
         }
     }
-    // UV-181 批次B：单 kind 资产条目数上限（防海量条目拖慢装载/放大攻击面）
+    // 批次B：单 kind 资产条目数上限（防海量条目拖慢装载/放大攻击面）
     if out.len() > ASSET_MAX_ENTRIES_PER_KIND {
         return Err(format!(
             "pack {pack_id} assets.{kind} 条目数超限: {} > {ASSET_MAX_ENTRIES_PER_KIND} — \
@@ -661,7 +661,7 @@ fn resolve_globs(
     Ok(out)
 }
 
-/// UV-181 批次A：canonicalize 后前缀校验——同时覆盖 `..` 残留与软链逃逸
+/// 批次A：canonicalize 后前缀校验——同时覆盖 `..` 残留与软链逃逸
 /// （canonicalize 把符号链接解析到真实目标，逃逸 pack 目录即拒载）。
 fn ensure_within_pack_dir(
     pack_id: &str,
@@ -1823,7 +1823,7 @@ pub async fn generate_template_handler(
 
 /// 内核 transform 元指令词表（对齐 evorule-tcb executor / evorule-governance
 /// rule_validation 的元指令白名单；type 词表门禁的基准面。
-/// collect/merge 已退役（69 号清理计划 2026-09-14），enforce 由 tier 门禁管控不入选）
+/// collect/merge 已退役（规则清理方案 2026-09-14），enforce 由 tier 门禁管控不入选）
 const R2_TRANSFORM_TYPES: &[&str] = &["branch", "set", "push", "io_request"];
 
 /// 内核域函数词表（对齐 evorule-tcb domain 7 域类型）
@@ -1842,7 +1842,7 @@ const COMPILE_TIMEOUT_SECS: u64 = 10;
 
 /// type 词表门禁（契约 v1.1 §6）：编译产物全树 `type` 字段词表校验。
 ///
-/// **边界如实声明（UV-181 批次D 如实化）**：本门禁只校验 `type` 字段取值
+/// **边界如实声明（批次D 如实化）**：本门禁只校验 `type` 字段取值
 /// ∈ transform 词表 ∪ domain 词表，**不做全结构白名单校验**（"等价性"系过度
 /// 声称，已修正）。防线纵深：产物为 draft-only（不落库不进治理状态），生效前
 /// 仍走既有 Draft→Publish 链的下游结构校验兜底。越界（含把指令层词
@@ -1862,7 +1862,7 @@ fn r2_gate(v: &Value) -> Result<(), String> {
                         ));
                     }
                 }
-                // UV-181 批次D：堵「type 非字符串静默放行」小洞——协议对象
+                // 批次D：堵「type 非字符串静默放行」小洞——协议对象
                 // 携带非字符串 type 即非法形态，fail-fast（含 null）。
                 Some(other) => {
                     return Err(format!(
@@ -1944,12 +1944,12 @@ fn resolve_flow_refs(pack: &PluginPack, flow: &Value) -> Result<Value, String> {
 /// 请求 = `{ "flow": <已解析 form_ref 的 flow> }`；
 /// 响应 = `{ "rule_draft": <规则草稿>, "compiler_version": "<semver>" }`。
 /// 传输/超时/解析失败全部显式 Err（调用方映射 502 + 自诊断），不静默。
-/// 重定向不跟随（P0-1/UV-180：SSRF 防线，对齐 io_handlers B1 修复）——3xx 按显式错误透传。
+/// 重定向不跟随（P0-1/回归验证：SSRF 防线，对齐 io_handlers B1 修复）——3xx 按显式错误透传。
 async fn compile_via_service(base_url: &str, flow: &Value) -> Result<(Value, String), String> {
     let url = format!("{}/v1/compile", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(COMPILE_TIMEOUT_SECS))
-        // P0-1/UV-180：重定向不跟随（SSRF 防线，对齐 io_handlers B1 修复）——
+        // P0-1/回归验证：重定向不跟随（SSRF 防线，对齐 io_handlers B1 修复）——
         // 本地编译服务可借 302 把请求（含 flow 内容）投递到任意主机。
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -2378,7 +2378,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// UV-181 批次A 反例①：`..` 组件穿越拒载（fail-fast 在文件存在性检查之前）。
+    /// 批次A 反例①：`..` 组件穿越拒载（fail-fast 在文件存在性检查之前）。
     #[test]
     fn load_pack_rejects_parent_dir_traversal() {
         let dir = std::env::temp_dir().join(format!("evorule-trav-a-{}", std::process::id()));
@@ -2398,7 +2398,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// UV-181 批次A 反例②：绝对路径拒载（资产必须相对 pack.json 所在目录）。
+    /// 批次A 反例②：绝对路径拒载（资产必须相对 pack.json 所在目录）。
     #[test]
     fn load_pack_rejects_absolute_asset_path() {
         let dir = std::env::temp_dir().join(format!("evorule-trav-b-{}", std::process::id()));
@@ -2423,7 +2423,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// UV-181 批次A 反例③：pack 目录内软链指向外部目标拒载
+    /// 批次A 反例③：pack 目录内软链指向外部目标拒载
     /// （canonicalize 解析真实目标 → 前缀校验失败）。Windows 无特权环境跳过
     /// （symlink 需开发者模式/管理员；防线本体在 Linux CI 全量验证）。
     #[test]
@@ -2458,7 +2458,7 @@ mod tests {
         let _ = std::fs::remove_file(&outside);
     }
 
-    /// UV-181 批次B 反例①：pack.json 超 256KB 拒载。
+    /// 批次B 反例①：pack.json 超 256KB 拒载。
     #[test]
     fn load_pack_rejects_oversized_pack_json() {
         let dir = std::env::temp_dir().join(format!("evorule-cap-a-{}", std::process::id()));
@@ -2479,7 +2479,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// UV-181 批次B 反例②：单资产文件超 2MB 拒载（大小检查在 JSON 解析之前）。
+    /// 批次B 反例②：单资产文件超 2MB 拒载（大小检查在 JSON 解析之前）。
     #[test]
     fn load_pack_rejects_oversized_asset_file() {
         let dir = std::env::temp_dir().join(format!("evorule-cap-b-{}", std::process::id()));
@@ -2504,7 +2504,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// UV-181 批次B 反例③：单 kind 条目数超 500 拒载（上限在 read_json 之前收口）。
+    /// 批次B 反例③：单 kind 条目数超 500 拒载（上限在 read_json 之前收口）。
     #[test]
     fn load_pack_rejects_too_many_asset_entries() {
         let dir = std::env::temp_dir().join(format!("evorule-cap-c-{}", std::process::id()));
@@ -2587,7 +2587,7 @@ mod tests {
     /// 零 loader 改动、纯数据包即可新增领域，契约 §1"资产是静态数据"的实证）。
     /// Phase B 起该包升级契约 v1.1（+flow-compile 能力 + 1 流程资产）——
     /// v1.0/v1.1 混装同仓装载 = MINOR 向后兼容的回归证据。
-    /// UV-178 批次E 起升 v1.2（node_types.out_guards 声明面）——
+    /// 批次E 起升 v1.2（node_types.out_guards 声明面）——
     /// v1.0 finance-pack（无 node_types）与 v1.2 hr-pack 混装 = 同款回归证据。
     #[test]
     fn hr_pack_replication_loads_and_generates() {
@@ -2845,7 +2845,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ===== UV-181 批次C：base_url 端口治理（黑名单恒拒 + 白名单可选收紧） =====
+    // ===== 批次C：base_url 端口治理（黑名单恒拒 + 白名单可选收紧） =====
 
     fn base_url_pack(tag: &str, port: u16) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("evorule-port-c-{}", std::process::id()));
@@ -2879,7 +2879,7 @@ mod tests {
         assert!(err.contains("compile_allowed_ports"), "got: {err}");
     }
 
-    // ===== UV-181 批次E：能力收口（implemented/reserved 两级） =====
+    // ===== 批次E：能力收口（implemented/reserved 两级） =====
 
     fn capabilities_pack(tag: &str, capabilities: &[&str]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("evorule-cap-e-{}", std::process::id()));
@@ -2957,7 +2957,7 @@ mod tests {
 
     #[test]
     fn r2_gate_rejects_non_string_type() {
-        // UV-181 批次D：堵「type 非字符串静默放行」小洞——非法形态含 null 一律拒
+        // 批次D：堵「type 非字符串静默放行」小洞——非法形态含 null 一律拒
         for bad in [
             json!({ "transform": [ { "type": 123 } ] }),
             json!({ "transform": [ { "type": null } ] }),
@@ -3051,7 +3051,7 @@ mod tests {
         assert!(err.contains("flow 缺 nodes"), "got: {err}");
     }
 
-    /// P0-1（UV-180 批次 B）：编译客户端不跟随重定向——本地编译服务可借 302
+    /// P0-1（批次B）：编译客户端不跟随重定向——本地编译服务可借 302
     /// 把请求（含 flow 内容）投递到任意主机。若重定向被跟随，目标将返回合法
     /// 信封导致本测试误绿；Policy::none 下 302 原样返回（空 body → 非 JSON
     /// 错误透传），重定向目标必须零命中。

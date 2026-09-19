@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 应用级配额限流（59 号专项 W1）
+//! 应用级配额限流（专项 W1）
 //!
 //! # 语义
 //! - **per-app 速率限制**：governor direct 令牌桶（每 app 独立实例，容量=per_sec），
@@ -145,7 +145,7 @@ fn secs_until_next_day(now_ms: u64) -> u64 {
 }
 
 /// 应用级配额限流管理器（单进程内存态；server 当前单进程形态，
-/// 多实例演进时状态外置另立，见 59 号方案边界）。
+/// 多实例演进时状态外置另立，见 设计方案边界）。
 ///
 /// 锁纪律：`Mutex<HashMap>` 内只做内存判定与计数更新；平台事件
 /// append（IO）在锁外进行，锁内不触碰 SharedFactsLog。

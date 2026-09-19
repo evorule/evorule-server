@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! ai-plugin 外部插件包 —— 服务端驻留 LLM 执行者（契约 v1.2；UV-172 L1 地基）。
+//! ai-plugin 外部插件包 —— 服务端驻留 LLM 执行者（契约 v1.2；回归验证 L1 地基）。
 //!
 //! 形态：独立 HTTP 进程（flow-studio 同模式）。服务端点收到调用后自建
 //! 一次性 sidecar 审计会话，走完整 `call_external → LLM → io_response → Stable`

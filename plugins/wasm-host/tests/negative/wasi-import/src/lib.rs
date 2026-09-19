@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 负面 fixture：含 **WASI import** 的恶意 UDF（77 号阶段 2 · V2 实证）
+//! 负面 fixture：含 **WASI import** 的恶意 UDF（阶段 2 · V2 实证）
 //!
 //! # 这条 fixture 要证什么
 //! `evorule-wasm-host` 的零能力承诺是「Linker 不注册任何 host function，含 WASI」。
