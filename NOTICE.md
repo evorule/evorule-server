@@ -63,5 +63,5 @@ EvoRule 的核心设计原则：
 - **项目**: EvoRule — 反应式执行引擎
 - **作者**: EvoRule Project
 - **邮箱**: <evorulelab@gmail.com>
-- **组织**: [EvoRule Lab](https://gitee.com/evorule)
+- **组织**: [EvoRule](https://gitee.com/evorule)
 - **Gitee**: <https://gitee.com/evorule/evorule-server>

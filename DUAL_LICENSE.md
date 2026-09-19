@@ -134,8 +134,8 @@ EvoRule 以 **AGPL-3.0-or-later** 为基础许可证，并为需要闭源使用�
 ## 八、联系信息
 
 - **商业许可咨询**: <evorulelab@gmail.com>
-- **组织**: [EvoRule Lab](https://gitee.com/evorule)
-- **Gitee**: <https://gitee.com/evorule/evorule-server>
+- **组织**: [EvoRule](https://gitee.com/evorule)
+- **Gitee**: <https://gitee.com/evorule/evorule>
 
 ---
 
@@ -159,12 +159,3 @@ EvoRule 的知识产权归 EvoRule Project 所有。
 
 **最后更新**: 2026-09-08
 **文档版本**: 2.0
-
-
----
-
-## 十、EvoRule-Server 托管变体说明（footnote）
-
-`evorule-server` 的**自托管核心**属于 **A 类开源**（AGPL-3.0-or-later，纳入本三文本架构），允许任何人自托管部署（单租户、由项目方自行运维），始终适用本仓库 AGPL 与三文本。
-
-若以**多租户 SaaS 运营变体**对外提供服务（即 DEC-2026-001 D-001-08 所述 B 类托管变体），该运营层不在本仓库 AGPL 文本覆盖范围内，须另行签署商用协议（Commercial License 或 FCL 资格评估）。托管运营与自托管部署的边界以"是否由 EvoRule Project 集中多租户运营"划分。

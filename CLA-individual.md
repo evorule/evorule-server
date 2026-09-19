@@ -22,8 +22,7 @@
 ## 1. 定义
 
 - **"项目"** 指 **EvoRule**(反应式执行引擎)及其所有相关代码仓库,包括但不限于:
-  - `evorule`(核心仓库)
-  - `evorule-server`(EvoRule 官方 HTTP server 实现)
+  - `evorule`(主仓库,本仓库)
   - `evo-agent`(evorule 生态配套仓库)
   - 未来可能增加的关联仓库
 - **"贡献"** 指您(贡献者)提交给项目的任何源代码、文档、测试用例、补丁、翻译、示例或其他材料,通过 Pull Request / Merge Request / Issue / Email / 任何其他渠道提交。
@@ -180,7 +179,7 @@
 
 ### Q4:公司贡献怎么处理?
 
-**A**: 公司贡献者需要签署 **Corporate CLA**（已发布，见 [CLA-corporate.md](CLA-corporate.md)）。注意：Gitee 官方 CLA 模块当前**仅支持个人签署、无企业入口**，企业贡献者请按 CLA-corporate.md 的“企业如何签署”走邮件人工流程，勿用个人 CLA 代替。
+**A**: 公司贡献者需要签署 **Corporate CLA**（已发布，见 [CLA-corporate.md](CLA-corporate.md)）。注意：Gitee 官方 CLA 模块当前**仅支持个人签署、无企业入口**，企业贡献者请按 CLA-corporate.md 的"企业如何签署"走邮件人工流程，勿用个人 CLA 代替。
 
 ### Q5:CLA 适用所有贡献吗?
 
@@ -193,7 +192,7 @@
 - **项目**: EvoRule
 - **版权人**: EvoRule Project
 - **邮箱**: <evorulelab@gmail.com>
-- **Gitee**: <https://gitee.com/evorule/evorule-server>
+- **Gitee**: <https://gitee.com/evorule/evorule>
 
 ---
 
@@ -201,7 +200,7 @@
 
 | 版本 | 日期 | 主要变化 |
 |---|---|---|
-| 1.0 | 2026-07-19 | 初版,基于 evorule-core-backup 0.2.0-beta 的 CLA-individual 适配;项目定义补充 `evorule-server` |
+| 1.0 | 2026-07-19 | 初版,基于 evorule-core-backup v0.2.0-beta 的 CLA-individual 适配 |
 
 ---
 
