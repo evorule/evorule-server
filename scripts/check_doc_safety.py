@@ -52,54 +52,6 @@ PRIVATE_LEAK_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
-# R-兄弟仓引用合规：L1 公开文档禁止谈论兄弟仓"未核实/规划态"的内容；
-# 允许引用兄弟仓"已核实/已实现"的功能模块或现状。
-# 基调：各仓独立发布,只管自己仓真实情况。可以引用兄弟仓已实现的部分（须经项目方核实为真实存在），
-#       但禁止谈论未实现/规划态/详细内部路径等未核实表述。
-# 判定优先级：未核实/规划态 → 违规；已实现引用 或 依赖声明 → 放行；谈论内部 → 违规；其他提及 → 报告需 review。
-# ---------------------------------------------------------------------------
-# 兄弟仓名（仅真正的外部兄弟仓；本仓子 crate evorule-tcb/reactor/governance/cli 不算兄弟仓,
-# 它们是本仓内部,谈论其内部属于"自己仓真实情况"）
-SIBLING_REPO_PATTERNS = [
-    re.compile(r'evorule-application'),
-    re.compile(r'evo-agent'),
-    re.compile(r'evorule-server'),
-    re.compile(r'evorule-sdk'),
-]
-# 依赖声明白名单：命中以下特征的行,即使提到兄弟仓名也视为允许(依赖说明,非谈论内部)
-# 基调允许:"最多说明依赖哪个仓哪个版本"
-DEPENDENCY_DECLARATION_HINTS = re.compile(
-    r'(依赖|depends|depend|requires|需要|基于|powered by|'
-    r'SDK|客户端|client|独立仓|独立发布|兄弟仓|'
-    r'path\s*=|version\s*=|version\s*:|'  # Cargo.toml / package.json 依赖声明
-    r'提供|exposes|暴露|封装|wrapper|'
-    r'配套|编排层|工作台|应用层|agent\s*层|'  # 依赖说明常见措辞
-    r'见.*仓|请使用.*仓|已归.*层|详见|归属)'  # 依赖指引措辞(指向其他仓,不谈内部)
-)
-# 明确的"谈论内部"特征：命中即违规(不走依赖白名单)
-SIBLING_INTERNAL_DISCUSSION_HINTS = re.compile(
-    r'(仓内|独立仓的|仓的|目录|路径|src/|main\.rs|'
-    r'默认监听|监听\s*\d+|运行方式|cargo run|'
-    r'已迁|迁至|迁移到|拆分|拆出|外迁|'
-    r'CI|workflow|发布情况|已发布|未发布|'
-    r'bin|二进制|crate\b)'
-)
-# v1.x 调整：允许引用"已核实的兄弟仓实现"（现状/已实现的功能模块），
-# 仅禁止谈论未核实 / 规划态 / 未实现状态的表述。核心仍是"引用须已核实"。
-# 已实现引用特征 → 放行（未实现/将实现/待实现由 SIBLING_UNVERIFIED_HINTS 先行拦截）
-SIBLING_IMPLEMENTATION_REFERENCE_HINTS = re.compile(
-    r'(由\s*\S*\s*仓|'          # "由 [X 仓] ..."
-    r'\S*\s*实现|'             # "... 实现"（描述已实现功能）
-    r'(?:现)?位于\s*\S*\s*仓|' # "现位于/位于 X 仓"
-    r'已迁出|已外迁|已发布|已实现)'
-)
-# 未核实 / 规划态特征 → 违规（即使同时带"实现/位于"字样）
-SIBLING_UNVERIFIED_HINTS = re.compile(
-    r'(将实现|未实现|待实现|待实施|计划|规划|待定|拟|'
-    r'即将|未来|将来|后续版本|路线图|planned|roadmap|tbd|todo)'
-)
-
-# ---------------------------------------------------------------------------
 # R-agent身份零泄露：L1 公开文档禁止泄露 AI agent 身份表述
 # 基调:文档中不要泄露 agent 的身份。
 # 区分:agent 作为产品概念(如"agent 编排""构建 agent 应用")允许;身份表述禁止。
@@ -132,7 +84,7 @@ AGENT_PRODUCT_HINTS = re.compile(
     r'给\s*LLM\s*精灵|'  # 产品/文学表达:LLM 作为受众(如"给 LLM 精灵一个确定性落点"),非 AI 协作身份泄露
     r'给\s*LLM\s*一个|'  # 产品概念:"给 LLM 一个可信任的执行层"——LLM 作为服务对象/受众,非身份泄露
     r'交给\s*LLM|'      # 产品概念:"交给 LLM,这是它的天赋"——LLM 作为分工对象,非身份泄露
-    r'evo-agent)'  # evo-agent 是仓名,由 R-兄弟仓 管,这里放行避免双重报告
+    r'evo-agent)'  # evo-agent 是产品名(agent 产品概念),放行
 )
 
 # R3 例外：以下 L1 文件是「规则声明本身」，允许提到私有集合名/目录名作为规则说明。
@@ -431,67 +383,6 @@ def check_l1_mentions_l2l3(docs: List[Path], root: Path) -> List[Tuple[Path, int
 
 
 # ---------------------------------------------------------------------------
-# R-兄弟仓引用合规：L1 公开文档禁止谈论未核实/规划态的兄弟仓内容,允许引用已核实实现
-# ---------------------------------------------------------------------------
-
-def check_sibling_mention(docs: List[Path], root: Path, self_name: str = '') -> List[Tuple[Path, int, str, str]]:
-    """返回 [(path, lineno, repo_name, snippet)]
-    规则(v1.x 调整,允许引用已核实的兄弟仓实现):
-      - 废弃文档(顶部 [已废弃] 横幅)跳过(保留历史不深清)
-      - 本仓名(self_name)引用跳过——各仓文档引用自身 URL/名称属正常(跨仓复制推广适配)
-      - 命中 SIBLING_UNVERIFIED_HINTS(未核实/规划态) → 违规(即使带"实现/位于"字样)
-      - 命中 SIBLING_IMPLEMENTATION_REFERENCE_HINTS(已实现引用) 或
-        DEPENDENCY_DECLARATION_HINTS(依赖声明) → 放行
-      - 命中 SIBLING_INTERNAL_DISCUSSION_HINTS(谈论内部特征) → 违规
-      - 其他提及兄弟仓名 → 报告(需人工 review)
-    """
-    violations: List[Tuple[Path, int, str, str]] = []
-    for doc in docs:
-        try:
-            lines = doc.read_text(encoding='utf-8').splitlines()
-        except (OSError, UnicodeDecodeError):
-            continue
-        # 废弃文档跳过(顶部 50 行内有 [已废弃] 横幅)
-        if '[已废弃]' in '\n'.join(lines[:50]):
-            continue
-        # 审计/威胁模型文档跳过(版本绑定的历史审计快照,审计范围覆盖生态,
-        # 与 validate-version 跳过审计文档版本号检查一致;本仓当前安全状态见 docs/security/SECURITY_AUDIT_v0.1.0.md)
-        # CHANGELOG 为历史发布记录:记录的是"已实现/已发布"的跨仓事实,同审计快照不深查待核实表述
-        if doc.name.lower() == 'changelog.md':
-            continue
-        # REPO_REGISTRY.md 为生态仓登记表:登记兄弟仓 URL/名称是其职责本体(同 CHANGELOG 先例豁免)
-        if doc.name.upper() == 'REPO_REGISTRY.MD':
-            continue
-        if re.search(r'AUDIT|THREAT_MODEL', doc.name):
-            continue
-        for i, line in enumerate(lines, 1):
-            for pat in SIBLING_REPO_PATTERNS:
-                m = pat.search(line)
-                if not m:
-                    continue
-                repo_name = m.group(0)
-                # 本仓名引用跳过(自我引用,非兄弟仓谈论)
-                if self_name and repo_name == self_name:
-                    continue
-                # 未核实 / 规划态 → 直接违规(即使带"实现/位于"字样)
-                if SIBLING_UNVERIFIED_HINTS.search(line):
-                    violations.append((doc, i, repo_name, line.strip()))
-                    break
-                # 已实现引用 或 依赖声明 → 放行
-                if SIBLING_IMPLEMENTATION_REFERENCE_HINTS.search(line) \
-                        or DEPENDENCY_DECLARATION_HINTS.search(line):
-                    continue
-                # 明确谈论内部特征 → 直接违规
-                if SIBLING_INTERNAL_DISCUSSION_HINTS.search(line):
-                    violations.append((doc, i, repo_name, line.strip()))
-                    break
-                # 其他提及 → 报告(人工 review)
-                violations.append((doc, i, repo_name, line.strip()))
-                break
-    return violations
-
-
-# ---------------------------------------------------------------------------
 # R-agent身份零泄露：L1 公开文档禁止泄露 AI agent 身份表述
 # ---------------------------------------------------------------------------
 
@@ -701,12 +592,11 @@ def check_docs_index_exist(docs: List[Path], root: Path) -> List[Tuple[Path, int
 # 主流程
 # ---------------------------------------------------------------------------
 
-def collect_all(root: Path, skip_git: bool, self_name: str = '') -> Dict[str, Any]:
+def collect_all(root: Path, skip_git: bool) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         'gate_staged': {'ok': True, 'staged_violations': [], 'history_violations': []},
         'private_leak_l1': [],
         'l1_mentions_l2l3': [],
-        'sibling_mention_l1': [],
         'agent_identity_leak_l1': [],
         'changelog_governance': [],
         'changelog_release_alignment': [],
@@ -735,12 +625,6 @@ def collect_all(root: Path, skip_git: bool, self_name: str = '') -> Dict[str, An
         result['l1_mentions_l2l3'].append({
             'file': str(p.relative_to(root)),
             'line': ln, 'snippet': snip,
-        })
-    # R-兄弟仓零谈论
-    for (p, ln, repo, snip) in check_sibling_mention(docs, root, self_name=self_name):
-        result['sibling_mention_l1'].append({
-            'file': str(p.relative_to(root)),
-            'line': ln, 'repo': repo, 'snippet': snip,
         })
     # R-agent身份零泄露
     for (p, ln, pat, snip) in check_agent_identity_leak(docs, root):
@@ -785,7 +669,7 @@ def any_violation(r: Dict[str, Any]) -> bool:
     gs = r.get('gate_staged', {})
     if not gs.get('ok', True):
         return True
-    for k in ('private_leak_l1', 'l1_mentions_l2l3', 'sibling_mention_l1',
+    for k in ('private_leak_l1', 'l1_mentions_l2l3',
               'agent_identity_leak_l1', 'changelog_governance', 'changelog_release_alignment',
               'cross_ref_l1', 'docs_index_exist'):
         if r.get(k):
@@ -820,13 +704,6 @@ def print_human(r: Dict[str, Any]):
     else:
         for v in r['l1_mentions_l2l3']:
             print(f"   ✗ {v['file']}:{v['line']}  {v['snippet']}", file=sys.stderr)
-
-    hr('R-兄弟仓引用合规')
-    if not r['sibling_mention_l1']:
-        print('✓ L1 公开文档未谈论兄弟仓未核实/规划态内容(已实现引用与依赖声明除外)')
-    else:
-        for v in r['sibling_mention_l1']:
-            print(f"   ✗ {v['file']}:{v['line']}  repo={v['repo']}  {v['snippet']}", file=sys.stderr)
 
     hr('R-agent身份零泄露')
     if not r['agent_identity_leak_l1']:
@@ -872,14 +749,13 @@ def main():
     p = argparse.ArgumentParser(description='EvoRule 文档安全 + 引用完整性检查')
     p.add_argument('--warn', action='store_true', help='只警告不报错（exit 恒 0）')
     p.add_argument('--skip-git', action='store_true', help='跳过 git staged/history 检查（非 git 环境）')
-    p.add_argument('--self', default='', help='本仓名：兄弟仓规则豁免自我引用（跨仓推广适配）')
     p.add_argument('--json', action='store_true', help='JSON 输出')
     p.add_argument('--cwd', default=default_root, help='repo 根目录（默认自动定位 scripts/..）')
     args = p.parse_args()
 
     cwd = Path(args.cwd).resolve()
 
-    r = collect_all(cwd, skip_git=args.skip_git, self_name=args.self)
+    r = collect_all(cwd, skip_git=args.skip_git)
 
     if args.json:
         r['summary'] = {

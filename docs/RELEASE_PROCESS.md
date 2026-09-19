@@ -72,20 +72,19 @@ pwsh scripts/validate-all.ps1 -PreRelease
 | 3   | `validate-license.ps1`    | LICENSE 含 AGPL + 所有 .rs 文件 SPDX 头                                                                        |
 | 4   | `validate-cargolock.ps1`  | Cargo.lock 策略（binary workspace 必须提交仓根 Cargo.lock）                                                    |
 | 5   | `validate-release.ps1`    | tag 格式校验（`-SkipTagCheck` 跳过 tag 存在性，发布前用）+ **`[patch.crates-io]` 段检测**（发布前必须移除）  |
-| 6   | **`check_doc_safety.py`** | 文档安全 + 交叉引用完整性 + 基调合规（7 类规则，见下）                                                         |
+| 6   | **`check_doc_safety.py`** | 文档安全 + 交叉引用完整性 + 基调合规（6 类规则，见下）                                                         |
 | 7   | **`check_schema_sync.py`** | 跨仓 Schema 同步检查（`core/rule_schema/schemas/` 与 `evorule-system-rules` 仓一致性）                        |
 
-`check_doc_safety.py` 检查 7 类规则：
+`check_doc_safety.py` 检查 6 类规则：
 
 - R-门控1：staged 文件不含 `wendang/` 路径（仓内私有文档不发布）
 - R3 引用合规：L1 公开文档无私有集合路径泄露
 - L1 不提 L2/L3：L1 不链接到仓内私有文档目录
-- **R-兄弟仓零谈论**：L1 不谈论兄弟仓内部（依赖声明/指引除外）
 - **R-agent身份零泄露**：L1 不泄露 AI agent 身份表述（产品概念除外）
 - L1 交叉引用完整性：md 链接指向的仓内文件存在
 - DOCS_INDEX 索引存在性
 
-以上全部通过（exit 0）才可继续。如 `check_doc_safety.py` 报告 R-兄弟仓/R-agent 违规，需清理文档后重跑。
+以上全部通过（exit 0）才可继续。如 `check_doc_safety.py` 报告 R-agent 违规，需清理文档后重跑。
 
 ## 2. 归档 cargo audit 报告（可选）
 
