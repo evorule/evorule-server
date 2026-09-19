@@ -955,3 +955,68 @@ async fn test_audit_archive_replay_after_close_and_restart() {
     .await;
     assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 }
+
+/// 测试 R10：origin_fact_id 跨链溯源（N6 链路统一）
+///
+/// `shared.*` payload 写入后：
+/// 1. 共享账本条目携带 `origin_fact_id` == payload 响应返回的会话侧 fact_id
+///    （P04 验收标准 ①）；
+/// 2. `GET /api/shared/facts/{id}/source` 出示含 origin 的双侧证据起点
+///    （P04 验收标准 ②）；
+/// 3. 时序交换回归：send 成功才广播，origin 永不悬空。
+#[tokio::test]
+async fn test_shared_fact_origin_fact_id_cross_chain() {
+    let state = make_state();
+
+    // 1. 创建会话
+    let (status, json) = send(&state, "POST", "/api/sessions", None).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let session_id = json["session_id"].as_u64().unwrap();
+
+    // 2. 写 shared.* payload（广播在同请求内同步完成，无需等待处理）
+    let body = r#"{"path":"shared.r10.test.key","value":"v1"}"#;
+    let (status, json) = send(
+        &state,
+        "POST",
+        &format!("/api/sessions/{session_id}/payload"),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(json["success"], true, "payload 写入应成功");
+    let session_side_fact_id = json["fact_id"].as_u64().expect("响应应含会话侧 fact_id");
+
+    // 3. 前缀查询共享账本：origin == 会话侧 fact_id（验收 ①）
+    let (status, json) = send(&state, "GET", "/api/shared/facts?prefix=shared.r10.", None).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let facts = json.as_array().expect("共享事实列表应为数组");
+    assert_eq!(facts.len(), 1, "应恰好一条 shared.r10.test.key");
+    let entry = &facts[0];
+    assert_eq!(entry["path"], "shared.r10.test.key");
+    assert_eq!(
+        entry["origin_fact_id"].as_u64(),
+        Some(session_side_fact_id),
+        "origin_fact_id 应等于 payload 响应的会话侧 fact_id"
+    );
+    assert_eq!(entry["source_session_id"].as_u64(), Some(session_id));
+    let shared_fact_id = entry["fact_id"].as_u64().unwrap();
+
+    // 4. 单条 source 查询：同样携带 origin（验收 ②）
+    let (status, json) = send(
+        &state,
+        "GET",
+        &format!("/api/shared/facts/{shared_fact_id}/source"),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(
+        json["origin_fact_id"].as_u64(),
+        Some(session_side_fact_id),
+        "source 端点应出示 origin"
+    );
+
+    // 5. 两个 fact_id 属不同账本空间（N6 语义）：共享侧 id ≠ 会话侧 id 由
+    //    各链独立编址决定，此处不断言具体关系，仅确认双侧均可独立寻址。
+    assert!(shared_fact_id > 0 && session_side_fact_id > 0);
+}

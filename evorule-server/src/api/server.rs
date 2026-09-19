@@ -3199,6 +3199,9 @@ pub struct SharedFact {
 
     /// 版本号
     pub version: u64,
+
+    /// 会话侧源头 fact_id（N6 链路统一，R10；旧数据/旧签名写入为 null）
+    pub origin_fact_id: Option<u64>,
 }
 
 /// used_at_startup 查询响应
@@ -6064,22 +6067,28 @@ async fn session_payload(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // L-1: 当路径以 "shared." 开头时，同步写入 SharedFactsLog（跨会话广播）
+    //
+    // R10 时序交换：先 send（会话侧事实确定入链）成功后，才广播并携带
+    // origin_fact_id=Some(id)——origin 永不悬空（共享侧条目必然指向已入链
+    // 的会话侧事实）。广播仍 best-effort：失败仅 warn，不影响主流程。
+    // 行为变化（相对旧时序）：reactor 已退出（send 失败）时不再向共享账本
+    // 写入指向未入链事实的幽灵条目；HTTP 响应语义不变。
 
-    // best-effort：失败仅 warn，不影响主流程
+    let send_result = session.command_tx.send(Fact::PayloadUpdate {
+        id,
 
-    if req.path.starts_with("shared.") {
-        if let Err(e) = shared_facts.append(&req.path, value.clone(), session_id) {
+        path: req.path.clone(),
+
+        value: value.clone(),
+    });
+
+    if send_result.is_ok() && req.path.starts_with("shared.") {
+        if let Err(e) = shared_facts.append_with_origin(&req.path, value, session_id, Some(id.0)) {
             tracing::warn!(session_id, path = %req.path, "SharedFactsLog append failed: {e}");
         }
     }
 
-    match session.command_tx.send(Fact::PayloadUpdate {
-        id,
-
-        path: req.path,
-
-        value,
-    }) {
+    match send_result {
         Ok(()) => Ok((
             StatusCode::OK,
             Json(ApiResponse {
@@ -6945,6 +6954,8 @@ async fn shared_facts_by_prefix(
 
                 "version": sf.version,
 
+                "origin_fact_id": sf.origin_fact_id,
+
             })
         })
         .collect();
@@ -6995,6 +7006,8 @@ async fn shared_fact_source(
         "source_session_id": fact.source_session_id,
 
         "version": fact.version,
+
+        "origin_fact_id": fact.origin_fact_id,
 
     })))
 }
