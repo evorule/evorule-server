@@ -328,7 +328,10 @@ async fn triple_plugin_demo_service_still_hit_through_indicator_layer() {
     let r = router
         .execute(&svc_params(
             "config_persist",
-            JsonValue::object_from_pairs(&[("operation", JsonValue::string("reg037-triple-probe"))]),
+            JsonValue::object_from_pairs(&[(
+                "operation",
+                JsonValue::string("reg037-triple-probe"),
+            )]),
         ))
         .await
         .unwrap();
