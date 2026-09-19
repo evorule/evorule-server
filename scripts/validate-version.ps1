@@ -157,6 +157,8 @@ if ($canonicalVersion -and $canonicalVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
         # 审计/威胁模型文档跳过(版本绑定审计批次)
         # SECURITY.md 含版本支持表(历史边界声明如 < v0.1.0,合法)
         if ($relName -match 'AUDIT|THREAT_MODEL|^SECURITY\.md$') { continue }
+        # CLA 协议文档跳过(修订记录为协议自身版本史与来源描述,与产品版本无关)
+        if ($relName -match '^CLA-') { continue }
 
         $seen = @{}
         foreach ($m in [regex]::Matches($content, $versionLiteralPattern)) {
