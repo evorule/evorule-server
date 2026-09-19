@@ -22,13 +22,11 @@ path = "src/main.rs"
 # 0.4.3 起 evorule-tcb/reactor 携带规则命中归因（RuleHit/TransitionTrace）、
 # enforce 元指令与 WAL 重启续链修复，server 侧消费该事实做聚合。
 # 发布顺序：evorule 0.4.3 先发 crates.io，本仓随后（D8 同发同装）。
-evorule-tcb = { version = "0.6.0" }
-evorule-reactor = { version = "0.6.0", features = ["persistence"] }
+evorule-tcb = { version = "0.6.1" }
+evorule-reactor = { version = "0.6.1", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
-# R10: 保持 ^0.6.0（caret 兼容即将发布的 0.6.1，origin_fact_id 经 JSON 字段透传）；
-# 显式对齐 0.6.1 留待发版提交，避免 registry 无 0.6.1 时 CI 解析失败。
-# 本地联调用 gitignore 的 .cargo/config.toml patch 到兄弟仓检出（仓库惯例，见下行注释区）。
-evorule-governance = { version = "0.6.0", features = ["persistence"] }
+# R10: origin_fact_id 经 JSON 字段透传（0.6.1 已发布 crates.io）。
+evorule-governance = { version = "0.6.1", features = ["persistence"] }
 # 审计档案链哈希重算
 blake3 = "1"
 

@@ -25,6 +25,16 @@
 
 ---
 
+## [0.7.0] - 2026-09-20
+
+### 🔄 变更
+
+- **核心依赖升级 0.6.0 → 0.6.1（跟随上游发版，2026-09-20）** — `evorule-tcb` / `evorule-reactor` / `evorule-governance` 依赖从 0.6.0 提升至 0.6.1（crates.io 已发布）：随上游获得 R10 共享事实跨链溯源（`origin_fact_id` 经 JSON 字段透传，共享账本条目记录其会话侧源头事实，溯源查询可出示双侧证据）、R11 `mark_as_rollup` 返回显式 `RollupOutcome`（不存在的 id 不入账并逐个上报）、`snapshot_at` 版本围栏 off-by-one 修复；`session_payload` 广播时序交换（send 成功后才 append，origin 永不悬空）随 reactor 0.6.1 生效
+
+### ❌ 移除
+
+- **顶层 `[patch.crates-io]` git 三件套退役** — 该过渡 patch 服务于「governance 0.6.1 尚未发布 crates.io」窗口期（CI 从主仓 git 拉含新 API 的版本）；0.6.1 发布后 Cargo.lock 直接从 registry 解析，本地与 CI 构建同构，patch 段连同说明注释一并删除
+
 ## [0.6.0] - 2026-09-11
 
 ### 🆕 新增

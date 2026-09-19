@@ -938,7 +938,7 @@ let report: String = api.audit_report.await.unwrap_or_else(|e| {
 - `noop` 初始指令是 CLI/应用层构造的业务指令，不是 transform 规则类型
 - `increment`/`decrement` 如果需要，应通过 `set` 元指令的 `operation: "add"`/`"sub"` 实现
 
-> **v0.6.0 更新**：元指令白名单已收窄为 5 种（`branch` / `set` / `push` / `io_request` / `enforce`）；`collect` / `merge` 已于 v0.6.0 退役，多轮编排由应用层 runner 实现。上文「6 种」为 0.3.0 时代的历史口径。
+> **更新说明**：元指令白名单已收窄为 5 种（`branch` / `set` / `push` / `io_request` / `enforce`）；`collect` / `merge` 已随规则清理退役，多轮编排由应用层 runner 实现。上文「6 种」为早期历史口径。
 
 **避坑要点**：提交规则前先用 `POST /api/rules/validate` 校验，该端点使用 `core/rule_schema` 的 JSON Schema 做权威校验，比 evorule TCB 内部校验更早发现问题。
 

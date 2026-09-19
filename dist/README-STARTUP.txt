@@ -1,4 +1,4 @@
-evorule 体验版(单机一键启动) v0.6.0
+evorule 体验版(单机一键启动) v0.7.0
 ====================================
 
 环境要求
@@ -155,7 +155,7 @@ service_registry.json,可自行扩展为真实 HTTP 服务端点。
                            插件时看门狗不会动作;其余插件按需登记)
 - plugins\ai-plugin\       AI 插件(evorule-ai-plugin.exe + plugin.json
                            + config.example.json;缺省禁用,启用见上文)
-- evorule-server.exe       主服务(evorule-server v0.6.0,运行时 :18080)
+- evorule-server.exe       主服务(evorule-server v0.7.0,运行时 :18080)
 - evorule-rule-serve.exe   治理服务(evorule-rule v0.3.1,规则资产库 :18081)
 - web\                     前端页面(evorule-console-cloud)
 - rules\                   运行规则集(业务场景演示规则)
