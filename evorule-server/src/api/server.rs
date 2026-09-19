@@ -7147,6 +7147,10 @@ async fn get_sessions_using_fact(
 ///
 /// 被标记的 fact_id 在 `facts_by_path_prefix` 查询中被过滤，
 /// 但仍可通过 `fact_by_id` 访问以保留审计可追溯性。
+///
+/// R11（静默失败修复）：空批次 → 400；含不存在的 fact_id → 404
+/// 并逐个列出（典型原因：误用写入响应的 payload 侧 fact_id——与共享表
+/// ID 空间不通用）。修复前任何输入都无条件返回 200，错 ID 空间静默无效。
 #[utoipa::path(
 
     post,
@@ -7161,7 +7165,9 @@ async fn get_sessions_using_fact(
 
         (status = 200, description = "标记成功，返回标记数量", body = ApiResponse),
 
-        (status = 400, description = "请求体缺少 fact_ids 或格式错误")
+        (status = 400, description = "fact_ids 为空"),
+
+        (status = 404, description = "存在共享账本中不存在的 fact_id（逐个列出）")
 
     )
 
@@ -7171,24 +7177,75 @@ async fn shared_facts_rollup(
     State(shared_facts): State<SharedFactsLog>,
 
     Json(req): Json<FactIdsRequest>,
-) -> Result<Json<ApiResponse>, StatusCode> {
+) -> Result<(StatusCode, Json<ApiResponse>), (StatusCode, Json<ApiResponse>)> {
+    if req.fact_ids.is_empty() {
+        tracing::warn!("rollup rejected: empty fact_ids");
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "fact_ids 不能为空".to_string(),
+                fact_id: None,
+                code: status_error_code(StatusCode::BAD_REQUEST).map(str::to_string),
+            }),
+        ));
+    }
+
     let fact_ids: Vec<FactId> = req.fact_ids.into_iter().map(FactId).collect();
 
-    let count = fact_ids.len();
+    let outcome = shared_facts.mark_as_rollup(&fact_ids);
 
-    shared_facts.mark_as_rollup(&fact_ids);
+    if !outcome.unknown.is_empty() {
+        // 不存在的 id 必须显式失败：静默 200 会让调用方误以为标记成功，
+        // 旧摘要永不失效 → 反复 rollup 膨胀（实测确认的事故形态）
+        tracing::warn!(
+            unknown = ?outcome.unknown,
+            marked = outcome.marked,
+            "rollup: request contains fact_ids absent from the shared ledger \
+             (likely payload-side fact_id misuse — the two ID spaces are not interchangeable)"
+        );
+        let show: Vec<String> = outcome
+            .unknown
+            .iter()
+            .take(20)
+            .map(|id| id.0.to_string())
+            .collect();
+        let ellipsis = if outcome.unknown.len() > 20 {
+            ", ..."
+        } else {
+            ""
+        };
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse {
+                success: false,
+                message: format!(
+                    "{} 个 fact_id 在共享账本中不存在（常见原因：误用 payload 侧 fact_id，两个 ID 空间不通用）；已标记 {} 个；未知 id: [{}{}]",
+                    outcome.unknown.len(),
+                    outcome.marked,
+                    show.join(", "),
+                    ellipsis
+                ),
+                fact_id: None,
+                code: status_error_code(StatusCode::NOT_FOUND).map(str::to_string),
+            }),
+        ));
+    }
 
-    tracing::info!(fact_count = count, "Marked shared facts as rolled up");
+    tracing::info!(
+        fact_count = outcome.marked,
+        "Marked shared facts as rolled up"
+    );
 
-    Ok(Json(ApiResponse {
-        success: true,
-
-        message: format!("{} facts marked as rolled up", count),
-
-        fact_id: None,
-
-        code: None,
-    }))
+    Ok((
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: format!("{} facts marked as rolled up", outcome.marked),
+            fact_id: None,
+            code: None,
+        }),
+    ))
 }
 
 /// 共享事实日志版本响应

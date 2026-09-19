@@ -872,8 +872,7 @@ dependencies = [
 [[package]]
 name = "evorule-governance"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75a8a871c0e1af7c0ac5775a2466785ed8f27058756657365183bd37885eb7d6"
+source = "git+https://gitee.com/evorule/evorule.git#8294122ac34a97843a2820612d2de06bbf9b5250"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -996,8 +995,7 @@ dependencies = [
 [[package]]
 name = "evorule-reactor"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d0fc3c6e336b285f1c1a7f52dac46cb72d7ca111f941cc3224d37bfdc779494"
+source = "git+https://gitee.com/evorule/evorule.git#8294122ac34a97843a2820612d2de06bbf9b5250"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1133,8 +1131,7 @@ version = "0.6.0"
 [[package]]
 name = "evorule-tcb"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf746e941dd9958ebfe19dc28a8c9f41fd32aa57b9a6a31468ebe23ef8fce785"
+source = "git+https://gitee.com/evorule/evorule.git#8294122ac34a97843a2820612d2de06bbf9b5250"
 
 [[package]]
 name = "evorule-time-machine"
@@ -4651,3 +4648,7 @@ dependencies = [
  "log",
  "simd-adler32",
 ]
+
+[[patch.unused]]
+name = "evorule-rule"
+version = "0.3.1"

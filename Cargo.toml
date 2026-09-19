@@ -54,3 +54,13 @@ all = { level = "warn", priority = -1 }
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# R11 过渡 patch：mark_as_rollup 返回 RollupOutcome 的新 API 尚未发布
+# crates.io（governance 0.6.1 未发），CI 从主仓 git 拉含新 API 的版本。
+# 三件套整体 patch（governance 的 git workspace 会连带 reactor，单 patch
+# governance 会造成 reactor 双版本类型冲突）；本地 .cargo/config.toml
+# （gitignore）的 path patch 已同步移除，本地与 CI 同构。发版后删除本段。
+[patch.crates-io]
+evorule-governance = { git = "https://gitee.com/evorule/evorule.git" }
+evorule-reactor = { git = "https://gitee.com/evorule/evorule.git" }
+evorule-tcb = { git = "https://gitee.com/evorule/evorule.git" }
