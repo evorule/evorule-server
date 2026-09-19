@@ -15,8 +15,6 @@ The response shape matches the 2026-08-19 WAL record produced by
 
 Run:
     python3 echo_server.py
-or
-    C:/Users/A/.workbuddy/binaries/python/versions/3.13.12/python.exe echo_server.py
 """
 import json
 import time

@@ -15,7 +15,7 @@
 #   脚本尾部自动跑双侧测试，双绿才算同步完成（不静默）。
 #
 # 用法：
-#   pwsh ./scripts/sync-native-services.ps1                        # 默认 D:\evorule-rule
+#   pwsh ./scripts/sync-native-services.ps1                        # 默认按兄弟目录推导(检出根下 evorule-rule)
 #   pwsh ./scripts/sync-native-services.ps1 -RepoRule E:\evorule-rule
 #   pwsh ./scripts/sync-native-services.ps1 -Verify                # 校验模式（CI 用）
 #
@@ -27,12 +27,13 @@
 
 [CmdletBinding()]
 param(
-    [string]$RepoRule = "D:\evorule-rule",
+    [string]$RepoRule = "",
     [switch]$Verify
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+if (-not $RepoRule) { $RepoRule = Join-Path (Split-Path -Parent $repoRoot) 'evorule-rule' }
 Set-Location $repoRoot
 
 # 插件登记表：id → 执行侧 crate 名（声明 SSOT 均位于 plugins/<id>/official_native_services.json）

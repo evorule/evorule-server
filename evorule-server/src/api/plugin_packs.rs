@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! 插件契约 v1 落地：声明式 pack 装载 + 资产面只读 API + 模板草稿生成纯函数
 //!
-//! 契约 SSOT：`D:\knowledge\2-Projects\evorule-plugin\02-Plugin-Contract-v1.md`
+//! 契约 SSOT：Plugin Contract v1（§5/§6）
 //!
 //! 红线对照（契约 §0，实施前复核表 §8）：
 //! - R1 确定性：`generate_draft` 是纯函数——同（模板字节, 表单值）→ 字节级同输出；

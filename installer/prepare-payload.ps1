@@ -1,4 +1,4 @@
-﻿# evorule-setup 安装器载荷填充脚本
+# evorule-setup 安装器载荷填充脚本
 # 将分发包内容汇集到 installer/payload/（build.rs 会整树内嵌进单文件安装器）。
 # 来源与 release.yml win64 打包步骤保持一致：
 #   - evorule-server.exe        <- 本仓 target/release
@@ -9,13 +9,16 @@
 #   - rules/                    <- console-cloud assets/evorule-rules/*.json + 本仓 rules/10_role13_demo.json
 #   - resources/server_eval.json / service_registry.json / dist 启动脚本与说明
 # 防御性排除 data/、logs/、*.log（build.rs 亦有同样排除）。
-# 默认来源路径适配当前发版机布局（RuleRepo/ConsoleRepo 为绝对盘符默认值）；换机发版请显式传参（-RuleRepo / -ConsoleRepo）。
+# 默认来源路径按检出根兄弟目录推导；换机发版也可显式传参（-RuleRepo / -ConsoleRepo）。
 param(
     [string]$ServerRepo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
-    [string]$RuleRepo = "D:\evorule-rule",
-    [string]$ConsoleRepo = "D:\evorule-console-cloud"
+    [string]$RuleRepo = "",
+    [string]$ConsoleRepo = ""
 )
 $ErrorActionPreference = "Stop"
+# 默认按兄弟目录推导(检出根下 evorule-rule / evorule-console-cloud);换机发版可显式传参覆盖
+if (-not $RuleRepo)    { $RuleRepo    = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'evorule-rule' }
+if (-not $ConsoleRepo) { $ConsoleRepo = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'evorule-console-cloud' }
 
 $payload = Join-Path $PSScriptRoot "payload"
 if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }

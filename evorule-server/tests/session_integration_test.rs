@@ -66,7 +66,7 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // evorule-server 独立仓:resources/ 在 crate 上一级(evorule-server/),
-    // 故只需一级 `..`。原 `../../` 是从 evorule-application 仓复制时的遗留路径。
+    // 故只需一级 `..`。原 `../../` 是从应用仓复制时的遗留路径。
     let core_eval_path = manifest_dir.join("../resources/server_eval.json");
     let json_str = std::fs::read_to_string(&core_eval_path).unwrap_or_else(|e| {
         panic!(

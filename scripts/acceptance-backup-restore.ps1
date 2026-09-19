@@ -23,7 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $ServerExe) { $ServerExe = Join-Path $repoRoot 'target\debug\evorule-server.exe' }
-if (-not $RuleExe) { $RuleExe = 'D:\evorule-rule\target\debug\evorule-rule-serve.exe' }
+if (-not $RuleExe) { $RuleExe = Join-Path (Split-Path -Parent $repoRoot) 'evorule-rule\target\debug\evorule-rule-serve.exe' }
 
 $script:Pass = 0
 $script:Fail = 0

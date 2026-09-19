@@ -15,11 +15,13 @@ param(
     [int]$Minutes = 30,
     [int]$Users = 3,
     [int]$Port = 18290,
-    [string]$ServerExe = "D:\evorule-server\target\release\evorule-server.exe",
-    [string]$RepoRoot = "D:\evorule-server"
+    [string]$ServerExe = "",
+    [string]$RepoRoot = ""
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $ServerExe) { $ServerExe = Join-Path (Split-Path -Parent $PSScriptRoot) 'target\release\evorule-server.exe' }
+if (-not $RepoRoot)  { $RepoRoot  = Split-Path -Parent $PSScriptRoot }
 $tmp = Join-Path $env:TEMP "uv032-drill-$(Get-Random)"
 New-Item -ItemType Directory -Path "$tmp\wal" -Force | Out-Null
 
