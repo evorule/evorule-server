@@ -278,7 +278,7 @@ async fn reject_proposal_handler(
 }
 
 /// 审计历史读取（管理面）：倒序=最新在前；?key= 过滤 + ?limit= 截断。
-/// server 对 /admin/{tail} 通配代理，本端点经 server 零改动自动可达（93 号 D2）。
+/// server 对 /admin/{tail} 通配代理，本端点经 server 零改动自动可达。
 /// 注：插件 axum 为裁剪 feature 集（无 Query extractor），手工解析 query string；
 /// key 取值限 ASCII 规则名（`.`/字母/数字），不做百分号解码。
 async fn audit_handler(
@@ -496,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn reject_then_audit_reads_symmetric_entry() {
-        // 93 号 D1+D2 HTTP 层闭环：set→提案→管理面拒绝→audit 端点读回对称条目
+        // HTTP 层闭环：set→提案→管理面拒绝→audit 端点读回对称条目
         let (state, _dir) = test_state();
         let app = app(state.clone());
 

@@ -259,7 +259,7 @@ impl ConfigStore {
             .iter()
             .position(|p| p.proposal_id == proposal_id)
             .ok_or_else(|| format!("提案 {proposal_id} 不存在"))?;
-        // 对称留痕（93 号 D1）：拒绝同样是审批决定，必须与 approve 同构入审计
+        // 对称留痕：拒绝同样是审批决定，必须与 approve 同构入审计
         let prop = guard.proposals[idx].clone();
         let old = guard.entries.get(&prop.key).cloned();
         guard.audit.push(AuditEntry {
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_reject_writes_symmetric_audit_entry() {
-        // 93 号 D1：拒绝与批准同构留痕——decision/new(null)/approved_by/reason 均落审计
+        // 拒绝与批准同构留痕——decision/new(null)/approved_by/reason 均落审计
         let dir = temp_dir();
         let path = dir.join("finance-config.json");
         let store = ConfigStore::open(&path).unwrap();
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_old_store_file_without_decision_loads() {
-        // 93 号 D1 兼容：旧版 config_store.json（AuditEntry 无 decision 字段）可加载
+        // 兼容：旧版 config_store.json（AuditEntry 无 decision 字段）可加载
         let dir = temp_dir();
         let path = dir.join("finance-config.json");
         let legacy = r#"{
