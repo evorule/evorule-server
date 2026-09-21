@@ -36,6 +36,7 @@ pub mod api;
 pub mod bundle_land;
 pub mod db;
 pub mod error;
+pub mod evolution_scanner;
 pub mod mock_io_responder;
 pub mod models;
 pub mod publish_service;

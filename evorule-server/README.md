@@ -108,6 +108,7 @@ evorule-server --config evorule.json --log-format json
 |------|----------|------|
 | 健康检查 | `/api/health/*` | liveness / readiness |
 | Session 管理 | `/api/sessions/*` | 创建/列出/关闭/命令/状态/事件流 |
+| 进化信号 | `/api/sessions/{id}/evolution-signals` | 违规信号聚合 + 治理队列现状（只读，自进化感知） |
 | 审计链 | `/api/sessions/{id}/audit/*` | 报告/验证/导出/导入/因果链追溯 |
 | 时间机器 | `/api/sessions/{id}/rewind`, `/diff` | 回溯/对比/分支 |
 | 调试 | `/api/sessions/{id}/debug/*` | phase/queue/pending_io |

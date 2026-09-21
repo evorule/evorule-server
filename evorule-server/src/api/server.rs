@@ -104,6 +104,15 @@ pub fn is_external_executor_request(io_type: &IoType, params: &JsonValue) -> boo
     is_llm_audit_request(io_type, params) || is_agent_tool_request(io_type, params)
 }
 
+/// L2 约束层文件名判定（单一权威，tier_inventory / l2_inventory / tier_gate 三处共用）。
+///
+/// 新权威前缀 `00_constraint_`（命名收敛 v3.0）；旧前缀 `00_meta_` 保持
+/// 兼容读取（存量零迁移）。仅 rules_dir **根目录直置**文件可据此判定为 L2
+/// （目录归属由调用方校验）。
+fn is_l2_meta_file_name(name: &str) -> bool {
+    name.starts_with("00_constraint_") || name.starts_with("00_meta_")
+}
+
 /// 就绪标志（优雅退出时设为 false，readiness 端点返回 503）
 pub type ReadinessFlag = Arc<AtomicBool>;
 
@@ -1312,9 +1321,10 @@ impl SessionApi {
     /// 分层是**纯约定**（执行顺序由"core_eval 在前 + 完整路径字典序"保证，本函数不参与
     /// 加载路径，只做只读扫描）：
     /// - L1 宪法层：core_eval 文件（server_eval.json），仅用户特批可改
-    /// - L2 元规则层：rules_dir **根目录直置**的 `00_meta_*.json`，仅治理链晋升可写
-    ///   （子目录内 00_meta_ 前缀不算 L2——L3 补丁落点在 bundles/{id}/ 子目录，
-    ///   防伪造层级；且字典序保证根目录 00_meta_ 恒先于 bundles/ 执行）
+    /// - L2 约束层：rules_dir **根目录直置**的 `00_constraint_*.json`（新权威前缀）
+    ///   或 `00_meta_*.json`（旧前缀兼容），仅治理链晋升可写
+    ///   （子目录内约束前缀不算 L2——L3 补丁落点在 bundles/{id}/ 子目录，
+    ///   防伪造层级；且字典序保证根目录 00_constraint_ 恒先于 bundles/ 执行）
     /// - L3 业务层：其余全部（根目录存量文件 + bundles/ 子目录条目）
     pub fn tier_inventory(
         core_eval_path: &std::path::Path,
@@ -1329,7 +1339,7 @@ impl SessionApi {
             paths: vec![core_eval_path.to_string_lossy().to_string()],
         });
 
-        // L2/L3 分类：根目录直置 00_meta_ 前缀 = L2，其余（含子目录）= L3
+        // L2/L3 分类：根目录直置约束前缀（00_constraint_ 新 / 00_meta_ 旧兼容）= L2，其余（含子目录）= L3
         let (mut l2, mut l3): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         let mut all: Vec<std::path::PathBuf> = Vec::new();
         Self::collect_json_files_recursive(rules_dir, &mut all);
@@ -1357,7 +1367,7 @@ impl SessionApi {
             let is_root_meta = p.parent().map(|d| d == rules_dir).unwrap_or(false)
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with("00_meta_"))
+                    .map(|n| is_l2_meta_file_name(n))
                     .unwrap_or(false);
             if is_root_meta {
                 l2.push(rel);
@@ -1383,7 +1393,8 @@ impl SessionApi {
     /// L2 约束（元规则）只读清单投影（结构化，供 LLM 代理读取约束边界摘要）。
     ///
     /// 扫描口径与 [`Self::tier_inventory`] 的 L2 层单一权威同源：rules_dir **根目录直置**
-    /// 的 `00_meta_*.json` 且过层级门禁（[`Self::tier_gate_reason`]，拒载文件不投影）。
+    /// 的 `00_constraint_*.json`（新权威前缀）或 `00_meta_*.json`（旧前缀兼容）且过层级门禁
+    /// （[`Self::tier_gate_reason`]，拒载文件不投影）。
     /// 输出为结构化投影——仅 `metadata.title` + `metadata.guard_for`，不包含
     /// transform / enforce 等执行语义内容。
     ///
@@ -1400,7 +1411,7 @@ impl SessionApi {
                 continue;
             }
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !(name.starts_with("00_meta_") && name.ends_with(".json")) {
+            if !(is_l2_meta_file_name(name) && name.ends_with(".json")) {
                 continue;
             }
             // fail-soft：读取或解析失败 → 跳过该文件
@@ -1469,10 +1480,12 @@ impl SessionApi {
 
     /// 层级门禁判定核心（静默版，加载路径与 tier_inventory 清单共用单一权威实现）。
     ///
-    /// - **正向**：rules_dir 根目录直置的 `00_meta_*.json`（L2 元规则层）必须声明
-    ///   `metadata.tier == "meta"`——防裸文件冒充元规则。
+    /// - **正向**：rules_dir 根目录直置的 `00_constraint_*.json`（新权威前缀）或
+    ///   `00_meta_*.json`（旧前缀兼容，见 [`is_l2_meta_file_name`]）必须声明
+    ///   `metadata.tier == "constraint"`（新权威值）或 `"meta"`（deprecated 兼容旧值）
+    ///   ——防裸文件冒充元规则。
     /// - **反向**：其余文件（根目录普通业务文件 / bundles/ 子目录条目）**禁止**声明
-    ///   `tier == "meta"`——防 LLM 补丁伪造层级。
+    ///   L2 层级 tier——防 LLM 补丁伪造层级。
     /// - **enforce 限定**（回归验证）：非 L2 文件禁止携带 `enforce` 强制原语——
     ///   引擎级阻止权仅随治理链晋升的 L2 元规则下发，业务规则/LLM 补丁
     ///   私自获得阻止权 = 治理旁路。
@@ -1490,22 +1503,24 @@ impl SessionApi {
         let is_root_meta_file = p.parent().map(|d| d == rules_dir).unwrap_or(false)
             && p.file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("00_meta_"))
+                .map(|n| is_l2_meta_file_name(n))
                 .unwrap_or(false);
         match (is_root_meta_file, tier) {
-            (true, Some("meta")) => {}
+            // tier 双值门禁（命名收敛 v3.0）："constraint" 为新权威值，
+            // "meta" 为 deprecated 兼容旧值——存量文件零迁移可继续加载
+            (true, Some("constraint") | Some("meta")) => {}
             (true, other) => {
                 return Err(format!(
-                    "元规则文件缺少 metadata.tier=\"meta\"（实际 {:?}）",
+                    "元规则文件缺少 metadata.tier=\"constraint\"（兼容旧值 \"meta\"）（实际 {:?}）",
                     other
                 ))
             }
-            (false, Some("meta")) => {
-                return Err("非元规则文件携带 tier=\"meta\"（层级伪造）".to_string())
+            (false, Some("constraint") | Some("meta")) => {
+                return Err("非元规则文件携带 L2 层级 tier（层级伪造）".to_string())
             }
             (false, _) => {}
         }
-        // enforce 层级限定（回归验证）：L2（根目录 00_meta_ + tier=meta）之外一律拒载
+        // enforce 层级限定（回归验证）：L2（根目录约束前缀 + L2 tier 声明）之外一律拒载
         if !is_root_meta_file && Self::contains_enforce_rule(json) {
             return Err(
                 "非元规则文件使用 enforce 强制原语（enforce 仅允许 L2 元规则文件，\
@@ -8461,6 +8476,10 @@ impl GovernanceServer {
             .route("/api/rules", get(get_rules))
             // L2 约束（元规则）只读清单投影（LLM 代理消费面，需认证）
             .route("/api/rules/l2-inventory", get(l2_inventory_handler))
+            .route(
+                "/api/sessions/{id}/evolution-signals",
+                get(session_evolution_signals),
+            )
             // 规则命中统计查询面（聚合器数据，需认证）
             .route("/api/rules/hit-stats", get(hit_stats_handler))
             .route(
@@ -8875,6 +8894,99 @@ async fn get_rules(State(api): State<SessionApi>) -> Result<Json<RulesResponse>,
 
 async fn l2_inventory_handler(State(api): State<SessionApi>) -> Json<L2InventoryResponse> {
     Json(SessionApi::l2_inventory(&api.rules_dir))
+}
+
+/// 进化信号查询参数（`GET /api/sessions/{id}/evolution-signals`）
+#[derive(Debug, Deserialize)]
+struct EvolutionSignalsParams {
+    /// 信号条数上限（count 降序截断；0 = 不限；缺省 20）
+    limit: Option<usize>,
+}
+
+/// 获取会话进化信号（GET /api/sessions/{id}/evolution-signals，014 合法 API 家族）
+///
+/// 自进化信号聚合（产品化）：对会话审计链（FactsLog）中的 `Fact::Violation` 事实做
+/// **只读聚合**（纯函数核心见 [`evorule_workspace::evolution_scanner`]），
+/// 同时投影发布队列 pending 计数。无定时器、无任何写操作；空会话 →
+/// 200 + 空信号列表（fail-soft）。
+#[utoipa::path(
+    get,
+    path = "/api/sessions/{id}/evolution-signals",
+    tag = "sessions",
+    params(
+        ("id" = u64, Path, description = "会话标识"),
+        ("limit" = Option<usize>, Query, description = "信号条数上限（0=不限，缺省 20）")
+    ),
+    responses(
+        (status = 200, description = "进化信号聚合投影", body = evorule_workspace::evolution_scanner::EvolutionSignalsResponse),
+        (status = 404, description = "会话不存在")
+    )
+)]
+async fn session_evolution_signals(
+    State(api): State<SessionApi>,
+    Path(session_id): Path<u64>,
+    Query(params): Query<EvolutionSignalsParams>,
+) -> Result<Json<evorule_workspace::evolution_scanner::EvolutionSignalsResponse>, StatusCode> {
+    use evorule_workspace::evolution_scanner::{
+        extract_instr_type, scan_violations, QueueCounts, ViolationSnapshot,
+    };
+
+    let sessions = api.sessions.lock().await;
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // ① 违规事实只读采集（FactsLog 单调版本号 = 确定性时钟）
+    let facts = session.facts_log.history_with_versions();
+    let mut snapshots: Vec<ViolationSnapshot> = Vec::new();
+    for (version, fact) in &facts {
+        if let Fact::Violation {
+            rule_index,
+            reason,
+            instruction,
+            ..
+        } = fact
+        {
+            snapshots.push(ViolationSnapshot {
+                version: *version,
+                // 归因 MVP：合并规则列表下标回退形态；规则 id 归因增强随命中统计专项
+                rule_ref: format!("rule_index={rule_index}"),
+                reason: reason.clone(),
+                instr_type: extract_instr_type(&tcb_to_serde(instruction)),
+            });
+        }
+    }
+
+    // ② 发布队列 pending 计数（fail-soft：库未接线/查询失败 → 全零）
+    let queue = api
+        .workspace_db
+        .as_ref()
+        .map(|db| {
+            let mut counts = QueueCounts::default();
+            if let Ok(items) =
+                db.list_publish_queue(Some(evorule_workspace::models::PublishStatus::Pending))
+            {
+                for item in items {
+                    match item.kind {
+                        evorule_workspace::models::PublishKind::MetaPromotion => {
+                            counts.pending_meta_promotion += 1;
+                        }
+                        evorule_workspace::models::PublishKind::Normal => {
+                            counts.pending_normal += 1;
+                        }
+                    }
+                }
+            }
+            counts
+        })
+        .unwrap_or_default();
+
+    Ok(Json(scan_violations(
+        session_id,
+        &snapshots,
+        queue,
+        params.limit.unwrap_or(20),
+    )))
 }
 
 // =============================================================================
@@ -13420,7 +13532,7 @@ mod tests {
 
     #[test]
     fn test_tier_gate_root_meta_with_decl_passes() {
-        // 正向：根目录 00_meta_ 文件带 tier=meta → 放行
+        // 正向：根目录 00_meta_ 文件带 tier=meta → 放行（旧形态兼容回归）
         let dir = std::env::temp_dir().join("reg145_tier_gate_ok");
         std::fs::create_dir_all(&dir).unwrap();
         let (f, json) = tier_gate_fixture(
@@ -13429,6 +13541,56 @@ mod tests {
             r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
         );
         assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_constraint_new_authority_passes() {
+        // 正向（新权威形态，命名收敛 v3.0）：根目录 00_constraint_ 文件带 tier=constraint → 放行
+        let dir = std::env::temp_dir().join("reg145_tier_gate_constraint_ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "00_constraint_x.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"constraint"},"transform":[]}"#,
+        );
+        assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_prefix_tier_cross_combo_passes() {
+        // 交叉组合（前缀与 tier 声明正交双值）：新前缀+旧 tier、旧前缀+新 tier 均放行
+        let dir = std::env::temp_dir().join("reg145_tier_gate_cross");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, tier) in [
+            ("00_constraint_cross1.json", "meta"),
+            ("00_meta_cross2.json", "constraint"),
+        ] {
+            let (f, json) = tier_gate_fixture(
+                &dir,
+                name,
+                &format!(r#"{{"kind":"rule_set","metadata":{{"tier":"{tier}"}},"transform":[]}}"#),
+            );
+            assert!(
+                SessionApi::passes_tier_gate(&f, &dir, &json),
+                "{name} + tier={tier} 应放行"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_tier_gate_constraint_prefix_business_rejected() {
+        // 反向（新前缀）：非 L2 文件携带 tier=constraint 同样按层级伪造拒载
+        let dir = std::env::temp_dir().join("reg145_tier_gate_constraint_subdir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (f, json) = tier_gate_fixture(
+            &dir,
+            "sub/00_constraint_y.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"constraint"},"transform":[]}"#,
+        );
+        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -13559,6 +13721,24 @@ mod tests {
         );
         assert_eq!(inv.files[1].path, "00_meta_b_second.json");
         assert_eq!(inv.files[1].title, "守卫乙");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_l2_inventory_projects_constraint_prefix() {
+        // 新权威前缀（命名收敛 v3.0）：根目录 00_constraint_ 过门禁 → 同口径投影
+        let dir = std::env::temp_dir().join("l2inv_projects_constraint");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        tier_gate_fixture(
+            &dir,
+            "00_constraint_new.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"constraint","title":"约束守卫","guard_for":["robot_move"]},"transform":[]}"#,
+        );
+        let inv = SessionApi::l2_inventory(&dir);
+        assert_eq!(inv.count, 1, "新前缀 L2 文件应投影");
+        assert_eq!(inv.files[0].path, "00_constraint_new.json");
+        assert_eq!(inv.files[0].title, "约束守卫");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -392,7 +392,7 @@ impl PublishService {
     ///
     /// 获取全局发布锁后按队列项类型分流:
     /// - Normal: 业务规则 DatasetBundle 落盘 bundles/ + 滚动 session 版本推进
-    /// - MetaPromotion (批次 W3): 元规则 00_meta_ 文件落盘 rules_dir 根目录,
+    /// - MetaPromotion (批次 W3): 约束文件 00_constraint_ 落盘 rules_dir 根目录,
     ///   不推业务版本, 审计 meta_promoted
     ///
     /// 任一步骤失败 → 发布失败 (队列保持 pending 可重试), 杜绝绕过。
@@ -549,8 +549,8 @@ impl PublishService {
     /// 执行元规则晋升落盘 (批次 W3 晋升通道核心)
     ///
     /// 与普通发布 ([`Self::execute_normal_publish`]) 的差异:
-    /// 1. 产物为 L2 元规则文件 `rules_dir/00_meta_promoted_{hash16}.json`
-    ///    (根目录直置, 非 bundles/ 子目录), 同内容同名幂等, 原子写 (tmp+rename);
+    /// 1. 产物为 L2 约束文件 `rules_dir/00_constraint_promoted_{hash16}.json`
+    ///    (新权威前缀; 根目录直置, 非 bundles/ 子目录), 同内容同名幂等, 原子写 (tmp+rename);
     /// 2. 不 fork session / 不推业务 ruleset_version (元规则不进业务版本序列),
     ///    仅触发 reload (会话程序为创建时快照, 新会话生效、存量会话不受影响);
     /// 3. 审计 event_type=meta_promoted, ruleset_snapshot 存落盘内容 (版本回溯可查);
@@ -598,10 +598,11 @@ impl PublishService {
         }
         let content_str = serde_json::to_string_pretty(&meta)?;
 
-        // 4. 原子落盘 L2 元规则文件 (tmp + rename, 同内容同名幂等)
+        // 4. 原子落盘 L2 约束文件 (tmp + rename, 同内容同名幂等)
+        //    落盘名用新权威前缀 00_constraint_promoted_ (命名收敛 v3.0)
         let hash = evorule_hash::digest(content_str.as_bytes());
         let hash_prefix = hash.get(..16).unwrap_or(&hash);
-        let file_name = format!("00_meta_promoted_{hash_prefix}.json");
+        let file_name = format!("00_constraint_promoted_{hash_prefix}.json");
         let final_path = self.rules_dir.join(&file_name);
         let tmp_path = self.rules_dir.join(format!("{file_name}.tmp"));
         std::fs::write(&tmp_path, &content_str).map_err(|e| {
@@ -756,7 +757,7 @@ fn compute_publish_ruleset_hash(rules: &[Value]) -> String {
 ///
 /// 与 loader 层级门禁 (`tier_gate_reason`) / Schema 门禁 (`passes_schema_gate`) 同口径:
 /// 1. 合法 JSON 对象;
-/// 2. `metadata.tier == "meta"` (L2 正向门禁——防裸文件冒充元规则);
+/// 2. `metadata.tier == "constraint"`（新权威值；兼容旧值 "meta"）(L2 正向门禁——防裸文件冒充约束规则);
 /// 3. `metadata.title` 非空 (元规则可观测性, W2 前馈摘要依赖标题);
 /// 4. `transform` 数组存在且逐条通过 `validate_transform_list`
 ///    (防落盘后 loader 拒载的废文件入库)。
@@ -769,9 +770,10 @@ fn validate_meta_rule_content(raw: &str) -> WorkspaceResult<()> {
         ));
     }
     let tier = meta.pointer("/metadata/tier").and_then(|t| t.as_str());
-    if tier != Some("meta") {
+    // tier 双值门禁 (命名收敛 v3.0): "constraint" 新权威值, "meta" deprecated 兼容旧值
+    if tier != Some("constraint") && tier != Some("meta") {
         return Err(WorkspaceError::invalid_input(format!(
-            "meta_rule_content 必须声明 metadata.tier=\"meta\" (实际 {tier:?})"
+            "meta_rule_content 必须声明 metadata.tier=\"constraint\" (兼容旧值 \"meta\") (实际 {tier:?})"
         )));
     }
     let title = meta
@@ -1837,7 +1839,7 @@ mod tests {
         let (publish_svc, _db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-1").await;
 
-        // tier 字段缺失 (正向门禁: L2 必须声明 metadata.tier=meta)
+        // tier 字段缺失 (正向门禁: L2 必须声明 L2 层级 tier)
         let result = submit_meta_promotion(
             &publish_svc,
             &ws_id,
@@ -1861,6 +1863,19 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(WorkspaceError::InvalidInput(_))));
+
+        // tier 旧值 "meta" (deprecated) 兼容回归：仍可通过提交门禁（命名收敛零迁移）
+        let rv_id_compat =
+            make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-compat").await;
+        let compat = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id_compat,
+            None,
+            Some(make_meta_content(Some("meta"))),
+        )
+        .await;
+        assert!(compat.is_ok(), "旧 tier 值 meta 应兼容放行: {compat:?}");
     }
 
     #[tokio::test]
@@ -1869,7 +1884,7 @@ mod tests {
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &_db, &ws_id, "rule-1").await;
 
         // transform 含非法元指令 → Schema 门禁拒绝
-        let bad = make_meta_content(Some("meta"))
+        let bad = make_meta_content(Some("constraint"))
             .replace(r#""type":"set""#, r#""type":"no_such_instruction""#);
         let result = submit_meta_promotion(&publish_svc, &ws_id, rv_id, None, Some(bad)).await;
         assert!(
@@ -1889,7 +1904,7 @@ mod tests {
             &ws_id,
             rv_id,
             None,
-            Some(make_meta_content(Some("meta"))),
+            Some(make_meta_content(Some("constraint"))),
         )
         .await
         .unwrap();
@@ -1917,8 +1932,10 @@ mod tests {
         let no_meta = std::fs::read_dir(&rules_dir)
             .unwrap()
             .filter_map(|e| e.unwrap().file_name().into_string().ok())
-            .all(|n| !n.starts_with("00_meta_promoted_"));
-        assert!(no_meta, "未审批通过前不得落盘 00_meta_ 文件");
+            .all(|n| {
+                !n.starts_with("00_constraint_promoted_") && !n.starts_with("00_meta_promoted_")
+            });
+        assert!(no_meta, "未审批通过前不得落盘 L2 约束文件");
     }
 
     #[tokio::test]
@@ -1938,7 +1955,7 @@ mod tests {
                     test_report_sandbox_id: Some(sandbox_id),
                     description: None,
                     kind: PublishKind::MetaPromotion,
-                    meta_rule_content: Some(make_meta_content(Some("meta"))),
+                    meta_rule_content: Some(make_meta_content(Some("constraint"))),
                 },
                 "doctor-1",
                 &PublishRole::Doctor,
@@ -1952,7 +1969,7 @@ mod tests {
             &ws_id,
             rv_id.clone(),
             Some(sandbox_id),
-            Some(make_meta_content(Some("meta"))),
+            Some(make_meta_content(Some("constraint"))),
         )
         .await
         .unwrap();
@@ -1973,20 +1990,20 @@ mod tests {
             .unwrap();
         assert_eq!(published.status, PublishStatus::Published);
 
-        // ① 00_meta_promoted_{hash}.json 落盘 rules_dir 根目录 + 溯源完整
+        // ① 00_constraint_promoted_{hash}.json 落盘 rules_dir 根目录 + 溯源完整
         let rules_dir = tmp.path().join("rules");
         let meta_files: Vec<String> = std::fs::read_dir(&rules_dir)
             .unwrap()
             .filter_map(|e| e.unwrap().file_name().into_string().ok())
-            .filter(|n| n.starts_with("00_meta_promoted_") && n.ends_with(".json"))
+            .filter(|n| n.starts_with("00_constraint_promoted_") && n.ends_with(".json"))
             .collect();
-        assert_eq!(meta_files.len(), 1, "应恰好落盘一个元规则文件");
+        assert_eq!(meta_files.len(), 1, "应恰好落盘一个 L2 约束文件");
         let landed: Value =
             serde_json::from_str(&std::fs::read_to_string(rules_dir.join(&meta_files[0])).unwrap())
                 .unwrap();
         assert_eq!(
             landed.pointer("/metadata/tier").and_then(|v| v.as_str()),
-            Some("meta")
+            Some("constraint")
         );
         assert_eq!(
             landed.pointer("/metadata/title").and_then(|v| v.as_str()),
@@ -2048,7 +2065,7 @@ mod tests {
             &ws_id,
             rv_id,
             None,
-            Some(make_meta_content(Some("meta"))),
+            Some(make_meta_content(Some("constraint"))),
         )
         .await
         .unwrap();
@@ -2071,7 +2088,9 @@ mod tests {
         let no_meta = std::fs::read_dir(&rules_dir)
             .unwrap()
             .filter_map(|e| e.unwrap().file_name().into_string().ok())
-            .all(|n| !n.starts_with("00_meta_promoted_"));
-        assert!(no_meta, "驳回后不得落盘 00_meta_ 文件");
+            .all(|n| {
+                !n.starts_with("00_constraint_promoted_") && !n.starts_with("00_meta_promoted_")
+            });
+        assert!(no_meta, "驳回后不得落盘 L2 约束文件");
     }
 }

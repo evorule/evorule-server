@@ -27,7 +27,7 @@ Workspace crate 是 evorule-server 的**多租户管理核心**，提供：
 
 ---
 
-## 模块结构（16 个子模块）
+## 模块结构（17 个子模块）
 
 | 模块 | 大小 | 职责 |
 |------|------|------|
@@ -42,6 +42,7 @@ Workspace crate 是 evorule-server 的**多租户管理核心**，提供：
 | `workspace_service` | 22KB | Workspace 业务服务 |
 | `verdict_service` | 11KB | 沙盒判定服务 |
 | `test_report` | 9.5KB | 测试报告 schema + 生成 + BLAKE3 签名（S3） |
+| `evolution_scanner` | 8.6KB | 进化信号只读聚合（violation 快照 → 确定性排序信号 + 队列计数） |
 | `error` | 7.7KB | 错误类型 + axum IntoResponse 实现 |
 | `session_switched` | 6.3KB | U7 SSE session_switched 广播（P3） |
 | `mock_io_responder` | 6.1KB | 沙盒合成 IO 响应器（S2） |
@@ -90,6 +91,16 @@ Workspace crate 是 evorule-server 的**多租户管理核心**，提供：
 6. **已发布（Published）** → 规则生效
 
 **滚动 session 热重载**（`rolling_session`）：发布时不中断现有 session，逐步将新规则应用到新创建的 session，旧 session 继续使用旧规则直到结束。
+
+---
+
+## 进化信号（evolution_scanner）
+
+只读聚合器：扫描指定 session 的违规拦截快照（violation 系 Fact），按规则归因聚合并确定性排序（计数降序 → 规则引用升序），同时返回治理队列现状（待审普通规则 / 待审约束层晋升计数）。纯函数实现，无 I/O、无时钟依赖；空数据 fail-soft 返回空信号集。
+
+- HTTP 端点：`GET /api/sessions/{id}/evolution-signals?limit=N`（limit=0 不限）
+- 消费方：agent 侧 `evolution_signals` 工具（自进化感知）与 console 视图
+- 约束：对 FactsLog 只读；不产生任何 Fact、不改写审计链
 
 ---
 
