@@ -1367,7 +1367,7 @@ impl SessionApi {
             let is_root_meta = p.parent().map(|d| d == rules_dir).unwrap_or(false)
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| is_l2_meta_file_name(n))
+                    .map(is_l2_meta_file_name)
                     .unwrap_or(false);
             if is_root_meta {
                 l2.push(rel);
@@ -1503,7 +1503,7 @@ impl SessionApi {
         let is_root_meta_file = p.parent().map(|d| d == rules_dir).unwrap_or(false)
             && p.file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| is_l2_meta_file_name(n))
+                .map(is_l2_meta_file_name)
                 .unwrap_or(false);
         match (is_root_meta_file, tier) {
             // tier 双值门禁（命名收敛 v3.0）："constraint" 为新权威值，
