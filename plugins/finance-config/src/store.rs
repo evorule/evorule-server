@@ -22,7 +22,7 @@ use serde_json::Value;
 /// 配置条目集合（键 → 值）。
 pub type ConfigMap = BTreeMap<String, Value>;
 
-/// 单条审计记录（配置变更历史）。
+/// 单条审计记录（配置变更/审批决定历史）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub key: String,
@@ -32,6 +32,9 @@ pub struct AuditEntry {
     pub when: String,
     pub reason: String,
     pub approved_by: String,
+    /// 决定类型："approved" | "rejected"；旧版文件缺省 None（兼容加载）
+    #[serde(default)]
+    pub decision: Option<String>,
 }
 
 /// 单条 pending 提案（等待审批的配置变更请求）。
@@ -156,6 +159,29 @@ impl ConfigStore {
             .unwrap_or_default()
     }
 
+    /// 审计历史查询（倒序=最新在前；可选 key 过滤 + limit 截断；管理面读取端点用）。
+    pub fn audit_entries(&self, key: Option<&str>, limit: Option<usize>) -> Vec<AuditEntry> {
+        self.inner
+            .read()
+            .map(|g| {
+                let mut items: Vec<AuditEntry> = g
+                    .audit
+                    .iter()
+                    .filter(|e| match key {
+                        Some(k) => e.key == k,
+                        None => true,
+                    })
+                    .cloned()
+                    .collect();
+                items.reverse();
+                if let Some(n) = limit {
+                    items.truncate(n);
+                }
+                items
+            })
+            .unwrap_or_default()
+    }
+
     pub fn create_proposal(
         &self,
         key: &str,
@@ -214,19 +240,38 @@ impl ConfigStore {
             when: StoreFile::now(),
             reason: prop.reason.clone(),
             approved_by: approver.to_string(),
+            decision: Some("approved".to_string()),
         });
         guard.proposals[idx].status = "approved".to_string();
         guard.proposals[idx].approver = Some(approver.to_string());
         self.persist(&guard)
     }
 
-    pub fn reject_proposal(&self, proposal_id: &str, approver: &str) -> Result<(), String> {
+    pub fn reject_proposal(
+        &self,
+        proposal_id: &str,
+        approver: &str,
+        reason: &str,
+    ) -> Result<(), String> {
         let mut guard = self.inner.write().map_err(|e| e.to_string())?;
         let idx = guard
             .proposals
             .iter()
             .position(|p| p.proposal_id == proposal_id)
             .ok_or_else(|| format!("提案 {proposal_id} 不存在"))?;
+        // 对称留痕（93 号 D1）：拒绝同样是审批决定，必须与 approve 同构入审计
+        let prop = guard.proposals[idx].clone();
+        let old = guard.entries.get(&prop.key).cloned();
+        guard.audit.push(AuditEntry {
+            key: prop.key,
+            old,
+            new: Value::Null,
+            who: prop.proposed_by,
+            when: StoreFile::now(),
+            reason: reason.to_string(),
+            approved_by: approver.to_string(),
+            decision: Some("rejected".to_string()),
+        });
         guard.proposals[idx].status = "rejected".to_string();
         guard.proposals[idx].approver = Some(approver.to_string());
         self.persist(&guard)
@@ -385,7 +430,9 @@ mod tests {
                 "user_001",
             )
             .unwrap();
-        store.reject_proposal(&pid, "manager").unwrap();
+        store
+            .reject_proposal(&pid, "manager", "额度冻结期，暂不上调")
+            .unwrap();
 
         assert!(store.get("limits.travel.max_amount").is_none());
     }
@@ -414,5 +461,105 @@ mod tests {
 
         store.approve_proposal(&pending[0].proposal_id, "finance_dir").unwrap();
         assert!(store.pending_proposals().is_empty(), "批准后不再出现在待批列表");
+    }
+
+    #[test]
+    fn test_reject_writes_symmetric_audit_entry() {
+        // 93 号 D1：拒绝与批准同构留痕——decision/new(null)/approved_by/reason 均落审计
+        let dir = temp_dir();
+        let path = dir.join("finance-config.json");
+        let store = ConfigStore::open(&path).unwrap();
+
+        let pid = store
+            .create_proposal(
+                "limits.travel.max_amount",
+                Value::from(5000),
+                "临时上调（被拒）",
+                "user_001",
+            )
+            .unwrap();
+        store
+            .reject_proposal(&pid, "manager", "额度冻结期，暂不上调")
+            .unwrap();
+
+        let entries = store.audit_entries(None, None);
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.key, "limits.travel.max_amount");
+        assert_eq!(e.decision.as_deref(), Some("rejected"));
+        assert_eq!(e.new, Value::Null, "拒绝不产生配置变更，new 应为 null");
+        assert_eq!(e.approved_by, "manager");
+        assert_eq!(e.reason, "额度冻结期，暂不上调");
+        assert_eq!(e.who, "user_001");
+
+        // 持久化文件同样含该条目（重启存活）
+        let content = fs::read_to_string(&path).unwrap();
+        let parsed: StoreFile = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed.audit.len(), 1);
+        assert_eq!(parsed.audit[0].decision.as_deref(), Some("rejected"));
+    }
+
+    #[test]
+    fn test_audit_entries_filter_limit_and_order() {
+        let dir = temp_dir();
+        let path = dir.join("finance-config.json");
+        let store = ConfigStore::open(&path).unwrap();
+
+        let pid_a = store
+            .create_proposal("k.a", Value::from(1), "a", "u")
+            .unwrap();
+        store.approve_proposal(&pid_a, "director").unwrap();
+        let pid_b = store
+            .create_proposal("k.b", Value::from(2), "b", "u")
+            .unwrap();
+        store.reject_proposal(&pid_b, "manager", "no").unwrap();
+
+        // 倒序：最新在前
+        let all = store.audit_entries(None, None);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].key, "k.b");
+        assert_eq!(all[0].decision.as_deref(), Some("rejected"));
+        assert_eq!(all[1].key, "k.a");
+        assert_eq!(all[1].decision.as_deref(), Some("approved"));
+
+        // key 过滤
+        let filtered = store.audit_entries(Some("k.a"), None);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].decision.as_deref(), Some("approved"));
+
+        // limit 截断
+        let limited = store.audit_entries(None, Some(1));
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].key, "k.b");
+    }
+
+    #[test]
+    fn test_old_store_file_without_decision_loads() {
+        // 93 号 D1 兼容：旧版 config_store.json（AuditEntry 无 decision 字段）可加载
+        let dir = temp_dir();
+        let path = dir.join("finance-config.json");
+        let legacy = r#"{
+  "version": 1,
+  "updated_at": "1700000000",
+  "entries": { "limits.meal.per_day": 100 },
+  "audit": [
+    {
+      "key": "limits.meal.per_day",
+      "old": null,
+      "new": 100,
+      "who": "user_old",
+      "when": "1700000000",
+      "reason": "旧版条目",
+      "approved_by": "finance_dir"
+    }
+  ],
+  "proposals": []
+}"#;
+        fs::write(&path, legacy).unwrap();
+        let store = ConfigStore::open(&path).unwrap();
+        assert_eq!(store.get("limits.meal.per_day"), Some(Value::from(100)));
+        let entries = store.audit_entries(None, None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].decision, None, "旧条目 decision 兼容缺省 None");
     }
 }

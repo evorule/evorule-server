@@ -224,6 +224,7 @@ Full routes (**126 paths** recorded in OpenAPI, plus workspace route families) a
 | `/api/plugins/{id}/admin/proposals` | GET | Plugin approval proxy: list pending proposals (passthrough of plugin admin surface) |
 | `/api/plugins/{id}/admin/proposals/{pid}/approve` | POST | Plugin approval proxy: approve (approver force-injected from platform login identity) |
 | `/api/plugins/{id}/admin/proposals/{pid}/reject` | POST | Plugin approval proxy: reject (reason kept from caller) |
+| `/api/plugins/{id}/admin/audit` | GET | Plugin approval proxy: audit history (symmetric approve/reject trail, `key`/`limit` query passthrough) |
 | `/api/openapi.json` | GET | OpenAPI doc (single source of truth) |
 
 ### Session & Execution

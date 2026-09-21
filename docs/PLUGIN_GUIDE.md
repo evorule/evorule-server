@@ -212,6 +212,7 @@ GET /health   →  {"status": "ok", "plugin": "<id>", "version": "<version>"}
 
 ```
 GET  /admin/proposals                    待批提案列表
+GET  /admin/audit?key=&limit=            审计历史（倒序=最新在前；可选 key 过滤/limit 截断）
 POST /admin/proposals/{id}/approve       body: {"approver": "..."}   批准落库
 POST /admin/proposals/{id}/reject        body: {"approver": "...", "reason": "..."}  拒绝
 ```
@@ -220,7 +221,7 @@ POST /admin/proposals/{id}/reject        body: {"approver": "...", "reason": "..
 
 - `Authorization: Bearer <token>`；token 经环境变量注入（范本：`FINANCE_PLUGIN_ADMIN_TOKEN`）。
 - **未配置 token → 管理面一律 503 拒绝**（fail-fast 不静默裸奔）；token 错误 → 401。
-- 审批动作带操作者标识，入插件自持审计（AuditEntry）。
+- 审批动作带操作者标识，入插件自持审计（AuditEntry）；**批准与拒绝对称留痕**（`decision` 字段区分 "approved"/"rejected"，拒绝条目 `new=null` 表无配置变更、`reason` 取拒绝理由）。
 
 **语义规范**：写路径 = "创建提案 → 人工审批 → 落库"两段式，服务调用本身**只创建提案不落库**（呼应治理哲学：静默处置允许，静默通过禁止）。
 
@@ -228,6 +229,7 @@ POST /admin/proposals/{id}/reject        body: {"approver": "...", "reason": "..
 
 ```
 GET  /api/plugins/{id}/admin/proposals                   待批提案列表（原样透传）
+GET  /api/plugins/{id}/admin/audit                       审计历史（原样透传，key/limit 查询参数保留）
 POST /api/plugins/{id}/admin/proposals/{pid}/approve     批准（approver 由 server 强制注入登录身份）
 POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留前端值）
 ```

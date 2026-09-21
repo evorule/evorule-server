@@ -25,6 +25,16 @@
 
 ---
 
+## [Unreleased]
+
+### 🆕 新增
+
+- **插件审批审计读取端点** — finance-config 管理面新增 `GET /admin/audit?key=&limit=`（倒序=最新在前，可选 key 过滤/limit 截断），经 server 插件管理面通配代理零改动自动可达（`/api/plugins/{id}/admin/audit`），补齐「审批留痕不可读」缺口；真实进程 E2E 验证通过（含重启存活与未认证 401）
+
+### 🔄 变更
+
+- **插件审批拒绝对称留痕** — finance-config `reject_proposal` 与 approve 同构追加审计条目：`AuditEntry` 结构新增 `decision` 字段（"approved"/"rejected"，旧 config_store.json 经 serde default 兼容加载），拒绝条目 `new=null` 表无配置变更、`reason` 取拒绝理由——拒绝不再零审计条目（测试 22/22 绿，含对称留痕/兼容加载/HTTP 层闭环用例）
+
 ## [0.7.0] - 2026-09-20
 
 ### 🔄 变更

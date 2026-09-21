@@ -14,6 +14,7 @@
 //!   GET  /admin/proposals                 待批提案列表
 //!   POST /admin/proposals/{id}/approve    body: {"approver": "..."}
 //!   POST /admin/proposals/{id}/reject     body: {"approver": "...", "reason": "..."}
+//!   GET  /admin/audit?key=&limit=         审计历史（倒序；可选 key 过滤/limit 截断）
 
 #![forbid(unsafe_code)]
 
@@ -110,6 +111,7 @@ fn main() {
             post(set_service_handler),
         )
         .route("/admin/proposals", get(list_proposals_handler))
+        .route("/admin/audit", get(audit_handler))
         .route(
             "/admin/proposals/{id}/approve",
             post(approve_proposal_handler),
@@ -256,8 +258,11 @@ async fn reject_proposal_handler(
         )
             .into_response());
     }
-    let _ = body.get("reason").and_then(|v| v.as_str());
-    match state.store.reject_proposal(&id, approver) {
+    let reason = body
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    match state.store.reject_proposal(&id, approver, reason) {
         Ok(()) => Ok(Json(json!({
             "success": true,
             "proposal_id": id,
@@ -270,6 +275,33 @@ async fn reject_proposal_handler(
         )
             .into_response()),
     }
+}
+
+/// 审计历史读取（管理面）：倒序=最新在前；?key= 过滤 + ?limit= 截断。
+/// server 对 /admin/{tail} 通配代理，本端点经 server 零改动自动可达（93 号 D2）。
+/// 注：插件 axum 为裁剪 feature 集（无 Query extractor），手工解析 query string；
+/// key 取值限 ASCII 规则名（`.`/字母/数字），不做百分号解码。
+async fn audit_handler(
+    State(state): State<PluginState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Result<Json<Value>, Response> {
+    check_admin(&state, &headers)?;
+    let mut key: Option<&str> = None;
+    let mut limit: Option<usize> = None;
+    for pair in uri.query().unwrap_or_default().split('&') {
+        let (k, v) = match pair.split_once('=') {
+            Some((k, v)) => (k, v),
+            None => continue,
+        };
+        match k {
+            "key" if !v.is_empty() => key = Some(v),
+            "limit" => limit = v.parse::<usize>().ok(),
+            _ => {}
+        }
+    }
+    let entries = state.store.audit_entries(key, limit);
+    Ok(Json(json!({ "audit": entries, "count": entries.len() })))
 }
 
 #[cfg(test)]
@@ -304,6 +336,7 @@ mod tests {
             .route("/services/finance_config_get", post(get_service_handler))
             .route("/services/finance_config_set", post(set_service_handler))
             .route("/admin/proposals", get(list_proposals_handler))
+            .route("/admin/audit", get(audit_handler))
             .route("/admin/proposals/{id}/approve", post(approve_proposal_handler))
             .route("/admin/proposals/{id}/reject", post(reject_proposal_handler))
             .with_state(state)
@@ -459,5 +492,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn reject_then_audit_reads_symmetric_entry() {
+        // 93 号 D1+D2 HTTP 层闭环：set→提案→管理面拒绝→audit 端点读回对称条目
+        let (state, _dir) = test_state();
+        let app = app(state.clone());
+
+        // set → 提案
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/services/finance_config_set")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"key":"config:limits.travel.max_amount","new_value":9999,"reason":"测试被拒提案","proposed_by":"tester"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let pid = body_json(resp).await["proposal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // 拒绝（含拒绝理由）
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/admin/proposals/{pid}/reject"))
+                    .header("content-type", "application/json")
+                    .header("Authorization", "Bearer test-token")
+                    .body(Body::from(
+                        r#"{"approver":"manager","reason":"额度冻结期"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // audit 读取：拒绝决定可见且字段完备（旧缺口=留了也看不到+拒绝零条目，双闭环）
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/audit")
+                    .header("Authorization", "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["count"], json!(1));
+        let entry = &v["audit"][0];
+        assert_eq!(entry["key"], json!("limits.travel.max_amount"));
+        assert_eq!(entry["decision"], json!("rejected"));
+        assert_eq!(entry["new"], serde_json::Value::Null);
+        assert_eq!(entry["approved_by"], json!("manager"));
+        assert_eq!(entry["reason"], json!("额度冻结期"));
+        assert_eq!(entry["who"], json!("tester"));
     }
 }
