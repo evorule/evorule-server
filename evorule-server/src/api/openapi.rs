@@ -81,6 +81,8 @@ use utoipa::OpenApi;
         crate::api::server::validate_rules_handler,
         crate::api::server::reload_rules_handler,
         crate::api::server::get_rules,
+        // L2 约束（元规则）只读清单（LLM 代理消费面）
+        crate::api::server::l2_inventory_handler,
         // rules 命中统计组
         crate::api::server::hit_stats_handler,
         crate::api::server::hit_stats_rule_handler,
@@ -203,6 +205,8 @@ use utoipa::OpenApi;
         crate::api::server::RulesReloadedResponse,
         crate::api::server::RulesResponse,
     crate::api::server::RuleTierEntry,
+        crate::api::server::L2InventoryEntry,
+        crate::api::server::L2InventoryResponse,
         crate::api::server::SharedFactsVersionResponse,
         // bundles 组
         crate::api::bundles::ImportResponse,
@@ -363,6 +367,7 @@ mod tests {
             "/api/sessions/{id}/audit/auto_verify",
             "/api/rules/reload",
             "/api/rules",
+            "/api/rules/l2-inventory",
             "/api/rules/hit-stats",
             "/api/rules/hit-stats/{rule_key}",
             "/api/bundles/import",

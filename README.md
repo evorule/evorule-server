@@ -319,6 +319,7 @@ Full routes (**126 paths** recorded in OpenAPI, plus workspace route families) a
 | `/api/bundles/active` | GET | Currently active rule package |
 | `/api/bundles/imports` | GET | Import history |
 | `/api/rules` | GET | Current rule set |
+| `/api/rules/l2-inventory` | GET | Read-only L2 constraint (meta) rule inventory (`count` + `files[path/title/guard_for]`, sorted by filename, gate-failing files excluded) |
 | `/api/rules/validate` | POST | Rule validation |
 | `/api/rules/reload` | POST | Hot reload |
 | `/api/rules/hit-stats` | GET | Rule hit statistics list (`filter=all/hit/zero`, specify `version`) |
@@ -925,6 +926,7 @@ curl -X POST http://localhost:18080/api/platform/auth/login \
 | `/api/bundles/active` | GET | 当前激活规则包 |
 | `/api/bundles/imports` | GET | 导入历史 |
 | `/api/rules` | GET | 当前规则集 |
+| `/api/rules/l2-inventory` | GET | L2 约束（元规则）只读清单（`count` + `files[path/title/guard_for]`，按文件名排序，未过层级门禁文件不投影） |
 | `/api/rules/validate` | POST | 规则校验 |
 | `/api/rules/reload` | POST | 热重载 |
 | `/api/rules/hit-stats` | GET | 规则命中统计清单(`filter=all/hit/zero`,`version` 指定版本) |

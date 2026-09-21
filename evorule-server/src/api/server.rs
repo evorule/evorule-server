@@ -1380,6 +1380,73 @@ impl SessionApi {
         tiers
     }
 
+    /// L2 约束（元规则）只读清单投影（结构化，供 LLM 代理读取约束边界摘要）。
+    ///
+    /// 扫描口径与 [`Self::tier_inventory`] 的 L2 层单一权威同源：rules_dir **根目录直置**
+    /// 的 `00_meta_*.json` 且过层级门禁（[`Self::tier_gate_reason`]，拒载文件不投影）。
+    /// 输出为结构化投影——仅 `metadata.title` + `metadata.guard_for`，不包含
+    /// transform / enforce 等执行语义内容。
+    ///
+    /// fail-soft：rules_dir 不存在 / 单文件读取或解析失败 → 跳过该文件；
+    /// 全部失败 → 空清单（count=0）。排序确定：按文件名排序。
+    pub fn l2_inventory(rules_dir: &std::path::Path) -> L2InventoryResponse {
+        let mut files: Vec<L2InventoryEntry> = Vec::new();
+        let Ok(read_dir) = std::fs::read_dir(rules_dir) else {
+            return L2InventoryResponse { count: 0, files };
+        };
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !(name.starts_with("00_meta_") && name.ends_with(".json")) {
+                continue;
+            }
+            // fail-soft：读取或解析失败 → 跳过该文件
+            let json = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+            let Some(json) = json else {
+                continue;
+            };
+            // 未过层级门禁的不投影（清单只列加载生效文件，与 tier_inventory 口径一致）
+            if Self::tier_gate_reason(&p, rules_dir, &json).is_err() {
+                continue;
+            }
+            let meta = json.get("metadata");
+            let title = meta
+                .and_then(|m| m.get("title"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            let guard_for = meta
+                .and_then(|m| m.get("guard_for"))
+                .and_then(|g| g.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let path = p
+                .strip_prefix(rules_dir)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push(L2InventoryEntry {
+                path,
+                title,
+                guard_for,
+            });
+        }
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        L2InventoryResponse {
+            count: files.len(),
+            files,
+        }
+    }
+
     /// 读取并解析单个业务规则文件，返回其 transform 数组。
     ///
     ///
@@ -8392,6 +8459,8 @@ impl GovernanceServer {
             // 未认证用户不应触发（DoS 风险 + rules_dir 可写时注入恶意规则）。
             .route("/api/rules/reload", post(reload_rules_handler))
             .route("/api/rules", get(get_rules))
+            // L2 约束（元规则）只读清单投影（LLM 代理消费面，需认证）
+            .route("/api/rules/l2-inventory", get(l2_inventory_handler))
             // 规则命中统计查询面（聚合器数据，需认证）
             .route("/api/rules/hit-stats", get(hit_stats_handler))
             .route(
@@ -8724,6 +8793,31 @@ pub struct RulesResponse {
     pub tiers: Vec<RuleTierEntry>,
 }
 
+/// L2 约束（元规则）清单项（只读投影：仅 metadata.title + metadata.guard_for，不含任何执行语义）
+#[derive(Debug, Serialize, ToSchema)]
+
+pub struct L2InventoryEntry {
+    /// 相对 rules_dir 的文件路径（'/' 归一）
+    pub path: String,
+
+    /// metadata.title（缺省空串）
+    pub title: String,
+
+    /// 守卫的指令类型清单（metadata.guard_for，缺省空数组）
+    pub guard_for: Vec<String>,
+}
+
+/// L2 约束规则清单响应
+#[derive(Debug, Serialize, ToSchema)]
+
+pub struct L2InventoryResponse {
+    /// 投影文件数
+    pub count: usize,
+
+    /// 按文件名排序的 L2 清单
+    pub files: Vec<L2InventoryEntry>,
+}
+
 /// 获取当前生效的 core_eval 规则（GET /api/rules，014 合法 API #2）
 
 #[utoipa::path(
@@ -8757,6 +8851,30 @@ async fn get_rules(State(api): State<SessionApi>) -> Result<Json<RulesResponse>,
 
         tiers,
     }))
+}
+
+/// 获取 L2 约束（元规则）只读清单投影（GET /api/rules/l2-inventory，014 合法 API 家族）
+///
+/// 扫描口径与 `/api/rules` 的三层清单 L2 层单一权威同源（见 [`SessionApi::l2_inventory`]）；
+/// 供 LLM 代理等消费方生成规则草稿前读取约束边界摘要。
+#[utoipa::path(
+
+    get,
+
+    path = "/api/rules/l2-inventory",
+
+    tag = "rules",
+
+    responses(
+
+        (status = 200, description = "L2 约束规则清单", body = L2InventoryResponse)
+
+    )
+
+)]
+
+async fn l2_inventory_handler(State(api): State<SessionApi>) -> Json<L2InventoryResponse> {
+    Json(SessionApi::l2_inventory(&api.rules_dir))
 }
 
 // =============================================================================
@@ -13410,6 +13528,169 @@ mod tests {
         );
         assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ===== L2 约束清单投影（l2_inventory）单元测试 =====
+
+    #[test]
+    fn test_l2_inventory_projects_root_meta_sorted() {
+        // 根目录 00_meta_ 且过层级门禁 → 投影 title/guard_for；按文件名排序确定
+        let dir = std::env::temp_dir().join("l2inv_projects_sorted");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        tier_gate_fixture(
+            &dir,
+            "00_meta_b_second.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"守卫乙","guard_for":["robot_move"]},"transform":[]}"#,
+        );
+        tier_gate_fixture(
+            &dir,
+            "00_meta_a_first.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"守卫甲","guard_for":["validate_precision","robot_move"]},"transform":[]}"#,
+        );
+        let inv = SessionApi::l2_inventory(&dir);
+        assert_eq!(inv.count, 2, "两个过门禁的 L2 文件都应投影");
+        // 排序确定：文件名字典序
+        assert_eq!(inv.files[0].path, "00_meta_a_first.json");
+        assert_eq!(inv.files[0].title, "守卫甲");
+        assert_eq!(
+            inv.files[0].guard_for,
+            vec!["validate_precision".to_string(), "robot_move".to_string()]
+        );
+        assert_eq!(inv.files[1].path, "00_meta_b_second.json");
+        assert_eq!(inv.files[1].title, "守卫乙");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_l2_inventory_excludes_gate_failures_and_subdir() {
+        // 拒载文件不投影（缺 tier 声明）；子目录 00_meta_ 不算 L2；普通业务文件不投影
+        let dir = std::env::temp_dir().join("l2inv_excludes");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 缺 tier=meta 声明 → 层级门禁拒载 → 不投影
+        tier_gate_fixture(
+            &dir,
+            "00_meta_no_decl.json",
+            r#"{"kind":"rule_set","metadata":{"title":"裸文件"},"transform":[]}"#,
+        );
+        // 子目录内 00_meta_ 前缀（带 tier=meta）→ 层级伪造拒载 → 不投影
+        tier_gate_fixture(
+            &dir,
+            "sub/00_meta_forged.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"伪造"},"transform":[]}"#,
+        );
+        // 根目录普通业务文件 → 非 00_meta_ 前缀 → 不投影
+        tier_gate_fixture(
+            &dir,
+            "biz_rules.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"业务文件不应出现在 L2 清单"},"transform":[]}"#,
+        );
+        // 唯一合法 L2
+        tier_gate_fixture(
+            &dir,
+            "00_meta_ok.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"合法守卫"},"transform":[]}"#,
+        );
+        let inv = SessionApi::l2_inventory(&dir);
+        assert_eq!(inv.count, 1, "仅根目录过门禁的 00_meta_ 文件投影");
+        assert_eq!(inv.files[0].path, "00_meta_ok.json");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_l2_inventory_field_defaults_and_fail_soft() {
+        // 字段缺省容错：title 缺省空串、guard_for 缺省空数组；坏 JSON → fail-soft 跳过
+        let dir = std::env::temp_dir().join("l2inv_defaults_failsoft");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        tier_gate_fixture(
+            &dir,
+            "00_meta_minimal.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
+        );
+        // 坏 JSON → 读取/解析失败 → 跳过（不影响其他文件）；直写绕过 fixture（其内部解析会 panic）
+        std::fs::write(
+            dir.join("00_meta_broken.json"),
+            r#"{"kind":"rule_set", NOT VALID"#,
+        )
+        .unwrap();
+        let inv = SessionApi::l2_inventory(&dir);
+        assert_eq!(inv.count, 1, "坏 JSON 被跳过，仅合法文件投影");
+        assert_eq!(inv.files[0].title, "", "title 缺省应为空串");
+        assert!(
+            inv.files[0].guard_for.is_empty(),
+            "guard_for 缺省应为空数组"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_l2_inventory_missing_dir_empty() {
+        // fail-soft：rules_dir 不存在 → 空清单（count=0），不 panic
+        let dir = std::env::temp_dir().join("l2inv_missing_dir_no_such");
+        let _ = std::fs::remove_dir_all(&dir);
+        let inv = SessionApi::l2_inventory(&dir);
+        assert_eq!(inv.count, 0);
+        assert!(inv.files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_l2_inventory_endpoint_200_empty_and_populated() {
+        // 端点级：空目录 → 200 + 空清单；有 L2 文件 → 200 + 投影
+        let (state, _) = make_test_state();
+
+        // 空目录
+        let empty = tempfile::tempdir().unwrap();
+        let mut state_empty = state.clone();
+        state_empty.sessions.rules_dir = empty.path().to_path_buf();
+
+        let router = GovernanceServer::new(
+            state_empty,
+            AuthConfig::disabled(),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            None,
+        )
+        .build_router();
+        let (status, json) = oneshot_json(router, "GET", "/api/rules/l2-inventory", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["count"], 0);
+        assert_eq!(json["files"].as_array().map(|a| a.len()), Some(0));
+
+        // 有 L2 文件
+        let populated = tempfile::tempdir().unwrap();
+        std::fs::write(
+            populated.path().join("00_meta_seed.json"),
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"种子元规则","guard_for":["robot_move"]},"transform":[]}"#,
+        )
+        .unwrap();
+        let mut state_pop = state.clone();
+        state_pop.sessions.rules_dir = populated.path().to_path_buf();
+        let router = GovernanceServer::new(
+            state_pop,
+            AuthConfig::disabled(),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            None,
+        )
+        .build_router();
+        let (status, json) = oneshot_json(router, "GET", "/api/rules/l2-inventory", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["files"][0]["path"], "00_meta_seed.json");
+        assert_eq!(json["files"][0]["title"], "种子元规则");
+        assert_eq!(json["files"][0]["guard_for"][0], "robot_move");
     }
 
     #[test]
