@@ -30,6 +30,10 @@ evorule-governance = { version = "0.6.1", features = ["persistence"] }
 # 审计档案链哈希重算
 blake3 = "1"
 
+# rules_dir 装载排序键解析（注入序治理：晋升约束按 metadata.promoted_at 降序排前；
+# 治理面依赖，确定性由显式排序键保证，与 TCB 无涉）
+chrono = "0.4"
+
 # 平台用户口令哈希; OsRng 亦用于会话 token 生成
 argon2 = { version = "0.5", features = ["std"] }
 

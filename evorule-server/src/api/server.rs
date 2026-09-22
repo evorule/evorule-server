@@ -113,6 +113,57 @@ fn is_l2_meta_file_name(name: &str) -> bool {
     name.starts_with("00_constraint_") || name.starts_with("00_meta_")
 }
 
+/// rules_dir 装载排序键（注入序治理，全序确定）
+///
+/// 字段序 = 排序优先级：
+/// ① `promoted_at_desc` —— 晋升约束（`00_constraint_promoted_` 前缀 **且**
+/// `metadata.promoted_at` 可解析为 RFC3339）按晋升时间**降序**排前：最新晋升的
+/// 约束最先求值，enforce 命中即终止执行链 → 归因变更为新约束、种子类既有
+/// enforce 不再重复拦截。非晋升文件该字段为 `None`（Reverse 序下恒排有值项之后）。
+/// ② `path` —— 平级兜底键：种子/业务/bundles 文件之间、以及晋升文件 promoted_at
+/// 平级时，按完整路径字典序收敛（全序保证；「文件名排序废弃」指不再作为主排序键，
+/// 兜底确定性仍依赖字典序）。存量 promoted 产物缺失该字段时自然落入兜底类。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RulesDirLoadOrderKey {
+    promoted_at_desc: std::cmp::Reverse<Option<chrono::DateTime<chrono::FixedOffset>>>,
+    path: std::path::PathBuf,
+}
+
+/// 读取单个规则文件的装载排序键（见 [`RulesDirLoadOrderKey`]）
+///
+/// 读取/解析失败不报错（fail-soft，与目录扫描同策略；排序退化不影响该文件
+/// 参与装载，后续 parse_rule_file 仍会独立校验）。peek 与 parse_rule_file
+/// 各自独立读取同一文件（reload 低频 + 规则文件小，双读成本可忽略）。
+fn rules_dir_load_order_key(p: &std::path::Path) -> RulesDirLoadOrderKey {
+    let is_promoted_name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("00_constraint_promoted_"));
+    let promoted_at = if is_promoted_name {
+        let parsed = std::fs::read_to_string(p)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.pointer("/metadata/promoted_at")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            });
+        if parsed.is_none() {
+            tracing::warn!(
+                "晋升约束文件 {} 缺失/非法 metadata.promoted_at，装载序退化为路径字典序兜底",
+                p.display()
+            );
+        }
+        parsed
+    } else {
+        None
+    };
+    RulesDirLoadOrderKey {
+        promoted_at_desc: std::cmp::Reverse(promoted_at),
+        path: p.to_path_buf(),
+    }
+}
+
 /// 就绪标志（优雅退出时设为 false，readiness 端点返回 503）
 pub type ReadinessFlag = Arc<AtomicBool>;
 
@@ -1158,8 +1209,10 @@ impl SessionApi {
         Ok(tcb)
     }
 
-    /// 扫描业务规则目录（递归，含 `rules/bundles/{bundle_id}/` 子目录，T3），按完整路径
-    /// 字典序加载所有 *.json 的 transform 数组（确定性加载顺序；排除 `bundle_manifest.json`）。
+    /// 扫描业务规则目录（递归，含 `rules/bundles/{bundle_id}/` 子目录，T3），按注入序
+    /// 治理排序加载所有 *.json 的 transform 数组（排除 `bundle_manifest.json`）：
+    /// 晋升约束（`00_constraint_promoted_` 前缀 + `metadata.promoted_at`）按晋升时间
+    /// 降序排前，其余按完整路径字典序兜底（全序确定；见 [`rules_dir_load_order_key`]）。
     ///
     ///
     /// 目录不存在或读取失败时返回空 Vec（不报错）；单个文件解析失败时
@@ -1179,8 +1232,11 @@ impl SessionApi {
 
         Self::collect_json_files_recursive(rules_dir, &mut paths);
 
-        // 完整路径字典序 = 确定性（bundles/ 子目录条目按路径自然归位）
-        paths.sort();
+        // 注入序治理（确定性显式排序键，替代单一路径字典序）：
+        // 晋升约束（promoted_at 降序）排前 → 新约束先于种子类既有 enforce 求值，
+        // 命中即终止 → 归因变更为新约束、种子不再重复拦截；其余文件（种子/业务/
+        // bundles）平级按完整路径字典序兜底（确定性保持）。
+        paths.sort_by_key(|p| rules_dir_load_order_key(p));
 
         // 批次F（P1-14 reload 防篡改）: bundle 条目 blake3 复验，
         // 失配条目 fail-fast 拒载（ERROR 不静默；拒载原因在收集阶段明示）
@@ -9931,6 +9987,126 @@ mod tests {
     #![allow(clippy::panic, clippy::expect_used)]
 
     use super::*;
+
+    // ===== rules_dir 装载排序治理（注入序）单元测试 =====
+
+    /// 临时 rules_dir 工厂（进程内唯一目录名，测试结束自清理）
+    fn make_sort_test_rules_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("evorule-load-order-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_rule_file(dir: &std::path::Path, name: &str, body: &str) {
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    fn constraint_body(title: &str, promoted_at: Option<&str>) -> String {
+        let pa = promoted_at
+            .map(|t| format!(r#","promoted_at":"{t}""#))
+            .unwrap_or_default();
+        format!(
+            r#"{{"metadata":{{"tier":"constraint","title":"{title}"{pa}}},"transform":[{{"type":"set","params":{{"attr":"mark","operation":"set","value":"{title}"}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn test_rules_dir_load_order_promoted_before_seed() {
+        // 注入序治理核心语义：晋升约束按 promoted_at 降序排前，种子（无 promoted_at）
+        // 兜底其后 → 新约束 rule_index < 种子 rule_index，enforce 命中即终止时归因=新约束。
+        // 文件名字典序种子在前（'e'<'p'），治理后必须反转。
+        let dir = make_sort_test_rules_dir("promoted-first");
+        write_rule_file(&dir, "00_constraint_evo_guard.json", &constraint_body("种子", None));
+        write_rule_file(
+            &dir,
+            "00_constraint_promoted_new.json",
+            &constraint_body("新约束", Some("2026-09-22T08:00:00Z")),
+        );
+        write_rule_file(
+            &dir,
+            "00_constraint_promoted_old.json",
+            &constraint_body("旧约束", Some("2026-09-21T08:00:00Z")),
+        );
+
+        let (rules, sources) = SessionApi::load_rules_dir_with_sources(&dir);
+
+        let idx = |name: &str| {
+            sources
+                .iter()
+                .position(|s| s == name)
+                .unwrap_or_else(|| panic!("来源标签 {name} 缺失"))
+        };
+        assert_eq!(rules.len(), sources.len(), "规则与来源标签等长不变式");
+        assert!(
+            idx("00_constraint_promoted_new.json") < idx("00_constraint_promoted_old.json"),
+            "新晋升先于旧晋升（promoted_at 降序）"
+        );
+        assert!(
+            idx("00_constraint_promoted_old.json") < idx("00_constraint_evo_guard.json"),
+            "晋升约束排前，种子兜底其后"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_rules_dir_load_order_fallback_lexicographic() {
+        // 兜底确定性：无 promoted_at 的文件（存量形态）按路径字典序；
+        // promoted 前缀但字段缺失 → 退化兜底且不影响其余文件装载。
+        let dir = make_sort_test_rules_dir("fallback");
+        write_rule_file(
+            &dir,
+            "00_constraint_promoted_legacy.json",
+            &constraint_body("存量", None),
+        );
+        write_rule_file(&dir, "10_b.json", r#"{"transform":[{"type":"set","params":{"attr":"b","operation":"set","value":"v"}}]}"#);
+        write_rule_file(&dir, "20_a.json", r#"{"transform":[{"type":"set","params":{"attr":"a","operation":"set","value":"v"}}]}"#);
+
+        let (_, sources) = SessionApi::load_rules_dir_with_sources(&dir);
+
+        let names: Vec<&str> = sources.iter().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            vec![
+                "00_constraint_promoted_legacy.json",
+                "10_b.json",
+                "20_a.json"
+            ],
+            "无 promoted_at 时按完整路径字典序兜底（确定性保持）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_rules_dir_load_order_promoted_tie_path_asc() {
+        // 全序保证：promoted_at 平级时按路径字典序收敛（非晋升文件仍在其后）
+        let dir = make_sort_test_rules_dir("tie");
+        write_rule_file(
+            &dir,
+            "00_constraint_promoted_z.json",
+            &constraint_body("平级乙", Some("2026-09-22T08:00:00Z")),
+        );
+        write_rule_file(
+            &dir,
+            "00_constraint_promoted_a.json",
+            &constraint_body("平级甲", Some("2026-09-22T08:00:00Z")),
+        );
+        write_rule_file(&dir, "30_x.json", r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":"v"}}]}"#);
+
+        let (_, sources) = SessionApi::load_rules_dir_with_sources(&dir);
+
+        let names: Vec<&str> = sources.iter().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            vec![
+                "00_constraint_promoted_a.json",
+                "00_constraint_promoted_z.json",
+                "30_x.json"
+            ],
+            "promoted_at 平级按路径字典序；非晋升文件兜底其后"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // ===== resolve_governor_config 单元测试 =====
 
