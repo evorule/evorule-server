@@ -327,7 +327,7 @@ Full routes (**126 paths** recorded in OpenAPI, plus workspace route families) a
 
 ### Rule Hit Statistics
 
-Runtime hit signals: aggregator consumes audit chain hit-attribution facts, aggregated by `rule-set version × source × rule index`.
+Runtime hit signals: aggregator consumes audit chain hit-attribution facts, aggregated by `rule-set version × source × rule index`; query responses carry a `rule_ref` attribution projection (`source#same-source ordinal`, e.g. `00_constraint_promoted_xxx.json#0`, out-of-range falls back to `rule_index=N`) — promoted constraint files can be located directly without manual index conversion.
 
 - Stored as process-memory state, **resets to zero after restart**; audit chain WAL is the authoritative full source
 - Any change to rule-set content or source produces a new version number; post-reload historical version slices retained (max 8)
@@ -364,7 +364,7 @@ Capacity note: audit chain produces +1 hit-attribution fact per command (recordk
 | `/api/marketplace/templates` | GET/POST | Template marketplace: list / upload |
 | `/api/marketplace/templates/{id}` | GET/PATCH/DELETE | Template detail / online edit / delete |
 | `/api/marketplace/templates/{id}/download` | GET | Template download |
-| `/api/workspaces` family | GET/POST/PATCH/DELETE | Multi-tenant workspace + members + rule CRUD / version / activate / sandbox / publish queue (meta-promotion dedup gate on submit; `GET /api/publish/queue?workspace_id=` filter) |
+| `/api/workspaces` family | GET/POST/PATCH/DELETE | Multi-tenant workspace + members + rule CRUD / version / activate / sandbox / publish queue (dual-state nomination dedup gate on submit: same workspace × same constraint-layer target blocked while pending **or** published; passes when `promoted_from` version set changes; `GET /api/publish/queue?workspace_id=` filter) |
 | `/metrics` | GET | Prometheus metrics (requires Bearer when `--metrics-auth`) |
 
 ### Further Reading
@@ -582,7 +582,7 @@ Load drill scripts in `scripts/load-drill.ps1`. An earlier release fixed the sin
 | Deterministic native plugins (physics / indicator) | ✅ | Simpson-integral physics kernel; pandas-aligned technical indicators |
 | Template marketplace / server-side PDF export / knowledge channel | ✅ | marketplace CRUD+online-edit; PDF Chinese font subset; `/api/knowledge` read-only |
 | OpenAPI single source of truth | ✅ | `GET /api/openapi.json` (84 paths); Swagger UI requires `--openapi-ui` |
-| Multi-tenant workspace (`core/workspace`) | ✅ | Workspace / members / rule CRUD + version + activate + sandbox + publish queue with nomination dedup gate |
+| Multi-tenant workspace (`core/workspace`) | ✅ | Workspace / members / rule CRUD + version + activate + sandbox + publish queue with dual-state nomination dedup gate |
 | Input sanitization (Prompt injection defense) | ✅ | `InputSanitizer` public service, silent rewrite |
 | API versioning (`/api/v1/` locked) | ❌ | Not promised before 1.0 |
 | Multi-reactor coordination primitives | ❌ | Roadmap |
@@ -934,7 +934,7 @@ curl -X POST http://localhost:18080/api/platform/auth/login \
 
 ### 规则命中统计
 
-运行时命中信号:聚合器消费审计链的命中归因事实,按 `规则集版本 × 来源 × 规则下标` 聚合。
+运行时命中信号:聚合器消费审计链的命中归因事实,按 `规则集版本 × 来源 × 规则下标` 聚合;查询响应附带 `rule_ref` 归因投影(`来源#同源序号`,如 `00_constraint_promoted_xxx.json#0`,越界回退 `rule_index=N`)——可直接定位晋升约束文件,无需人工换算下标。
 
 - 存储为进程内存态,**重启后计数归零**;审计链 WAL 是全量权威源
 - 规则集内容或来源任一变化即产生新版本号,reload 后历史版本切片保留(上限 8 个)
@@ -971,7 +971,7 @@ evorule_rules_zero_hits
 | `/api/marketplace/templates` | GET/POST | 模板市场:列表 / 上传 |
 | `/api/marketplace/templates/{id}` | GET/PATCH/DELETE | 模板详情 / 在线编辑 / 删除 |
 | `/api/marketplace/templates/{id}/download` | GET | 模板下载 |
-| `/api/workspaces` 族 | GET/POST/PATCH/DELETE | 多租户工作空间 + 成员 + 规则 CRUD / 版本 / 激活 / 沙盒 / 发布队列(提交侧提名去重门禁;`GET /api/publish/queue?workspace_id=` 过滤) |
+| `/api/workspaces` 族 | GET/POST/PATCH/DELETE | 多租户工作空间 + 成员 + 规则 CRUD / 版本 / 激活 / 沙盒 / 发布队列(提交侧提名双态去重门禁:同 workspace × 同约束层目标规则 pending 或 published 均拦截,promoted_from 版本集变化放行;`GET /api/publish/queue?workspace_id=` 过滤) |
 | `/metrics` | GET | Prometheus 指标(需 `--metrics-auth` 时带 Bearer) |
 
 ### 深入阅读
@@ -1188,7 +1188,7 @@ cargo build --release
 | 确定性原生插件(physics / indicator)      | ✅       | 辛积分器物理内核;pandas 逐位对齐技术指标 |
 | 模板市场 / 服务端 PDF 导出 / 知识通道    | ✅       | marketplace CRUD+在线编辑;PDF 中文字体子集;`/api/knowledge` 只读 |
 | OpenAPI 单一真相源                       | ✅       | `GET /api/openapi.json`(84 条);Swagger UI 需 `--openapi-ui` |
-| 多租户工作空间 (`core/workspace`)        | ✅       | 工作空间 / 成员 / 规则 CRUD + 版本 + 激活 + 沙盒 + 发布队列(提名去重门禁) |
+| 多租户工作空间 (`core/workspace`)        | ✅       | 工作空间 / 成员 / 规则 CRUD + 版本 + 激活 + 沙盒 + 发布队列(提名双态去重门禁) |
 | 输入净化 (Prompt 注入防御)               | ✅       | `InputSanitizer` 公共服务, 静默改写   |
 | API 版本化 (`/api/v1/` 锁定)             | ❌       | 1.0 之前不承诺                        |
 | 多反应器协作原语                         | ❌       | 路线图                                |
