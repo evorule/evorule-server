@@ -2220,6 +2220,18 @@ mod tests {
             Some(format!("sandbox:{sandbox_id}").as_str()),
             "零报警证据须可追溯"
         );
+        // promoted_at 须服务端权威填充且为合法 RFC3339（L2 装载排序键的确定性来源，
+        // 排序治理依赖该字段：晋升约束按 promoted_at 降序排前）
+        let promoted_at = landed
+            .pointer("/metadata/promoted_at")
+            .and_then(|v| v.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .expect("promoted_at 须为服务端权威填充的合法 RFC3339 时间");
+        assert_eq!(
+            promoted_at.offset().local_minus_utc(),
+            0,
+            "promoted_at 须为 UTC"
+        );
 
         // ③ 审计 meta_promoted + ruleset_snapshot 回溯
         let audits = db.list_production_audit(20).unwrap();
