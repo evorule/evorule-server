@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn entry_level_unknown_key_rejected() {
-        // O-066（条目级未知键 fail-fast）：LLM 转写产物曾把匹配条件写成条目级
+        // 条目级未知键 fail-fast：LLM 转写产物曾把匹配条件写成条目级
         // condition 字段，引擎静默忽略导致约束对所有指令无条件触发——收紧后
         // 提交期即拒，错误信息列明键名
         let doc = rs(serde_json::json!([

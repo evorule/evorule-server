@@ -9993,7 +9993,8 @@ mod tests {
 
     /// 临时 rules_dir 工厂（进程内唯一目录名，测试结束自清理）
     fn make_sort_test_rules_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("evorule-load-order-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("evorule-load-order-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -10018,7 +10019,11 @@ mod tests {
         // 兜底其后 → 新约束 rule_index < 种子 rule_index，enforce 命中即终止时归因=新约束。
         // 文件名字典序种子在前（'e'<'p'），治理后必须反转。
         let dir = make_sort_test_rules_dir("promoted-first");
-        write_rule_file(&dir, "00_constraint_evo_guard.json", &constraint_body("种子", None));
+        write_rule_file(
+            &dir,
+            "00_constraint_evo_guard.json",
+            &constraint_body("种子", None),
+        );
         write_rule_file(
             &dir,
             "00_constraint_promoted_new.json",
@@ -10060,8 +10065,16 @@ mod tests {
             "00_constraint_promoted_legacy.json",
             &constraint_body("存量", None),
         );
-        write_rule_file(&dir, "10_b.json", r#"{"transform":[{"type":"set","params":{"attr":"b","operation":"set","value":"v"}}]}"#);
-        write_rule_file(&dir, "20_a.json", r#"{"transform":[{"type":"set","params":{"attr":"a","operation":"set","value":"v"}}]}"#);
+        write_rule_file(
+            &dir,
+            "10_b.json",
+            r#"{"transform":[{"type":"set","params":{"attr":"b","operation":"set","value":"v"}}]}"#,
+        );
+        write_rule_file(
+            &dir,
+            "20_a.json",
+            r#"{"transform":[{"type":"set","params":{"attr":"a","operation":"set","value":"v"}}]}"#,
+        );
 
         let (_, sources) = SessionApi::load_rules_dir_with_sources(&dir);
 
@@ -10092,7 +10105,11 @@ mod tests {
             "00_constraint_promoted_a.json",
             &constraint_body("平级甲", Some("2026-09-22T08:00:00Z")),
         );
-        write_rule_file(&dir, "30_x.json", r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":"v"}}]}"#);
+        write_rule_file(
+            &dir,
+            "30_x.json",
+            r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":"v"}}]}"#,
+        );
 
         let (_, sources) = SessionApi::load_rules_dir_with_sources(&dir);
 
