@@ -228,6 +228,30 @@ impl HitStatsAggregator {
             .clone()
     }
 
+    /// 把引擎归因下标解析为规则身份引用（进化信号归因用）
+    ///
+    /// 形态 `{source}#{同源序号}`：source = `core_eval` 或 rules_dir 相对文件路径；
+    /// 同源序号 = 该下标之前同 source 规则数（同文件条目连续装载 → 序号即文件内
+    /// 条目下标），如 `00_constraint_promoted_x.json#0`。越界（layout 与引擎规则
+    /// 列表不等长的异常态）回退 `rule_index={n}` 字面量（不产生错误归因）。
+    /// 版本口径与 [`Self::record_trace`] 一致：以当前 layout 为权威。
+    pub fn resolve_rule_ref(&self, index: u64) -> String {
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match inner.current.rules.get(index as usize) {
+            Some(meta) => {
+                let k = inner.current.rules[..index as usize]
+                    .iter()
+                    .filter(|m| m.source == meta.source)
+                    .count();
+                format!("{}#{}", meta.source, k)
+            }
+            None => format!("rule_index={index}"),
+        }
+    }
+
     /// 记录一条 TransitionTrace 归因（每次收敛转换 1 条）
     pub fn record_trace(&self, rule_hits: &[TraceHit]) {
         let now_ms = wall_now_ms();
@@ -559,6 +583,25 @@ mod tests {
             instr_type: "set".to_string(),
             hit: false,
         }
+    }
+
+    #[test]
+    fn test_resolve_rule_ref_identity_and_fallback() {
+        // 归因升级契约：下标 → 规则身份引用 `{source}#{同源序号}`；越界回退字面量。
+        // layout: [core_eval#0, core_eval#1, rules/bundles/expenses.json#0]
+        let agg = HitStatsAggregator::new(layout());
+        assert_eq!(agg.resolve_rule_ref(0), "core_eval#0");
+        assert_eq!(agg.resolve_rule_ref(1), "core_eval#1", "同源序号递增");
+        assert_eq!(
+            agg.resolve_rule_ref(2),
+            "rules/bundles/expenses.json#0",
+            "不同源文件序号归零"
+        );
+        assert_eq!(
+            agg.resolve_rule_ref(99),
+            "rule_index=99",
+            "越界回退 rule_index 字面量（不产生错误归因）"
+        );
     }
 
     #[test]

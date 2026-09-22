@@ -9005,8 +9005,9 @@ async fn session_evolution_signals(
         {
             snapshots.push(ViolationSnapshot {
                 version: *version,
-                // 归因 MVP：合并规则列表下标回退形态；规则 id 归因增强随命中统计专项
-                rule_ref: format!("rule_index={rule_index}"),
+                // 归因升级：规则身份引用优先（经当前 layout 解析为 source#同源序号），
+                // 越界异常态回退 rule_index 字面量（见 hit_stats::resolve_rule_ref）
+                rule_ref: api.hit_stats.resolve_rule_ref(*rule_index),
                 reason: reason.clone(),
                 instr_type: extract_instr_type(&tcb_to_serde(instruction)),
             });
