@@ -197,10 +197,11 @@ impl PublishService {
         };
 
         // 提名预算门禁 (fail-closed 去重): 同 (workspace, kind=meta_promotion,
-        // 目标规则版本集) 已存在 pending 项时拒绝 (409), 杜绝重复提名刷屏治理队列。
+        // 目标规则版本集) 已存在 pending 或 published 项时拒绝 (409), 杜绝重复
+        // 提名刷屏治理队列 (pending) 与审批落盘后同目标反复回归提名 (published)。
         // 目标规则身份以服务端权威预填的 metadata.promoted_from 为准, 与客户端输入无关。
         if let Some(meta_json) = &meta_rule_content {
-            self.ensure_no_pending_meta_promotion_dup(&req.workspace_id, meta_json)?;
+            self.ensure_no_meta_promotion_dup(&req.workspace_id, meta_json)?;
         }
 
         // 5. 插入 publish_queue
@@ -248,14 +249,20 @@ impl PublishService {
     }
 
     /// 提名预算门禁: 同 (workspace_id, kind=meta_promotion, 目标规则版本集) 的
-    /// pending 项已存在时拒绝 (409, fail-closed)。
+    /// pending 或 published 项已存在时拒绝 (409, fail-closed)。
     ///
     /// 目标规则身份取 meta_rule_content.metadata.promoted_from (提交时由服务端
     /// 权威预填, 形如 "rule_version:A,rule_version:B"), 与同 workspace 待审晋升项
     /// 的来源版本集合比对; submit_publish 已强制仅当前版本可提交, 故同规则重复
-    /// 提名必命中同版本集合。promoted_from 缺失/形态异常时跳过比对 (放行,
-    /// 由既有 schema/tier 门禁兜底, 不在本层静默拒绝合法提名)。
-    fn ensure_no_pending_meta_promotion_dup(
+    /// 提名必命中同版本集合。
+    ///
+    /// 双态占用语义: pending = 审批期防重复刷屏; published = 同目标审批落盘后
+    /// 拒绝再提名 (违规持续发生但目标已治理, 放行只会制造不收敛的重复审批
+    /// 负担)。目标版本集变化 (promoted_from 扩展/演进) 时放行——目标已构成新的
+    /// 治理提名。rejected/cancelled 不占用 (驳回后允许修正重提)。
+    /// promoted_from 缺失/形态异常时跳过比对 (放行, 由既有 schema/tier 门禁
+    /// 兜底, 不在本层静默拒绝合法提名)。
+    fn ensure_no_meta_promotion_dup(
         &self,
         workspace_id: &str,
         meta_rule_content: &str,
@@ -263,27 +270,28 @@ impl PublishService {
         let Some(incoming) = extract_promoted_from_versions(meta_rule_content) else {
             return Ok(());
         };
-        let pending = self
-            .db
-            .list_publish_queue(Some(PublishStatus::Pending), Some(workspace_id))?;
-        for item in pending {
-            if item.kind != PublishKind::MetaPromotion {
-                continue;
-            }
-            let Some(existing_meta) = item.meta_rule_content.as_deref() else {
-                continue;
-            };
-            let Some(existing) = extract_promoted_from_versions(existing_meta) else {
-                continue;
-            };
-            if existing == incoming {
-                return Err(WorkspaceError::already_exists(
-                    "meta_promotion nomination",
-                    format!(
-                        "workspace {workspace_id} already has a pending promotion for the same target rule version set ({})",
-                        incoming.join(",")
-                    ),
-                ));
+        for status in [PublishStatus::Pending, PublishStatus::Published] {
+            let items = self.db.list_publish_queue(Some(status), Some(workspace_id))?;
+            for item in items {
+                if item.kind != PublishKind::MetaPromotion {
+                    continue;
+                }
+                let Some(existing_meta) = item.meta_rule_content.as_deref() else {
+                    continue;
+                };
+                let Some(existing) = extract_promoted_from_versions(existing_meta) else {
+                    continue;
+                };
+                if existing == incoming {
+                    return Err(WorkspaceError::already_exists(
+                        "meta_promotion nomination",
+                        format!(
+                            "workspace {workspace_id} already has a {} promotion for the same target rule version set ({})",
+                            status.as_str(),
+                            incoming.join(",")
+                        ),
+                    ));
+                }
             }
         }
         Ok(())
@@ -2042,8 +2050,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_meta_promotion_dup_allowed_after_review() {
-        // 预算门禁只互斥 pending: 审结 (published) 后可再次提名
+    async fn test_meta_promotion_dup_allowed_after_rejection() {
+        // 驳回 (rejected) 不占用目标: 驳回后修正可重新提名
         let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
         let sandbox_id = make_sandbox_evidence(&db, &ws_id);
@@ -2078,7 +2086,123 @@ mod tests {
             Some(make_meta_content(Some("constraint"))),
         )
         .await;
-        assert!(second.is_ok(), "审结后重复提名不应被拒, 实际: {second:?}");
+        assert!(second.is_ok(), "驳回后重复提名不应被拒, 实际: {second:?}");
+    }
+
+    #[tokio::test]
+    async fn test_meta_promotion_dup_rejected_after_published() {
+        // published 占用目标: 同目标 (同 promoted_from 版本集) 审批落盘后再提名
+        // 被拒 (409, fail-closed)——违规持续发生但目标已治理, 防止审批负担不收敛
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
+
+        let item = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id.clone(),
+            Some(sandbox_id),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await
+        .unwrap();
+        publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: Some("批准晋升".to_string()),
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await
+            .unwrap();
+
+        let dup = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id,
+            Some(sandbox_id),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await;
+        assert!(
+            matches!(dup, Err(WorkspaceError::AlreadyExists { ref resource, .. }) if resource == "meta_promotion nomination"),
+            "published 同目标再提名应被预算门禁拒绝, 实际: {dup:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_meta_promotion_dup_allowed_when_version_set_changes_or_cross_workspace() {
+        // 目标版本集变化 (新来源规则版本) 放行——构成新的治理提名;
+        // published 占用仅限同 workspace, 跨 workspace 提名不受影响
+        let (publish_svc, db, rule_svc_handle, ws_id, ops, _tmp) = make_services().await;
+        let rv_a = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let rv_b = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-2").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
+
+        let item = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_a,
+            Some(sandbox_id),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await
+        .unwrap();
+        publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: Some("批准晋升".to_string()),
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await
+            .unwrap();
+
+        // ① 版本集变化: 已发布目标版本集 {A}, 新提名版本集 {B} → 放行
+        let evolved = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_b,
+            Some(sandbox_id),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await;
+        assert!(
+            evolved.is_ok(),
+            "目标版本集变化应放行, 实际: {evolved:?}"
+        );
+
+        // ② 跨 workspace: 另一 workspace 提名同版本集 → 不受本 workspace published 占用影响
+        // (经 WorkspaceService 创建以同步建立属主成员关系——权限先行的成员资格校验)
+        let ws_other = WorkspaceService::new(db.clone(), ops.clone())
+            .create_workspace(CreateWorkspaceRequest {
+                name: "ws-other".to_string(),
+                owner_id: "head-1".to_string(),
+                description: None,
+            })
+            .await
+            .unwrap()
+            .id;
+        let rv_c = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_other, "rule-3").await;
+        let sandbox_other = make_sandbox_evidence(&db, &ws_other);
+        let cross = submit_meta_promotion(
+            &publish_svc,
+            &ws_other,
+            rv_c,
+            Some(sandbox_other),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await;
+        assert!(
+            cross.is_ok(),
+            "跨 workspace 提名不受其他 workspace published 占用影响, 实际: {cross:?}"
+        );
     }
 
     #[tokio::test]
