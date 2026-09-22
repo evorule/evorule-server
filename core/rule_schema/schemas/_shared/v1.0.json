@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://evorule.org/schemas/_shared/v1.0.json",
   "title": "evorule 共享定义 v1.0（固化版）",
-  "description": "跨 kind 共享的 $defs 单一事实源（SSOT，records/70）。transform_rule / domain / instruction 权威源为 evorule-tcb 源码（executor.rs 6 元指令 + domain.rs 7 基础域）；service_entry 权威源为 evorule-server io_handlers/src/service_registry.rs。rule_set / migration 等 schema 通过跨文件 $ref 引用本文件，禁止复制粘贴导致漂移。",
+  "description": "跨 kind 共享的 $defs 单一事实源（SSOT，records/70）。transform_rule / domain / instruction 权威源为 evorule-tcb 源码（executor.rs 5 元指令 + domain.rs 7 基础域）；service_entry 权威源为 evorule-server io_handlers/src/service_registry.rs。rule_set / migration 等 schema 通过跨文件 $ref 引用本文件，禁止复制粘贴导致漂移。",
   "$defs": {
     "path": {
       "type": "string",
