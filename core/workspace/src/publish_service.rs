@@ -271,7 +271,9 @@ impl PublishService {
             return Ok(());
         };
         for status in [PublishStatus::Pending, PublishStatus::Published] {
-            let items = self.db.list_publish_queue(Some(status), Some(workspace_id))?;
+            let items = self
+                .db
+                .list_publish_queue(Some(status), Some(workspace_id))?;
             for item in items {
                 if item.kind != PublishKind::MetaPromotion {
                     continue;
@@ -2173,10 +2175,7 @@ mod tests {
             Some(make_meta_content(Some("constraint"))),
         )
         .await;
-        assert!(
-            evolved.is_ok(),
-            "目标版本集变化应放行, 实际: {evolved:?}"
-        );
+        assert!(evolved.is_ok(), "目标版本集变化应放行, 实际: {evolved:?}");
 
         // ② 跨 workspace: 另一 workspace 提名同版本集 → 不受本 workspace published 占用影响
         // (经 WorkspaceService 创建以同步建立属主成员关系——权限先行的成员资格校验)
