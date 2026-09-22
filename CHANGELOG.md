@@ -25,15 +25,6 @@
 
 ---
 
-## [Unreleased]
-
-### 🔄 变更
-
-- **约束层引擎加载序治理（晋升约束优先）** — 规则目录加载从文件名字典序改为排序键序:文件名 `00_constraint_promoted_` 前缀且 `metadata.promoted_at` 可解析的文件按晋升时间降序排前(同刻按路径升序),种子与其余规则按字典序兜底;前缀命中但 `promoted_at` 缺失/非法的文件回退兜底序并输出告警。保证审批落盘的新晋升约束先于种子约束装配生效,不再受文件名字典序偶然性摆布
-- **MetaPromotion 提名去重门禁双态化** — 同 workspace × 同约束层目标规则的占用判定从仅 `pending` 扩为 `pending` + `published` 双态:审批已发布后对同一目标(源版本集不变)再次提名同样 409 拒绝;`promoted_from` 版本集变化(源规则发布后又有修订)或前次提名被驳回后放行
-- **transform_rule 条目级未知键 fail-fast** — 规则 schema 门禁对 transform 数组条目收紧 `additionalProperties: false`(条目级键白名单 = `type` + `params`),未知键提交期报错并列明键名——防御转写产物把匹配条件写成条目级 `condition` 被引擎静默忽略、约束退化为无条件触发(拦截条件只能经 `params` 内 domain/enforce 原语表达)
-- **命中归因 `rule_ref` 形态升级** — hit-stats 查询响应的规则引用从裸下标改为 `来源#同源序号` 投影(如 `00_constraint_promoted_xxx.json#0`),越界回退 `rule_index=N`;晋升约束可直接按文件名定位,无需人工换算下标
-
 ## [0.7.0] - 2026-09-20
 
 ### 🔄 变更
