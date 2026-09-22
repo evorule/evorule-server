@@ -1291,6 +1291,7 @@ async fn submit_publish(
     tag = "workspace",
     params(
         ("status" = Option<String>, Query, description = "按状态过滤 (pending/approved/published/rejected/cancelled)"),
+        ("workspace_id" = Option<String>, Query, description = "按来源工作空间 ID 过滤 (缺省返回全部工作空间)"),
     ),
     responses(
         (status = 200, description = "success", body = Vec<PublishQueueItem>),
@@ -1311,7 +1312,10 @@ async fn list_publish_queue(
         })?),
         None => None,
     };
-    let list = state.publish_service.list_queue(status_filter).await?;
+    let list = state
+        .publish_service
+        .list_queue(status_filter, q.workspace_id.as_deref())
+        .await?;
     Ok(Json(list))
 }
 

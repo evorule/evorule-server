@@ -1793,10 +1793,11 @@ impl WorkspaceDb {
         Ok(item)
     }
 
-    /// 列出发布队列 (按状态过滤, 按提交时间升序 FIFO)
+    /// 列出发布队列 (按状态/workspace 过滤, 按提交时间升序 FIFO)
     pub fn list_publish_queue(
         &self,
         status_filter: Option<PublishStatus>,
+        workspace_id_filter: Option<&str>,
     ) -> WorkspaceResult<Vec<PublishQueueItem>> {
         let conn = self.lock()?;
         let status_str = status_filter.map(|s| s.as_str());
@@ -1809,11 +1810,15 @@ impl WorkspaceDb {
                         kind, meta_rule_content
                  FROM publish_queue
                  WHERE (?1 IS NULL OR status = ?1)
+                   AND (?2 IS NULL OR workspace_id = ?2)
                  ORDER BY submitted_at ASC",
             )
             .map_err(WorkspaceError::from)?;
         let rows = stmt
-            .query_map(params![status_str], row_to_publish_queue)
+            .query_map(
+                params![status_str, workspace_id_filter],
+                row_to_publish_queue,
+            )
             .map_err(WorkspaceError::from)?;
         let mut out = Vec::new();
         for r in rows {

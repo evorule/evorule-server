@@ -949,6 +949,8 @@ pub struct RollbackRequest {
 pub struct ListPublishQueueQuery {
     /// 按状态过滤 (pending/approved/published/rejected/cancelled)
     pub status: Option<String>,
+    /// 按来源工作空间 ID 过滤 (缺省返回全部工作空间)
+    pub workspace_id: Option<String>,
 }
 
 #[cfg(test)]

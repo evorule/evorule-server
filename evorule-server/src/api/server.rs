@@ -8963,9 +8963,10 @@ async fn session_evolution_signals(
         .as_ref()
         .map(|db| {
             let mut counts = QueueCounts::default();
-            if let Ok(items) =
-                db.list_publish_queue(Some(evorule_workspace::models::PublishStatus::Pending))
-            {
+            if let Ok(items) = db.list_publish_queue(
+                Some(evorule_workspace::models::PublishStatus::Pending),
+                None,
+            ) {
                 for item in items {
                     match item.kind {
                         evorule_workspace::models::PublishKind::MetaPromotion => {

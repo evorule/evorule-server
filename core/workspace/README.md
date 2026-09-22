@@ -92,6 +92,10 @@ Workspace crate 是 evorule-server 的**多租户管理核心**，提供：
 
 **滚动 session 热重载**（`rolling_session`）：发布时不中断现有 session，逐步将新规则应用到新创建的 session，旧 session 继续使用旧规则直到结束。
 
+**提名去重门禁**（进化预算第一档）：`POST /api/publish/queue` 提交侧校验——同 `(workspace_id, kind=meta_promotion, 目标规则集)` 三元组已存在 `pending` 项时拒绝（fail-closed，`AlreadyExists` 409 语义），杜绝重复提名刷屏；`promoted_from` 缺失/异常的提交跳过该校验放行，由后续闸门把关。
+
+**队列查询过滤**：`GET /api/publish/queue` 支持可选 `workspace_id` 查询参数，仅返回该工作空间的条目；缺省保留旧行为（跨工作空间全量）。
+
 ---
 
 ## 进化信号（evolution_scanner）

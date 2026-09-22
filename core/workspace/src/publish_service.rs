@@ -196,6 +196,13 @@ impl PublishService {
             }
         };
 
+        // 提名预算门禁 (fail-closed 去重): 同 (workspace, kind=meta_promotion,
+        // 目标规则版本集) 已存在 pending 项时拒绝 (409), 杜绝重复提名刷屏治理队列。
+        // 目标规则身份以服务端权威预填的 metadata.promoted_from 为准, 与客户端输入无关。
+        if let Some(meta_json) = &meta_rule_content {
+            self.ensure_no_pending_meta_promotion_dup(&req.workspace_id, meta_json)?;
+        }
+
         // 5. 插入 publish_queue
         let id = self.db.insert_publish_queue_item(
             &req.workspace_id,
@@ -240,14 +247,59 @@ impl PublishService {
         })
     }
 
-    /// 列出发布队列 (按状态过滤)
+    /// 提名预算门禁: 同 (workspace_id, kind=meta_promotion, 目标规则版本集) 的
+    /// pending 项已存在时拒绝 (409, fail-closed)。
+    ///
+    /// 目标规则身份取 meta_rule_content.metadata.promoted_from (提交时由服务端
+    /// 权威预填, 形如 "rule_version:A,rule_version:B"), 与同 workspace 待审晋升项
+    /// 的来源版本集合比对; submit_publish 已强制仅当前版本可提交, 故同规则重复
+    /// 提名必命中同版本集合。promoted_from 缺失/形态异常时跳过比对 (放行,
+    /// 由既有 schema/tier 门禁兜底, 不在本层静默拒绝合法提名)。
+    fn ensure_no_pending_meta_promotion_dup(
+        &self,
+        workspace_id: &str,
+        meta_rule_content: &str,
+    ) -> WorkspaceResult<()> {
+        let Some(incoming) = extract_promoted_from_versions(meta_rule_content) else {
+            return Ok(());
+        };
+        let pending = self
+            .db
+            .list_publish_queue(Some(PublishStatus::Pending), Some(workspace_id))?;
+        for item in pending {
+            if item.kind != PublishKind::MetaPromotion {
+                continue;
+            }
+            let Some(existing_meta) = item.meta_rule_content.as_deref() else {
+                continue;
+            };
+            let Some(existing) = extract_promoted_from_versions(existing_meta) else {
+                continue;
+            };
+            if existing == incoming {
+                return Err(WorkspaceError::already_exists(
+                    "meta_promotion nomination",
+                    format!(
+                        "workspace {workspace_id} already has a pending promotion for the same target rule version set ({})",
+                        incoming.join(",")
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// 列出发布队列 (按状态/workspace 过滤)
     ///
     /// 所有角色可查看队列 (但只有 Admin 可审批)。
+    /// workspace_id_filter: None 返回全部工作空间 (旧行为不变),Some 仅返回该工作空间条目。
     pub async fn list_queue(
         &self,
         status_filter: Option<PublishStatus>,
+        workspace_id_filter: Option<&str>,
     ) -> WorkspaceResult<Vec<PublishQueueItem>> {
-        self.db.list_publish_queue(status_filter)
+        self.db
+            .list_publish_queue(status_filter, workspace_id_filter)
     }
 
     /// 获取单个队列项详情
@@ -751,6 +803,25 @@ fn compute_publish_ruleset_hash(rules: &[Value]) -> String {
         buf.extend_from_slice(b"\n");
     }
     evorule_hash::digest(&buf)
+}
+
+/// 从元规则 JSON 提取 `metadata.promoted_from` 的 rule_version id 集合 (去重排序)。
+///
+/// promoted_from 由服务端提交时权威预填, 形如 "rule_version:A,rule_version:B";
+/// 缺失、非 JSON、形态异常时返回 None (提名去重跳过该项, 不参与比对)。
+fn extract_promoted_from_versions(meta_rule_content: &str) -> Option<Vec<String>> {
+    let meta: Value = serde_json::from_str(meta_rule_content).ok()?;
+    let promoted_from = meta
+        .pointer("/metadata/promoted_from")
+        .and_then(Value::as_str)?;
+    let mut ids: Vec<String> = promoted_from
+        .split(',')
+        .filter_map(|s| s.strip_prefix("rule_version:"))
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Some(ids)
 }
 
 /// 校验转写后的元规则内容 (批次 W3, 提交与落盘两侧共用单一权威实现)
@@ -1936,6 +2007,125 @@ mod tests {
                 !n.starts_with("00_constraint_promoted_") && !n.starts_with("00_meta_promoted_")
             });
         assert!(no_meta, "未审批通过前不得落盘 L2 约束文件");
+    }
+
+    #[tokio::test]
+    async fn test_meta_promotion_duplicate_pending_rejected() {
+        // 提名预算门禁: 同 (workspace, kind=meta_promotion, 目标规则版本集)
+        // 已有 pending 项时, 重复提名被拒 (409 AlreadyExists, fail-closed)
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
+
+        submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id.clone(),
+            Some(sandbox_id),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await
+        .unwrap();
+
+        let dup = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id,
+            Some(sandbox_id),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await;
+        assert!(
+            matches!(dup, Err(WorkspaceError::AlreadyExists { ref resource, .. }) if resource == "meta_promotion nomination"),
+            "重复提名应被预算门禁拒绝, 实际: {dup:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_meta_promotion_dup_allowed_after_review() {
+        // 预算门禁只互斥 pending: 审结 (published) 后可再次提名
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
+
+        let item = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id.clone(),
+            Some(sandbox_id),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await
+        .unwrap();
+        publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "rejected".to_string(),
+                    comment: Some("驳回测试".to_string()),
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await
+            .unwrap();
+
+        let second = submit_meta_promotion(
+            &publish_svc,
+            &ws_id,
+            rv_id,
+            Some(sandbox_id),
+            Some(make_meta_content(Some("constraint"))),
+        )
+        .await;
+        assert!(second.is_ok(), "审结后重复提名不应被拒, 实际: {second:?}");
+    }
+
+    #[tokio::test]
+    async fn test_list_publish_queue_workspace_filter() {
+        // D3: list_publish_queue 支持 workspace_id 过滤; None 保留旧行为 (全量)
+        let db = WorkspaceDb::in_memory().unwrap();
+        for (ws, hash) in [("ws-a", "hash-a"), ("ws-b", "hash-b")] {
+            let now = chrono::Utc::now();
+            db.insert_workspace(&crate::models::WorkspaceRecord {
+                id: ws.to_string(),
+                name: format!("ws-{ws}"),
+                owner_id: "owner-1".to_string(),
+                created_at: now,
+                updated_at: now,
+                archived_at: None,
+                state: crate::models::WorkspaceState::Active,
+                description: None,
+            })
+            .unwrap();
+            db.insert_publish_queue_item(
+                ws,
+                "[]",
+                hash,
+                None,
+                "head-1",
+                None,
+                PublishKind::Normal,
+                None,
+            )
+            .unwrap();
+        }
+
+        let all = db.list_publish_queue(None, None).unwrap();
+        assert_eq!(all.len(), 2, "无过滤时返回全部 (旧行为不变)");
+
+        let only_a = db.list_publish_queue(None, Some("ws-a")).unwrap();
+        assert_eq!(only_a.len(), 1);
+        assert_eq!(only_a[0].workspace_id, "ws-a");
+
+        let pending_b = db
+            .list_publish_queue(Some(PublishStatus::Pending), Some("ws-b"))
+            .unwrap();
+        assert_eq!(pending_b.len(), 1);
+        assert_eq!(pending_b[0].workspace_id, "ws-b");
+
+        let none_c = db.list_publish_queue(None, Some("ws-c")).unwrap();
+        assert!(none_c.is_empty());
     }
 
     #[tokio::test]
