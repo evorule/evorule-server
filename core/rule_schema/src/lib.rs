@@ -377,6 +377,47 @@ mod tests {
     }
 
     #[test]
+    fn entry_level_unknown_key_rejected() {
+        // O-066（条目级未知键 fail-fast）：LLM 转写产物曾把匹配条件写成条目级
+        // condition 字段，引擎静默忽略导致约束对所有指令无条件触发——收紧后
+        // 提交期即拒，错误信息列明键名
+        let doc = rs(serde_json::json!([
+            { "type": "set", "params": { "attr": "x", "operation": "set", "value": 1 }, "condition": { "type": "eq" } }
+        ]));
+        let report = validate_rule_set(&doc);
+        assert!(!report.valid, "条目级未知键 condition 应被拒");
+        assert!(
+            report.errors.iter().any(|e| e.contains("condition")),
+            "错误信息须列明未知键名: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn nested_branch_entry_unknown_key_rejected() {
+        // branch 的 on_true/on_false 条目同属 transform_rule（递归 $ref），
+        // 条目级收紧对嵌套层同样生效，堵住「顶层放对、嵌套写错位」的绕过
+        let doc = rs(serde_json::json!([
+            { "type": "branch", "params": {
+                "domain": { "type": "all", "inner": [] },
+                "on_true": [
+                    { "type": "set", "params": { "attr": "x", "operation": "set", "value": 1 }, "condition": { "type": "eq" } }
+                ]
+            } }
+        ]));
+        let report = validate_rule_set(&doc);
+        assert!(!report.valid, "嵌套条目级未知键 condition 应被拒");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("condition") && e.contains("on_true")),
+            "错误信息须定位嵌套位置并列明键名: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn domain_string_without_prefix_rejected() {
         let doc = rs(serde_json::json!([
             { "type": "branch", "params": { "domain": "payload.flag", "on_true": [] } }

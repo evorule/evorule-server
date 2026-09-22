@@ -175,6 +175,8 @@
         },
         "params": { "type": "object" }
       },
+      "additionalProperties": false,
+      "description": "条目级键白名单 = {type, params}，未知键 fail-fast（additionalProperties:false）。背景（意图静默丢失防御）：LLM 转写产物曾把匹配条件写成条目级 condition 字段，引擎静默忽略导致约束对所有指令无条件触发——条件语义只能经 params 内的 domain/enforce 原语表达；条目级未知键一律提交期报错并列明键名，杜绝起草意图在转写环节静默丢失。",
       "allOf": [
         {
           "if": { "properties": { "type": { "const": "enforce" } } },
