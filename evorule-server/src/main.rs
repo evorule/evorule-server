@@ -1641,6 +1641,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         step_start.elapsed().as_millis()
     );
 
+    // 影子强制汇总曝光（纪律门禁影子强制整改，2026-09-24）：装载完成后一次性上报
+    // 影子期违规文件数——0 = 影子期干净（分面灰度 flip 的安全前提）；
+    // > 0 = 存在「若 enforce 将拒载」的文件，明细见上文 discipline_gate ERROR 日志。
+    let shadow_files = SessionApi::shadow_violation_files();
+    if shadow_files > 0 {
+        error!(
+            target: "discipline_gate",
+            files = shadow_files,
+            "影子强制汇总：{} 个规则文件存在纪律违规（EVORULE_DISCIPLINE_GATE=enforce \
+             模式下将被拒载/拒启）；flip 条件 = 影子期违规归零",
+            shadow_files
+        );
+    } else {
+        info!(
+            target: "discipline_gate",
+            "影子强制汇总：0 违规——纪律门禁影子期干净（分面灰度 flip 安全前提已满足）"
+        );
+    }
+
     // 批次 W1：三层规则清单日志（分层=纯约定，语义见 设计方案 §2.1；
     // 运维启动时一眼核对层级文件数是否符合预期，异常增量即篡改信号）
     let tiers = SessionApi::tier_inventory(&cfg.core_eval, &cfg.rules_dir);

@@ -19,6 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 纪律门禁接线: evorule-discipline 为兄弟仓 path 依赖, [patch.crates-io] 亦将
+      # evorule-tcb 指向 ../evorule/evorule-tcb。CI 无同机兄弟仓, 克隆到工作区
+      # 上一级 evorule/ 供给（两条相对路径均解析到该位置）
+      - name: Checkout sibling evorule repo (path-dep base)
+        run: git clone --depth 1 https://github.com/evorule/evorule.git "$GITHUB_WORKSPACE/../evorule"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -162,6 +168,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 纪律门禁接线: 兄弟仓 path 依赖供给（同 lint job 注释）
+      - name: Checkout sibling evorule repo (path-dep base)
+        run: git clone --depth 1 https://github.com/evorule/evorule.git "$GITHUB_WORKSPACE/../evorule"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -188,6 +198,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # 纪律门禁接线: 兄弟仓 path 依赖供给（同 lint job 注释）
+      - name: Checkout sibling evorule repo (path-dep base)
+        run: git clone --depth 1 https://github.com/evorule/evorule.git "$GITHUB_WORKSPACE/../evorule"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

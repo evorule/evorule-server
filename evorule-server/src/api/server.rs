@@ -55,13 +55,22 @@ use serde::{Deserialize, Serialize};
 
 use utoipa::ToSchema;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use std::collections::HashSet;
 
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+
+/// 影子强制违规文件计数（纪律门禁影子强制整改，2026-09-24）。
+///
+/// L2 纪律门禁 warn（缺省）期命中违规的**文件数**（按文件去重前先简单累加
+/// 各接线点，宪法与业务文件各计 1）。语义 =「若 enforce 将拒载的文件数」：
+/// 计数 > 0 即影子期不干净；装载完成后 main 以 ERROR 级汇总曝光，作为
+/// 分面灰度 flip（影子期违规归零）的观测依据。enforce 期不累计（违规
+/// 本身已拒载/拒启，行动面生效）。
+static SHADOW_VIOLATION_FILES: AtomicUsize = AtomicUsize::new(0);
 
 /// LLM 审计形态判定（K 约束族，2026-08-30）
 ///
@@ -1179,6 +1188,12 @@ impl SessionApi {
             ));
         }
 
+        // 接线点②（宪法 loader）：宪法文件此前**零门禁**
+        // （连 schema/tier 都没有，走独立 loader），补 L2 纪律门禁。
+        // enforce 期违规 → Err 拒启（fail-fast，与下方 call_external 校验同款）；
+        // warn 期仅告警（W1 纯观测，吸收门禁残余误报）。
+        Self::check_discipline_for_core_eval(core_eval_path, &tcb)?;
+
         // 修复(2026-09-01): call_external 指令规则是 LLM 审计桥的平台契约。
         // 会话反应器的 IoRequest 完全由宪法规则驱动;若宪法缺该规则,LLM 审计桥命令会被
         // all([]) 兜底规则静默 no-op(无 IoRequest、无 Error 事实),违反"拒绝静默通过"原则。
@@ -1531,6 +1546,11 @@ impl SessionApi {
         if !Self::passes_schema_gate(p, &arr) {
             return None;
         }
+        // 接线点④（业务 loader）：L2 规则集形态纪律（DC-01..DC-09）。
+        // warn 模式（W1 纯观测）照常装载；enforce 模式拒载。
+        if !Self::passes_discipline_gate(p, &arr) {
+            return None;
+        }
         Some(arr.into_iter().map(serde_to_tcb).collect())
     }
 
@@ -1677,6 +1697,191 @@ impl SessionApi {
             return false;
         }
         true
+    }
+
+    /// L2 纪律门禁模式开关：env `EVORULE_DISCIPLINE_GATE`。
+    /// - `enforce`（大小写不敏感）= 违规拒载（业务文件 fail-soft / 宪法 fail-fast）；
+    /// - 其余值（含缺省）= warn 纯观测（W1：只记结构化日志，照常装载）；
+    /// - 非法值 = 按 warn 处理 + 告警日志（fail-open，门禁配置错误不放大为可用性事故）。
+    fn discipline_gate_enforce() -> bool {
+        match std::env::var("EVORULE_DISCIPLINE_GATE") {
+            Ok(v) if v.eq_ignore_ascii_case("enforce") => true,
+            Ok(v) if v.eq_ignore_ascii_case("warn") || v.is_empty() => false,
+            Ok(other) => {
+                tracing::warn!(
+                    target: "discipline_gate",
+                    value = %other,
+                    "EVORULE_DISCIPLINE_GATE 非法值，按 warn（纯观测）处理"
+                );
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// 门禁模式横幅（每进程一次）：让运维在启动日志直接看到当前模式与切换方式
+    fn discipline_gate_banner() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let enforce = Self::discipline_gate_enforce();
+            tracing::info!(
+                target: "discipline_gate",
+                enforce,
+                env = "EVORULE_DISCIPLINE_GATE",
+                "L2 纪律门禁已接线：DC-01..DC-09；判定 SSOT = \
+                 evorule-discipline crate，纪律数据 SSOT = evorule-tcb/discipline/core_eval.json"
+            );
+            if !enforce {
+                tracing::warn!(
+                    target: "discipline_gate",
+                    "当前为 warn 影子强制模式（缺省）：违规文件照常装载但以 ERROR 级 \
+                     大声曝光（若 enforce 将拒载）；flip 条件 = 影子期违规归零 \
+                     （整改三步走：普查→影子强制→分面灰度）"
+                );
+            }
+        });
+    }
+
+    /// 影子期违规文件数（门禁影子强制整改，2026-09-24）：装载完成后由 main 汇总曝光。
+    /// 0 = 影子期干净（flip 安全前提）；> 0 = 存在 enforce 下将被拒载的文件。
+    pub fn shadow_violation_files() -> usize {
+        SHADOW_VIOLATION_FILES.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 违规明细结构化日志（两个接线点共用；字段口径 = 清零判据的观测源）。
+    ///
+    /// 影子强制：日志级别 warn→error——违规不再淹没在日常 warn 噪音里，
+    /// 「若 enforce 将拒载」必须大到不可忽视；文件照常装载（行动面不变）。
+    fn log_discipline_violations(
+        p: &std::path::Path,
+        violations: &[evorule_discipline::Violation],
+        source: &str,
+    ) {
+        for v in violations {
+            tracing::error!(
+                target: "discipline_gate",
+                source,
+                file = %p.display(),
+                dc_code = %v.code,
+                node_type = %v.node_type,
+                node_path = %v.path,
+                reason = %v.reason,
+                "影子强制：未过 L2 纪律门禁（若 EVORULE_DISCIPLINE_GATE=enforce 该文件将被拒载）"
+            );
+        }
+    }
+
+    /// L2 纪律门禁（业务 loader 接线；影子强制整改 2026-09-24）。
+    ///
+    /// - **warn 模式（缺省，W1 影子强制）**：违规文件照常装载（行动面不变，
+    ///   吸收门禁残余误报，防未登记合法规则集被误拒致系统不可用），但以
+    ///   **ERROR 级**大声曝光（file/dc_code/node_type/node_path/reason +
+    ///   「若 enforce 将拒载」文案），并累计影子违规文件数供装载后汇总——
+    ///   暴露音量 = enforce，行动面 = warn；flip 条件 = 影子期违规归零；
+    /// - **enforce 模式**：违规拒载（fail-soft，与 schema/tier 门禁同款），
+    ///   一键降级 = env 切回 warn，无需发版；
+    /// - 门禁自身求值失败：warn 期 fail-open（不拦装载），enforce 期 fail-closed
+    ///   （「校验层缺位即不通过」）。
+    fn passes_discipline_gate_with(
+        p: &std::path::Path,
+        arr: &[serde_json::Value],
+        enforce: bool,
+    ) -> bool {
+        Self::discipline_gate_banner();
+        let tcb_rules: Vec<JsonValue> = arr.iter().cloned().map(serde_to_tcb).collect();
+        match evorule_discipline::check(&tcb_rules) {
+            Ok(report) if report.violations.is_empty() => true,
+            Ok(report) => {
+                Self::log_discipline_violations(p, &report.violations, "rule_file");
+                if enforce {
+                    tracing::warn!(
+                        target: "discipline_gate",
+                        file = %p.display(),
+                        violations = report.violations.len(),
+                        "enforce 模式：拒绝加载该规则文件"
+                    );
+                    false
+                } else {
+                    // 影子强制：文件照常装载，但计数供装载后汇总曝光
+                    SHADOW_VIOLATION_FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    true
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "discipline_gate",
+                    file = %p.display(),
+                    error = %e,
+                    "纪律门禁求值失败"
+                );
+                !enforce
+            }
+        }
+    }
+
+    /// 纪律门禁（按 env 模式；测试用 `passes_discipline_gate_with` 注入模式）
+    fn passes_discipline_gate(p: &std::path::Path, arr: &[serde_json::Value]) -> bool {
+        Self::passes_discipline_gate_with(p, arr, Self::discipline_gate_enforce())
+    }
+
+    /// 宪法文件的纪律门禁（接线点②，宪法 loader）：
+    /// 宪法走独立 loader、此前零门禁，补 L2 纪律门禁。enforce 期违规 = Err 拒启
+    /// （fail-fast，与本 loader 既有的 call_external 校验同款）；warn 期仅告警。
+    fn check_discipline_for_core_eval(
+        p: &std::path::Path,
+        tcb: &[JsonValue],
+    ) -> Result<(), String> {
+        Self::check_discipline_for_core_eval_with(p, tcb, Self::discipline_gate_enforce())
+    }
+
+    fn check_discipline_for_core_eval_with(
+        p: &std::path::Path,
+        tcb: &[JsonValue],
+        enforce: bool,
+    ) -> Result<(), String> {
+        Self::discipline_gate_banner();
+        match evorule_discipline::check(tcb) {
+            Ok(report) if report.violations.is_empty() => Ok(()),
+            Ok(report) => {
+                for v in &report.violations {
+                    tracing::error!(
+                        target: "discipline_gate",
+                        file = %p.display(),
+                        dc_code = %v.code,
+                        node_type = %v.node_type,
+                        node_path = %v.path,
+                        reason = %v.reason,
+                        "影子强制：宪法文件未过 L2 纪律门禁（若 enforce 将拒绝启动）"
+                    );
+                }
+                if enforce {
+                    Err(format!(
+                        "宪法文件 {} 未通过 L2 纪律门禁（{} 条违规；条款见 \
+                         evorule-tcb/discipline/core_eval.json；临时恢复 = \
+                         EVORULE_DISCIPLINE_GATE=warn）",
+                        p.display(),
+                        report.violations.len()
+                    ))
+                } else {
+                    // 影子强制：宪法照常装载，但计数供装载后汇总曝光
+                    SHADOW_VIOLATION_FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Ok(())
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "discipline_gate",
+                    file = %p.display(),
+                    error = %e,
+                    "纪律门禁求值失败（宪法文件）"
+                );
+                if enforce {
+                    Err(format!("纪律门禁求值失败: {e}"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     /// ①.5 测试证据引用校验。
@@ -10011,6 +10216,138 @@ mod tests {
         format!(
             r#"{{"metadata":{{"tier":"constraint","title":"{title}"{pa}}},"transform":[{{"type":"set","params":{{"attr":"mark","operation":"set","value":"{title}"}}}}]}}"#
         )
+    }
+
+    // ===== L2 纪律门禁接线 =====
+
+    /// DC-09 违规样本：io_request 前有同规则 set（IoRequired 纯信号会丢弃 set → 重放失真）。
+    /// 结构合法（过 schema 门禁），专门用于验证纪律门禁的独立拦截。
+    const DC09_VIOLATING_RULE: &str = r#"{"transform":[
+        {"type":"set","params":{"attr":"x","operation":"set","value":1}},
+        {"type":"io_request","params":{"io_type":"llm"}}
+    ]}"#;
+
+    fn parse_transforms(body: &str) -> Vec<serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        v.get("transform")
+            .and_then(|t| t.as_array())
+            .map(|a| a.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// W1 纯观测（warn 模式）：违规**不拦装载**——纪律门禁 warn 期的目的是
+    /// 吸收残余误报，误报的最大代价 = 一行日志，而非可用性事故。
+    #[test]
+    fn discipline_gate_warn_mode_still_loads_violating_file() {
+        let p = std::path::Path::new("rules/dc09-violating.json");
+        let arr = parse_transforms(DC09_VIOLATING_RULE);
+        assert!(!arr.is_empty());
+        assert!(
+            SessionApi::passes_discipline_gate_with(p, &arr, false),
+            "warn 模式（W1 纯观测）违规文件必须照常装载"
+        );
+        assert!(
+            !SessionApi::passes_discipline_gate_with(p, &arr, true),
+            "enforce 模式同一违规文件必须拒载（一键降级旋钮的反向验证）"
+        );
+    }
+
+    /// enforce 模式拒载语义（fail-soft 单文件）：违规文件返回 false → parse_rule_file
+    /// 返回 None → 与 schema/tier 门禁同款「warn + 跳过」，服务不中断。
+    #[test]
+    fn discipline_gate_enforce_mode_rejects_violating_file() {
+        let p = std::path::Path::new("rules/dc09-violating.json");
+        let arr = parse_transforms(DC09_VIOLATING_RULE);
+        assert!(
+            !SessionApi::passes_discipline_gate_with(p, &arr, true),
+            "enforce 模式必须拒载 DC-09 违规文件"
+        );
+    }
+
+    /// 端到端：经 load_merged_transforms_from_fs 全管线验证接线点 ①（parse_rule_file）。
+    /// 宪法 2 条 + 违规文件 1 条；按当前 env 模式断言是否计入（缺省 warn → 计入）。
+    #[test]
+    fn discipline_gate_wired_into_parse_rule_file_pipeline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("dc09.json"), DC09_VIOLATING_RULE).unwrap();
+        let core_eval_path = tmp.path().join("server_eval.json");
+        std::fs::write(
+            &core_eval_path,
+            r#"{"transform":[
+                {"type":"set","params":{"attr":"result","operation":"set","value":"ok"}},
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[],"on_false":[]}}
+            ]}"#,
+        )
+        .unwrap();
+        let merged = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)
+            .expect("warn 模式下装载不应失败");
+        // merged 是扁平 transform 列表：宪法 2 条 + 违规文件 2 条（set+io_request）
+        let expect_violating = !SessionApi::discipline_gate_enforce();
+        assert_eq!(
+            merged.len(),
+            if expect_violating { 4 } else { 2 },
+            "warn 模式 = 宪法 2 + 违规 2（照常装载）；enforce 模式 = 仅宪法 2"
+        );
+    }
+
+    /// 接线点 ②（宪法 loader）：enforce 期宪法违规 fail-fast 拒启；warn 期放行。
+    /// 宪法此前零门禁（补防前缺口），本测试锁死补防后的语义。
+    #[test]
+    fn discipline_gate_wired_into_core_eval_loader() {
+        // DC-02 违规：enforce 嵌入 branch 内（{"transform":[...]} 包裹形态）
+        let violating = r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"exists","path":"a"},
+             "on_true":[{"type":"enforce","params":{"domain":{"type":"exists","path":"b"},"reason":"r"}}],
+             "on_false":[]}}
+        ]}"#;
+        let tcb: Vec<JsonValue> = parse_transforms(violating)
+            .into_iter()
+            .map(serde_to_tcb)
+            .collect();
+        assert!(!tcb.is_empty(), "测试样本必须实际解析出规则");
+        let p = std::path::Path::new("server_eval.json");
+        assert!(
+            SessionApi::check_discipline_for_core_eval_with(p, &tcb, false).is_ok(),
+            "warn 模式宪法违规只告警不拒启（W1）"
+        );
+        let err = SessionApi::check_discipline_for_core_eval_with(p, &tcb, true)
+            .expect_err("enforce 模式宪法违规必须 fail-fast 拒启");
+        assert!(
+            err.contains("L2 纪律门禁"),
+            "拒启错误信息应指明纪律门禁与恢复方式: {err}"
+        );
+    }
+
+    /// 回归锁：随包发布的宪法 server_eval.json 必须通过纪律门禁（0 违规）。
+    /// R-A4/R-B1 的误报修复以 server 装载侧视角再次锁死——宪法违规会直接
+    /// 拒载服务器自身的核心规则集。
+    #[test]
+    fn shipped_server_eval_passes_discipline_gate() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("resources")
+            .join("server_eval.json");
+        if !path.exists() {
+            // 非随包检出（如裁剪仓）跳过；随包环境必须存在
+            return;
+        }
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let arr = v
+            .get("transform")
+            .and_then(|t| t.as_array())
+            .map(|a| a.to_vec())
+            .unwrap_or_default();
+        assert!(!arr.is_empty(), "随包宪法应有 transform 数组");
+        let tcb: Vec<JsonValue> = arr.into_iter().map(serde_to_tcb).collect();
+        let report = evorule_discipline::check(&tcb).unwrap();
+        assert!(
+            report.violations.is_empty(),
+            "随包宪法不得含纪律违规: {:?}",
+            report.violations
+        );
     }
 
     #[test]

@@ -45,6 +45,10 @@ evorule-workspace = { path = "../core/workspace" }
 
 # Schema 门禁（线1 防御层）：/api/rules/validate 提交校验的权威基准
 evorule-rule-schema = { path = "../core/rule_schema" }
+# L2 规则集形态纪律门禁判定引擎，与 evorule-cli 共享判定 SSOT（机制自 cli 抽出，
+# 2026-09-24 接线）。path 供本机联调（同机 evorule 仓 0.6.1）；发布前必做（同发同装）：
+# 先发 evorule-discipline 0.6.1 到 crates.io，再删 path 段切纯 version。
+evorule-discipline = { path = "../../evorule/evorule-discipline", version = "0.6.1" }
 
 # 快照包共享校验（历史批次 集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘）
 evorule-bundle = { version = "0.3.0" }
