@@ -61,6 +61,14 @@ jobs:
             ext: ".exe"
     runs-on: ${{ matrix.os }}
     steps:
+      - name: 门禁旁路断言 (EVORULE_SKIP_GATE 存在即 fail)
+        shell: bash
+        # 补偿检测: build.rs 跳过阀 fail-closed 化后, 若构建/发布机环境残留
+        # 该变量(哪怕 =0), cargo build 时门禁静默跳过且无任何环节报警。
+        # 存在即拒绝——值内容不回显, 防变量内容泄入日志。
+        run: |
+          [ -z "${EVORULE_SKIP_GATE+x}" ] || { echo "ERROR: EVORULE_SKIP_GATE 已设置(值不回显)——构建环境残留门禁旁路变量, 禁止构建/发布"; exit 1; }
+
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable

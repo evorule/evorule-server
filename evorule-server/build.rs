@@ -34,9 +34,11 @@
 //!
 //! # 紧急跳过
 //! ```bash
-//! EVORULE_SKIP_GATE=1 cargo build
+//! EVORULE_SKIP_GATE=1 EVORULE_SKIP_REASON="原因" cargo build
 //! ```
-//! 跳过必须临时且有书面理由，永不永久禁用。
+//! 阀值仅 `1`/`true` 生效 (`0`/空/其他值 = 门禁照常执行, fail-closed，与
+//! 主仓 evorule-tcb 同一语义，跨仓同步契约见 GATE_REFERENCE.md)。
+//! 跳过必须临时且有书面理由, 永不永久禁用。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,13 +55,48 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("S1-panic", "panic!("),
 ];
 
+/// 跳过类环境变量解析（fail-closed 阀值语义）。
+///
+/// 与主仓 evorule-tcb/build.rs 同名函数保持实现一致（跨仓同步契约见
+/// GATE_REFERENCE.md，改一处必须同步另一处）。仅 `1` / `true`（trim 后、
+/// 大小写不敏感）视为请求跳过；其余任何值（`0`、空串、乱值）一律不跳过
+/// ——门禁照常执行，并发出 warning 提示该值被忽略。旧实现 `is_ok()` 把
+/// `=0`/空值也当跳过，属意外 fail-open。
+///
+/// 附带跳过理由登记（EVORULE_SKIP_REASON）：跳过生效时若未设置非空理由，
+/// 追加 warning——「大声原则」：任何跳过都必须可追溯。
+fn skip_requested(var: &str) -> bool {
+    match std::env::var(var) {
+        Ok(v) => {
+            let t = v.trim().to_ascii_lowercase();
+            if t == "1" || t == "true" {
+                match std::env::var("EVORULE_SKIP_REASON") {
+                    Ok(r) if !r.trim().is_empty() => {
+                        println!("cargo:warning={var} skip reason: {r}");
+                    }
+                    _ => {
+                        println!(
+                            "cargo:warning={var} 已跳过但未登记理由 (EVORULE_SKIP_REASON)——跳过须有书面理由"
+                        );
+                    }
+                }
+                true
+            } else {
+                println!("cargo:warning={var}={v} 非肯定值 (仅 1/true 生效)，门禁照常执行");
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
 fn main() -> ExitCode {
     let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "unknown".into());
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");
 
-    if std::env::var("EVORULE_SKIP_GATE").is_ok() {
+    if skip_requested("EVORULE_SKIP_GATE") {
         println!("cargo:warning={crate_name} compile-time gate SKIPPED via EVORULE_SKIP_GATE");
         return ExitCode::SUCCESS;
     }
@@ -124,10 +161,15 @@ fn main() -> ExitCode {
     }
 
     if violations.is_empty() {
-        // Gate passed silently — success is the default expected state, not a warning.
-        // SKIP path still emits cargo:warning (skipping a security gate is noteworthy).
-        // FAILURE path uses eprintln! (loud, visible on build failure).
-        // Gate execution is verifiable by build success (gate failure → build failure).
+        // 大声原则（跨仓同步，与主仓 evorule-tcb 口径一致）：通过也要可见——
+        // 零输出的通过无法与 "build.rs 被删/被短路/未执行" 区分。cargo:warning
+        // 每次构建常态可见，与 SKIPPED 输出同口径；文件数/模式数动态取值，
+        // 模式清单变更不产生假数字。
+        println!(
+            "cargo:warning={crate_name} compile-time gate PASSED - 已扫 {} 文件 x {} 模式, 0 违规",
+            rs_files.len(),
+            FORBIDDEN.len()
+        );
         return ExitCode::SUCCESS;
     }
 

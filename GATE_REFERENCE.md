@@ -101,7 +101,7 @@ evorule-server 仓是 HTTP server 应用层, **不需要确定性约束**, 但�
 
 - `strip_test_mod`: 剥离 `#[cfg(test)] mod tests { ... }` 块, 不扫描测试代码
 - 注释行豁免: `//` 开头的行 (含 `///`、`//!`) 不扫描
-- `EVORULE_SKIP_GATE=1`: 紧急跳过, 编译时输出 `cargo:warning` 提醒
+- `EVORULE_SKIP_GATE`: 紧急跳过阀, **fail-closed**——仅 `1`/`true` (trim 后大小写不敏感) 生效; `0`/空/乱值 = 门禁照常执行并出 `cargo:warning` 提示值被忽略。跳过生效须登记理由 `EVORULE_SKIP_REASON` (未登记出 warning)。通过与跳过均以 `cargo:warning` 出声 (大声原则, 与主仓同口径)
 
 ---
 
@@ -258,6 +258,8 @@ src/ 内 `#[cfg(test)] mod <ident> { ... }` 块是测试代码, build.rs 的 `st
 
 **build.rs L1 门禁** 随 `cargo build` / `cargo test` / `cargo clippy` 自动执行 — 如果 build.rs 检测到 S1 违规, 编译会失败, 门禁脚本也会失败。
 
+**CI 门禁旁路断言**: `release.yml` build job 首步断言 `EVORULE_SKIP_GATE` 存在即 fail (值不回显)——防构建/发布机环境残留旁路变量 (哪怕 `=0`) 致门禁静默跳过而无任何环节报警 (补偿控制, 与主仓 release-gate job 同件, 见 §十 #4)。
+
 ---
 
 ## 九、相关文件
@@ -269,3 +271,27 @@ src/ 内 `#[cfg(test)] mod <ident> { ... }` 块是测试代码, build.rs 的 `st
 - `scripts/_cargo_gate.ps1` (发布门禁脚本)
 - 代码风格约束: 不写 unsafe / 不写 panic-prone (见本文档 §一/§二)
 - 核心仓 `GATE_REFERENCE.md` (T/G/F 编号体系, 本仓 S 编号的源头)
+
+---
+
+## 十、与主仓门禁同步契约
+
+> 本节为跨仓同步清单（堵「修一次漏一仓」的根因——同步靠人记忆不可靠，须落为清单逐件核对）。
+> 主仓 = evorule 仓（tcb/reactor/governance/cli 四 crate 各带 build.rs），本仓 = evorule-server（bin + io_handlers 两 build.rs）。
+> 改动下列任一件时，必须同批核对另一仓对应件并同步；同步后按下文验证命令比对两侧实现一致。
+
+| # | 同步件 | 主仓位置 | 本仓位置 | 说明 |
+| --- | --- | --- | --- | --- |
+| 1 | `skip_requested` 跳过阀解析器 | `evorule-tcb/build.rs`（其余三仓同名同实现） | `evorule-server/build.rs` + `core/io_handlers/build.rs` | fail-closed：仅 `1`/`true` 生效 + `EVORULE_SKIP_REASON` 理由登记。历史事故：主仓 fail-closed 化修复未同步本仓，旧版 `is_ok()` fail-open 阀在本仓存活（`=0`/空/乱值即静默跳过 S1） |
+| 2 | PASSED 横幅（大声原则） | 四仓 build.rs 通过分支 | 两 build.rs 通过分支 | 通过时 `cargo:warning=...PASSED - 已扫 N 文件 x M 模式, 0 违规`，文件数/模式数动态取值；消除「通过 vs 被短路」不可区分 |
+| 3 | panic-prone 模式族一致性 | `panic!(` 等（F11/G1） | `panic!(` 等（S1） | S1 = F11 = G1 跨仓一致（见 §二） |
+| 4 | CI 门禁旁路断言 | `.github/workflows/release.yml`（release-gate job 首步） | `.github/workflows/release.yml`（build job 首步，`shell: bash` 覆盖双平台矩阵） | `EVORULE_SKIP_GATE` 存在即 fail，值不回显（补偿控制） |
+
+**同步验证命令**（改后必跑）：
+
+- 旧阀残留 grep：两侧仓内所有 build.rs 不得出现 `var("EVORULE_SKIP_GATE").is_ok()`；
+- 三态探针（两侧各跑）：
+  1. 未设变量 → 门禁正常扫描（PASSED 横幅可见）；
+  2. `EVORULE_SKIP_GATE=0` → warning「非肯定值 (仅 1/true 生效)，门禁照常执行」+ PASSED 横幅（门禁照跑）；
+  3. `EVORULE_SKIP_GATE=1` + `EVORULE_SKIP_REASON="..."` → 理由回显 warning + SKIPPED warning（跳过生效）。
+- 注意：环境变量变更不触发 build.rs 重跑，探针前须 touch build.rs（或 `cargo clean -p <crate>`）强制重编译。
