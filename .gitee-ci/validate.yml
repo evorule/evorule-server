@@ -2,9 +2,8 @@
 # Parity with .github/workflows/ci.yml
 #
 # Gitee Go does not support actions/checkout, so we use git clone explicitly.
-# evorule-server 仓独立 release,evorule 核心从 crates.io 拉取;纪律门禁接线后
-# evorule-discipline 为兄弟仓 path 依赖（[patch.crates-io] 亦将 evorule-tcb 指向
-# 兄弟仓）,lint/test/build/docker 各 stage 需供给兄弟仓 evorule 克隆.
+# evorule-server 仓独立 release,evorule 核心从 crates.io 拉取;纪律门禁接线过渡期,
+# evorule-discipline 以 git 形态依赖公开主仓（cargo 自取, 无需 checkout 其他仓）.
 
 stages:
   - validate
@@ -48,7 +47,6 @@ lint:
   image: rust:1.97.1-slim
   script:
     - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
-    - git clone --depth 1 https://gitee.com/evorule/evorule.git ../evorule
     - cargo fmt --all -- --check
     - cargo clippy --workspace --all-targets -- -D warnings
   rules:
@@ -64,7 +62,6 @@ test:
   image: rust:1.97.1-slim
   script:
     - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
-    - git clone --depth 1 https://gitee.com/evorule/evorule.git ../evorule
     - cargo test --workspace --all-features
   rules:
     - changes:
@@ -78,7 +75,6 @@ build:
   image: rust:1.97.1-slim
   script:
     - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
-    - git clone --depth 1 https://gitee.com/evorule/evorule.git ../evorule
     - cargo build --release --bin evorule-server
   artifacts:
     name: "evorule-server-linux-x86_64"
@@ -100,7 +96,7 @@ docker:
   dependencies:
     - build
   script:
-    - docker build --build-arg EVORULE_SIBLING_URL=https://gitee.com/evorule/evorule.git -t evorule-server:gitee-$CI_COMMIT_SHORT_SHA .
+    - docker build -t evorule-server:gitee-$CI_COMMIT_SHORT_SHA .
     - docker run --rm -d -p 18080:18080 -e EVORULE_ADDR=127.0.0.1:18080 --name evorule-smoke evorule-server:gitee-$CI_COMMIT_SHORT_SHA
     - sleep 5
     - wget -qO- http://127.0.0.1:18080/api/health || (docker logs evorule-smoke; exit 1)

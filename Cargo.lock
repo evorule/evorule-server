@@ -861,7 +861,7 @@ dependencies = [
  "async-trait",
  "evorule-io-handlers",
  "evorule-plugin-kit",
- "evorule-reactor 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "evorule-reactor",
  "evorule-rule-schema",
  "evorule-tcb",
  "serde_json",
@@ -872,8 +872,9 @@ dependencies = [
 [[package]]
 name = "evorule-discipline"
 version = "0.6.1"
+source = "git+https://gitee.com/evorule/evorule#5669444aab3550f1e4a26cd613208321fbfa9916"
 dependencies = [
- "evorule-reactor 0.6.1",
+ "evorule-reactor",
  "evorule-tcb",
  "serde_json",
 ]
@@ -886,7 +887,7 @@ checksum = "a4b648694cb49bf4152a5f2831a31af95152f40e6a1bfc91ea67e1f231c66030"
 dependencies = [
  "blake3",
  "ed25519-dalek",
- "evorule-reactor 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "evorule-reactor",
  "evorule-tcb",
  "flate2",
  "getrandom 0.2.17",
@@ -936,7 +937,7 @@ version = "0.7.0"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
- "evorule-reactor 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "evorule-reactor",
  "evorule-tcb",
  "serde_json",
  "tokio",
@@ -947,7 +948,7 @@ name = "evorule-io-handlers"
 version = "0.7.0"
 dependencies = [
  "async-trait",
- "evorule-reactor 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "evorule-reactor",
  "evorule-rule-schema",
  "evorule-tcb",
  "mockito",
@@ -986,7 +987,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "evorule-plugin-kit",
- "evorule-reactor 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "evorule-reactor",
  "evorule-tcb",
  "serde_json",
  "tokio",
@@ -997,7 +998,7 @@ name = "evorule-plugin-kit"
 version = "0.7.0"
 dependencies = [
  "async-trait",
- "evorule-reactor 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "evorule-reactor",
  "evorule-tcb",
  "tokio",
 ]
@@ -1005,20 +1006,7 @@ dependencies = [
 [[package]]
 name = "evorule-reactor"
 version = "0.6.1"
-dependencies = [
- "async-trait",
- "blake3",
- "evorule-tcb",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "evorule-reactor"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a41badf1cb4d0eb65f19109c0a206ddb115bb055545b204b1c46d56a1916c3a6"
+source = "git+https://gitee.com/evorule/evorule#5669444aab3550f1e4a26cd613208321fbfa9916"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1120,7 +1108,7 @@ dependencies = [
  "evorule-io-handlers",
  "evorule-physics-services",
  "evorule-plugin-kit",
- "evorule-reactor 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "evorule-reactor",
  "evorule-rule",
  "evorule-rule-schema",
  "evorule-tcb",
@@ -1156,6 +1144,7 @@ version = "0.7.0"
 [[package]]
 name = "evorule-tcb"
 version = "0.6.1"
+source = "git+https://gitee.com/evorule/evorule#5669444aab3550f1e4a26cd613208321fbfa9916"
 
 [[package]]
 name = "evorule-time-machine"

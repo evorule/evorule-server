@@ -55,10 +55,13 @@ opt-level = 3
 lto = true
 codegen-units = 1
 
-# 本机联调补丁（纪律门禁接线）：evorule-discipline 以 path 依赖同机 evorule 仓，
-# 若不把 evorule-tcb 一并指向本地，registry 0.6.1 与 path 0.6.1 会成为两个 crate
-# 实例，JsonValue 跨 crate 传参报 E0308 类型不匹配。
+# 过渡期补丁（纪律门禁接线）：evorule-discipline 暂以 git 形态依赖主仓
+# （其 API 尚未发上 crates.io），evorule-tcb/evorule-reactor 一并 patch 到
+# 同一主仓 git 源，使三者共享同一份 checkout 内实例（否则 registry 0.6.1 与
+# 过渡源 0.6.1 会成为两个 crate 实例，JsonValue/持久化类型跨 crate 传参报
+# E0308 类型不匹配）。
 # 发布前必做（同发同装）：①发 evorule-discipline 0.6.1 到 crates.io；
 # ②删除本 [patch] 段；③evorule-server/Cargo.toml 的 evorule-discipline 依赖切纯 version。
 [patch.crates-io]
-evorule-tcb = { path = "../evorule/evorule-tcb" }
+evorule-tcb = { git = "https://gitee.com/evorule/evorule" }
+evorule-reactor = { git = "https://gitee.com/evorule/evorule" }

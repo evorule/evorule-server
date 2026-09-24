@@ -11,12 +11,11 @@
 #   - resources/        (CC0 资源: server_eval.json)
 #   - Cargo.toml + Cargo.lock (workspace 顶层)
 #
-# evorule 核心 (evorule-tcb/reactor/governance) 从 crates.io 拉,
-# 本地开发用 [patch.crates-io] override (见 Cargo.toml)。
-# 纪律门禁接线: evorule-discipline 为兄弟仓 evorule 的 path 依赖, 且
-# [patch.crates-io] 将 evorule-tcb 指向 ../evorule/evorule-tcb——构建时须
-# 浅克隆兄弟仓 evorule 到 /evorule 供给（--build-arg EVORULE_SIBLING_URL/REF
-# 可覆盖克隆源, 如 Gitee 环境切镜像地址）。
+# evorule 核心 (evorule-tcb/reactor/governance) 从 crates.io 拉。
+# 纪律门禁接线过渡期例外: evorule-discipline 以 git 形态依赖公开主仓（API 尚未
+# 发上 crates.io）, [patch.crates-io] 将 evorule-tcb patch 到同一 git 源——
+# cargo 构建时自取, 无需额外供给; 发布前随 evorule-discipline 发 crates.io
+# 一并切回纯 version（见根 Cargo.toml 注释「发布前必做」）。
 #
 # 由 scripts/build-docker.ps1 或 CI workflow 调用。
 #
@@ -26,7 +25,7 @@
 # ===== 阶段 1: 构建 =====
 FROM rust:1.92-slim AS builder
 
-# 安装构建依赖(SQLite 开发库 + OpenSSL + curl(utoipa-swagger-ui 构建时下载) + git(兄弟仓克隆) + pkg-config)
+# 安装构建依赖(SQLite 开发库 + OpenSSL + curl(utoipa-swagger-ui 构建时下载) + git(cargo 拉取 git 形态过渡依赖) + pkg-config)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libsqlite3-dev \
@@ -34,14 +33,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
-
-# 兄弟仓供给（纪律门禁接线, 见头部注释）: 克隆到 /evorule,
-# 使 [patch.crates-io] 的 ../evorule/evorule-tcb（相对 /build）与
-# evorule-discipline 的 ../../evorule/evorule-discipline（相对 /build/evorule-server）
-# 均解析到同一份克隆源码。置于 COPY 之前以利用层缓存（兄弟仓变更频率低）。
-ARG EVORULE_SIBLING_URL=https://github.com/evorule/evorule.git
-ARG EVORULE_SIBLING_REF=main
-RUN git clone --depth 1 --branch ${EVORULE_SIBLING_REF} ${EVORULE_SIBLING_URL} /evorule
 
 WORKDIR /build
 
