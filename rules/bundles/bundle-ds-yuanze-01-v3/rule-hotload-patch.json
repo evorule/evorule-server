@@ -1,136 +1,212 @@
 {
-  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
-  "kind": "rule_set",
-  "id": "org.evorule.bundle.bundle_ds_yuanze_01_v3.rule_hotload_patch",
-  "version": "1.0.0",
-  "metadata": {
-    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
-    "license": "AGPL-3.0-or-later",
-    "provenance": {
-      "source": "derived",
-      "derived_from": [
-        "rule-hotload-patch.json"
-      ]
-    }
-  },
-  "transform": [
-    {
+ "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+ "kind": "rule_set",
+ "id": "org.evorule.bundle.bundle_ds_yuanze_01_v3.rule_hotload_patch",
+ "version": "1.1.0",
+ "metadata": {
+  "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform；2026-09-23 D5 两段式整改（report-006 R-B1）：io 前置 set 改为 phase1 提交 + push 合成指令，phase2 纯 io 叶子 + 结果消费",
+  "license": "AGPL-3.0-or-later",
+  "provenance": {
+   "source": "derived",
+   "derived_from": [
+    "rule-hotload-patch.json"
+   ]
+  }
+ },
+ "transform": [
+  {
+   "params": {
+    "domain": {
+     "instruction_type": "hotload_patch",
+     "type": "instruction"
+    },
+    "on_true": [
+     {
       "params": {
-        "domain": {
-          "instruction_type": "hotload_patch",
-          "type": "instruction"
+       "domain": {
+        "path": "payload.audit.sandbox_verdict.passed",
+        "type": "eq",
+        "value": true
+       },
+       "on_false": [
+        {
+         "params": {
+          "attr": "audit.evolve_request",
+          "operation": "set",
+          "value": null
+         },
+         "type": "set"
         },
-        "on_true": [
-          {
+        {
+         "params": {
+          "attr": "audit.evolution_count",
+          "operation": "add",
+          "value": 1
+         },
+         "type": "set"
+        }
+       ],
+       "on_true": [
+        {
+         "params": {
+          "domain": {
+           "path": "__exec__.payload.__io_results__.call_service",
+           "type": "exists"
+          },
+          "on_false": [
+           {
             "params": {
-              "domain": {
-                "path": "payload.audit.sandbox_verdict.passed",
-                "type": "eq",
-                "value": true
-              },
-              "on_false": [
-                {
-                  "params": {
-                    "attr": "audit.evolve_request",
-                    "operation": "set",
-                    "value": null
-                  },
-                  "type": "set"
-                },
-                {
-                  "params": {
-                    "attr": "audit.evolution_count",
-                    "operation": "add",
-                    "value": 1
-                  },
-                  "type": "set"
-                }
-              ],
-              "on_true": [
-                {
-                  "params": {
-                    "domain": {
-                      "path": "__exec__.payload.__io_results__.call_service",
-                      "type": "exists"
-                    },
-                    "on_false": [
-                      {
-                        "params": {
-                          "attr": "_persist_args.operation",
-                          "operation": "set",
-                          "value": "append_transform"
-                        },
-                        "type": "set"
-                      },
-                      {
-                        "params": {
-                          "attr": "_persist_args.rule",
-                          "operation": "set",
-                          "value": "__exec__.payload.audit.generated_patch_raw"
-                        },
-                        "type": "set"
-                      },
-                      {
-                        "params": {
-                          "args": "__exec__.payload._persist_args",
-                          "io_type": "call_service",
-                          "service_name": "config_persist"
-                        },
-                        "type": "io_request"
-                      }
-                    ],
-                    "on_true": [
-                      {
-                        "params": {
-                          "attr": "audit.evolution_history.last_patch",
-                          "operation": "set",
-                          "value": "__exec__.payload.audit.generated_patch_raw"
-                        },
-                        "type": "set"
-                      },
-                      {
-                        "params": {
-                          "attr": "audit.evolution_history.reason",
-                          "operation": "set",
-                          "value": "__exec__.payload.audit.evolve_request.reason"
-                        },
-                        "type": "set"
-                      },
-                      {
-                        "params": {
-                          "attr": "audit.evolution_history.timestamp",
-                          "operation": "set",
-                          "value": "__exec__.instruction.params.timestamp"
-                        },
-                        "type": "set"
-                      },
-                      {
-                        "params": {
-                          "attr": "audit.evolve_request",
-                          "operation": "set",
-                          "value": null
-                        },
-                        "type": "set"
-                      },
-                      {
-                        "params": {
-                          "attr": "audit.evolution_count",
-                          "operation": "add",
-                          "value": 1
-                        },
-                        "type": "set"
-                      }
-                    ]
-                  },
-                  "type": "branch"
-                }
-              ]
+             "attr": "_persist_args.operation",
+             "operation": "set",
+             "value": "append_transform"
             },
-            "type": "branch"
-          }
-        ]
+            "type": "set"
+           },
+           {
+            "params": {
+             "attr": "_persist_args.rule",
+             "operation": "set",
+             "value": "__exec__.payload.audit.generated_patch_raw"
+            },
+            "type": "set"
+           },
+           {
+            "type": "push",
+            "params": {
+             "instructions": [
+              {
+               "type": "hotload_persist_exec",
+               "params": {}
+              }
+             ]
+            }
+           }
+          ],
+          "on_true": [
+           {
+            "params": {
+             "attr": "audit.evolution_history.last_patch",
+             "operation": "set",
+             "value": "__exec__.payload.audit.generated_patch_raw"
+            },
+            "type": "set"
+           },
+           {
+            "params": {
+             "attr": "audit.evolution_history.reason",
+             "operation": "set",
+             "value": "__exec__.payload.audit.evolve_request.reason"
+            },
+            "type": "set"
+           },
+           {
+            "params": {
+             "attr": "audit.evolution_history.timestamp",
+             "operation": "set",
+             "value": "__exec__.instruction.params.timestamp"
+            },
+            "type": "set"
+           },
+           {
+            "params": {
+             "attr": "audit.evolve_request",
+             "operation": "set",
+             "value": null
+            },
+            "type": "set"
+           },
+           {
+            "params": {
+             "attr": "audit.evolution_count",
+             "operation": "add",
+             "value": 1
+            },
+            "type": "set"
+           }
+          ]
+         },
+         "type": "branch"
+        }
+       ]
       },
       "type": "branch"
-    }
-  ]
+     }
+    ]
+   },
+   "type": "branch"
+  },
+  {
+   "type": "branch",
+   "params": {
+    "domain": {
+     "type": "instruction",
+     "instruction_type": "hotload_persist_exec"
+    },
+    "on_true": [
+     {
+      "type": "branch",
+      "params": {
+       "domain": {
+        "path": "__exec__.payload.__io_results__.call_service",
+        "type": "exists"
+       },
+       "on_false": [
+        {
+         "params": {
+          "args": "__exec__.payload._persist_args",
+          "io_type": "call_service",
+          "service_name": "config_persist"
+         },
+         "type": "io_request"
+        }
+       ],
+       "on_true": [
+        {
+         "params": {
+          "attr": "audit.evolution_history.last_patch",
+          "operation": "set",
+          "value": "__exec__.payload.audit.generated_patch_raw"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "audit.evolution_history.reason",
+          "operation": "set",
+          "value": "__exec__.payload.audit.evolve_request.reason"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "audit.evolution_history.timestamp",
+          "operation": "set",
+          "value": "__exec__.instruction.params.timestamp"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "audit.evolve_request",
+          "operation": "set",
+          "value": null
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "audit.evolution_count",
+          "operation": "add",
+          "value": 1
+         },
+         "type": "set"
+        }
+       ]
+      }
+     }
+    ],
+    "on_false": []
+   }
+  }
+ ]
 }

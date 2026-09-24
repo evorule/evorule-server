@@ -1,158 +1,202 @@
 {
-  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
-  "kind": "rule_set",
-  "id": "org.evorule.bundle.bundle_ds_yuanze_01_v3.rule_safety_rollback",
-  "version": "1.0.0",
-  "metadata": {
-    "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform",
-    "license": "AGPL-3.0-or-later",
-    "provenance": {
-      "source": "derived",
-      "derived_from": [
-        "rule-safety-rollback.json"
-      ]
-    }
-  },
-  "transform": [
-    {
+ "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+ "kind": "rule_set",
+ "id": "org.evorule.bundle.bundle_ds_yuanze_01_v3.rule_safety_rollback",
+ "version": "1.1.0",
+ "metadata": {
+  "description": "存量 bundle 条目带壳整改（2026-09-15，原裸数组零语义变更）；壳为治理标注层，引擎仍取 transform；2026-09-23 D5 两段式整改（report-006 R-B1 补充，旧门禁盲区修复后暴露）：io 前置 set 改为 phase1 提交 + push 合成指令，phase2 纯 io 叶子 + 结果消费",
+  "license": "AGPL-3.0-or-later",
+  "provenance": {
+   "source": "derived",
+   "derived_from": [
+    "rule-safety-rollback.json"
+   ]
+  }
+ },
+ "transform": [
+  {
+   "params": {
+    "domain": {
+     "instruction_type": "safety_rollback",
+     "type": "instruction"
+    },
+    "on_true": [
+     {
       "params": {
-        "domain": {
-          "instruction_type": "safety_rollback",
-          "type": "instruction"
-        },
-        "on_true": [
+       "domain": {
+        "inner": {
+         "inner": [
           {
-            "params": {
-              "domain": {
-                "inner": {
-                  "inner": [
-                    {
-                      "inner": {
-                        "path": "payload.shadow_result.diff_exceeded",
-                        "type": "eq",
-                        "value": true
-                      },
-                      "type": "not"
-                    },
-                    {
-                      "inner": {
-                        "inner": [
-                          {
-                            "path": "payload.audit.pending_alert",
-                            "type": "exists"
-                          },
-                          {
-                            "inner": {
-                              "path": "payload.audit.pending_alert",
-                              "type": "eq",
-                              "value": null
-                            },
-                            "type": "not"
-                          }
-                        ],
-                        "type": "all"
-                      },
-                      "type": "not"
-                    }
-                  ],
-                  "type": "all"
-                },
-                "type": "not"
+           "inner": {
+            "path": "payload.shadow_result.diff_exceeded",
+            "type": "eq",
+            "value": true
+           },
+           "type": "not"
+          },
+          {
+           "inner": {
+            "inner": [
+             {
+              "path": "payload.audit.pending_alert",
+              "type": "exists"
+             },
+             {
+              "inner": {
+               "path": "payload.audit.pending_alert",
+               "type": "eq",
+               "value": null
               },
-              "on_false": [],
-              "on_true": [
-                {
-                  "params": {
-                    "attr": "service_result",
-                    "operation": "set",
-                    "value": "__exec__.instruction.params.safe_fallback"
-                  },
-                  "type": "set"
-                },
-                {
-                  "params": {
-                    "attr": "audit.rollback_triggered",
-                    "operation": "set",
-                    "value": true
-                  },
-                  "type": "set"
-                },
-                {
-                  "params": {
-                    "attr": "_alert_args.tpl_alert.reason",
-                    "operation": "set",
-                    "value": "紧急：系统已触发看门狗回滚"
-                  },
-                  "type": "set"
-                },
-                {
-                  "params": {
-                    "attr": "_alert_args.tpl_alert.cause",
-                    "operation": "set",
-                    "value": "影子差异超限或残差超标"
-                  },
-                  "type": "set"
-                },
-                {
-                  "params": {
-                    "attr": "_alert_args.tpl_alert.safe_fallback",
-                    "operation": "set",
-                    "value": "__exec__.instruction.params.safe_fallback"
-                  },
-                  "type": "set"
-                },
-                {
-                  "params": {
-                    "attr": "_alert_args.model",
-                    "operation": "set",
-                    "value": "__exec__.instruction.params.model"
-                  },
-                  "type": "set"
-                },
-                {
-                  "params": {
-                    "attr": "_alert_args.system",
-                    "operation": "set",
-                    "value": "你是一名紧急响应工程师，回复需简短有力。"
-                  },
-                  "type": "set"
-                },
-                {
-                  "params": {
-                    "domain": {
-                      "path": "__exec__.payload.__io_results__.call_service",
-                      "type": "exists"
-                    },
-                    "on_false": [
-                      {
-                        "params": {
-                          "args": "__exec__.payload._alert_args",
-                          "io_type": "call_service",
-                          "service_name": "llm_advisor"
-                        },
-                        "type": "io_request"
-                      }
-                    ],
-                    "on_true": [
-                      {
-                        "params": {
-                          "attr": "audit.rollback_alert",
-                          "operation": "set",
-                          "value": "__exec__.payload.__io_results__.call_service"
-                        },
-                        "type": "set"
-                      }
-                    ]
-                  },
-                  "type": "branch"
-                }
-              ]
-            },
-            "type": "branch"
+              "type": "not"
+             }
+            ],
+            "type": "all"
+           },
+           "type": "not"
           }
-        ]
+         ],
+         "type": "all"
+        },
+        "type": "not"
+       },
+       "on_false": [],
+       "on_true": [
+        {
+         "params": {
+          "attr": "service_result",
+          "operation": "set",
+          "value": "__exec__.instruction.params.safe_fallback"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "audit.rollback_triggered",
+          "operation": "set",
+          "value": true
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "_alert_args.tpl_alert.reason",
+          "operation": "set",
+          "value": "紧急：系统已触发看门狗回滚"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "_alert_args.tpl_alert.cause",
+          "operation": "set",
+          "value": "影子差异超限或残差超标"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "_alert_args.tpl_alert.safe_fallback",
+          "operation": "set",
+          "value": "__exec__.instruction.params.safe_fallback"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "_alert_args.model",
+          "operation": "set",
+          "value": "__exec__.instruction.params.model"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "attr": "_alert_args.system",
+          "operation": "set",
+          "value": "你是一名紧急响应工程师，回复需简短有力。"
+         },
+         "type": "set"
+        },
+        {
+         "params": {
+          "domain": {
+           "path": "__exec__.payload.__io_results__.call_service",
+           "type": "exists"
+          },
+          "on_false": [
+           {
+            "type": "push",
+            "params": {
+             "instructions": [
+              {
+               "type": "safety_rollback_alert_exec",
+               "params": {}
+              }
+             ]
+            }
+           }
+          ],
+          "on_true": [
+           {
+            "params": {
+             "attr": "audit.rollback_alert",
+             "operation": "set",
+             "value": "__exec__.payload.__io_results__.call_service"
+            },
+            "type": "set"
+           }
+          ]
+         },
+         "type": "branch"
+        }
+       ]
       },
       "type": "branch"
-    }
-  ]
+     }
+    ]
+   },
+   "type": "branch"
+  },
+  {
+   "type": "branch",
+   "params": {
+    "domain": {
+     "type": "instruction",
+     "instruction_type": "safety_rollback_alert_exec"
+    },
+    "on_true": [
+     {
+      "type": "branch",
+      "params": {
+       "domain": {
+        "path": "__exec__.payload.__io_results__.call_service",
+        "type": "exists"
+       },
+       "on_false": [
+        {
+         "params": {
+          "args": "__exec__.payload._alert_args",
+          "io_type": "call_service",
+          "service_name": "llm_advisor"
+         },
+         "type": "io_request"
+        }
+       ],
+       "on_true": [
+        {
+         "params": {
+          "attr": "audit.rollback_alert",
+          "operation": "set",
+          "value": "__exec__.payload.__io_results__.call_service"
+         },
+         "type": "set"
+        }
+       ]
+      }
+     }
+    ],
+    "on_false": []
+   }
+  }
+ ]
 }

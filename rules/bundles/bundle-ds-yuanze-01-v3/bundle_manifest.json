@@ -9,7 +9,7 @@
     {
       "entry_id": "rule-audit-alert",
       "file": "rule-audit-alert.json",
-      "content_hash": "blake3:b54b83ffe864fbca39d7b5a3a49d35a295f18758d7fbfb87d3b9c8773d29e9fa"
+      "content_hash": "blake3:b295fb4c06136d9dfad5ea2c7eb18c820943745b54f20cb43df9d6fd00676073"
     },
     {
       "entry_id": "rule-audit-compactor",
@@ -19,7 +19,7 @@
     {
       "entry_id": "rule-compute-ik",
       "file": "rule-compute-ik.json",
-      "content_hash": "blake3:1f83a4373436dac1156382d5ddb3991d8482798cc7f402de783b751fe056a9d4"
+      "content_hash": "blake3:3fcff9fab83f0a08faa1521737c0b250bd640d8b4f8a1b0e0073403d5fb454b0"
     },
     {
       "entry_id": "rule-evolution-scanner",
@@ -29,22 +29,22 @@
     {
       "entry_id": "rule-generate-patch",
       "file": "rule-generate-patch.json",
-      "content_hash": "blake3:0283792aecf7795b893b479499b4fc824d8d3339c28f4d6ba523954ef513571b"
+      "content_hash": "blake3:f23a73aecc3532db2abcd270a6dc36bdb25649967352e18e813fa44efc675433"
     },
     {
       "entry_id": "rule-hotload-patch",
       "file": "rule-hotload-patch.json",
-      "content_hash": "blake3:0721d053af134923fc67be86936ece90a8712f0459d3518950dc3972c4a2e4d0"
+      "content_hash": "blake3:1f59d10ce3d3d864fd4ba7f9e5c51a9e55cfe789dc63e9c68cd35aa22ec02361"
     },
     {
       "entry_id": "rule-robot-move",
       "file": "rule-robot-move.json",
-      "content_hash": "blake3:12d0d72f5049f881a36fafdebb08861e0f99302577459b58495f969957648648"
+      "content_hash": "blake3:d2135e6ca7626210f4bdbc974f184576291cb67f9d4eea73b7cc3ae5b3caf3a1"
     },
     {
       "entry_id": "rule-safety-rollback",
       "file": "rule-safety-rollback.json",
-      "content_hash": "blake3:06089abeb067fc0ce50df1f77a01f7d85e8fc77cee63ae998255bee262e10d53"
+      "content_hash": "blake3:0c8dcb1720689eee059533645d95584b8e43a8c37ba155f5e916bf6f743d39a0"
     },
     {
       "entry_id": "rule-sampling-decider",
@@ -54,7 +54,7 @@
     {
       "entry_id": "rule-sandbox-validate",
       "file": "rule-sandbox-validate.json",
-      "content_hash": "blake3:22d1573ade7194ba44ef557882d4550dd11ae3a54bd75a622d861ae2a6398b7f"
+      "content_hash": "blake3:92805345fee05e0a4ebaca686cabf32741ad7892ddcd00a1e11701f18e032047"
     },
     {
       "entry_id": "rule-shadow-validate",
