@@ -441,6 +441,20 @@ Config loading priority: **CLI args > env vars (prefix `EVORULE_`) > JSON config
 | `EVORULE_DEMO_AUTH` | `--demo-auth` | `false` | Demo login toggle (on by default in quick-start packages; production recommends off) |
 | `EVORULE_WEB_DIR` | `--web-dir` | (empty) | Static frontend hosting dir (SPA fallback index.html; unset = no hosting) |
 | `EVORULE_PLUGIN_ADMIN_TOKEN__<ID>` | — | (empty) | Per-external-plugin admin token for the approval proxy (uppercase-underscore id, e.g. `EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG`; unset = proxy returns 503 for that plugin) |
+| `EVORULE_DISCIPLINE_GATE` | — | `warn` | L2 rule-shape discipline gate mode: `warn` (shadow-enforce, default) / `enforce` (reject on violation); invalid values fall back to `warn` with a warning log — see [Discipline Gate](#discipline-gate-l2-rule-shape-discipline) |
+
+### Discipline Gate (L2 rule-shape discipline)
+
+The server validates rule-set shape discipline (DC-01..DC-09) at two wiring points. Evaluation SSOT = the `evorule-discipline` crate (shares the same judge as evorule-cli); discipline data SSOT = `evorule-tcb` discipline core_eval.
+
+- **Constitution loader** (`EVORULE_CORE_EVAL`): the constitution file previously had no gate at all (neither schema nor tier) — the discipline gate closes that gap. In `enforce` mode a violating constitution file fails startup (fail-fast, same semantics as the existing call_external constitution check).
+- **Business rule loader** (`EVORULE_RULES_DIR`, hot-reload included): in `enforce` mode a violating rule file is rejected from loading (fail-soft per file, same semantics as schema/tier gates).
+
+Modes (`EVORULE_DISCIPLINE_GATE`):
+
+- `warn` (default, shadow-enforce): violating files still load (behavior unchanged — absorbs residual gate false-positives so unregistered legitimate rule sets can never render the system unloadable), but every violation is logged at **ERROR** level (file / dc_code / node_type / node_path / reason + "would be rejected under enforce") and counted; after rule loading completes the server prints a one-shot shadow summary (violation file count; 0 = shadow period clean). Flip condition: zero violations during the shadow period. Expose-as-enforce, act-as-warn.
+- `enforce`: violations reject loading/startup as described above.
+- Invalid values: treated as `warn` with a warning log (fail-open by design — a gate misconfiguration must not escalate into an availability incident).
 
 ### JSON Config File
 
