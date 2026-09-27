@@ -22,9 +22,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.6.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.8.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.7.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.8.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 **Language / 语言**: [English](#english) · [中文 / Chinese](#chinese)
@@ -49,9 +49,11 @@
 
 ---
 
-> ## ✅ v0.7.0 — Stable Release (2026-09-20)
+> ## ✅ v0.8.0 — Stable Release (2026-09-27)
 >
 > This repo **releases independently**, not tied to other repos' release cadence; version numbers correspond only to this repo's [CHANGELOG](CHANGELOG.md).
+>
+> **0.8.0**: load-time I/O-rights exclusivity — per `io_type`, emit/consume rights are held only by the first entry and overlapping entries are rejected at load with loud diagnostics, eliminating session infinite loops caused by emit/consume entry overlap; L2 discipline-gate verdict engine wiring with shadow-enforcement exposure; publish-queue nomination dedup gate; evolution-signal aggregation endpoint and read-only L2 constraint inventory; meta-rule entry-level key whitelist tightening (fail-fast); rule-load injection-order governance (total deterministic ordering); finance-config symmetric rejection audit; bundle sync endpoint, sandbox report directory absolutization, and call-service registry (reusing the echo verification endpoint).
 >
 > **0.7.0**: core dependency upgrade to `evorule-tcb`/`evorule-reactor`/`evorule-governance` 0.6.1 (crates.io) — shared-fact cross-chain provenance (`origin_fact_id`), explicit `RollupOutcome` returns, `snapshot_at` fence fix; the transitional `[patch.crates-io]` git overrides are retired now that 0.6.1 is published.
 >
@@ -657,9 +659,9 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.6.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.8.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.7.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.8.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -676,9 +678,11 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 ---
 
-> ## ✅ v0.7.0 — 稳定发布 (2026-09-20)
+> ## ✅ v0.8.0 — 稳定发布 (2026-09-27)
 >
 > 本仓库**独立 release**,不绑其他仓的发布节奏;版本号只与本仓 [CHANGELOG](CHANGELOG.md) 对应。
+>
+> **0.8.0**:装载期 I/O 权利面独占防线——同 `io_type` 的发射/消费权利仅首条条目持有,重叠条目拒载并大声告警,根治发射/消费条目重叠导致的会话无限循环;L2 纪律门禁判定引擎接线与影子强制曝光;发布队列提名去重门禁;进化信号聚合端点与 L2 约束清单只读端点;元规则条目级键白名单收紧(fail-fast);规则装载注入序治理(全序确定);财务配置对称拒绝审计;bundle 同步端点、沙盒报告目录绝对化、call-service 服务注册(复用 echo 验证端点)。
 >
 > **0.7.0**:核心依赖升级至 `evorule-tcb`/`evorule-reactor`/`evorule-governance` 0.6.1(crates.io)——共享事实跨链溯源(`origin_fact_id`)、`mark_as_rollup` 显式返回、`snapshot_at` 围栏修复;过渡期 `[patch.crates-io]` git 三件套随 0.6.1 发布退役。
 >
