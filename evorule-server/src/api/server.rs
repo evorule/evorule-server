@@ -57,7 +57,7 @@ use utoipa::ToSchema;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use std::sync::Arc;
 
@@ -1044,13 +1044,19 @@ impl SessionApi {
     ///
     /// # 返回
     ///
-    /// - `Ok((old_len, new_len))`：旧规则数和新规则数
+    /// - `Ok((old_len, new_len, rejected_overlaps))`：旧规则数、新规则数（剔除后）、
+    ///   O-135 装载防线被拒重叠条目清单（审计面；同时已由 [`Self::log_rejected_overlaps`] 大声上报）
     ///
     /// - `Err(String)`：读取/解析失败（失败时旧规则保持不变）
     ///
-    pub async fn reload_from_disk(&self) -> Result<(usize, usize), String> {
-        let (new_transforms, new_layout) =
+    pub async fn reload_from_disk(
+        &self,
+    ) -> Result<(usize, usize, Vec<RejectedOverlapEntry>), String> {
+        let (new_transforms, new_layout, rejected_overlaps) =
             Self::load_merged_with_layout(&self.core_eval_path, &self.rules_dir)?;
+
+        // O-135 装载防线横幅：reload 与启动共用（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
+        Self::log_rejected_overlaps(&rejected_overlaps, "reload");
 
         let new_len = new_transforms.len();
 
@@ -1091,7 +1097,7 @@ impl SessionApi {
             "session rules reloaded from disk"
         );
 
-        Ok((old_len_mgr.max(old_len_cache), new_len))
+        Ok((old_len_mgr.max(old_len_cache), new_len, rejected_overlaps))
     }
 
     /// 从文件系统合并加载：TCB 宪法 core_eval.json（在前）+ rules_dir/*.json（在后，按文件名字典序）
@@ -1100,33 +1106,261 @@ impl SessionApi {
 
         rules_dir: &std::path::Path,
     ) -> Result<Vec<JsonValue>, String> {
-        Self::load_merged_with_layout(core_eval_path, rules_dir).map(|(rules, _)| rules)
+        Self::load_merged_with_layout(core_eval_path, rules_dir).map(|(rules, _, _)| rules)
     }
 
     /// 合并加载并产出规则集 layout（单一权威装载点）
     ///
-    /// 与 [`Self::load_merged_transforms_from_fs`] 同一次读取产出两件事：
+    /// 与 [`Self::load_merged_transforms_from_fs`] 同一次读取产出三件事：
     /// 合并规则列表（引擎输入）+ [`RulesetLayout`]（下标→来源/指令类型解析 +
-    /// 规则集版本哈希）。避免双份装载逻辑漂移——hit-stats 的下标解析正确性
-    /// 依赖"layout 与引擎合并顺序一致"这一不变式。
+    /// 规则集版本哈希）+ O-135 装载防线被拒重叠条目清单（审计面）。
+    /// 避免双份装载逻辑漂移——hit-stats 的下标解析正确性
+    /// 依赖"layout 与引擎合并顺序一致"这一不变式（防线剔除同步作用于二者）。
     pub fn load_merged_with_layout(
         core_eval_path: &std::path::Path,
 
         rules_dir: &std::path::Path,
-    ) -> Result<(Vec<JsonValue>, crate::api::hit_stats::RulesetLayout), String> {
-        let mut rules = Self::load_core_eval_transforms(core_eval_path)?;
+    ) -> Result<
+        (
+            Vec<JsonValue>,
+            crate::api::hit_stats::RulesetLayout,
+            Vec<RejectedOverlapEntry>,
+        ),
+        String,
+    > {
+        let constitution = Self::load_core_eval_transforms(core_eval_path)?;
 
-        let mut sources = vec!["core_eval".to_string(); rules.len()];
+        let constitution_len = constitution.len();
 
         let (extra, extra_sources) = Self::load_rules_dir_with_sources(rules_dir);
+
+        let mut rules = constitution;
+
+        let mut sources = vec!["core_eval".to_string(); constitution_len];
 
         rules.extend(extra);
 
         sources.extend(extra_sources);
 
+        // O-135 装载期 I/O 权利面独占防线：先剔除重叠条目，再以剔除后列表构建
+        // layout（下标一致性不变式保持：layout 与引擎输入同源同长度）
+        let (rules, sources, rejected_overlaps) =
+            Self::reject_overlapped_io_rules(rules, sources, constitution_len);
+
         let layout = crate::api::hit_stats::RulesetLayout::from_rules(&rules, sources);
 
-        Ok((rules, layout))
+        Ok((rules, layout, rejected_overlaps))
+    }
+
+    // =========================================================================
+    // O-135 装载期 I/O 权利面独占防线（2026-09-27，立项档 §四）
+    //
+    // 缺陷：同一 io_type 的 I/O 生命周期规则（发射 io_request / 消费
+    // `__io_results__.{T}`）在合并规则集中多于一处时，TCB all-match 顺序执行
+    // 语义下消费轮「先消费清除 → 后位规则重发 io_request → IoRequired 早退
+    // 丢半成品」→ 会话无限循环（实证：bundle e3-call-external 与宪法 L1
+    // call_external 规则语义重叠致 evo-agent minimax 全部会话死循环）。
+    //
+    // 防线：合并列表按序扫描，同一 io_type 的「发射权」「消费权」全集合仅首条
+    // 持有；后续重叠条目装载期拒载（fail-closed，无影子期/逃生阀——立项档
+    // §4.2 案 a）+ 逐条 ERROR + 汇总横幅（[`Self::log_rejected_overlaps`]）。
+    //
+    // 宪法豁免：core_eval 前缀段条目只声明权利、永不拒载（宪法优先；宪法内部
+    // 组合由宪法维护者负责，如 L1 call_service 双规则靠 domain 互斥共存），
+    // 拒载面仅限 rules_dir 并入条目。发射权独占同时覆盖「双路径规则重叠」
+    // （发射+消费同条，e2/e3 型）与「无守卫纯发射重叠」（t0-r2/flow-e 型）；
+    // 消费权独占闭合「跨规则 消费者在前+发射者在后」组合。项目方扩面裁定
+    // 见立项档 §4.0-5。
+    //
+    // 诚实边界：参数化 io_type（`__` 前缀引用路径）静态不可判定，不入检测面；
+    // 检测为静态特征匹配（path/attr/value 引用 `__io_results__.{T}`），不执行
+    // 规则语义，性能零负担。
+    // =========================================================================
+
+    /// 从 transform 指令子树提取 I/O 能力面：`(发射 io_type 集, 消费 io_type 集)`。
+    ///
+    /// - **发射面**：子树中 `io_request` 指令的 `params.io_type` 为**字面量**
+    ///   （`__` 前缀引用路径属参数化形态，静态不可判定 → 诚实边界外）；
+    /// - **消费面**：子树 `path`/`attr`/`value` 字符串字段引用 `__io_results__.{T}`，
+    ///   覆盖 exists 判定、set null 清除、set value 读取三类消费特征
+    ///   （描述性 prose 不在上述键内，不会误报）；
+    /// - 递归覆盖 branch on_true/on_false、push instructions、domain inner/not 等全部嵌套。
+    fn io_capability(rule: &JsonValue) -> (BTreeSet<String>, BTreeSet<String>) {
+        const IO_RESULTS_MARKER: &str = "__io_results__.";
+
+        fn walk(v: &JsonValue, emit: &mut BTreeSet<String>, consume: &mut BTreeSet<String>) {
+            match v {
+                JsonValue::Array(items) => {
+                    for it in items {
+                        walk(it, emit, consume);
+                    }
+                }
+                JsonValue::Object(map) => {
+                    // 发射面：io_request 的字面量 io_type
+                    if map.get("type").and_then(|t| t.as_str()) == Some("io_request") {
+                        if let Some(io_type) = map
+                            .get("params")
+                            .and_then(|p| p.get("io_type"))
+                            .and_then(|t| t.as_str())
+                        {
+                            if !io_type.is_empty() && !io_type.starts_with("__") {
+                                emit.insert(io_type.to_string());
+                            }
+                        }
+                    }
+                    // 消费面：path/attr/value 引用 __io_results__.{T}
+                    for key in ["path", "attr", "value"] {
+                        if let Some(s) = map.get(key).and_then(|x| x.as_str()) {
+                            if let Some(pos) = s.find(IO_RESULTS_MARKER) {
+                                let rest = &s[pos + IO_RESULTS_MARKER.len()..];
+                                let seg = rest.split('.').next().unwrap_or("");
+                                if !seg.is_empty() && !seg.starts_with("__") {
+                                    consume.insert(seg.to_string());
+                                }
+                            }
+                        }
+                    }
+                    for child in map.values() {
+                        walk(child, emit, consume);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut emit = BTreeSet::new();
+        let mut consume = BTreeSet::new();
+        walk(rule, &mut emit, &mut consume);
+        (emit, consume)
+    }
+
+    /// 被拒条目特征摘要（顶层指令类型 + domain.instruction_type，如 `branch[call_external]`）
+    fn rule_summary(rule: &JsonValue) -> String {
+        let ty = rule.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+        let it = rule
+            .get("params")
+            .and_then(|p| p.get("domain"))
+            .and_then(|d| d.get("instruction_type"))
+            .and_then(|t| t.as_str());
+        match it {
+            Some(it) => format!("{}[{}]", ty, it),
+            None => ty.to_string(),
+        }
+    }
+
+    /// O-135 权利面独占判定（纯函数）：按序扫描合并列表，返回
+    /// `(kept_rules, kept_sources, rejected)`。
+    ///
+    /// - `constitution_len`：合并列表前缀中宪法条目数——宪法条目只声明权利、永不拒载；
+    /// - rules_dir 条目：其发射 io_type 已被更早条目声明，或其消费 io_type 已被
+    ///   更早条目声明 → 拒载（fail-closed）；
+    /// - 被拒条目携带原始下标/来源/特征摘要/重叠明细，全程可审计。
+    fn reject_overlapped_io_rules(
+        rules: Vec<JsonValue>,
+        sources: Vec<String>,
+        constitution_len: usize,
+    ) -> (Vec<JsonValue>, Vec<String>, Vec<RejectedOverlapEntry>) {
+        use std::collections::BTreeMap;
+
+        // 权利声明账本：io_type → (首声明下标, 来源标签)
+        let mut emit_claims: BTreeMap<String, (usize, String)> = BTreeMap::new();
+        let mut consume_claims: BTreeMap<String, (usize, String)> = BTreeMap::new();
+
+        let mut kept_rules = Vec::with_capacity(rules.len());
+        let mut kept_sources = Vec::with_capacity(sources.len());
+        let mut rejected = Vec::new();
+
+        for (idx, (rule, source)) in rules.into_iter().zip(sources).enumerate() {
+            let (emit, consume) = Self::io_capability(&rule);
+            let is_constitution = idx < constitution_len;
+
+            let mut overlaps: Vec<RejectedOverlapDetail> = Vec::new();
+            for t in &emit {
+                if let Some((owner_idx, owner_src)) = emit_claims.get(t) {
+                    overlaps.push(RejectedOverlapDetail {
+                        io_type: t.clone(),
+                        kind: "emit".to_string(),
+                        claimed_by: format!("{}#{}", owner_src, owner_idx),
+                    });
+                }
+            }
+            for t in &consume {
+                if let Some((owner_idx, owner_src)) = consume_claims.get(t) {
+                    overlaps.push(RejectedOverlapDetail {
+                        io_type: t.clone(),
+                        kind: "consume".to_string(),
+                        claimed_by: format!("{}#{}", owner_src, owner_idx),
+                    });
+                }
+            }
+
+            if !overlaps.is_empty() && !is_constitution {
+                rejected.push(RejectedOverlapEntry {
+                    index: idx,
+                    source,
+                    rule_summary: Self::rule_summary(&rule),
+                    overlaps,
+                });
+                continue; // 拒载：不进保留列表，权利面不更新
+            }
+
+            // 保留条目（含宪法条目）声明其权利面
+            for t in emit {
+                emit_claims.entry(t).or_insert((idx, source.clone()));
+            }
+            for t in consume {
+                consume_claims.entry(t).or_insert((idx, source.clone()));
+            }
+            kept_rules.push(rule);
+            kept_sources.push(source);
+        }
+
+        (kept_rules, kept_sources, rejected)
+    }
+
+    /// O-135 装载防线汇总横幅（启动 main.rs 与 reload 共用；对齐 O-100 影子汇总双态口径）。
+    ///
+    /// - 0 拒载 → info（权利面干净）；
+    /// - >0 → 逐条 ERROR（下标/来源/特征/io_type/重叠面/首声明者）+ 汇总 ERROR。
+    pub fn log_rejected_overlaps(rejected: &[RejectedOverlapEntry], context: &str) {
+        if rejected.is_empty() {
+            tracing::info!(
+                target: "io_overlap_gate",
+                "I/O 权利面独占防线汇总（{}）：0 重叠拒载——规则集发射/消费权利面无冲突",
+                context
+            );
+            return;
+        }
+        for e in rejected {
+            let details = e
+                .overlaps
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}({}重叠 ← 首声明 {})",
+                        d.io_type,
+                        if d.kind == "emit" { "发射" } else { "消费" },
+                        d.claimed_by
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            tracing::error!(
+                target: "io_overlap_gate",
+                index = e.index,
+                source = %e.source,
+                "I/O 权利面独占防线：拒载重叠规则 [{}] {} — {}",
+                e.rule_summary, e.source, details
+            );
+        }
+        tracing::error!(
+            target: "io_overlap_gate",
+            count = rejected.len(),
+            "I/O 权利面独占防线汇总（{}）：{} 条重叠规则被拒载（同 io_type 发射/消费权利仅首条持有；\
+             被拒条目为冗余重复，业务语义由首条承担；否则 all-match 语义下消费轮重发将致会话无限循环）",
+            context,
+            rejected.len()
+        );
     }
 
     /// 加载 TCB 宪法 core_eval.json 的 transform 数组。
@@ -1952,12 +2186,11 @@ impl SessionApi {
                      请重跑沙盒测试"
                 )
             })?;
-            let file_name = export_path.rsplit('/').next().unwrap_or_default();
-            let report_path = format!(
-                "{}/report_{}",
-                evorule_workspace::SANDBOX_REPORT_DIR,
-                file_name
-            );
+            let file_name = export_path.rsplit(['/', '\\']).next().unwrap_or_default();
+            let report_path = evorule_workspace::sandbox_report_dir()
+                .join(format!("report_{file_name}"))
+                .to_string_lossy()
+                .to_string();
             let content = std::fs::read_to_string(&report_path).map_err(|_| {
                 format!(
                     "测试证据校验失败: 沙盒 #{sid} 报告文件缺失({report_path};\
@@ -3926,6 +4159,124 @@ use tokio::sync::broadcast;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use tower_http::limit::RequestBodyLimitLayer;
+
+/// H12 双通道衔接：把已落盘 bundle 条目同步注册为 workspace 规则（沙盒可测）
+/// - bundle 经治理链导入后落在 `{rules_dir}/bundles/{bundle_id}/`（条目 JSON + manifest）；
+/// - 本端点把这些条目注册为 workspace 规则（state=Draft，rule_version v1），
+///   使沙盒（rule_version_ids 引用）可覆盖治理链导入的规则——双通道正式衔接。
+/// - 幂等：同名规则（`{bundle_id}:{entry_id}`）已存在则跳过。
+#[derive(Debug, serde::Deserialize)]
+pub struct BundleSyncRequest {
+    pub bundle_id: String,
+    pub created_by: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SyncedRuleInfo {
+    pub entry_id: String,
+    pub rule_id: String,
+    pub rule_version_id: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct BundleSyncResponse {
+    pub bundle_id: String,
+    pub synced: Vec<SyncedRuleInfo>,
+    pub skipped: Vec<String>,
+}
+
+pub async fn bundle_sync_handler(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<String>,
+    Json(req): Json<BundleSyncRequest>,
+) -> Result<Json<BundleSyncResponse>, (StatusCode, Json<serde_json::Value>)> {
+    use std::collections::HashSet;
+
+    let bundle_dir = state
+        .sessions
+        .rules_dir
+        .join("bundles")
+        .join(&req.bundle_id);
+    let manifest_path = bundle_dir.join(evorule_bundle::BUNDLE_MANIFEST_FILE);
+    let manifest: evorule_workspace::BundleManifest = serde_json::from_slice(
+        &std::fs::read(&manifest_path).map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("bundle manifest 读取失败（bundle_id={}）: {e}", req.bundle_id),
+                    "synced": false
+                })),
+            )
+        })?,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("bundle manifest 解析失败: {e}"), "synced": false})),
+        )
+    })?;
+
+    // 幂等查重：同名规则已存在 → 跳过
+    let existing = state
+        .workspace
+        .rule_meta_service
+        .list_rules(&workspace_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({"error": format!("list_rules 失败: {e}"), "synced": false}),
+                ),
+            )
+        })?;
+    let existing_names: HashSet<String> = existing.iter().map(|r| r.name.clone()).collect();
+
+    let mut synced = Vec::new();
+    let mut skipped = Vec::new();
+    for ef in &manifest.entry_files {
+        let name = format!("{}:{}", req.bundle_id, ef.entry_id);
+        if existing_names.contains(&name) {
+            skipped.push(ef.entry_id.clone());
+            continue;
+        }
+        let content = std::fs::read_to_string(bundle_dir.join(&ef.file)).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("条目 {} 读取失败: {e}", ef.entry_id), "synced": false})),
+            )
+        })?;
+        let rule = state
+            .workspace
+            .rule_meta_service
+            .create_rule(
+                &workspace_id,
+                evorule_workspace::CreateRuleRequest {
+                    name: name.clone(),
+                    content,
+                    created_by: req.created_by.clone(),
+                    description: Some(format!("H12 bundle-sync: {}", req.bundle_id)),
+                },
+            )
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("规则 {} 创建失败: {e}", ef.entry_id), "synced": false})),
+                )
+            })?;
+        synced.push(SyncedRuleInfo {
+            entry_id: ef.entry_id.clone(),
+            rule_id: rule.id.clone(),
+            rule_version_id: rule.current_version_id.clone().unwrap_or_default(),
+        });
+    }
+    Ok(Json(BundleSyncResponse {
+        bundle_id: req.bundle_id,
+        synced,
+        skipped,
+    }))
+}
 
 /// 将 Fact 序列化为 SSE 事件 data 字段（JSON 字符串）
 ///
@@ -8756,6 +9107,10 @@ impl GovernanceServer {
                 "/api/bundles/import/dry-run",
                 post(crate::api::bundles::import_bundle_dry_run_handler),
             )
+            .route(
+                "/api/workspaces/{id}/bundle-sync",
+                post(crate::api::server::bundle_sync_handler),
+            )
             // T4: 报告当前激活 bundle（版本语义运行配置只读）
             .route(
                 "/api/bundles/active",
@@ -10044,6 +10399,30 @@ async fn validate_rules_handler(
 
 // ============================================================================
 
+/// O-135 装载期 I/O 权利面独占防线：被拒条目的单条重叠明细
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RejectedOverlapDetail {
+    /// 重叠的 io_type
+    pub io_type: String,
+    /// 重叠面：`emit`（发射重叠）/ `consume`（消费重叠）
+    pub kind: String,
+    /// 权利首声明者（`来源#下标`，如 `core_eval#7`）
+    pub claimed_by: String,
+}
+
+/// O-135 装载期 I/O 权利面独占防线：被拒载的重叠规则条目（审计面）
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RejectedOverlapEntry {
+    /// 被拒条目在剔除前合并列表中的原始下标（与启动日志/hit-stats 下标口径一致）
+    pub index: usize,
+    /// 来源标签（rules_dir 相对路径）
+    pub source: String,
+    /// 被拒规则特征摘要（顶层指令类型 + domain.instruction_type）
+    pub rule_summary: String,
+    /// 重叠明细（发射/消费 × io_type）
+    pub overlaps: Vec<RejectedOverlapDetail>,
+}
+
 /// 规则热重载响应
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
@@ -10057,6 +10436,10 @@ pub struct RulesReloadedResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    /// O-135 装载防线：本次装载被拒载的重叠条目（空 = 无重叠）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejected_overlaps: Vec<RejectedOverlapEntry>,
 }
 
 /// 规则热重载 handler
@@ -10088,7 +10471,7 @@ async fn reload_rules_handler(
     let old_len = sessions.core_eval_len();
 
     match sessions.reload_from_disk().await {
-        Ok((old, new_len)) => Ok((
+        Ok((old, new_len, rejected_overlaps)) => Ok((
             StatusCode::OK,
             Json(RulesReloadedResponse {
                 reload_ok: true,
@@ -10098,6 +10481,8 @@ async fn reload_rules_handler(
                 current_rules: new_len,
 
                 error: None,
+
+                rejected_overlaps,
             }),
         )),
 
@@ -10114,6 +10499,8 @@ async fn reload_rules_handler(
                     current_rules: old_len,
 
                     error: Some(e),
+
+                    rejected_overlaps: Vec::new(),
                 }),
             ))
         }
@@ -10290,6 +10677,267 @@ mod tests {
             if expect_violating { 4 } else { 2 },
             "warn 模式 = 宪法 2 + 违规 2（照常装载）；enforce 模式 = 仅宪法 2"
         );
+    }
+
+    // ===== O-135 装载期 I/O 权利面独占防线 =====
+
+    /// serde_json transform 文档 → TCB JsonValue 列表
+    fn o135_tcb(body: &str) -> Vec<JsonValue> {
+        parse_transforms(body)
+            .into_iter()
+            .map(serde_to_tcb)
+            .collect()
+    }
+
+    /// 宪法同构最小片段：call_external 双路径 + call_service 双路径（复刻 server_eval L1）
+    const O135_CONSTITUTION: &str = r#"{"transform":[
+        {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[
+            {"type":"branch","params":{"domain":{"type":"exists","path":"__exec__.payload.__io_results__.call_external"},
+             "on_true":[
+                {"type":"set","params":{"attr":"llm_response","operation":"set","value":"__exec__.payload.__io_results__.call_external"}},
+                {"type":"set","params":{"attr":"__exec__.payload.__io_results__.call_external","operation":"set","value":null}}],
+             "on_false":[{"type":"io_request","params":{"io_type":"call_external","messages":"m"}}]}}],
+         "on_false":[]}},
+        {"type":"branch","params":{"domain":{"type":"all","inner":[{"type":"instruction","instruction_type":"call_service"},{"type":"exists","path":"__exec__.instruction.params.service_name"}]},
+         "on_true":[{"type":"branch","params":{"domain":{"type":"exists","path":"__exec__.payload.__io_results__.call_service"},
+           "on_true":[
+             {"type":"set","params":{"attr":"service_result","operation":"set","value":"__exec__.payload.__io_results__.call_service"}},
+             {"type":"set","params":{"attr":"__exec__.payload.__io_results__.call_service","operation":"set","value":null}}],
+           "on_false":[{"type":"io_request","params":{"io_type":"call_service","service_name":"s"}}]}}],
+         "on_false":[]}}
+    ]}"#;
+
+    /// e3-call-external 同构文件：双路径 branch + 恒空 branch（第二条无害放行）
+    const O135_E3_LIKE: &str = r#"{"transform":[
+        {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[
+            {"type":"branch","params":{"domain":{"type":"exists","path":"__exec__.payload.__io_results__.call_external"},
+             "on_true":[
+                {"type":"set","params":{"attr":"llm_response","operation":"set","value":"__exec__.payload.__io_results__.call_external"}},
+                {"type":"set","params":{"attr":"__exec__.payload.__io_results__.call_external","operation":"set","value":null}}],
+             "on_false":[{"type":"io_request","params":{"io_type":"call_external","messages":"m"}}]}}],
+         "on_false":[]}},
+        {"type":"branch","params":{"domain":{"type":"all","inner":[]},"on_true":[],"on_false":[]}}
+    ]}"#;
+
+    /// t0-r2/flow-e 同构：无守卫纯发射（消费轮重发缺陷型）
+    const O135_T0_LIKE: &str = r#"{"transform":[
+        {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_service"},"on_true":[
+            {"type":"io_request","params":{"io_type":"call_service","service_name":"echo","args?":"a"}}],"on_false":[]}}
+    ]}"#;
+
+    /// 无 I/O 特征的普通业务规则（防线零误伤面）
+    const O135_BENIGN: &str = r#"{"transform":[
+        {"type":"set","params":{"attr":"mark","operation":"set","value":"ok"}},
+        {"type":"branch","params":{"domain":{"type":"exists","path":"flag"},"on_true":[],"on_false":[]}}
+    ]}"#;
+
+    /// io_capability 特征面：双路径/纯发射/参数化诚实边界/enforce 不参与/prose 不误报
+    #[test]
+    fn o135_io_capability_feature_face() {
+        let (e3_emit, e3_consume) = SessionApi::io_capability(&o135_tcb(O135_E3_LIKE)[0]);
+        assert!(e3_emit.contains("call_external") && e3_consume.contains("call_external"));
+        assert_eq!(e3_emit.len(), 1);
+        assert_eq!(e3_consume.len(), 1);
+
+        // e3 第二条恒空 branch：无任何能力面
+        let (empty_emit, empty_consume) = SessionApi::io_capability(&o135_tcb(O135_E3_LIKE)[1]);
+        assert!(empty_emit.is_empty() && empty_consume.is_empty());
+
+        // 纯发射：只有发射面
+        let (t0_emit, t0_consume) = SessionApi::io_capability(&o135_tcb(O135_T0_LIKE)[0]);
+        assert!(t0_emit.contains("call_service"));
+        assert!(t0_consume.is_empty());
+
+        // 诚实边界：参数化 io_type（__ 引用路径）不入发射面
+        let parameterized = r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"custom"},"on_true":[
+                {"type":"io_request","params":{"io_type":"__exec__.instruction.params.target"}}],"on_false":[]}}
+        ]}"#;
+        let (p_emit, p_consume) = SessionApi::io_capability(&o135_tcb(parameterized)[0]);
+        assert!(p_emit.is_empty() && p_consume.is_empty());
+
+        // enforce 指令不参与检测面（L2 约束非 I/O 生命周期规则）
+        let enforce = r#"{"transform":[
+            {"type":"enforce","params":{"domain":{"type":"exists","path":"quota_exceeded"},"reason":"r"}}
+        ]}"#;
+        let (en_emit, en_consume) = SessionApi::io_capability(&o135_tcb(enforce)[0]);
+        assert!(en_emit.is_empty() && en_consume.is_empty());
+
+        // prose 引用（无 `__io_results__.` 点缀形态）不误报
+        let prose = r#"{"transform":[
+            {"type":"set","params":{"attr":"note","operation":"set","value":"__io_results__ 按类型隔离"}}
+        ]}"#;
+        let (_, pr_consume) = SessionApi::io_capability(&o135_tcb(prose)[0]);
+        assert!(pr_consume.is_empty());
+    }
+
+    /// 正例（端到端）：宪法 L1 双路径 + e3 同构文件 → 恰拒 e3 双路径条目，
+    /// 恒空第二条与宪法保留（保留列表含完整消费语义）。
+    #[test]
+    fn o135_end_to_end_rejects_e3_like_overlap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("e3-call-external.json"), O135_E3_LIKE).unwrap();
+        let core_eval_path = tmp.path().join("server_eval.json");
+        std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
+
+        let (rules, _layout, rejected) =
+            SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).expect("装载不应失败");
+
+        // 宪法 2 条 + e3 文件 2 条 − 拒 1 = 3
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rejected.len(), 1, "恰拒 e3 双路径 transform[0] 一条");
+        let e = &rejected[0];
+        assert_eq!(e.index, 2, "被拒下标 = 宪法之后首条（原始合并下标口径）");
+        assert_eq!(e.source, "e3-call-external.json");
+        let kinds: Vec<&str> = e.overlaps.iter().map(|d| d.kind.as_str()).collect();
+        assert!(kinds.contains(&"emit") && kinds.contains(&"consume"));
+        assert!(
+            e.overlaps.iter().all(|d| d.io_type == "call_external"),
+            "重叠 io_type 均为 call_external"
+        );
+        assert!(
+            e.overlaps
+                .iter()
+                .all(|d| d.claimed_by.starts_with("core_eval#")),
+            "首声明者为宪法条目"
+        );
+        // 保留列表首条仍为宪法 call_external 双路径（消费语义由首条承担）
+        let (k_emit, k_consume) = SessionApi::io_capability(&rules[0]);
+        assert!(k_emit.contains("call_external") && k_consume.contains("call_external"));
+    }
+
+    /// 扩面（端到端）：无守卫纯发射（t0/flow-e 型）与宪法发射权重叠 → 拒载。
+    #[test]
+    fn o135_emission_only_overlap_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("t0-r2.json"), O135_T0_LIKE).unwrap();
+        let core_eval_path = tmp.path().join("server_eval.json");
+        std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
+
+        let (rules, _layout, rejected) =
+            SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).unwrap();
+
+        // 宪法 2 条 + t0 1 条 − 拒 1 = 2
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].source, "t0-r2.json");
+        assert_eq!(rejected[0].overlaps.len(), 1);
+        assert_eq!(rejected[0].overlaps[0].kind, "emit");
+        assert_eq!(rejected[0].overlaps[0].io_type, "call_service");
+    }
+
+    /// 负例（端到端）：无重叠规则集 → 零拒载（防线零误伤）。
+    #[test]
+    fn o135_benign_ruleset_zero_rejection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(rules_dir.join("benign.json"), O135_BENIGN).unwrap();
+        let core_eval_path = tmp.path().join("server_eval.json");
+        std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
+
+        let (rules, _layout, rejected) =
+            SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).unwrap();
+        // 宪法 2 条 + benign 文件 2 条（set + branch，均无 I/O 能力面）
+        assert_eq!(rules.len(), 4);
+        assert!(rejected.is_empty(), "无重叠必须零拒载");
+    }
+
+    /// 宪法豁免（纯函数）：宪法内部同 io_type 双路径双条目（L1-8/9 domain 互斥型）
+    /// 互不拒载；rules_dir 条目不得触发对宪法条目的拒载。
+    #[test]
+    fn o135_constitution_internal_overlap_exempt() {
+        let mut rules = o135_tcb(O135_CONSTITUTION); // 2 条宪法（call_external + call_service 各一）
+                                                     // 宪法第 3 条：call_service 第二双路径（复刻 L1 tool_name 变体）
+        rules.push(
+            o135_tcb(r#"{"transform":[
+                {"type":"branch","params":{"domain":{"type":"all","inner":[{"type":"instruction","instruction_type":"call_service"},{"type":"exists","path":"__exec__.instruction.params.tool_name"}]},
+                 "on_true":[{"type":"branch","params":{"domain":{"type":"exists","path":"__exec__.payload.__io_results__.call_service"},
+                   "on_true":[{"type":"set","params":{"attr":"__exec__.payload.__io_results__.call_service","operation":"set","value":null}}],
+                   "on_false":[{"type":"io_request","params":{"io_type":"call_service","tool_name":"t"}}]}}],
+                 "on_false":[]}}
+            ]}"#)[0]
+                .clone(),
+        );
+        let sources = vec!["core_eval".to_string(); 3];
+        let (kept, _ks, rejected) = SessionApi::reject_overlapped_io_rules(rules, sources, 3);
+        assert_eq!(kept.len(), 3, "宪法内部重叠互不拒载（豁免）");
+        assert!(rejected.is_empty());
+    }
+
+    /// 多条重叠仅保首条（纯函数）：权利首声明者 = 宪法条目，后续全部拒载。
+    #[test]
+    fn o135_multiple_overlaps_keep_first_only() {
+        let mut rules = o135_tcb(O135_CONSTITUTION);
+        rules.push(o135_tcb(O135_E3_LIKE)[0].clone());
+        rules.push(o135_tcb(O135_E3_LIKE)[0].clone());
+        let sources = vec![
+            "core_eval".to_string(),
+            "core_eval".to_string(),
+            "bundles/a/e3.json".to_string(),
+            "bundles/b/e3-copy.json".to_string(),
+        ];
+        let (kept, _ks, rejected) = SessionApi::reject_overlapped_io_rules(rules, sources, 2);
+        assert_eq!(kept.len(), 2, "仅宪法 2 条保留");
+        assert_eq!(rejected.len(), 2, "两条重叠全部拒载");
+        assert_eq!(rejected[0].index, 2);
+        assert_eq!(rejected[1].index, 3);
+        assert!(
+            rejected
+                .iter()
+                .flat_map(|r| r.overlaps.iter())
+                .all(|d| d.claimed_by == "core_eval#0"),
+            "首声明者统一指向宪法首条"
+        );
+    }
+
+    /// 消费权独占（纯函数）：跨规则「消费者在后」组合同样拒载
+    /// （消费-only 条目清除 __io_results__ 会使后位发射者误判首次调用）。
+    #[test]
+    fn o135_cross_rule_consume_overlap_rejected() {
+        let mut rules = o135_tcb(O135_CONSTITUTION);
+        // 消费-only 条目（set null 清除 call_external，无发射）
+        rules.push(
+            o135_tcb(r#"{"transform":[
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[
+                    {"type":"set","params":{"attr":"__exec__.payload.__io_results__.call_external","operation":"set","value":null}}],"on_false":[]}}
+            ]}"#)[0]
+                .clone(),
+        );
+        let sources = vec![
+            "core_eval".to_string(),
+            "core_eval".to_string(),
+            "c.json".to_string(),
+        ];
+        let (kept, _ks, rejected) = SessionApi::reject_overlapped_io_rules(rules, sources, 2);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].overlaps[0].kind, "consume");
+    }
+
+    /// 诚实边界（纯函数）：参数化 io_type 发射不参与独占判定（静态不可判定，漏检留痕）。
+    #[test]
+    fn o135_parameterized_io_type_out_of_face() {
+        let mut rules = o135_tcb(O135_CONSTITUTION);
+        rules.push(
+            o135_tcb(r#"{"transform":[
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"custom"},"on_true":[
+                    {"type":"io_request","params":{"io_type":"__exec__.instruction.params.target"}}],"on_false":[]}}
+            ]}"#)[0]
+                .clone(),
+        );
+        let sources = vec![
+            "core_eval".to_string(),
+            "core_eval".to_string(),
+            "p.json".to_string(),
+        ];
+        let (kept, _ks, rejected) = SessionApi::reject_overlapped_io_rules(rules, sources, 2);
+        assert_eq!(kept.len(), 3, "参数化形态放行（诚实边界）");
+        assert!(rejected.is_empty());
     }
 
     /// 接线点 ②（宪法 loader）：enforce 期宪法违规 fail-fast 拒启；warn 期放行。
@@ -13768,8 +14416,10 @@ mod tests {
             };
             ws_db.insert_workspace(&ws).unwrap();
         }
-        let report_dir = evorule_workspace::SANDBOX_REPORT_DIR;
-        std::fs::create_dir_all(report_dir).unwrap();
+        let report_dir = evorule_workspace::sandbox_report_dir()
+            .to_string_lossy()
+            .to_string();
+        std::fs::create_dir_all(&report_dir).unwrap();
         let facts_1 = format!("audit_sandbox_1_{ts}.json");
         let facts_2 = format!("audit_sandbox_2_{ts}.json");
         let sb_pass = ws_db

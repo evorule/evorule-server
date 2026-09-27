@@ -205,6 +205,8 @@ use utoipa::OpenApi;
         crate::api::server::FactIdsRequest,
         crate::api::server::ValidateRulesRequest,
         crate::api::server::RulesReloadedResponse,
+        crate::api::server::RejectedOverlapEntry,
+        crate::api::server::RejectedOverlapDetail,
         crate::api::server::RulesResponse,
     crate::api::server::RuleTierEntry,
         crate::api::server::L2InventoryEntry,

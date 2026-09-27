@@ -1,0 +1,8 @@
+{
+  "call-service": {
+    "url": "http://127.0.0.1:18099/call-service",
+    "method": "POST",
+    "timeout_ms": 5000,
+    "description": "P0 演示服务：E 类 call_service 模板的落地端点（echo）"
+  }
+}

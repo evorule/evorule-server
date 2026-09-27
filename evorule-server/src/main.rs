@@ -1632,7 +1632,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 复用 SessionApi::load_merged_with_layout（统一一份合并逻辑，避免双份代码漂移）；
     // 同时产出规则集 layout（下标→来源/指令类型解析 + 版本哈希），供命中统计聚合器使用。
     let step_start = Instant::now();
-    let (core_eval, ruleset_layout) =
+    let (core_eval, ruleset_layout, rejected_overlaps) =
         SessionApi::load_merged_with_layout(&cfg.core_eval, &cfg.rules_dir)?;
     info!(
         "已加载 {} 条 transform 规则（ruleset_version={}，耗时: {}ms）",
@@ -1640,6 +1640,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ruleset_layout.ruleset_version,
         step_start.elapsed().as_millis()
     );
+
+    // O-135 装载期 I/O 权利面独占防线：启动汇总横幅（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
+    SessionApi::log_rejected_overlaps(&rejected_overlaps, "启动装载");
 
     // 影子强制汇总曝光（纪律门禁影子强制整改，2026-09-24）：装载完成后一次性上报
     // 影子期违规文件数——0 = 影子期干净（分面灰度 flip 的安全前提）；

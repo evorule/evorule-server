@@ -506,8 +506,11 @@ impl PublishService {
                  导出路径（数据异常）。请重跑沙盒测试"
             ))
         })?;
-        let file_name = export_path.rsplit('/').next().unwrap_or_default();
-        let report_path = format!("{}/report_{}", crate::SANDBOX_REPORT_DIR, file_name);
+        let file_name = export_path.rsplit(['/', '\\']).next().unwrap_or_default();
+        let report_path = crate::sandbox_report_dir()
+            .join(format!("report_{file_name}"))
+            .to_string_lossy()
+            .to_string();
         let content = std::fs::read_to_string(&report_path).map_err(|_| {
             WorkspaceError::invalid_input(format!(
                 "发布被拒绝（闸门一证据无效）: 沙盒 #{sandbox_id} 报告文件缺失\
@@ -1121,9 +1124,9 @@ mod tests {
             .insert_sandbox_session(None, ws_id, 100, None, 1, "head-1")
             .unwrap();
         db.close_sandbox_session(sid, &export_path).unwrap();
-        std::fs::create_dir_all(crate::SANDBOX_REPORT_DIR).unwrap();
+        std::fs::create_dir_all(&crate::sandbox_report_dir()).unwrap();
         std::fs::write(
-            format!("{}/report_report-{n}.json", crate::SANDBOX_REPORT_DIR),
+            crate::sandbox_report_dir().join(format!("report_report-{n}.json")),
             r#"{"summary": {"total_cases": 1, "passed": 1, "failed": 0, "skipped": 0}}"#,
         )
         .unwrap();
@@ -1675,9 +1678,9 @@ mod tests {
             .unwrap();
         db.close_sandbox_session(sid, &export_path).unwrap();
         if let Some(json) = report_json {
-            std::fs::create_dir_all(crate::SANDBOX_REPORT_DIR).unwrap();
+            std::fs::create_dir_all(&crate::sandbox_report_dir()).unwrap();
             std::fs::write(
-                format!("{}/report_{tag}.json", crate::SANDBOX_REPORT_DIR),
+                crate::sandbox_report_dir().join(format!("report_{tag}.json")),
                 json,
             )
             .unwrap();

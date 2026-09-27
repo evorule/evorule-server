@@ -40,10 +40,26 @@ use crate::models::{
 use crate::session_bridge::SessionOps;
 use crate::test_report::{TestReport, TestReportBuilder};
 
-/// 沙盒测试报告导出目录
+/// 沙盒测试报告导出目录（相对默认值；实际路径由 [`sandbox_report_dir`] 解析）。
 /// pub: 执行域 import 侧证据一致性校验需按同一规则推导报告路径
 /// (report_<facts 文件 basename>.json,与 generate_test_report 关闭态同口径)
 pub const SANDBOX_REPORT_DIR: &str = "./data/sandbox_reports";
+
+/// 沙盒报告目录解析（2026-09-26 E9 补缺：消除相对路径对进程 cwd 的隐式依赖，
+/// 修复"server 重启后 cwd 变化 → 旧报告不可寻址 → 闸门一误拒"运维事故级断链）。
+/// - 显式配置：环境变量 `EVORULE_SANDBOX_REPORT_DIR`（非空即用，相对值基于启动 cwd 解析）；
+/// - 默认：基于**启动时 cwd** 解析为绝对路径（进程内稳定；跨重启同一启动目录
+///   可寻址——报告目录不再随 cwd 漂移）。部署契约：以固定 cwd 启动 server。
+pub fn sandbox_report_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("EVORULE_SANDBOX_REPORT_DIR") {
+        if !dir.is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
+    std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join(SANDBOX_REPORT_DIR)
+}
 
 /// 沙盒编排服务
 ///
@@ -418,25 +434,25 @@ impl SandboxService {
         Ok(())
     }
 
-    /// 导出 session 审计 fact 链到 SANDBOX_REPORT_DIR, 返回导出文件路径
+    /// 导出 session 审计 fact 链到沙盒报告目录（[`sandbox_report_dir`]），返回导出文件路径
     async fn export_sandbox_facts(
         &self,
         sandbox_id: i64,
         tcb_session_id: u64,
     ) -> WorkspaceResult<String> {
-        let export_path = format!(
-            "{}/sandbox_{}_{}.json",
-            SANDBOX_REPORT_DIR,
+        let dir = sandbox_report_dir();
+        let export_path = dir.join(format!(
+            "sandbox_{}_{}.json",
             sandbox_id,
             chrono::Utc::now().timestamp()
-        );
+        ));
         let audit_data = self.session_ops.get_audit_export(tcb_session_id).await?;
-        std::fs::create_dir_all(SANDBOX_REPORT_DIR).map_err(|e| {
+        std::fs::create_dir_all(&dir).map_err(|e| {
             WorkspaceError::internal(format!("create sandbox_report dir failed: {e}"))
         })?;
         std::fs::write(&export_path, &audit_data)
             .map_err(|e| WorkspaceError::internal(format!("write sandbox export failed: {e}")))?;
-        Ok(export_path)
+        Ok(export_path.to_string_lossy().to_string())
     }
 
     /// : 生成完整 TestReport 并落盘 (与 facts 文件同目录同时间戳配对)
@@ -447,11 +463,13 @@ impl SandboxService {
         export_path: &str,
     ) -> WorkspaceResult<()> {
         let sandbox_id = sandbox.id;
-        let report_path = format!(
-            "{}/report_{}",
-            SANDBOX_REPORT_DIR,
-            export_path.rsplit('/').next().unwrap_or_default()
-        );
+        let report_path = sandbox_report_dir()
+            .join(format!(
+                "report_{}",
+                export_path.rsplit(['/', '\\']).next().unwrap_or_default()
+            ))
+            .to_string_lossy()
+            .to_string();
         let state_val = self.session_ops.get_session_state(tcb_session_id).await?;
         let audit_val = self.session_ops.get_audit_report(tcb_session_id).await?;
         let facts_val = self.session_ops.get_facts(tcb_session_id).await?;
@@ -526,8 +544,11 @@ impl SandboxService {
                     sandbox_id.to_string(),
                 )
             })?;
-            let file_name = export_path.rsplit('/').next().unwrap_or_default();
-            let report_path = format!("{}/report_{}", SANDBOX_REPORT_DIR, file_name);
+            let file_name = export_path.rsplit(['/', '\\']).next().unwrap_or_default();
+            let report_path = sandbox_report_dir()
+                .join(format!("report_{file_name}"))
+                .to_string_lossy()
+                .to_string();
             let content = std::fs::read_to_string(&report_path).map_err(|_| {
                 WorkspaceError::not_found(
                     "sandbox report file",

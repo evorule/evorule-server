@@ -63,16 +63,16 @@ pub use bundle_land::{
 pub use db::WorkspaceDb;
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use models::{
-    BundleImportRecord, ProductionAuditRecord, ProductionStateRecord, PublishQueueItem,
-    PublishRole, PublishStatus, RuleRecord, RuleSessionBinding, RuleState, RuleVersionRecord,
-    RuleVersionState, SandboxSession, SandboxStatus, SessionBindingState, SessionRecord,
-    TestDatasetRecord, VerdictContractRecord, VersionClockMapRecord, WorkspaceMemberRecord,
-    WorkspaceRecord,
+    BundleImportRecord, CreateRuleRequest, ProductionAuditRecord, ProductionStateRecord,
+    PublishQueueItem, PublishRole, PublishStatus, RuleRecord, RuleSessionBinding, RuleState,
+    RuleVersionRecord, RuleVersionState, SandboxSession, SandboxStatus, SessionBindingState,
+    SessionRecord, TestDatasetRecord, VerdictContractRecord, VersionClockMapRecord,
+    WorkspaceMemberRecord, WorkspaceRecord,
 };
 pub use publish_service::PublishService;
 pub use rolling_session::{RollingSessionService, RollingSwapResult};
 pub use rule_meta_service::RuleMetaService;
-pub use sandbox_service::{SandboxService, SANDBOX_REPORT_DIR};
+pub use sandbox_service::{sandbox_report_dir, SandboxService, SANDBOX_REPORT_DIR};
 pub use session_bridge::SessionOps;
 pub use session_switched::{SessionSwitchedBroadcaster, SessionSwitchedEvent};
 pub use test_report::{TestReport, TestReportBuilder};
