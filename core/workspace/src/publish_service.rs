@@ -1124,7 +1124,7 @@ mod tests {
             .insert_sandbox_session(None, ws_id, 100, None, 1, "head-1")
             .unwrap();
         db.close_sandbox_session(sid, &export_path).unwrap();
-        std::fs::create_dir_all(&crate::sandbox_report_dir()).unwrap();
+        std::fs::create_dir_all(crate::sandbox_report_dir()).unwrap();
         std::fs::write(
             crate::sandbox_report_dir().join(format!("report_report-{n}.json")),
             r#"{"summary": {"total_cases": 1, "passed": 1, "failed": 0, "skipped": 0}}"#,
@@ -1678,7 +1678,7 @@ mod tests {
             .unwrap();
         db.close_sandbox_session(sid, &export_path).unwrap();
         if let Some(json) = report_json {
-            std::fs::create_dir_all(&crate::sandbox_report_dir()).unwrap();
+            std::fs::create_dir_all(crate::sandbox_report_dir()).unwrap();
             std::fs::write(
                 crate::sandbox_report_dir().join(format!("report_{tag}.json")),
                 json,
