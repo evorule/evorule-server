@@ -526,6 +526,9 @@ impl SessionApi {
             1,
             std::path::PathBuf::from("./resources/server_eval.json"),
             std::path::PathBuf::from("./rules"),
+            // 便捷构造保持引擎缺省（30s/60s），缺省常量随动防漂移
+            session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         )
     }
 
@@ -554,6 +557,10 @@ impl SessionApi {
     ///
     /// - `rules_dir`：业务规则目录（reload 时重扫描）
     ///
+    /// - `io_warn_timeout_secs`：pending I/O 超时警告阈值（秒，贯通至每个会话反应器）
+    ///
+    /// - `io_error_timeout_secs`：pending I/O 超时错误阈值（秒，贯通至每个会话反应器）
+    ///
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_full_config(
         core_eval: Vec<JsonValue>,
@@ -575,6 +582,10 @@ impl SessionApi {
         core_eval_path: std::path::PathBuf,
 
         rules_dir: std::path::PathBuf,
+
+        io_warn_timeout_secs: u64,
+
+        io_error_timeout_secs: u64,
     ) -> Self {
         let ce_cloned = core_eval.clone();
 
@@ -598,6 +609,11 @@ impl SessionApi {
                 auto_verify,
                 auto_verify_threshold,
                 auto_verify_interval,
+            )
+            .with_io_timeouts(
+                Some(std::time::Duration::from_secs(io_warn_timeout_secs)),
+                Some(std::time::Duration::from_secs(io_error_timeout_secs)),
+                None,
             ),
         ));
 
@@ -13830,6 +13846,8 @@ mod tests {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../resources/server_eval.json"),
             rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         );
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
@@ -14109,6 +14127,8 @@ mod tests {
             1,
             core_eval_path.clone(),
             rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         );
         assert!(
             sessions.knowledge_load_error().is_none(),
@@ -14184,6 +14204,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         );
 
         let mut bundle = q12_knowledge_bundle(
@@ -14246,6 +14268,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         );
 
         let mut bundle = q12_knowledge_bundle(
@@ -14296,6 +14320,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         )
         .with_workspace_db(Arc::new(
             evorule_workspace::WorkspaceDb::in_memory().unwrap(),
@@ -14348,6 +14374,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         );
 
         // q12_knowledge_bundle 的 subset 已是 human 背书形态
@@ -14391,6 +14419,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         )
         .with_workspace_db(ws_db.clone());
 
@@ -14500,6 +14530,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         );
 
         // 不注入领域 schema → resolver 未命中

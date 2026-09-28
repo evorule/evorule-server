@@ -18,15 +18,15 @@ name = "evorule-server"
 path = "src/main.rs"
 
 [dependencies]
-# 核心层 (crates.io 版本依赖)
-# 0.4.3 起 evorule-tcb/reactor 携带规则命中归因（RuleHit/TransitionTrace）、
-# enforce 元指令与 WAL 重启续链修复，server 侧消费该事实做聚合。
-# 发布顺序：evorule 0.4.3 先发 crates.io，本仓随后（D8 同发同装）。
-evorule-tcb = { version = "0.6.1" }
-evorule-reactor = { version = "0.6.1", features = ["persistence"] }
+# 核心层（主仓 gitee git 补丁形态，与 [patch.crates-io] 三件套同源同实例；
+# 主仓 0.7.0 已发 gitee/crates.io 待发——pending I/O 超时预算贯通
+# （SessionManager::with_io_timeouts）需 0.7 线治理侧 API，先行切 git 补丁，
+# 同发同装发版后切纯 version）
+evorule-tcb = { version = "0.7" }
+evorule-reactor = { version = "0.7", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
 # R10: origin_fact_id 经 JSON 字段透传（0.6.1 已发布 crates.io）。
-evorule-governance = { version = "0.6.1", features = ["persistence"] }
+evorule-governance = { version = "0.7", features = ["persistence"] }
 # 审计档案链哈希重算
 blake3 = "1"
 
@@ -47,8 +47,9 @@ evorule-workspace = { path = "../core/workspace" }
 evorule-rule-schema = { path = "../core/rule_schema" }
 # L2 规则集形态纪律门禁判定引擎，与 evorule-cli 共享判定 SSOT（机制自 cli 抽出，
 # 2026-09-24 接线）。git 形态为过渡依赖（API 尚未发上 crates.io，指向公开主仓）；
-# 发布前必做（同发同装）：先发 evorule-discipline 0.6.1 到 crates.io，再切纯 version。
-evorule-discipline = { git = "https://gitee.com/evorule/evorule", version = "0.6.1" }
+# 发布前必做（同发同装）：先发 evorule-discipline 到 crates.io，再切纯 version。
+# version requirement 随主仓 0.7.0 线同步升 0.7（git checkout 版本须满足该 req）。
+evorule-discipline = { git = "https://gitee.com/evorule/evorule", version = "0.7" }
 
 # 快照包共享校验（历史批次 集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘）
 evorule-bundle = { version = "0.3.0" }

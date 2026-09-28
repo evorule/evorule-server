@@ -71,7 +71,9 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 /// {
 /// "server": {
 /// "addr": "0.0.0.0:18080",
-/// "max_rounds": 1000
+/// "max_rounds": 1000,
+/// "io_warn_timeout_secs": 30,
+/// "io_error_timeout_secs": 3600
 /// },
 /// "auth": {
 /// "token": "secret123"
@@ -93,7 +95,7 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 /// **为什么用 JSON?**
 /// EvoRule 的核心理念是"只接受和运行 JSON 数据集"。
 /// 配置文件虽然不是业务规则,但也应该是 JSON,以保持原则一致性。
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize)]
 struct FileConfig {
     #[serde(default)]
     server: FileServerConfig,
@@ -105,17 +107,22 @@ struct FileConfig {
     log: FileLogConfig,
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize)]
 struct FileServerConfig {
     addr: Option<String>,
     max_rounds: Option<usize>,
+    /// pending I/O 超时警告阈值（秒，缺省 30=引擎缺省；不配置行为不变）
+    io_warn_timeout_secs: Option<u64>,
+    /// pending I/O 超时错误阈值（秒，缺省 60=引擎缺省；多轮编排窗口按任务
+    /// 墙钟预算放宽——`io_request→io_response` 窗口承载整个 agent 循环）
+    io_error_timeout_secs: Option<u64>,
     /// :演示登录入口开关（缺省 true；生产部署建议 false）
     demo_auth: Option<bool>,
     /// 批次C：pack 编译服务 base_url 端口白名单（空/缺省 = 仅黑名单 18080/18081）
     compile_allowed_ports: Option<Vec<u16>>,
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize)]
 struct FileAuthConfig {
     token: Option<String>,
     /// B5-server：受信服务管道 token（service 身份，可写受保护域）
@@ -126,7 +133,7 @@ struct FileAuthConfig {
     allowed_origins: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize)]
 struct FilePathsConfig {
     core_eval: Option<PathBuf>,
     rules_dir: Option<PathBuf>,
@@ -144,7 +151,7 @@ struct FilePathsConfig {
     workspace_db: Option<PathBuf>,
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize)]
 struct FileLogConfig {
     level: Option<String>,
     /// `plain` 或 `json`
@@ -263,6 +270,14 @@ struct Cli {
     /// 反应器最大指令执行步数
     #[arg(long, env = "EVORULE_MAX_ROUNDS")]
     max_rounds: Option<usize>,
+
+    /// pending I/O 超时警告阈值（秒，缺省 30=引擎缺省）
+    #[arg(long, env = "EVORULE_IO_WARN_TIMEOUT_SECS")]
+    io_warn_timeout_secs: Option<u64>,
+
+    /// pending I/O 超时错误阈值（秒，缺省 60=引擎缺省；长程任务按墙钟预算放宽）
+    #[arg(long, env = "EVORULE_IO_ERROR_TIMEOUT_SECS")]
+    io_error_timeout_secs: Option<u64>,
 
     /// 日志级别（error/warn/info/debug/trace）
     #[arg(long, env = "EVORULE_LOG_LEVEL")]
@@ -424,6 +439,10 @@ struct ResolvedConfig {
     db_path: PathBuf,
     memory_dir: PathBuf,
     max_rounds: usize,
+    /// pending I/O 超时警告阈值（秒，CLI > env > file > default 30）
+    io_warn_timeout_secs: u64,
+    /// pending I/O 超时错误阈值（秒，CLI > env > file > default 60）
+    io_error_timeout_secs: u64,
     log_level: String,
     log_format: String,
     log_file: Option<PathBuf>,
@@ -510,6 +529,14 @@ impl ResolvedConfig {
                 .or(file.paths.memory_dir)
                 .unwrap_or_else(|| PathBuf::from("./data/memory")),
             max_rounds: cli.max_rounds.or(file.server.max_rounds).unwrap_or(1000),
+            io_warn_timeout_secs: cli
+                .io_warn_timeout_secs
+                .or(file.server.io_warn_timeout_secs)
+                .unwrap_or(30),
+            io_error_timeout_secs: cli
+                .io_error_timeout_secs
+                .or(file.server.io_error_timeout_secs)
+                .unwrap_or(60),
             log_level: cli
                 .log_level
                 .or(file.log.level)
@@ -1975,7 +2002,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 不再用 create 模式截断——旧实现每次重启清空单反应器审计链，
     // 与"保证重启后可回放"承诺直接矛盾（实测 2621B → 0B）。
     // 恢复失败 fail-closed 拒绝启动（与 shared_facts 的 AUDIT-A1 同款口径）。
-    let mut reactor_builder = Reactor::builder(core_eval.clone()).max_rounds(cfg.max_rounds);
+    let mut reactor_builder = Reactor::builder(core_eval.clone())
+        .max_rounds(cfg.max_rounds)
+        .io_warn_timeout(Duration::from_secs(cfg.io_warn_timeout_secs))
+        .io_error_timeout(Duration::from_secs(cfg.io_error_timeout_secs));
     if let Some(wal_dir) = &cfg.wal_dir {
         let single_wal = wal_dir.join("governance_single_reactor.wal");
         let wal_exists = single_wal.exists();
@@ -2067,6 +2097,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.auto_verify_interval,
         cfg.core_eval.clone(),
         cfg.rules_dir.clone(),
+        cfg.io_warn_timeout_secs,
+        cfg.io_error_timeout_secs,
     )
     .with_dispatcher(session_dispatcher)
     .with_bound_services(registry_names)
@@ -3551,8 +3583,7 @@ mod tests {
             server: FileServerConfig {
                 addr: Some("0.0.0.0:1111".to_string()),
                 max_rounds: Some(999),
-                demo_auth: None,
-                compile_allowed_ports: None,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -3567,8 +3598,7 @@ mod tests {
             server: FileServerConfig {
                 addr: Some("0.0.0.0:7777".to_string()),
                 max_rounds: Some(300),
-                demo_auth: None,
-                compile_allowed_ports: None,
+                ..Default::default()
             },
             auth: FileAuthConfig {
                 token: Some("filetoken".to_string()),
@@ -3581,6 +3611,39 @@ mod tests {
         assert_eq!(cfg.addr, "0.0.0.0:7777", "file 应填充 CLI 缺失的 addr");
         assert_eq!(cfg.max_rounds, 300);
         assert_eq!(cfg.auth_token.as_deref(), Some("filetoken"));
+    }
+
+    #[test]
+    fn test_resolve_io_timeouts_three_tier() {
+        // 缺省：30/60（引擎缺省逐位一致，不配置行为不变）
+        let cfg = ResolvedConfig::resolve(minimal_cli(), FileConfig::default());
+        assert_eq!(cfg.io_warn_timeout_secs, 30);
+        assert_eq!(cfg.io_error_timeout_secs, 60);
+
+        // file > default
+        let file = FileConfig {
+            server: FileServerConfig {
+                io_warn_timeout_secs: Some(120),
+                io_error_timeout_secs: Some(3600),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cfg = ResolvedConfig::resolve(minimal_cli(), file.clone());
+        assert_eq!(cfg.io_warn_timeout_secs, 120);
+        assert_eq!(cfg.io_error_timeout_secs, 3600);
+
+        // CLI > file
+        let cli = Cli::parse_from([
+            "evorule-server",
+            "--io-warn-timeout-secs",
+            "45",
+            "--io-error-timeout-secs",
+            "1800",
+        ]);
+        let cfg = ResolvedConfig::resolve(cli, file);
+        assert_eq!(cfg.io_warn_timeout_secs, 45, "CLI 应覆盖 file");
+        assert_eq!(cfg.io_error_timeout_secs, 1800, "CLI 应覆盖 file");
     }
 
     #[test]

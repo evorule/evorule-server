@@ -60,8 +60,12 @@ codegen-units = 1
 # 同一主仓 git 源，使三者共享同一份 checkout 内实例（否则 registry 0.6.1 与
 # 过渡源 0.6.1 会成为两个 crate 实例，JsonValue/持久化类型跨 crate 传参报
 # E0308 类型不匹配）。
-# 发布前必做（同发同装）：①发 evorule-discipline 0.6.1 到 crates.io；
-# ②删除本 [patch] 段；③evorule-server/Cargo.toml 的 evorule-discipline 依赖切纯 version。
+# pending I/O 超时预算贯通（SessionManager::with_io_timeouts）扩展：治理侧
+# 0.7 线 API 尚未发 crates.io，evorule-governance 同批入 patch——四包共享
+# 同一 git checkout 实例（核心依赖 req 已同步升 0.7，两实例类型冲突不可能发生）。
+# 发布前必做（同发同装）：①发主仓 0.7 线四包到 crates.io；
+# ②删除本 [patch] 段；③evorule-server/Cargo.toml 核心依赖切纯 version。
 [patch.crates-io]
 evorule-tcb = { git = "https://gitee.com/evorule/evorule" }
 evorule-reactor = { git = "https://gitee.com/evorule/evorule" }
+evorule-governance = { git = "https://gitee.com/evorule/evorule" }

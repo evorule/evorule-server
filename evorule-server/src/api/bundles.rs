@@ -381,6 +381,8 @@ mod tests {
             0,
             core_eval_path,
             rules_dir,
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         )
         .with_bound_services(["payroll_svc".to_string()])
     }
