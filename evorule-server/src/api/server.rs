@@ -108,9 +108,27 @@ pub fn is_agent_tool_request(io_type: &IoType, params: &JsonValue) -> bool {
         && params.get("name").is_none()
 }
 
+/// bundle 自有探针形态判定（O-150 改造版）。
+///
+/// `flow_probe` 为 bundle 层自有 io_type（平台 io_type 发射权部署面独占，bundle
+/// 规则的 io 往返正道），无内置 handler——此类 IoRequest **不由内置 IoSubscriber
+/// 自动应答**，留给外部执行者（流程固化探针等）经 `POST /api/sessions/{id}/io_response`
+/// 应答。若不跳过，IoRequest 会进入分发路径：先被 PermissionGate 以 unknown 调用者
+/// 拒绝（fail-closed），即使无 gate 也会被 dispatcher 以 no-handler 错误应答——
+/// 请求即被消费，外部执行者随后的真实应答被按 stale 拒绝，探针往返断链。
+/// 与 `is_llm_audit_request` / `is_agent_tool_request` 完全同构。
+///
+/// 跳过语义：请求保持 pending（审计链留 IoRequest 事实，透明可查），直至外部
+/// 应答到达或 io 超时预算兜底——不存在静默吞没。
+pub fn is_flow_probe_request(io_type: &IoType, _params: &JsonValue) -> bool {
+    io_type.as_str() == "flow_probe"
+}
+
 /// 内置 IoSubscriber 的合并 skip 谓词：任一外部执行者形态命中即跳过自动应答
 pub fn is_external_executor_request(io_type: &IoType, params: &JsonValue) -> bool {
-    is_llm_audit_request(io_type, params) || is_agent_tool_request(io_type, params)
+    is_llm_audit_request(io_type, params)
+        || is_agent_tool_request(io_type, params)
+        || is_flow_probe_request(io_type, params)
 }
 
 /// L2 约束层文件名判定（单一权威，tier_inventory / l2_inventory / tier_gate 三处共用）。
@@ -12660,6 +12678,32 @@ mod tests {
         assert!(is_external_executor_request(
             &IoType::call_external(),
             &serde_to_tcb(with_messages)
+        ));
+    }
+
+    // --- bundle 自有探针形态判定（O-150 改造版：IoSubscriber 跳过谓词） ---
+
+    #[test]
+    fn test_is_flow_probe_request_shape() {
+        let probe_type = IoType::new("flow_probe");
+
+        // 探针形态：io_type=flow_probe（bundle 自有类型，无内置 handler）→ 跳过自动应答
+        let probe = serde_json::json!({ "args": { "msg": "flow-probe-no-svc" } });
+        assert!(is_flow_probe_request(&probe_type, &serde_to_tcb(probe.clone())));
+        assert!(is_external_executor_request(&probe_type, &serde_to_tcb(probe)));
+
+        // 参数形态不限：外部应答契约只约定 request_id/result/error，params 由发射方自定
+        let empty = serde_json::json!({});
+        assert!(is_flow_probe_request(&probe_type, &serde_to_tcb(empty)));
+
+        // 平台 io_type 不受该谓词影响（flow_probe 仅按 io_type 精确匹配）
+        assert!(!is_flow_probe_request(
+            &IoType::call_service(),
+            &serde_to_tcb(serde_json::json!({ "args": {} }))
+        ));
+        assert!(!is_flow_probe_request(
+            &IoType::call_external(),
+            &serde_to_tcb(serde_json::json!({ "args": {} }))
         ));
     }
 
