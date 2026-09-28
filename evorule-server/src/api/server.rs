@@ -12689,8 +12689,14 @@ mod tests {
 
         // 探针形态：io_type=flow_probe（bundle 自有类型，无内置 handler）→ 跳过自动应答
         let probe = serde_json::json!({ "args": { "msg": "flow-probe-no-svc" } });
-        assert!(is_flow_probe_request(&probe_type, &serde_to_tcb(probe.clone())));
-        assert!(is_external_executor_request(&probe_type, &serde_to_tcb(probe)));
+        assert!(is_flow_probe_request(
+            &probe_type,
+            &serde_to_tcb(probe.clone())
+        ));
+        assert!(is_external_executor_request(
+            &probe_type,
+            &serde_to_tcb(probe)
+        ));
 
         // 参数形态不限：外部应答契约只约定 request_id/result/error，params 由发射方自定
         let empty = serde_json::json!({});
