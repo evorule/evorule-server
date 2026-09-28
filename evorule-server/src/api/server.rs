@@ -1334,6 +1334,95 @@ impl SessionApi {
         (kept_rules, kept_sources, rejected)
     }
 
+    /// bundle 导入前置 I/O 权利面重叠预判（纯函数）：落盘前以同一判定语义给出
+    /// 「导入即拒」的显式 400 明细，替代「落盘成功 + reload 拒载半激活」的静默形态。
+    ///
+    /// 与装载期 [`Self::reject_overlapped_io_rules`] 同源同语义（同一
+    /// [`Self::io_capability`] 能力提取 + 同款权利账本比对，零判定分叉）：
+    ///
+    /// - 基线：当前装载集（最近一次防线剔除后的 kept 列表）全部条目播种权利账本；
+    ///   来源位于 `exclude_prefixes` 之下的条目除外——它们将被本次导入原子替换
+    ///   （同 bundle_id 重导入 / 同 dataset 单激活换版），不构成真实基线冲突；
+    /// - 新条目按 `entries` 顺序逐条判定：发射/消费权利与基线或更早新条目重叠 → 拒；
+    /// - 取基线方向比装载期「首声明序」更保守：新条目与既有条目冲突一律拒导入——
+    ///   若放行，装载序可能反转让既有部署面规则的权利被 bundle 条目静默挤占
+    ///   （部署面权利被剥夺比显式 400 更不可接受）；
+    /// - 返回条目 `index` = 新条目在 `entries` 中的序位，`source` =
+    ///   `bundles/{bundle_id}/{entry_id}`（与装载期来源标签同口径）；最终裁决
+    ///   权威仍是装载期防线（双保险，覆盖非导入通道的 rules_dir 变更）。
+    fn predict_import_io_overlaps(
+        loaded: &[JsonValue],
+        loaded_sources: &[String],
+        bundle_id: &str,
+        exclude_prefixes: &[String],
+        entries: &[(String, JsonValue)],
+    ) -> Vec<RejectedOverlapEntry> {
+        use std::collections::BTreeMap;
+
+        let excluded = |src: &str| exclude_prefixes.iter().any(|p| src.starts_with(p.as_str()));
+
+        // 1. 基线播种：当前装载集 kept 条目（已过防线，相互零冲突）
+        let mut emit_claims: BTreeMap<String, (usize, String)> = BTreeMap::new();
+        let mut consume_claims: BTreeMap<String, (usize, String)> = BTreeMap::new();
+        for (idx, (rule, source)) in loaded.iter().zip(loaded_sources.iter()).enumerate() {
+            if excluded(source) {
+                continue;
+            }
+            let (emit, consume) = Self::io_capability(rule);
+            for t in emit {
+                emit_claims.entry(t).or_insert((idx, source.clone()));
+            }
+            for t in consume {
+                consume_claims.entry(t).or_insert((idx, source.clone()));
+            }
+        }
+
+        // 2. 新条目逐条判定（重叠明细结构与装载期防线同构）
+        let mut rejected = Vec::new();
+        for (pos, (entry_id, rule)) in entries.iter().enumerate() {
+            let (emit, consume) = Self::io_capability(rule);
+            let self_source = format!("bundles/{}/{}", bundle_id, entry_id);
+            let mut overlaps: Vec<RejectedOverlapDetail> = Vec::new();
+            for t in &emit {
+                if let Some((owner_idx, owner_src)) = emit_claims.get(t) {
+                    overlaps.push(RejectedOverlapDetail {
+                        io_type: t.clone(),
+                        kind: "emit".to_string(),
+                        claimed_by: format!("{}#{}", owner_src, owner_idx),
+                    });
+                }
+            }
+            for t in &consume {
+                if let Some((owner_idx, owner_src)) = consume_claims.get(t) {
+                    overlaps.push(RejectedOverlapDetail {
+                        io_type: t.clone(),
+                        kind: "consume".to_string(),
+                        claimed_by: format!("{}#{}", owner_src, owner_idx),
+                    });
+                }
+            }
+            if !overlaps.is_empty() {
+                rejected.push(RejectedOverlapEntry {
+                    index: pos,
+                    source: self_source,
+                    rule_summary: Self::rule_summary(rule),
+                    overlaps,
+                });
+                continue;
+            }
+            // 无重叠新条目声明其权利面（同包后位条目与之前条目冲突同样可判定）
+            for t in emit {
+                emit_claims.entry(t).or_insert((pos, self_source.clone()));
+            }
+            for t in consume {
+                consume_claims
+                    .entry(t)
+                    .or_insert((pos, self_source.clone()));
+            }
+        }
+        rejected
+    }
+
     /// O-135 装载防线汇总横幅（启动 main.rs 与 reload 共用；对齐 O-100 影子汇总双态口径）。
     ///
     /// - 0 拒载 → info（权利面干净）；
@@ -2288,16 +2377,21 @@ impl SessionApi {
     }
 
     /// T2: 导入快照包（历史批次 集成契约）—— 6 项硬校验 → 逐条 Schema 门禁 → 服务绑定核对
-    /// → 原子落盘 → 触发 reload。
+    /// → I/O 权利面重叠前置预判 → 原子落盘 → 触发 reload。
     ///
     /// - 任一硬校验失败 → `Err`（显式报错，不静默跳过，T0/设计文档 §9）；
-    /// - `dry_run=true` 只跑校验链（6 项 + Schema 门禁 + 服务绑定核对），不落盘不 reload；
-    /// - 返回 [evorule_bundle::ImportResult]（校验通过后的运行配置）。
+    /// - I/O 权利面重叠预判：bundle 规则条目与当前装载集（或同包更早条目）存在
+    ///   发射/消费权利重叠 → 落盘前显式 `Err`（400），明细可归因到规则对——
+    ///   与 reload 期防线同源同语义，reload 期防线保留作双保险；
+    /// - `dry_run=true` 只跑校验链（6 项 + Schema 门禁 + 服务绑定核对 + 重叠预判），
+    ///   不落盘不 reload；
+    /// - 返回 [ImportOutcome]：运行配置 + reload 期被拒重叠条目（正常为空；
+    ///   非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式到达调用方）。
     pub async fn import_bundle(
         &self,
         bundle: &evorule_bundle::DatasetBundle,
         dry_run: bool,
-    ) -> Result<evorule_bundle::ImportResult, String> {
+    ) -> Result<ImportOutcome, String> {
         // ⓪ Q12 条目类型同质性：Rule 与 Knowledge 不得混装同一 bundle
         // （载荷语义互斥——transform 指令集与领域 payload 的门禁/消费通道完全不同）
         let has_rule = bundle
@@ -2363,13 +2457,71 @@ impl SessionApi {
         // ③ 第 8 项执行侧服务绑定核对 —— 详见 validate_service_bindings 文档
         self.validate_service_bindings(bundle)?;
 
+        // ③.5 I/O 权利面重叠前置预判（仅规则包；数据资产不进 TCB 无权利面）：
+        // 命中 → 落盘前显式 Err（调用方 400），明细归因到规则对。
+        // 基线排除：同 bundle_id 与同 dataset 已激活 bundle 的旧条目将被本次
+        // 原子落盘替换（单激活换版），其权利声明不构成冲突。
+        if has_rule {
+            let mut exclude_prefixes = vec![format!("bundles/{}/", bundle.bundle_id)];
+            for m in self.active_bundles()? {
+                if m.dataset_id == result.dataset_id && m.bundle_id != bundle.bundle_id {
+                    exclude_prefixes.push(format!("bundles/{}/", m.bundle_id));
+                }
+            }
+            let loaded = self
+                .core_eval
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let loaded_sources = self.hit_stats.current_sources();
+            let entries: Vec<(String, JsonValue)> = bundle
+                .entries
+                .iter()
+                .map(|e| (e.entry_id.clone(), serde_to_tcb(e.rule_body.clone())))
+                .collect();
+            let predicted = Self::predict_import_io_overlaps(
+                &loaded,
+                &loaded_sources,
+                &bundle.bundle_id,
+                &exclude_prefixes,
+                &entries,
+            );
+            if !predicted.is_empty() {
+                let detail = predicted
+                    .iter()
+                    .map(|r| {
+                        let ovs = r
+                            .overlaps
+                            .iter()
+                            .map(|o| format!("{} {}", o.kind, o.io_type))
+                            .collect::<Vec<_>>()
+                            .join("、");
+                        format!(
+                            "`{}`({}) 与已装载 {} 重叠 [{}]",
+                            r.source, r.rule_summary, r.overlaps[0].claimed_by, ovs
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("；");
+                return Err(format!(
+                    "快照包条目与当前装载规则集存在 I/O 权利面重叠（发射/消费权利首声明独占，\
+                     导入前置预判；bundle 规则正道=使用自有 io_type，不得发射/消费平台保留 \
+                     io_type）: {detail}",
+                ));
+            }
+        }
+
         if dry_run {
-            return Ok(result);
+            return Ok(ImportOutcome {
+                result,
+                rejected_overlaps: Vec::new(),
+            });
         }
 
         // ④ 原子落盘（临时目录 → rename，失败清理无半成品；含 bundle_manifest.json）。
         // Q12 W1 分流：知识包落 `{knowledge_dir}/bundles/`（与 rules_dir 物理隔离，
         // TCB 加载路径天然不触碰数据文件）；规则包落 `rules_dir/bundles/`（原语义）。
+        let mut reload_rejected: Vec<RejectedOverlapEntry> = Vec::new();
         if is_knowledge {
             evorule_workspace::bundle_land::land_knowledge_bundle_atomically(
                 &self.knowledge_dir,
@@ -2383,8 +2535,11 @@ impl SessionApi {
         } else {
             self.land_bundle_atomically(bundle, &result)?;
 
-            // ⑤b 触发既有 reload 链（新会话使用新规则；已存在会话不改 TCB 语义）
-            self.reload_from_disk().await?;
+            // ⑤b 触发既有 reload 链（新会话使用新规则；已存在会话不改 TCB 语义）。
+            // 被拒重叠条目软结果透传到响应体（正常为空——③.5 前置预判已拦；
+            // 非空=预判与 reload 之间 rules_dir 并发变更，半激活事实显式不静默）。
+            let (_, _, rejected) = self.reload_from_disk().await?;
+            reload_rejected = rejected;
         }
 
         // ⑥ T5 审计溯源：bundle 导入历史写入 workspace 元数据库（bundle_imports 表）。
@@ -2412,7 +2567,10 @@ impl SessionApi {
                 .map_err(|e| format!("bundle 导入溯源写入失败（不静默）: {e}"))?;
         }
 
-        Ok(result)
+        Ok(ImportOutcome {
+            result,
+            rejected_overlaps: reload_rejected,
+        })
     }
 
     /// T4: 列出当前激活的 bundle（读 `rules/bundles/*/bundle_manifest.json`）。
@@ -10437,6 +10595,26 @@ pub struct RejectedOverlapEntry {
     pub rule_summary: String,
     /// 重叠明细（发射/消费 × io_type）
     pub overlaps: Vec<RejectedOverlapDetail>,
+}
+
+/// bundle 导入结果（运行配置 + reload 期被拒重叠条目）
+///
+/// `Deref` 到 [evorule_bundle::ImportResult]：既有运行配置字段访问面零迁移。
+#[derive(Debug)]
+pub struct ImportOutcome {
+    /// 校验通过后的运行配置（与导入前一致）
+    pub result: evorule_bundle::ImportResult,
+    /// reload 期 I/O 权利面防线拒载的重叠条目（导入前置预判已拦，正常为空；
+    /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式不静默）
+    pub rejected_overlaps: Vec<RejectedOverlapEntry>,
+}
+
+impl std::ops::Deref for ImportOutcome {
+    type Target = evorule_bundle::ImportResult;
+
+    fn deref(&self) -> &Self::Target {
+        &self.result
+    }
 }
 
 /// 规则热重载响应

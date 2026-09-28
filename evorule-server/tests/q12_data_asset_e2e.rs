@@ -234,6 +234,8 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         1,
         core_eval_path.clone(),
         rules_dir.clone(),
+        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
     );
     assert!(sessions.knowledge_load_error().is_none());
     // TCB 合并集基线（导入前）

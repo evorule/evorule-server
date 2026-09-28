@@ -348,6 +348,8 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: Option<&str>) -> Ses
         1,
         core_eval_path,
         rules_dir.to_path_buf(),
+        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
     )
     .with_dispatcher(dispatcher)
     .with_bound_services([SVC.to_string()])

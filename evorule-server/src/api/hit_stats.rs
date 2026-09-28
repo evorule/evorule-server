@@ -228,6 +228,21 @@ impl HitStatsAggregator {
             .clone()
     }
 
+    /// 当前 layout 的逐条来源标签（与引擎规则列表等长、按执行顺序）
+    ///
+    /// 消费方：bundle 导入前置 I/O 权利面重叠预判（基线播种需要逐条来源，
+    /// 以识别将被本次导入原子替换的同 bundle/同 dataset 旧条目）。
+    pub fn current_sources(&self) -> Vec<String> {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current
+            .rules
+            .iter()
+            .map(|m| m.source.clone())
+            .collect()
+    }
+
     /// 把引擎归因下标解析为规则身份引用（进化信号归因用）
     ///
     /// 形态 `{source}#{同源序号}`：source = `core_eval` 或 rules_dir 相对文件路径；

@@ -3,7 +3,8 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! 快照包导入端点（·历史批次 集成契约 / 历史批次 bundles）
 //!
-//! - `POST /api/bundles/import`：6 项硬校验 + 逐条 Schema 门禁 + 原子落盘 + 触发 reload；
+//! - `POST /api/bundles/import`：6 项硬校验 + 逐条 Schema 门禁 + I/O 权利面重叠
+//!   前置预判（重叠 → 400 规则对明细）+ 原子落盘 + 触发 reload；
 //! - `POST /api/bundles/import/dry-run`：只跑校验链，不落盘不 reload。
 //!
 //! 框架层无 RBAC（D12：审批权威留在治理层 evorule-rule），此处仅要求有效 token（受保护路由）。
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-use crate::api::server::SessionApi;
+use crate::api::server::{ImportOutcome, RejectedOverlapEntry, SessionApi};
 
 /// 导入请求体（契约复刻治理侧 `ImportReq`：`{"bundle": DatasetBundle}`）
 #[derive(Debug, Deserialize)]
@@ -48,6 +49,9 @@ pub struct ImportResponse {
     pub entry_count: usize,
     /// 硬失败原则：缺失服务已在校验链以显式错误拦截，成功导入即无缺失（设计文档 §9）
     pub missing_services: Vec<String>,
+    /// reload 期 I/O 权利面防线拒载的重叠条目（导入前置预判已拦，正常为空数组；
+    /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式到达调用方不静默）
+    pub rejected_overlaps: Vec<RejectedOverlapEntry>,
 }
 
 /// 当前激活 bundle 信息（，来自 `bundle_manifest.json` 的精简视图）
@@ -110,7 +114,7 @@ pub async fn import_bundle_handler(
     State(sessions): State<SessionApi>,
     Json(req): Json<ImportReq>,
 ) -> Result<(StatusCode, Json<ImportResponse>), (StatusCode, Json<Value>)> {
-    let result = sessions
+    let outcome = sessions
         .import_bundle(&req.bundle, false)
         .await
         .map_err(|e| {
@@ -119,6 +123,10 @@ pub async fn import_bundle_handler(
                 Json(serde_json::json!({ "error": e, "imported": false })),
             )
         })?;
+    let ImportOutcome {
+        result,
+        rejected_overlaps,
+    } = outcome;
     Ok((
         StatusCode::CREATED,
         Json(ImportResponse {
@@ -128,6 +136,7 @@ pub async fn import_bundle_handler(
             activated_version: result.source_version,
             entry_count: result.entry_count,
             missing_services: Vec::new(),
+            rejected_overlaps,
         }),
     ))
 }
@@ -156,7 +165,8 @@ pub async fn import_bundle_dry_run_handler(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": e, "valid": false })),
             )
-        })?;
+        })?
+        .result;
     Ok(Json(serde_json::json!({
         "valid": true,
         "bundle_id": result.bundle_id,
@@ -1000,8 +1010,15 @@ mod tests {
         api.import_bundle(&valid_bundle(schema_valid_body()), false)
             .await
             .unwrap();
+        // b2 使用自有 io_type：同 io_type 跨 dataset 并存会被导入前置重叠预判显式拒
+        // （发射/消费权利首声明独占——并存两 bundle 只允许首声明者持有同一 io_type）
+        let med_body = serde_json::json!({
+            "transform": [
+                { "type": "io_request", "params": { "io_type": "med_probe", "service_name": "payroll_svc" } }
+            ]
+        });
         let b2 = re_id_bundle(
-            valid_bundle(schema_valid_body()),
+            valid_bundle(med_body),
             "bundle-ds-med-2024-v1",
             "ds-med-2024",
         );
@@ -1020,6 +1037,168 @@ mod tests {
             .path()
             .join("rules/bundles/bundle-ds-med-2024-v1")
             .exists());
+    }
+
+    // ============ I/O 权利面重叠导入前置预判 ============
+
+    /// 部署面平台规则文件（rules_dir 直落，发射 call_service）
+    fn platform_emit_file_body() -> Value {
+        serde_json::json!({
+            "transform": [
+                { "type": "io_request", "params": { "io_type": "call_service", "service_name": "payroll_svc" } }
+            ]
+        })
+    }
+
+    /// 与装载集权利重叠的 bundle → 落盘前显式拒（明细归因到规则对，无半激活落盘）
+    #[tokio::test]
+    async fn import_overlap_with_loaded_rules_fails_fast() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = test_api(&tmp);
+        // 部署面平台规则发射 call_service → reload 后进入装载集基线
+        std::fs::write(
+            tmp.path().join("rules/platform_io.json"),
+            serde_json::to_string_pretty(&platform_emit_file_body()).unwrap(),
+        )
+        .unwrap();
+        api.reload_from_disk().await.unwrap();
+        assert_eq!(api.core_eval_len(), 3, "基线=宪法 2 + 平台规则 1");
+
+        let err = api
+            .import_bundle(&valid_bundle(schema_valid_body()), false)
+            .await
+            .unwrap_err();
+        assert!(err.contains("I/O 权利面重叠"), "应为重叠前置拒绝: {err}");
+        assert!(
+            err.contains("platform_io.json"),
+            "明细应归因到已装载规则: {err}"
+        );
+        assert!(err.contains("emit call_service"), "明细应含重叠面: {err}");
+        assert!(
+            !tmp.path()
+                .join("rules/bundles/bundle-ds-tax-2024-v1")
+                .exists(),
+            "被拒 bundle 不得落盘（fail-fast，无半激活）"
+        );
+    }
+
+    /// bundle 自有 io_type（flow_probe）不触平台保留权利面 → 正常导入且零拒载
+    #[tokio::test]
+    async fn import_own_io_type_complies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = test_api(&tmp);
+        let body = serde_json::json!({
+            "transform": [
+                { "type": "io_request", "params": { "io_type": "flow_probe", "service_name": "payroll_svc" } }
+            ]
+        });
+        let outcome = api.import_bundle(&valid_bundle(body), false).await.unwrap();
+        assert_eq!(outcome.entry_count, 1);
+        assert!(
+            outcome.rejected_overlaps.is_empty(),
+            "合规导入 reload 期应零拒载"
+        );
+        assert!(tmp
+            .path()
+            .join("rules/bundles/bundle-ds-tax-2024-v1/entry-tax-001.json")
+            .is_file());
+    }
+
+    /// 不同 dataset 的第二 bundle 声明同一发射权 → 并存即权利冲突 → 显式拒
+    #[tokio::test]
+    async fn import_second_bundle_same_io_type_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = test_api(&tmp);
+        api.import_bundle(&valid_bundle(schema_valid_body()), false)
+            .await
+            .unwrap();
+        let b2 = re_id_bundle(
+            valid_bundle(schema_valid_body()),
+            "bundle-ds-med-2024-v1",
+            "ds-med-2024",
+        );
+        let err = api.import_bundle(&b2, false).await.unwrap_err();
+        assert!(err.contains("I/O 权利面重叠"), "应为重叠前置拒绝: {err}");
+        assert!(
+            !tmp.path()
+                .join("rules/bundles/bundle-ds-med-2024-v1")
+                .exists(),
+            "被拒 bundle 不得落盘"
+        );
+    }
+
+    /// 替换形态不误伤：同 bundle_id 重导入 / 同 dataset 单激活换版，旧条目
+    /// 权利声明将被本次原子落盘替换，不构成基线冲突
+    #[tokio::test]
+    async fn reimport_replacement_bundles_not_flagged_as_overlap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = test_api(&tmp);
+        api.import_bundle(&valid_bundle(schema_valid_body()), false)
+            .await
+            .unwrap();
+        // 同 bundle_id 重导入（原子替换旧条目）
+        api.import_bundle(&valid_bundle(schema_valid_body()), false)
+            .await
+            .unwrap();
+        // 同 dataset 换版（v2 替换 v1，单激活）
+        let v2 = re_id_bundle(
+            valid_bundle(schema_valid_body()),
+            "bundle-ds-tax-2024-v2",
+            "ds-tax-2024",
+        );
+        api.import_bundle(&v2, false).await.unwrap();
+        assert_eq!(api.core_eval_len(), 3, "宪法 2 + v2 条目 1（v1 已替换）");
+    }
+
+    /// handler 层两向：重叠 → 400 显式明细；合规自有 io_type → 201 且
+    /// rejected_overlaps 为空
+    #[tokio::test]
+    async fn import_handler_overlaps_map_to_400_and_clean_to_201() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = test_api(&tmp);
+        std::fs::write(
+            tmp.path().join("rules/platform_io.json"),
+            serde_json::to_string_pretty(&platform_emit_file_body()).unwrap(),
+        )
+        .unwrap();
+        api.reload_from_disk().await.unwrap();
+        let (status, Json(err_json)) = import_bundle_handler(
+            axum::extract::State(api),
+            Json(ImportReq {
+                bundle: valid_bundle(schema_valid_body()),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(
+            err_json["error"]
+                .as_str()
+                .unwrap()
+                .contains("I/O 权利面重叠"),
+            "400 明细应含重叠说明: {err_json}"
+        );
+
+        let tmp2 = tempfile::tempdir().unwrap();
+        let api2 = test_api(&tmp2);
+        let body = serde_json::json!({
+            "transform": [
+                { "type": "io_request", "params": { "io_type": "flow_probe", "service_name": "payroll_svc" } }
+            ]
+        });
+        let (status, resp) = import_bundle_handler(
+            axum::extract::State(api2),
+            Json(ImportReq {
+                bundle: valid_bundle(body),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        assert!(
+            resp.0.rejected_overlaps.is_empty(),
+            "合规导入响应 rejected_overlaps 应为空"
+        );
     }
 
     #[tokio::test]

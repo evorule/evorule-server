@@ -30,7 +30,7 @@
       "v0.3.1: set 的 attr 引用 payload 内以 __ 开头的字段时必须写显式前缀（如 __exec__.payload.__io_results__.call_external），否则会被误判为状态根路径",
       "本版撤销兼容说明: query_db/http_get/save_memory 不再是内置指令类型（宪法未定义对应 transform 规则，提交会触发显式警告——TCB 层检测到 noop 效果返回 TransitionResult::Ignored，反应器产生 Error 事实）；需要这些能力的应用在其自有 rule_set 中定义 call_service 类规则",
       "本版 call_external 参数: 仅使用 messages（LLM 消息历史数组）与 tools（可选工具描述）；prompt/system 不再作为指令参数（live handler 可直接从 messages 透传）。v0.4.0 注: 最小集曾不定义 call_external 规则致 LLM 审计桥静默失效(该缺陷),v0.4.1 补回;server 启动 fail-fast 校验 call_external 规则存在。多轮编排应用请在其应用层 runner 自行实现（宪法 v0.5.0 起回归单轮指令映射）",
-      "v0.4.2 call_service 桥接语义: 宪法单发桥接仅接管命令显式携带 params.service_name 的 call_service(io_request 必选路径解析失败即 Error 为 TCB 审计决策,不可静默);命令不携带 service_name 时宪法规则不触发,由 bundle 落地规则以硬编码服务名路由——两条通路并存,bundle 规则自有触发域不受影响",
+      "v0.4.2 call_service 桥接语义: 宪法单发桥接仅接管命令显式携带 params.service_name 的 call_service(io_request 必选路径解析失败即 Error 为 TCB 审计决策,不可静默);命令不携带 service_name 时宪法规则不触发——bundle 命令须显式携带 service_name 走部署面桥接,或使用 bundle 自有 io_type;bundle 规则发射/消费平台保留 io_type 将被 I/O 权利面独占防线拒载(装载期防线+导入期前置预判双落点),bundle 正道=自有 io_type",
       "语义澄清: 业务 set 指令为纯覆盖语义——宪法规则硬编码元指令 operation=set，指令 params 中的 operation 字段（如 add/sub）被忽略；算术更新必须使用 increment（add）/decrement（sub）指令。误用 set+add 做循环体累加会导致计数器每轮被覆盖回常量、while_loop 条件永真（差分测试回归教训）",
       "v0.6.0 纪律: tool_trace 属部署面应用层策略规则（2026-09-29 项目方改判——应用层策略规则禁入主仓宪法，自主仓宪法迁出至此自持），不触及物理原语（元指令/域函数零新增）；确定性/可回放/审计链为无商量红线——轨迹数据只经 set 进入 payload 随 StateTransition 落链，不触碰哈希链与状态机语义"
     ]
