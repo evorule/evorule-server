@@ -10,7 +10,8 @@
 
 <div align="center">
 
-# EvoRule Server
+# EvoRule Server
+
 
 > **仓库角色**：本仓库是 **GitHub 镜像**。权威源（primary repo）在 **Gitee**：[https://gitee.com/evorule/evorule-server](https://gitee.com/evorule/evorule-server)。
 > Issue / PR 请提交到 Gitee，GitHub 侧仅供镜像与推广展示。
@@ -419,6 +420,8 @@ Config loading priority: **CLI args > env vars (prefix `EVORULE_`) > JSON config
 | `EVORULE_DB_PATH` | `--db-path` | `./data/evorule.db` | SQLite database path |
 | `EVORULE_MEMORY_DIR` | `--memory-dir` | `./data/memory` | Memory handler storage directory |
 | `EVORULE_MAX_ROUNDS` | `--max-rounds` | `1000` | Reactor max instruction execution steps |
+| `EVORULE_IO_WARN_TIMEOUT_SECS` | `--io-warn-timeout-secs` | `30` | Pending I/O warn threshold in seconds (per-session reactor; a warning fact is emitted when a pending `io_request` exceeds it) |
+| `EVORULE_IO_ERROR_TIMEOUT_SECS` | `--io-error-timeout-secs` | `60` | Pending I/O error threshold in seconds (per-session reactor; an exceeding pending `io_request` fails with an explicit timeout error — raise for long-running multi-round application loops) |
 | `EVORULE_LOG_LEVEL` | `--log-level` | `info` | Tracing level |
 | `EVORULE_LOG_FORMAT` | `--log-format` | `plain` | Log format (`plain` / `json`) |
 | `EVORULE_LOG_FILE` | `--log-file` | (empty) | Log file path (unset = stderr only) |
@@ -1040,6 +1043,8 @@ evorule_rules_zero_hits
 | `EVORULE_DB_PATH`         | `--db-path`         | `./data/evorule.db`          | SQLite 数据库路径                       |
 | `EVORULE_MEMORY_DIR`      | `--memory-dir`      | `./data/memory`              | Memory handler 存储目录                 |
 | `EVORULE_MAX_ROUNDS`      | `--max-rounds`      | `1000`                       | 反应器最大指令执行步数                  |
+| `EVORULE_IO_WARN_TIMEOUT_SECS` | `--io-warn-timeout-secs` | `30`              | pending I/O 警告阈值(秒,逐会话反应器;pending `io_request` 超过即发警告事实) |
+| `EVORULE_IO_ERROR_TIMEOUT_SECS` | `--io-error-timeout-secs` | `60`             | pending I/O 超时阈值(秒,逐会话反应器;超时的 pending `io_request` 以显式超时错误失败——应用层多轮长循环部署应调大) |
 | `EVORULE_LOG_LEVEL`       | `--log-level`       | `info`                       | tracing 级别                            |
 | `EVORULE_LOG_FORMAT`      | `--log-format`      | `plain`                      | 日志格式(`plain` / `json`)            |
 | `EVORULE_LOG_FILE`        | `--log-file`        | (空)                         | 日志文件路径(不设则仅输出 stderr)     |
