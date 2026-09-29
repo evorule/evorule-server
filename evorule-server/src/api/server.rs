@@ -783,6 +783,67 @@ impl SessionApi {
         });
     }
 
+    /// 为新会话 spawn IoSubscriber（O-185/O-182：create_session / from / fork
+    /// 三处复用的公共构造段，防漂移）
+    ///
+    /// - 没有 IoSubscriber 时，session 的 IoRequest 会 60s 超时；
+    /// - dispatcher 为 None（纯计算场景）时静默跳过；
+    /// - `inherit_role` 为 Some 时登记会话声明（fork 语义 = 同主体派生，
+    ///   声明继承父会话）；None 不登记（fail-closed：未声明 → Unknown → Deny）。
+    async fn spawn_io_subscriber_for_session(
+        &self,
+        session_id: u64,
+        metrics: SharedMetrics,
+        inherit_role: Option<String>,
+    ) {
+        // 声明登记（fork 继承 / 显式声明两种来源；创建成功才登记）
+        if let Some(role) = inherit_role {
+            if let Ok(mut table) = self.caller_roles.lock() {
+                table.insert(session_id, role);
+            }
+            tracing::info!(
+                session_id,
+                "会话已继承 caller_role 声明（命令入口将注入 __meta__）"
+            );
+        }
+
+        if let Some(ref dispatcher) = self.dispatcher {
+            let sessions = self.sessions.lock().await;
+
+            if let Some(session) = sessions.get_session(session_id) {
+                let event_rx = session.event_tx.subscribe();
+
+                let command_tx = session.command_tx.clone();
+
+                // O-179：注入会话级 caller_role resolver（B-3 接缝；
+                // 声明随 WAL 事实，回放确定性成立）
+                let gate = PermissionGate::new(Arc::new(self.shared_facts.clone()))
+                    .with_caller_role_resolver(
+                        crate::api::caller_role_resolver::session_caller_role_resolver(
+                            session.facts_log.clone(),
+                        ),
+                    );
+
+                let subscriber = IoSubscriber::new(dispatcher.clone())
+                    .with_metrics(metrics)
+                    .with_skip(Arc::new(is_external_executor_request))
+                    .with_permission_gate(gate);
+
+                tokio::spawn(async move {
+                    if let Err(e) = subscriber.run(event_rx, command_tx).await {
+                        tracing::error!(
+                            session_id,
+                            error = %e,
+                            "Session IoSubscriber 异常退出"
+                        );
+                    }
+                });
+
+                tracing::info!(session_id, "IoSubscriber 已为 session 启动");
+            }
+        }
+    }
+
     /// 读取会话的 caller_role 声明（O-179；未声明 = None）
     fn declared_caller_role(&self, session_id: u64) -> Option<String> {
         self.caller_roles.lock().ok()?.get(&session_id).cloned()
@@ -5378,49 +5439,11 @@ async fn create_session(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
-            // 为新 session 的 reactor spawn IoSubscriber
-
+            // 为新 session 的 reactor spawn IoSubscriber（O-185：公共构造段）
             // 没有 IoSubscriber 时，session 的 IoRequest 会 60s 超时
-
-            if let Some(ref dispatcher) = api.dispatcher {
-                let sessions = api.sessions.lock().await;
-
-                if let Some(session) = sessions.get_session(id) {
-                    let event_rx = session.event_tx.subscribe();
-
-                    let command_tx = session.command_tx.clone();
-
-                    // O-179：注入会话级 caller_role resolver（B-3 接缝；
-                    // 声明随 WAL 事实，回放确定性成立）
-                    let gate = PermissionGate::new(Arc::new(api.shared_facts.clone()))
-                        .with_caller_role_resolver(
-                            crate::api::caller_role_resolver::session_caller_role_resolver(
-                                session.facts_log.clone(),
-                            ),
-                        );
-
-                    let subscriber = IoSubscriber::new(dispatcher.clone())
-                        .with_metrics(metrics.clone())
-                        .with_skip(Arc::new(is_external_executor_request))
-                        .with_permission_gate(gate);
-
-                    tokio::spawn(async move {
-                        if let Err(e) = subscriber.run(event_rx, command_tx).await {
-                            tracing::error!(
-
-                                session_id = id,
-
-                                error = %e,
-
-                                "Session IoSubscriber 异常退出"
-
-                            );
-                        }
-                    });
-
-                    tracing::info!(session_id = id, "IoSubscriber 已为 session 启动");
-                }
-            }
+            // （声明登记已在上方完成，此处不重复继承）
+            api.spawn_io_subscriber_for_session(id, metrics.clone(), None)
+                .await;
 
             Ok(Json(serde_json::json!({
 
@@ -5752,6 +5775,17 @@ async fn create_session_from_parent(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
+            // O-185/O-182：fork 子会话补 IoSubscriber（原缺口：IoRequest 60s
+            // 超时无人应答）＋声明继承父会话（fork 语义 = 同主体派生）。
+            // 父未声明 → 不登记（Unknown → Deny，fail-closed 与今日一致）；
+            // fork-from-archive（archive_version.is_some()）父会话已不在内存、
+            // 无声明可继承 → 不登记（fail-closed，响应体 source="archive" 可区分）。
+            let inherited_role = api
+                .declared_caller_role(parent_id)
+                .filter(|_| archive_version.is_none());
+            api.spawn_io_subscriber_for_session(id, metrics.clone(), inherited_role)
+                .await;
+
             let mut body = serde_json::json!({
 
                 "session_id": id,
@@ -5896,6 +5930,13 @@ async fn create_session_fork(
 
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
+
+            // O-185/O-182：fork 子会话补 IoSubscriber＋声明继承（同 from 端点口径）
+            let inherited_role = api
+                .declared_caller_role(parent_id)
+                .filter(|_| archive_version.is_none());
+            api.spawn_io_subscriber_for_session(id, metrics.clone(), inherited_role)
+                .await;
 
             let mut body = serde_json::json!({
 
@@ -11039,6 +11080,196 @@ mod tests {
             assert!(
                 !evorule_rule_schema::validate_command_instruction(&meta_instr).valid,
                 "根部 __meta__ 的元指令原文应被门禁拒绝（守护注入时机在门禁之后）"
+            );
+        }
+    }
+
+    // ===== O-185 fork/from IoSubscriber + 声明继承（O-182 合并修复）=====
+
+    mod o185 {
+        use super::*;
+
+        /// EchoHandler：call_service 应答回显参数（结果注入 __io_results__）
+        struct EchoHandler;
+
+        #[async_trait::async_trait]
+        impl evorule_reactor::IoHandler for EchoHandler {
+            async fn execute(&self, params: &JsonValue) -> evorule_reactor::IoResult {
+                Ok(params.clone())
+            }
+        }
+
+        /// core_eval：任意命令触发一次 call_service pending I/O
+        ///（与 session.rs 超时预算测试同构的最小 io core_eval）
+        fn make_io_core_eval() -> Vec<JsonValue> {
+            let mut params = std::collections::BTreeMap::new();
+            params.insert("io_type".to_string(), JsonValue::string("call_service"));
+            params.insert("service_name".to_string(), JsonValue::string("demo"));
+            let mut instr = std::collections::BTreeMap::new();
+            instr.insert("type".to_string(), JsonValue::string("io_request"));
+            instr.insert("params".to_string(), JsonValue::Object(params));
+            vec![JsonValue::Object(instr)]
+        }
+
+        /// 时限内轮询会话事实链，等待首个 IoResponse，返回 (error, result)
+        async fn wait_io_response(
+            session: &evorule_governance::session::Session,
+            deadline: std::time::Duration,
+        ) -> (Option<String>, JsonValue) {
+            let start = tokio::time::Instant::now();
+            loop {
+                assert!(
+                    start.elapsed() < deadline,
+                    "时限内未收到 IoResponse（IoSubscriber 未应答？）"
+                );
+                for fact in session.facts_log.history() {
+                    if let Fact::IoResponse { result, error, .. } = fact {
+                        return (error, result);
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+
+        /// 核心验收：fork 子会话（经公共辅助 spawn IoSubscriber + 声明继承）
+        /// 发射 call_service io 时可被应答分发——O-182 缺口（60s 超时无人应答）
+        /// 修复后的正向探针。
+        #[tokio::test]
+        async fn o185_fork_child_session_io_dispatches_with_inherited_role() {
+            let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
+
+            let dispatcher = IoDispatcher::builder()
+                .register(IoType::call_service(), Arc::new(EchoHandler))
+                .build();
+            let api = SessionApi::new(make_io_core_eval(), 100).with_dispatcher(dispatcher);
+
+            // 父会话声明 human（等价于经 /api/sessions 带 caller_role 创建）
+            let parent = api.sessions.lock().await.create_session().unwrap();
+            api.caller_roles
+                .lock()
+                .unwrap()
+                .insert(parent, "human".to_string());
+
+            // fork：与 from/fork handler 相同的接线（取父声明 → 公共辅助）
+            let child = api.sessions.lock().await.create_session().unwrap();
+            let inherited = api.declared_caller_role(parent);
+            assert_eq!(inherited.as_deref(), Some("human"), "父声明应可读出");
+            api.spawn_io_subscriber_for_session(child, metrics, inherited)
+                .await;
+
+            // 子会话发命令；__meta__ 为命令入口 inject_caller_role 的等价形态
+            let session = api
+                .sessions
+                .lock()
+                .await
+                .get_session(child)
+                .expect("子会话应存在");
+            let mut meta = std::collections::BTreeMap::new();
+            meta.insert("caller_role".to_string(), JsonValue::string("human"));
+            let mut instr = std::collections::BTreeMap::new();
+            instr.insert("type".to_string(), JsonValue::string("tick"));
+            instr.insert("__meta__".to_string(), JsonValue::Object(meta));
+            session
+                .command_tx
+                .send(Fact::Command {
+                    // 直连命令手工指定 id：避开反应器 id_gen 从 1 起的引导事实
+                    // （撞 id 会导致 Command append 失败 → resolver 断链 fail-closed）
+                    id: FactId(10_000),
+                    instruction: JsonValue::Object(instr),
+                })
+                .unwrap();
+
+            // 子会话 io 被应答分发（非 60s 超时）：human 声明 + 默认策略 Allow
+            let (error, result) =
+                wait_io_response(&session, std::time::Duration::from_secs(5)).await;
+            assert!(
+                error.is_none(),
+                "继承 human 声明的子会话 io 应成功分发，实际错误: {error:?}"
+            );
+            assert_eq!(
+                result.get("service_name"),
+                Some(&JsonValue::string("demo")),
+                "EchoHandler 应回显参数"
+            );
+        }
+
+        /// fork 子会话声明继承：llm 父 → from / fork 两端点子会话均继承 llm
+        #[tokio::test]
+        async fn o185_fork_inherits_parent_declaration_from_and_fork() {
+            let (state, _) = make_test_state();
+            let router = make_test_router(&state);
+
+            // 声明 llm 的父会话
+            let (status, body) = oneshot_json(
+                router.clone(),
+                "POST",
+                "/api/sessions",
+                Some(r#"{"caller_role":"llm"}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let parent = body["session_id"].as_u64().unwrap();
+
+            // from 端点（默认最新版本）→ 子会话继承 llm
+            let (status, body) = oneshot_json(
+                router.clone(),
+                "POST",
+                &format!("/api/sessions/from/{parent}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "from 应成功: {body}");
+            let child_from = body["session_id"].as_u64().unwrap();
+            assert_eq!(
+                state.sessions.declared_caller_role(child_from).as_deref(),
+                Some("llm"),
+                "from 子会话必须继承父声明"
+            );
+
+            // fork 端点（显式版本；version=0 = 初始空状态，恒有效）
+            let (status, body) = oneshot_json(
+                router,
+                "POST",
+                &format!("/api/sessions/fork/{parent}?version=0"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "fork 应成功: {body}");
+            let child_fork = body["session_id"].as_u64().unwrap();
+            assert_eq!(
+                state.sessions.declared_caller_role(child_fork).as_deref(),
+                Some("llm"),
+                "fork 子会话必须继承父声明"
+            );
+        }
+
+        /// 父未声明 → 子不登记（fail-closed：Unknown → Deny 与今日一致）
+        #[tokio::test]
+        async fn o185_fork_without_parent_declaration_child_stays_undeclared() {
+            let (state, _) = make_test_state();
+            let router = make_test_router(&state);
+
+            let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+            assert_eq!(status, StatusCode::OK);
+            let parent = body["session_id"].as_u64().unwrap();
+            assert!(
+                state.sessions.declared_caller_role(parent).is_none(),
+                "未带声明的创建不应登记"
+            );
+
+            let (status, body) = oneshot_json(
+                router,
+                "POST",
+                &format!("/api/sessions/from/{parent}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "from 应成功: {body}");
+            let child = body["session_id"].as_u64().unwrap();
+
+            assert!(
+                state.sessions.declared_caller_role(child).is_none(),
+                "父未声明 → 子会话不得登记（fail-closed）"
             );
         }
     }
