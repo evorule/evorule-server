@@ -106,7 +106,6 @@ mod tests {
     /// O-179 resolver 单测矩阵（设计档 §七）：
     /// 1 声明 human/llm 链完整；2 未声明/非法值；3 IoResponse 恢复链；
     /// 4 深度上限/环/断链；5 链外事实不参与；6 gate 级判定覆盖。
-
     /// {"type":"call_service"} (+ 可选 __meta__.caller_role)
     fn instruction_with_role(role: Option<&str>) -> JsonValue {
         let mut obj = Vec::new();
