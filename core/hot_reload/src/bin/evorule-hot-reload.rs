@@ -6,8 +6,12 @@
 //! # 用法
 //!
 //! ```text
-//! evorule-hot-reload --rules-dir ./rules --server-url http://127.0.0.1:18080 --api-port 8081
+//! evorule-hot-reload --rules-dir D:\evorule-server\data\agent-governance\rules --server-url http://127.0.0.1:18080 --api-port 8081
 //! ```
+//!
+//! 注意：`--rules-dir` 必须指向 evorule-server 的 `--rules-dir`——本服务监听
+//! 该目录变化并触发 `POST /api/rules/reload`，规则对新会话生效（已存在会话
+//! 保持不变，TCB 不可变语义）。
 
 #![forbid(unsafe_code)]
 // C5 (unwrap/expect/panic = deny) 仅约束生产代码;测试代码保留 unwrap 惯例
@@ -21,17 +25,13 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Parser, Debug)]
 #[command(name = "evorule-hot-reload", about = "规则文件热重载服务")]
 struct Args {
-    /// 监控的规则目录
+    /// 监控的规则目录（应指向 evorule-server 的 --rules-dir）
     #[arg(long, default_value = "./rules")]
     rules_dir: String,
 
     /// evorule-server 地址
     #[arg(long, default_value = "http://127.0.0.1:18080")]
     server_url: String,
-
-    /// 会话 ID（不指定则自动创建）
-    #[arg(long)]
-    session_id: Option<u64>,
 
     /// HTTP API 监听端口
     #[arg(long, default_value = "8081")]
@@ -55,7 +55,6 @@ async fn main() -> Result<(), String> {
     let config = HotReloadConfig {
         rules_dir: args.rules_dir.clone(),
         evorule_server_url: args.server_url.clone(),
-        session_id: args.session_id,
         auth_token: args.auth_token.clone(),
         poll_interval_ms: 1000,
         auto_start: true,

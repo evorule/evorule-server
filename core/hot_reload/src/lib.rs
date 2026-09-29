@@ -3,18 +3,25 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! 规则文件热重载服务
 //!
-//! 监听规则目录变化，自动将新规则发送到 evorule-server
+//! 监听规则目录变化，触发 evorule-server 规则重载，使规则对新会话生效
 //!
 //! # 设计
 //! - 使用 notify crate 监听文件系统变化
-//! - 通过 HTTP API 与 evorule-server 通信
+//! - 通过 HTTP API（`POST /api/rules/reload`）触发 evorule-server 重载规则
 //! - 支持手动触发重载和自动监听两种模式
+//! - 语义为「目录为准全量重载」：规则对新会话生效，已存在会话保持不变
+//!   （TCB 不可变语义）
 //!
 //! # 端点
 //!
 //! - `GET  /status` — 服务状态 + 规则计数
 //! - `POST /reload` — 手动触发规则重载
 //! - `GET  /rules`  — 列出规则文件路径
+//!
+//! # 使用约束
+//!
+//! `rules_dir` 必须指向 evorule-server 的 `--rules-dir`（服务端 reload 从
+//! 该目录合并加载规则），否则监听到的变化不会反映到服务端规则集。
 //!
 //! # 设计说明
 //!
@@ -54,30 +61,26 @@ pub struct HotReloadService {
 
 impl HotReloadService {
     /// 创建新的热重载服务
-    ///
-    /// 若 `config.session_id` 为 `None`，会向 evorule-server 请求创建新会话。
-    pub async fn new(mut config: HotReloadConfig) -> Result<Self, String> {
-        if config.session_id.is_none() {
-            let sid =
-                Self::create_session(&config.evorule_server_url, config.auth_token.as_deref())
-                    .await?;
-            info!(session_id = sid, "创建新会话");
-            config.session_id = Some(sid);
-        }
-
+    pub async fn new(config: HotReloadConfig) -> Result<Self, String> {
         Ok(Self {
             config: Arc::new(Mutex::new(config)),
         })
     }
 
-    /// 创建 evorule 会话
+    /// 触发 evorule-server 规则重载（`POST /api/rules/reload`）
     ///
     /// N4：`auth_token` 设置后会携带 `Authorization: Bearer <token>` 头
-    async fn create_session(server_url: &str, auth_token: Option<&str>) -> Result<u64, String> {
+    ///
+    /// 返回 `(previous_rules, current_rules)`——服务端重载前后的规则总数
+    /// （TCB 宪法 + rules_dir 业务规则合并后的数量）。
+    pub async fn trigger_reload(
+        server_url: &str,
+        auth_token: Option<&str>,
+    ) -> Result<(usize, usize), String> {
         let client = reqwest::Client::new();
-        let url = format!("{}/api/sessions", server_url);
+        let url = format!("{}/api/rules/reload", server_url);
 
-        let mut req = client.post(&url).json(&serde_json::json!({}));
+        let mut req = client.post(&url);
         if let Some(token) = auth_token {
             req = req.header("Authorization", format!("Bearer {}", token));
         }
@@ -85,80 +88,47 @@ impl HotReloadService {
         let resp = req
             .send()
             .await
-            .map_err(|e| format!("创建会话失败: {}", e))?;
+            .map_err(|e| format!("触发规则重载失败: {}", e))?;
 
+        let status = resp.status();
         let body: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| format!("解析响应失败: {}", e))?;
+            .map_err(|e| format!("解析重载响应失败: {}", e))?;
 
-        body["session_id"]
-            .as_u64()
-            .ok_or_else(|| "会话 ID 无效".to_string())
-    }
-
-    /// 发送规则到 evorule-server
-    ///
-    /// N4：`auth_token` 设置后会携带 `Authorization: Bearer <token>` 头
-    pub async fn send_rules(
-        server_url: &str,
-        session_id: u64,
-        rules: &[serde_json::Value],
-        auth_token: Option<&str>,
-    ) -> Result<(), String> {
-        let client = reqwest::Client::new();
-        let url = format!("{}/api/sessions/{}/command", server_url, session_id);
-
-        for rule in rules {
-            let command = serde_json::json!({
-                "instruction": {
-                    "type": "transform",
-                    "payload": rule.clone(),
-                }
-            });
-
-            let mut req = client.post(&url).json(&command);
-            if let Some(token) = auth_token {
-                req = req.header("Authorization", format!("Bearer {}", token));
-            }
-
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| format!("发送规则失败: {}", e))?;
-
-            if !resp.status().is_success() {
-                return Err(format!("服务器返回错误: {}", resp.status()));
-            }
+        if !status.is_success() {
+            let detail = body["error"].as_str().unwrap_or("unknown");
+            return Err(format!("服务器返回错误: {} ({detail})", status));
         }
 
-        Ok(())
+        let previous = body["previous_rules"].as_u64().unwrap_or(0) as usize;
+        let current = body["current_rules"].as_u64().unwrap_or(0) as usize;
+        Ok((previous, current))
     }
 
-    /// 重载规则
+    /// 重载规则（手动触发入口）
+    ///
+    /// 校验规则目录存在后触发服务端 reload；规则为「目录为准全量重载」，
+    /// 空目录同样允许触发（用于清空业务规则，仅保留 TCB 宪法）。
     pub async fn reload_rules(&self) -> Result<usize, String> {
         // 在 await 之前获取配置并释放锁
-        let (server_url, session_id, rules_dir, auth_token) = {
+        let (server_url, rules_dir, auth_token) = {
             let config = self.lock_config();
             (
                 config.evorule_server_url.clone(),
-                config.session_id,
                 config.rules_dir.clone(),
                 config.auth_token.clone(),
             )
         };
 
-        let rules = load_rules(Path::new(&rules_dir))?;
-
-        if rules.is_empty() {
-            return Err("未找到任何规则文件".to_string());
+        let path = Path::new(&rules_dir);
+        if !path.exists() {
+            return Err(format!("规则目录不存在: {}", path.display()));
         }
 
-        let session_id = session_id.ok_or_else(|| "未设置会话 ID".to_string())?;
+        let (_, current) = Self::trigger_reload(&server_url, auth_token.as_deref()).await?;
 
-        Self::send_rules(&server_url, session_id, &rules, auth_token.as_deref()).await?;
-
-        Ok(rules.len())
+        Ok(current)
     }
 
     /// 启动文件监听
@@ -173,54 +143,41 @@ impl HotReloadService {
             return Err(format!("规则目录不存在: {}", path.display()));
         }
 
-        let rx = create_watcher(path).map_err(|e| format!("创建文件监听器失败: {}", e))?;
+        // watcher 必须移入 task 保活——drop 后停止监听（notify 语义）
+        let (watcher, rx) =
+            create_watcher(path).map_err(|e| format!("创建文件监听器失败: {}", e))?;
 
         let svc_clone = self.clone();
 
         task::spawn(async move {
+            // 保活绑定：_watcher 持有至 task 结束
+            let _watcher = watcher;
             while let Ok(change) = rx.recv() {
                 info!(path = %change.path, event = ?change.event_type, "检测到文件变化");
 
-                // S1：删除规则文件不会从 server 移除已有规则
                 if matches!(change.event_type, ChangeType::Remove) {
-                    warn!(
+                    info!(
                         path = %change.path,
-                        "规则文件被删除。注意：hot_reload 仅支持增量添加规则，\
-                         删除文件不会从 server 移除已有规则。如需清除旧规则，请重启 session。"
+                        "规则文件被删除。重载后该规则对新会话移除；\
+                         已存在会话保持不变（TCB 不可变语义）。"
                     );
                 }
 
                 // 先获取配置（在 await 之前释放锁）
-                let (server_url, session_id, rules_dir, auth_token) = {
+                let (server_url, auth_token) = {
                     let config = svc_clone.lock_config();
                     (
                         config.evorule_server_url.clone(),
-                        config.session_id,
-                        config.rules_dir.clone(),
                         config.auth_token.clone(),
                     )
                 };
 
-                let rules = match load_rules(Path::new(&rules_dir)) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!(error = %e, "加载规则失败");
-                        continue;
+                match Self::trigger_reload(&server_url, auth_token.as_deref()).await {
+                    Ok((previous, current)) => {
+                        info!(previous_rules = previous, current_rules = current, "规则自动重载成功");
                     }
-                };
-
-                if rules.is_empty() {
-                    continue;
-                }
-
-                if let Some(session_id) = session_id {
-                    if let Err(e) =
-                        Self::send_rules(&server_url, session_id, &rules, auth_token.as_deref())
-                            .await
-                    {
-                        warn!(error = %e, "发送规则失败");
-                    } else {
-                        info!(count = rules.len(), "规则自动重载成功");
+                    Err(e) => {
+                        warn!(error = %e, "触发规则重载失败");
                     }
                 }
             }
@@ -256,14 +213,14 @@ type HandlerError = (StatusCode, String);
 async fn status_handler(State(svc): State<HotReloadService>) -> Json<serde_json::Value> {
     let config = svc.lock_config();
     let rules_dir = config.rules_dir.clone();
-    let session_id = config.session_id;
+    let server_url = config.evorule_server_url.clone();
     let rule_count = load_rules(Path::new(&rules_dir))
         .map(|r| r.len())
         .unwrap_or(0);
     Json(serde_json::json!({
         "status": "running",
         "rules_dir": rules_dir,
-        "session_id": session_id,
+        "evorule_server_url": server_url,
         "rule_count": rule_count,
     }))
 }
@@ -354,12 +311,11 @@ mod tests {
             .to_string()
     }
 
-    /// 构造带预设 session_id 的 service（不走网络创建会话）
-    async fn new_service_with_session(rules_dir: String, server_url: String) -> HotReloadService {
+    /// 构造预设配置的 service（不走网络）
+    async fn new_service(rules_dir: String, server_url: String) -> HotReloadService {
         let config = HotReloadConfig {
             rules_dir,
             evorule_server_url: server_url,
-            session_id: Some(42),
             auth_token: None,
             poll_interval_ms: 1000,
             auto_start: false,
@@ -389,7 +345,6 @@ mod tests {
         let config = HotReloadConfig::default();
         assert_eq!(config.rules_dir, "./rules");
         assert_eq!(config.evorule_server_url, "http://127.0.0.1:18080");
-        assert_eq!(config.session_id, None);
         assert_eq!(config.poll_interval_ms, 1000);
         assert!(config.auto_start);
     }
@@ -571,104 +526,78 @@ mod tests {
 
     // ============ 服务层 HTTP 测试（mockito） ============
 
+    /// 构造 server /api/rules/reload 成功响应体
+    fn reload_ok_body(previous: u64, current: u64) -> String {
+        serde_json::json!({
+            "reload_ok": true,
+            "previous_rules": previous,
+            "current_rules": current,
+            "error": null,
+            "rejected_overlaps": [],
+        })
+        .to_string()
+    }
+
     #[tokio::test]
-    async fn test_new_with_existing_session_id() {
-        // 已有 session_id → 不调 create_session,不需要 mock
+    async fn test_new_without_session() {
+        // reload 通路不需要会话——config 直接生效
         let config = HotReloadConfig {
             rules_dir: "./rules".to_string(),
             evorule_server_url: "http://127.0.0.1:1".to_string(),
-            session_id: Some(99),
             auth_token: None,
             poll_interval_ms: 1000,
             auto_start: false,
         };
         let svc = HotReloadService::new(config)
             .await
-            .expect("已有 session_id 时应直接成功");
+            .expect("service 创建应直接成功");
         let config = svc.lock_config();
-        assert_eq!(config.session_id, Some(99));
+        assert_eq!(config.evorule_server_url, "http://127.0.0.1:1");
     }
 
     #[tokio::test]
-    async fn test_new_creates_session() {
+    async fn test_trigger_reload_success() {
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("POST", "/api/sessions")
+            .mock("POST", "/api/rules/reload")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(serde_json::json!({"session_id": 42}).to_string())
+            .with_body(reload_ok_body(10, 12))
             .create_async()
             .await;
 
-        let config = HotReloadConfig {
-            rules_dir: "./rules".to_string(),
-            evorule_server_url: server.url(),
-            session_id: None,
-            auth_token: None,
-            poll_interval_ms: 1000,
-            auto_start: false,
-        };
-        let svc = HotReloadService::new(config).await.expect("应成功创建会话");
-        let config = svc.lock_config();
-        assert_eq!(config.session_id, Some(42));
-    }
-
-    #[tokio::test]
-    async fn test_new_create_session_error() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/api/sessions")
-            .with_status(500)
-            .create_async()
-            .await;
-
-        let config = HotReloadConfig {
-            rules_dir: "./rules".to_string(),
-            evorule_server_url: server.url(),
-            session_id: None,
-            auth_token: None,
-            poll_interval_ms: 1000,
-            auto_start: false,
-        };
-        let err = HotReloadService::new(config)
+        let (previous, current) = HotReloadService::trigger_reload(&server.url(), None)
             .await
-            .expect_err("上游 500 应报错");
-        // body 解析失败或 session_id 无效
-        assert!(
-            err.contains("解析响应失败") || err.contains("会话 ID 无效"),
-            "实际错误: {err}"
-        );
+            .expect("触发重载应成功");
+        assert_eq!(previous, 10);
+        assert_eq!(current, 12);
     }
 
     #[tokio::test]
-    async fn test_send_rules_success() {
+    async fn test_trigger_reload_upstream_error() {
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("POST", "/api/sessions/42/command")
-            .with_status(200)
-            .create_async()
-            .await;
-
-        let rules = vec![serde_json::json!({"name": "rule1"})];
-        HotReloadService::send_rules(&server.url(), 42, &rules, None)
-            .await
-            .expect("发送应成功");
-    }
-
-    #[tokio::test]
-    async fn test_send_rules_upstream_error() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/api/sessions/42/command")
+            .mock("POST", "/api/rules/reload")
             .with_status(500)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "reload_ok": false,
+                    "previous_rules": 10,
+                    "current_rules": 10,
+                    "error": "解析失败",
+                    "rejected_overlaps": [],
+                })
+                .to_string(),
+            )
             .create_async()
             .await;
 
-        let rules = vec![serde_json::json!({"name": "rule1"})];
-        let err = HotReloadService::send_rules(&server.url(), 42, &rules, None)
+        let err = HotReloadService::trigger_reload(&server.url(), None)
             .await
             .expect_err("上游 500 应报错");
         assert!(err.contains("服务器返回错误"), "实际错误: {err}");
+        assert!(err.contains("解析失败"), "错误应携带服务端 detail: {err}");
     }
 
     #[tokio::test]
@@ -679,32 +608,50 @@ mod tests {
 
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("POST", "/api/sessions/42/command")
+            .mock("POST", "/api/rules/reload")
             .with_status(200)
-            .expect(2) // 2 条规则 = 2 次请求
+            .with_header("content-type", "application/json")
+            .with_body(reload_ok_body(10, 12))
             .create_async()
             .await;
 
-        let svc =
-            new_service_with_session(dir.path().to_string_lossy().to_string(), server.url()).await;
+        let svc = new_service(dir.path().to_string_lossy().to_string(), server.url()).await;
 
+        // 返回服务端重载后的规则总数（current_rules）
         let count = svc.reload_rules().await.expect("重载应成功");
-        assert_eq!(count, 2);
+        assert_eq!(count, 12);
     }
 
     #[tokio::test]
-    async fn test_reload_rules_no_rules_found() {
+    async fn test_reload_rules_empty_dir_allowed() {
+        // 目录为准全量重载：空目录允许触发（用于清空业务规则）
         let dir = TempDir::new().expect("创建临时目录失败");
-        // 空目录,无规则文件
 
-        let svc = new_service_with_session(
-            dir.path().to_string_lossy().to_string(),
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/api/rules/reload")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(reload_ok_body(10, 10))
+            .create_async()
+            .await;
+
+        let svc = new_service(dir.path().to_string_lossy().to_string(), server.url()).await;
+
+        let count = svc.reload_rules().await.expect("空目录重载应成功");
+        assert_eq!(count, 10);
+    }
+
+    #[tokio::test]
+    async fn test_reload_rules_nonexistent_dir() {
+        let svc = new_service(
+            "Z:\\nonexistent\\path\\xyz".to_string(),
             "http://127.0.0.1:1".to_string(),
         )
         .await;
 
-        let err = svc.reload_rules().await.expect_err("无规则应报错");
-        assert!(err.contains("未找到任何规则文件"));
+        let err = svc.reload_rules().await.expect_err("目录不存在应报错");
+        assert!(err.contains("规则目录不存在"), "实际错误: {err}");
     }
 
     // ============ handler oneshot 测试 ============
@@ -715,11 +662,9 @@ mod tests {
         write_json_file(&dir, "rule1.json", &engine_native_rule());
         write_json_file(&dir, "rule2.json", &engine_native_rule());
 
-        let svc = new_service_with_session(
-            dir.path().to_string_lossy().to_string(),
-            "http://127.0.0.1:1".to_string(),
-        )
-        .await;
+        let svc =
+            new_service(dir.path().to_string_lossy().to_string(), "http://127.0.0.1:1".to_string())
+                .await;
         let router = build_router(svc);
 
         let (status, body) = send_request(
@@ -734,7 +679,6 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("\"status\":\"running\""));
-        assert!(body.contains("\"session_id\":42"));
         assert!(body.contains("\"rule_count\":2"));
     }
 
@@ -745,13 +689,14 @@ mod tests {
 
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("POST", "/api/sessions/42/command")
+            .mock("POST", "/api/rules/reload")
             .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(reload_ok_body(10, 11))
             .create_async()
             .await;
 
-        let svc =
-            new_service_with_session(dir.path().to_string_lossy().to_string(), server.url()).await;
+        let svc = new_service(dir.path().to_string_lossy().to_string(), server.url()).await;
         let router = build_router(svc);
 
         let (status, body) = send_request(
@@ -766,19 +711,33 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("\"success\":true"));
-        assert!(body.contains("\"rule_count\":1"));
+        assert!(body.contains("\"rule_count\":11"));
     }
 
     #[tokio::test]
-    async fn test_handler_reload_no_rules() {
+    async fn test_handler_reload_server_error() {
         let dir = TempDir::new().expect("创建临时目录失败");
-        // 空目录
+        write_json_file(&dir, "rule1.json", &engine_native_rule());
 
-        let svc = new_service_with_session(
-            dir.path().to_string_lossy().to_string(),
-            "http://127.0.0.1:1".to_string(),
-        )
-        .await;
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/api/rules/reload")
+            .with_status(500)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "reload_ok": false,
+                    "previous_rules": 10,
+                    "current_rules": 10,
+                    "error": "宪法解析失败",
+                    "rejected_overlaps": [],
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let svc = new_service(dir.path().to_string_lossy().to_string(), server.url()).await;
         let router = build_router(svc);
 
         let (status, body) = send_request(
@@ -791,9 +750,10 @@ mod tests {
         )
         .await;
 
+        // handler 层不向上传播错误，统一 200 + success:false（原有契约）
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("\"success\":false"));
-        assert!(body.contains("未找到任何规则文件"));
+        assert!(body.contains("规则重载失败"));
     }
 
     #[tokio::test]
@@ -803,11 +763,9 @@ mod tests {
         write_json_file(&dir, "b.json", "{}");
         fs::write(dir.path().join("c.txt"), "ignored").expect("写入失败");
 
-        let svc = new_service_with_session(
-            dir.path().to_string_lossy().to_string(),
-            "http://127.0.0.1:1".to_string(),
-        )
-        .await;
+        let svc =
+            new_service(dir.path().to_string_lossy().to_string(), "http://127.0.0.1:1".to_string())
+                .await;
         let router = build_router(svc);
 
         let (status, body) = send_request(

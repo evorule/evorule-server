@@ -44,7 +44,11 @@ impl From<Event> for FileChange {
 }
 
 /// 创建文件监听器
-pub fn create_watcher(path: &Path) -> Result<Receiver<FileChange>, notify::Error> {
+///
+/// 返回 `(watcher, receiver)`：调用方必须保持 `watcher` 存活（drop 后停止监听）。
+pub fn create_watcher(
+    path: &Path,
+) -> Result<(RecommendedWatcher, Receiver<FileChange>), notify::Error> {
     let (tx, rx) = channel();
 
     let mut watcher = RecommendedWatcher::new(
@@ -65,5 +69,5 @@ pub fn create_watcher(path: &Path) -> Result<Receiver<FileChange>, notify::Error
     watcher.watch(path, RecursiveMode::Recursive)?;
     info!(path = %path.display(), "已开始监听规则目录");
 
-    Ok(rx)
+    Ok((watcher, rx))
 }
