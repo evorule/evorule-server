@@ -125,15 +125,24 @@ IoDispatcher（共享，Clone）
 
 ```bash
 POST /api/sessions
-# 无需请求体
+# 请求体可选。{"caller_role": "..."} 显式声明会话主体：
+#   "human" = 人驱动会话（console 前端等）
+#   "llm"   = LLM 执行会话（agent 后端 / LLM 审计桥 / ai-plugin 等）
 ```
 
 ```json
+// 请求体（示例：声明为 LLM 执行会话）
+{"caller_role": "llm"}
+
 // 响应
 {"session_id": 1, "message": "Session created"}
 ```
 
 > **D-S1 对齐(2026-08-03)**：实际响应只含 `session_id` 与 `message`，无 `created_at`/`max_rounds`（此前的文档字段是臆造的）。
+
+**caller_role 声明与 I/O 权限判定**：声明登记后随每条命令注入审计链（`__meta__.caller_role`），I/O 请求经权限门按主体判定。默认策略：`human` = Allow，`llm` = Deny，**未声明 = Deny（fail-closed）**——LLM 会话如需发起 I/O，须由管理员显式加权限条目（见 §7.3）。非法值直接 400。
+
+**fork/from 继承**：`POST /api/sessions/from/{pid}` 与 `POST /api/sessions/fork/{pid}` 派生的子会话**自动继承父会话声明**（并自动 spawn IoSubscriber，与直连创建一致）；从归档派生（fork-from-archive）除外——归档会话声明不可考，子会话视为未声明。
 
 创建后，server 会**自动为该 session spawn IoSubscriber**（前提是 `SessionApi` 注入了 dispatcher，见 PITFALLS 坑 1）。
 
@@ -664,17 +673,52 @@ GET /api/permissions?subject=user:alice&resource=session:1&action=read
 
 ### 7.3 管理权限条目
 
+> **路径勘误(2026-09-29)**：本节此前写作 `GET/POST /api/permissions/entries`、`DELETE /api/permissions/entries/{entry_id}`，与实现不符。真实端点是 `POST /api/permissions`（新建，强制 Draft）、`GET/PUT/DELETE /api/permissions/{id}`、`POST /api/permissions/{id}/submit`（Draft→Candidate）、`POST /api/permissions/{id}/review`（Candidate→Active/Rejected，body `{"approve": true|false}`）。权限门**只对 Active 状态条目判定**，新建条目须走完三步（或对已存在条目 PUT 保态）。
+
 ```bash
-# 列出所有权限条目
-GET /api/permissions/entries
+# 列出所有权限条目（含当前版本号）
+GET /api/permissions
 
-# 新增权限条目
-POST /api/permissions/entries
-{"subject": "user:bob", "resource": "session:*", "action": "read", "effect": "Allow"}
+# 新增权限条目（强制 Draft，id 冲突 409）
+POST /api/permissions
+{"subject": {"subject_type": "user", "id": "bob"}, "resource": {"resource_type": "fact", "path": "state.*"}, "action": "read", "effect": "allow"}
 
-# 删除权限条目
-DELETE /api/permissions/entries/{entry_id}
+# 提交审批（Draft → Candidate）→ 裁决（Candidate → Active）
+POST /api/permissions/{id}/submit
+POST /api/permissions/{id}/review
+{"approve": true}
+
+# 全量替换（不存在则创建；已存在保持原状态）
+PUT /api/permissions/{id}
+
+# 删除权限条目（写墓碑，历史保留）
+DELETE /api/permissions/{id}
+
+# 判定测试
+POST /api/permissions/evaluate
 ```
+
+条目字段：`id`（必填）/ `subject{subject_type, id}` / `resource{resource_type, path}` / `action` / `effect`（`allow`/`deny` 小写）/ `conditions`（可选）。`subject_type` 取值 `user|role|rule|llm_agent|any`，`resource_type` 取值 `fact|io_action|api|shared`；`path` 以 `*` 结尾为前缀通配。
+
+**LLM 会话 I/O 放行条目（caller_role 声明机制配套，0.3.x）**：默认策略下 `llm` 主体的 I/O 一律 Deny（fail-closed）。LLM 会话（agent 后端 / LLM 审计桥 / ai-plugin 声明 `caller_role=llm` 的会话）如需调用外部服务，由管理员显式加一条 Allow 条目并走完审批流。配套脚本 `scripts/configure-llm-io-permission.ps1` 一键完成（幂等）：
+
+```bash
+# 1. 新建（Draft）：最小放大面——仅放行 call_service
+POST /api/permissions
+{"id": "default-llm-allow-io",
+ "subject": {"subject_type": "user", "id": "llm"},
+ "resource": {"resource_type": "io_action", "path": "io:call_service"},
+ "action": "*", "effect": "allow"}
+
+# 2. 提交审批
+POST /api/permissions/default-llm-allow-io/submit
+
+# 3. 裁决生效（Candidate → Active）
+POST /api/permissions/default-llm-allow-io/review
+{"approve": true}
+```
+
+条目落共享事实 WAL（持久，重启不丢）；主体匹配按 `subject.id == caller_role` 字符串（`"human"`/`"llm"`/`"unknown"`）。内置种子 `default-human-allow-io`（human × `io:*` × allow）启动时幂等登记；llm 条目是否开箱即用属部署策略，当前由管理员显式配置。
 
 > **注意**: 权限 API 是机制层原语，不包含具体业务角色定义。应用层（如 evorule-console）负责将业务角色（admin/editor/viewer）映射为具体的 PermissionEntry。
 
