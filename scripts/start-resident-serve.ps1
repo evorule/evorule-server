@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# start-resident-serve.ps1 — evorule-server 常驻实例启动脚本（唯一权威启动入口）
+# start-resident-serve.ps1 — evorule-server 常驻实例启动脚本（通用开发辅助）
 #
-# 【为什么必须有这个脚本】（2026-09-29 caller_role 接线批教训，登记册有同步条目）：
-#   常驻 serve 的启动参数此前只散落在会话记忆/对话中，无本地固化位。
-#   caller_role 接线批为验证宪法桥接（call-service → 127.0.0.1:9100）新增了
-#   --allow-loopback 参数并仅在设计文档留痕——下次会话若按记忆里的
-#   "原参数"手工拼启动，桥接 dispatch 将被 SSRF 防线拦截（错误应答
-#   丢弃分支），排查成本高且未必能定位到根因。
-#   纪律：重启常驻 serve 一律用本脚本，禁止手工拼参数。
-#   参数变更须先改本脚本（含理由注释）再执行。
+# 【适用范围说明】（2026-09-29 更新）：
+#   本脚本面向「其他开发环境/首次部署」的通用启动辅助。
+#   若你的环境使用 evo-agent ops 运维脚本族（scripts/ops/watchdog-check.ps1
+#   计划任务看门狗 + ops.local.json 配置），则本机常驻实例的启动参数权威源
+#   为 ops.local.json 的 services.evorule-server.args，重启一律交给看门狗
+#   或 ops 族的 start-evorule-server.ps1 —— 两处参数表需人工保持一致，
+#   变更时同步修改（参数语义见下方注释块）。
 #
 # 【--allow-loopback 参数变更留痕】（2026-09-29 caller_role 接线批）：
 #   本地开发约定（main.rs L786 注释语义，与已开的 --insecure-serve 同族）：
