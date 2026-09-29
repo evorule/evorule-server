@@ -15,6 +15,12 @@
 #   无此参则桥接 dispatch 被 SSRF 防线拦（http_handler.rs L266），宪法桥 io
 #   往返不可用。生产部署严禁加此参（SSRF 防线全额生效）。
 #
+# 【--wal-dir 参数变更留痕】（2026-09-29 审计链持久化修复批）：
+#   会话审计链（Command/IoRequest/IoResponse/判定/payload_update 事实）此前
+#   为纯内存模式（会话 TTL 1800s 过期即失、重启清零）。--wal-dir 指向全新
+#   目录（不复用旧 data\wal，避免启动时 WAL 恢复复活陈旧共享事实）。
+#   生产部署同样应配置 --wal-dir（或 EVORULE_WAL_DIR / paths.wal_dir）。
+#
 # 用法：
 #   pwsh -NoProfile -File scripts\start-resident-serve.ps1          # 启动（若已占用则拒绝）
 #   pwsh -NoProfile -File scripts\start-resident-serve.ps1 -Force   # 先停旧实例再启动
@@ -60,6 +66,7 @@ $args = @(
     "--io-warn-timeout-secs", "1800",
     "--io-error-timeout-secs", "3600",
     "--allow-loopback",                                                  # caller_role 接线批新增：放行 127.0.0.1:9100 桥接 dispatch（见头部留痕；生产禁用）
+    "--wal-dir", "D:\evorule-server\data\wal-live",                      # 审计链持久化修复批新增：会话事实 WAL 落盘（见头部留痕；勿指向含旧 WAL 的目录）
     "--log-file", "D:\evorule-server\data\agent-governance\logs\server.log"
 )
 
