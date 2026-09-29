@@ -20,7 +20,7 @@ use wasmtime::{Config, Engine, Linker, Memory, Module, ResourceLimiter, Store, T
 /// 资源上限（挂到 `Store` 的 `ResourceLimiter`）
 ///
 /// 签名对齐 wasmtime 48（`current`/`desired`/`maximum` **均为 `usize`**，
-/// 早期版本的 `u32` 签名已变更 —— 见 `wasmtime-48.0.2/src/runtime/limits.rs:32`）。
+/// 早期版本的 `u32` 签名已变更 —— 见 `wasmtime-48.0.3/src/runtime/limits.rs:32`）。
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     max_memory_bytes: usize,

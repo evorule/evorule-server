@@ -166,15 +166,16 @@ impl HotReloadService {
                 // 先获取配置（在 await 之前释放锁）
                 let (server_url, auth_token) = {
                     let config = svc_clone.lock_config();
-                    (
-                        config.evorule_server_url.clone(),
-                        config.auth_token.clone(),
-                    )
+                    (config.evorule_server_url.clone(), config.auth_token.clone())
                 };
 
                 match Self::trigger_reload(&server_url, auth_token.as_deref()).await {
                     Ok((previous, current)) => {
-                        info!(previous_rules = previous, current_rules = current, "规则自动重载成功");
+                        info!(
+                            previous_rules = previous,
+                            current_rules = current,
+                            "规则自动重载成功"
+                        );
                     }
                     Err(e) => {
                         warn!(error = %e, "触发规则重载失败");
@@ -662,9 +663,11 @@ mod tests {
         write_json_file(&dir, "rule1.json", &engine_native_rule());
         write_json_file(&dir, "rule2.json", &engine_native_rule());
 
-        let svc =
-            new_service(dir.path().to_string_lossy().to_string(), "http://127.0.0.1:1".to_string())
-                .await;
+        let svc = new_service(
+            dir.path().to_string_lossy().to_string(),
+            "http://127.0.0.1:1".to_string(),
+        )
+        .await;
         let router = build_router(svc);
 
         let (status, body) = send_request(
@@ -763,9 +766,11 @@ mod tests {
         write_json_file(&dir, "b.json", "{}");
         fs::write(dir.path().join("c.txt"), "ignored").expect("写入失败");
 
-        let svc =
-            new_service(dir.path().to_string_lossy().to_string(), "http://127.0.0.1:1".to_string())
-                .await;
+        let svc = new_service(
+            dir.path().to_string_lossy().to_string(),
+            "http://127.0.0.1:1".to_string(),
+        )
+        .await;
         let router = build_router(svc);
 
         let (status, body) = send_request(
