@@ -437,6 +437,16 @@ pub struct SessionApi {
     /// 规则命中统计聚合器：消费各会话/单反应器的 TransitionTrace，
     /// 按 规则集版本×来源×下标 聚合；查询面 /api/rules/hit-stats 与 Prometheus 指标。
     hit_stats: Arc<crate::api::hit_stats::HitStatsAggregator>,
+
+    /// 会话级 caller_role 声明表（O-179）
+    ///
+    /// 会话创建时若声明 caller_role（"human"/"llm"），在此登记（内存辅助态）：
+    /// 命令入口据此对声明会话提交的每条 Command 注入 instruction 根部
+    /// `__meta__.caller_role`（随 WAL 落账 = 判定权威源；本表仅承载「注入决策」，
+    /// 丢失不破坏判定与回放确定性——resolver 以 WAL 事实为权威，见专项设计档 §四）。
+    /// 注入发生在 Schema 门禁之后：transform_rule 条目级键白名单针对用户/LLM
+    /// 产物，服务端系统注入不属其对象。
+    caller_roles: Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>,
 }
 
 /// external 插件管理面端点(审批代理转发目标 + server 侧持有的 admin token)
@@ -735,6 +745,9 @@ impl SessionApi {
             hit_stats: Arc::new(crate::api::hit_stats::HitStatsAggregator::new(
                 initial_layout,
             )),
+
+            // 会话级 caller_role 声明表（O-179；默认空=全部会话不声明，零回归）
+            caller_roles: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -770,13 +783,44 @@ impl SessionApi {
         });
     }
 
+    /// 读取会话的 caller_role 声明（O-179；未声明 = None）
+    fn declared_caller_role(&self, session_id: u64) -> Option<String> {
+        self.caller_roles.lock().ok()?.get(&session_id).cloned()
+    }
+
+    /// 移除会话声明（O-179；会话终结路径调用，防声明表无界增长）
+    fn remove_caller_role(&self, session_id: u64) {
+        if let Ok(mut table) = self.caller_roles.lock() {
+            table.remove(&session_id);
+        }
+    }
+
+    /// O-179：对声明过的会话向指令根部注入 `__meta__.caller_role`
+    ///
+    /// - 仅声明会话注入；未声明指令原样（零回归）；
+    /// - 注入发生在 Schema 门禁之后（transform_rule 条目级键白名单针对用户/LLM
+    ///   产物，服务端系统注入不属其对象）；TCB 引擎对指令根部额外键零消费
+    ///   （transition 只读 type、executor 只读 type/params，差分尽调已实证）；
+    /// - instruction 非 object（理论上门禁已拦）不注入。
+    fn inject_caller_role(&self, session_id: u64, instruction: &mut serde_json::Value) {
+        if let Some(role) = self.declared_caller_role(session_id) {
+            if let Some(obj) = instruction.as_object_mut() {
+                let meta = obj
+                    .entry("__meta__".to_string())
+                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                if let Some(m) = meta.as_object_mut() {
+                    m.insert("caller_role".to_string(), serde_json::Value::String(role));
+                }
+            }
+        }
+    }
+
     /// 注入 I/O 分发器（builder 模式）
     ///
     ///
     /// 注入后，每个新创建的 session 会自动 spawn 一个 IoSubscriber，
     ///
     /// 将 session reactor 的 IoRequest 分发到注册的 handler。
-    ///
     pub fn with_dispatcher(mut self, dispatcher: IoDispatcher) -> Self {
         self.dispatcher = Some(dispatcher);
 
@@ -2859,11 +2903,18 @@ impl evorule_workspace::SessionOps for SessionApi {
 
                         let command_tx = session.command_tx.clone();
 
+                        // O-179：注入会话级 caller_role resolver（B-3 接缝；
+                        // 声明随 WAL 事实，回放确定性成立）
+                        let gate = PermissionGate::new(Arc::new(self.shared_facts.clone()))
+                            .with_caller_role_resolver(
+                                crate::api::caller_role_resolver::session_caller_role_resolver(
+                                    session.facts_log.clone(),
+                                ),
+                            );
+
                         let subscriber = IoSubscriber::new(dispatcher.clone())
                             .with_skip(Arc::new(is_external_executor_request))
-                            .with_permission_gate(PermissionGate::new(Arc::new(
-                                self.shared_facts.clone(),
-                            )));
+                            .with_permission_gate(gate);
 
                         tokio::spawn(async move {
                             if let Err(e) = subscriber.run(event_rx, command_tx).await {
@@ -2933,7 +2984,12 @@ impl evorule_workspace::SessionOps for SessionApi {
         };
 
         match result {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                // O-179：会话关闭，同步清理声明表
+                self.remove_caller_role(session_id);
+
+                Ok(())
+            }
 
             Err(_) => Err(evorule_workspace::WorkspaceError::not_found(
                 "session",
@@ -2960,6 +3016,11 @@ impl evorule_workspace::SessionOps for SessionApi {
         command: serde_json::Value,
     ) -> evorule_workspace::WorkspaceResult<u64> {
         let id = self.next_id();
+
+        // O-179：声明会话注入 __meta__.caller_role（workspace 桥接路径，落账前注入；
+        // TCB 引擎对根部额外键零消费）
+        let mut command = command;
+        self.inject_caller_role(session_id, &mut command);
 
         let instruction = serde_to_tcb(command);
 
@@ -3652,6 +3713,22 @@ pub struct PayloadUpdateRequest {
 // 动态载荷（payload / queue / fact 等）保留为 `serde_json::Value`，
 
 // 由 description 说明其结构；固定结构字段一律强类型化。
+
+/// 会话创建请求体（O-179）
+///
+/// 可选 body：缺省（无 body / 空 object）= 不声明，行为与既有会话完全一致
+/// （io 判定 Unknown → 默认策略 Deny，fail-closed 零回归）。
+#[derive(Debug, Default, Deserialize, ToSchema)]
+
+pub struct CreateSessionRequest {
+    /// 调用者角色声明（可选）
+    ///
+    /// 声明后：该会话内每条命令的 instruction 根部注入 `__meta__.caller_role`
+    /// 随 WAL 落账，I/O 判定权限门按此角色解析主体匹配与默认策略。
+    /// 仅接受 "human" | "llm"；其余值 400 拒绝（fail-closed，不静默降级）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_role: Option<String>,
+}
 
 /// 会话 ID 通用响应（create/close 等）
 
@@ -5239,9 +5316,13 @@ async fn platform_events_handler(
 
     tag = "sessions",
 
+    request_body = Option<CreateSessionRequest>,
+
     responses(
 
         (status = 200, description = "会话创建成功，返回 session_id", body = SessionIdResponse),
+
+        (status = 400, description = "caller_role 声明非法（仅接受 human | llm）"),
 
         (status = 429, description = "超过最大会话数"),
 
@@ -5257,7 +5338,22 @@ async fn create_session(
     State(api): State<SessionApi>,
 
     State(metrics): State<SharedMetrics>,
+
+    body: Option<Json<CreateSessionRequest>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // O-179：可选 caller_role 声明（fail-closed——非法值 400 显式拒绝，不静默降级 Unknown）
+    let declared_role: Option<String> = match body {
+        Some(Json(req)) => match req.caller_role.as_deref() {
+            None | Some("") => None,
+            Some(r @ ("human" | "llm")) => Some(r.to_string()),
+            Some(other) => {
+                tracing::warn!(caller_role = %other, "会话创建被拒：caller_role 非法");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        },
+        None => None,
+    };
+
     let result = {
         let sessions = api.sessions.lock().await;
 
@@ -5267,6 +5363,17 @@ async fn create_session(
     match result {
         Ok(id) => {
             metrics.inc_sessions(); // 会话数 +1
+
+            // O-179：声明登记（创建成功才登记；失败路径无会话可声明）
+            if let Some(role) = declared_role {
+                if let Ok(mut table) = api.caller_roles.lock() {
+                    table.insert(id, role);
+                }
+                tracing::info!(
+                    session_id = id,
+                    "会话已声明 caller_role（命令入口将注入 __meta__）"
+                );
+            }
 
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
@@ -5283,12 +5390,19 @@ async fn create_session(
 
                     let command_tx = session.command_tx.clone();
 
+                    // O-179：注入会话级 caller_role resolver（B-3 接缝；
+                    // 声明随 WAL 事实，回放确定性成立）
+                    let gate = PermissionGate::new(Arc::new(api.shared_facts.clone()))
+                        .with_caller_role_resolver(
+                            crate::api::caller_role_resolver::session_caller_role_resolver(
+                                session.facts_log.clone(),
+                            ),
+                        );
+
                     let subscriber = IoSubscriber::new(dispatcher.clone())
                         .with_metrics(metrics.clone())
                         .with_skip(Arc::new(is_external_executor_request))
-                        .with_permission_gate(PermissionGate::new(Arc::new(
-                            api.shared_facts.clone(),
-                        )));
+                        .with_permission_gate(gate);
 
                     tokio::spawn(async move {
                         if let Err(e) = subscriber.run(event_rx, command_tx).await {
@@ -6023,7 +6137,7 @@ async fn session_command(
     Json(req): Json<CommandRequest>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
     // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
-    let (instruction_value, sanitize_report) = sanitizer.sanitize_value(&req.instruction);
+    let (mut instruction_value, sanitize_report) = sanitizer.sanitize_value(&req.instruction);
     if sanitize_report.has_hits() {
         // P5-A1：命中指标化（按 rule）
         for rule in sanitize_report.unique_hits() {
@@ -6071,6 +6185,11 @@ async fn session_command(
     }
 
     let id = api.next_id();
+
+    // O-179：声明会话注入 __meta__.caller_role（Schema 门禁已过，落账前注入；
+    // 随 WAL 落账 = resolver 判定权威源）
+    api.inject_caller_role(session_id, &mut instruction_value);
+
     let instruction = serde_to_tcb(instruction_value);
 
     let sessions = api.sessions.lock().await;
@@ -10793,7 +10912,136 @@ mod tests {
 
     use super::*;
 
-    // ===== rules_dir 装载排序治理（注入序）单元测试 =====
+    // ===== O-179 caller_role 注入单元测试 =====
+
+    mod o179 {
+        use super::*;
+
+        /// 空白 SessionApi（纯内存，无 dispatcher）
+        fn blank_api() -> SessionApi {
+            SessionApi::new(vec![], 64)
+        }
+
+        #[test]
+        fn o179_inject_declared_session_adds_meta_and_keeps_body() {
+            let api = blank_api();
+            api.caller_roles
+                .lock()
+                .unwrap()
+                .insert(1, "human".to_string());
+
+            let mut instr = serde_json::json!({
+                "type": "io_request",
+                "params": {"io_type": "call_service", "service_name": "s"}
+            });
+            api.inject_caller_role(1, &mut instr);
+
+            assert_eq!(instr["__meta__"]["caller_role"], "human");
+            // 原有键不受影响
+            assert_eq!(instr["params"]["io_type"], "call_service");
+            assert_eq!(instr["type"], "io_request");
+        }
+
+        #[test]
+        fn o179_inject_undeclared_or_closed_session_is_noop() {
+            let api = blank_api();
+            let mut instr = serde_json::json!({"type": "set", "params": {"attr": "x", "operation": "set", "value": 1}});
+            api.inject_caller_role(42, &mut instr); // 未登记的会话
+            assert!(instr.get("__meta__").is_none());
+
+            // 声明后移除（close 语义）→ 同样不注入
+            api.caller_roles
+                .lock()
+                .unwrap()
+                .insert(7, "llm".to_string());
+            api.remove_caller_role(7);
+            assert!(api.declared_caller_role(7).is_none());
+        }
+
+        #[test]
+        fn o179_inject_into_existing_meta_object_merges() {
+            let api = blank_api();
+            api.caller_roles
+                .lock()
+                .unwrap()
+                .insert(2, "llm".to_string());
+            let mut instr = serde_json::json!({"type": "noop", "__meta__": {"note": "keep"}});
+            api.inject_caller_role(2, &mut instr);
+            assert_eq!(instr["__meta__"]["caller_role"], "llm");
+            assert_eq!(instr["__meta__"]["note"], "keep");
+        }
+
+        /// O-179 差分验证（设计档 §八风险 1 退路判定）：
+        /// 同一指令带/不带根部 `__meta__` 进 TCB execute_transition，
+        /// 规则命中与转换结果完全一致 —— 根部额外键与 TCB 兼容，退路不触发。
+        #[test]
+        fn o179_tcb_differential_meta_key_has_no_rule_effect() {
+            // 宪法同构最小片段（与 O-135 宪法测试同源结构）：
+            // L1 直接规则（set counter）+ 桥接 branch（call_service → io_request）
+            let core_eval = o135_tcb(O135_CONSTITUTION);
+            let plain = serde_json::json!({
+                "type": "call_service",
+                "params": {"service_name": "demo", "args": {"k": "v"}}
+            });
+
+            // 注入前的原文必须过提交期 Schema 门禁（回归锚）
+            assert!(
+                evorule_rule_schema::validate_command_instruction(&plain).valid,
+                "原文应过 Schema 门禁"
+            );
+
+            let mut injected = plain.clone();
+            injected["__meta__"] = serde_json::json!({"caller_role": "human"});
+
+            let payload = serde_json::json!({});
+            let queue: Vec<JsonValue> = Vec::new();
+            let r_plain = evorule_tcb::execute_transition(
+                &core_eval,
+                &serde_to_tcb(plain),
+                &serde_to_tcb(payload.clone()),
+                &queue,
+            )
+            .unwrap();
+            let r_injected = evorule_tcb::execute_transition(
+                &core_eval,
+                &serde_to_tcb(injected.clone()),
+                &serde_to_tcb(payload),
+                &queue,
+            )
+            .unwrap();
+
+            // 同为 IoRequired（桥接分支命中），io_type 一致 —— 规则命中行为不变
+            match (&r_plain, &r_injected) {
+                (
+                    evorule_tcb::TransitionResult::IoRequired {
+                        io_type: t1,
+                        params: _,
+                    },
+                    evorule_tcb::TransitionResult::IoRequired {
+                        io_type: t2,
+                        params: _,
+                    },
+                ) => assert_eq!(t1, t2, "带 __meta__ 与不带的规则命中 io_type 必须一致"),
+                (a, b) => panic!("两侧应同为 IoRequired，实际 plain={a:?} injected={b:?}"),
+            }
+        }
+
+        /// 注入发生在 Schema 门禁之后的守护测试：
+        /// 元指令（transform_rule 白名单 additionalProperties=false）原文不含
+        /// __meta__ 可过门禁 —— 若未来有人把注入挪到门禁前，此测试立即红。
+        #[test]
+        fn o179_meta_key_would_break_meta_instruction_gate_guard() {
+            let meta_instr = serde_json::json!({
+                "type": "io_request",
+                "params": {"io_type": "call_service"},
+                "__meta__": {"caller_role": "human"}
+            });
+            assert!(
+                !evorule_rule_schema::validate_command_instruction(&meta_instr).valid,
+                "根部 __meta__ 的元指令原文应被门禁拒绝（守护注入时机在门禁之后）"
+            );
+        }
+    }
 
     /// 临时 rules_dir 工厂（进程内唯一目录名，测试结束自清理）
     fn make_sort_test_rules_dir(tag: &str) -> std::path::PathBuf {

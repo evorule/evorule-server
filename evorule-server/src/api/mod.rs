@@ -12,6 +12,7 @@
 pub mod app_quota;
 pub mod audit_archive;
 pub mod bundles;
+pub mod caller_role_resolver;
 pub mod hit_stats;
 pub mod knowledge;
 pub mod marketplace;
