@@ -878,13 +878,14 @@ pub async fn run_audited_chat(
     let base = cfg.server_base_url.trim_end_matches('/').to_string();
     let headers = auth_headers(cfg)?;
 
-    // 1. 一次性 sidecar 会话
+    // 1. 一次性 sidecar 会话（声明 caller_role=llm：会话主体是 LLM 审计调用，
+    //    O-185 声明通路——服务端登记 caller_roles 表，PermissionGate 按角色判定）
     let created = fetch_step(
         http,
         reqwest::Method::POST,
         format!("{base}/api/sessions"),
         headers.clone(),
-        Some(json!({})),
+        Some(json!({"caller_role": "llm"})),
         "create_session",
     )
     .await?;
@@ -1520,6 +1521,7 @@ mod tests {
 
     #[derive(Clone)]
     struct MockState {
+        create_bodies: Arc<Mutex<Vec<Value>>>,
         commands: Arc<Mutex<Vec<Value>>>,
         io_responses: Arc<Mutex<Vec<Value>>>,
         /// 每次 LLM 调用收到的 messages（断言上下文演化：工具结果回喂）
@@ -1538,6 +1540,7 @@ mod tests {
     impl MockState {
         fn new(llm_ok: bool, replies: Vec<String>) -> Self {
             Self {
+                create_bodies: Arc::new(Mutex::new(Vec::new())),
                 commands: Arc::new(Mutex::new(Vec::new())),
                 io_responses: Arc::new(Mutex::new(Vec::new())),
                 llm_calls: Arc::new(Mutex::new(Vec::new())),
@@ -1560,7 +1563,14 @@ mod tests {
         json!({ "tool_call": { "name": name, "arguments": args } }).to_string()
     }
 
-    async fn mock_create() -> Json<Value> {
+    async fn mock_create(
+        State(st): State<MockState>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        st.create_bodies
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(body);
         Json(json!({ "session_id": 1 }))
     }
 
@@ -1710,6 +1720,11 @@ mod tests {
         let outcome = run_audited_chat(&cfg, &http, &test_request()).await.unwrap();
         assert_eq!(outcome.reply, "mock reply");
         assert_eq!(outcome.session_id, 1);
+
+        // 会话创建声明（O-185）：sidecar 会话主体是 LLM 审计调用，声明 caller_role=llm
+        let creates = st.create_bodies.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0]["caller_role"], "llm");
 
         // 命令事实：call_external + messages(prompt 全文) + executor 提示位
         let commands = st.commands.lock().unwrap_or_else(|e| e.into_inner());
