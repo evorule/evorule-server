@@ -589,6 +589,7 @@ mod tests {
             index,
             instr_type: "branch".to_string(),
             hit: true,
+            domain_attr: None,
         }
     }
 
@@ -597,6 +598,7 @@ mod tests {
             index,
             instr_type: "set".to_string(),
             hit: false,
+            domain_attr: None,
         }
     }
 

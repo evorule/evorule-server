@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-use crate::api::server::{ImportOutcome, RejectedOverlapEntry, SessionApi};
+use crate::api::server::{ImportOutcome, RejectedDomainEntry, RejectedOverlapEntry, SessionApi};
 
 /// 导入请求体（契约复刻治理侧 `ImportReq`：`{"bundle": DatasetBundle}`）
 #[derive(Debug, Deserialize)]
@@ -52,6 +52,9 @@ pub struct ImportResponse {
     /// reload 期 I/O 权利面防线拒载的重叠条目（导入前置预判已拦，正常为空数组；
     /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式到达调用方不静默）
     pub rejected_overlaps: Vec<RejectedOverlapEntry>,
+    /// reload 期 T4b domain 门禁拒载的违规条目（导入前置预判已拦，正常为空数组；
+    /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式到达调用方不静默）
+    pub rejected_domains: Vec<RejectedDomainEntry>,
 }
 
 /// 当前激活 bundle 信息（，来自 `bundle_manifest.json` 的精简视图）
@@ -126,6 +129,7 @@ pub async fn import_bundle_handler(
     let ImportOutcome {
         result,
         rejected_overlaps,
+        rejected_domains,
     } = outcome;
     Ok((
         StatusCode::CREATED,
@@ -137,6 +141,7 @@ pub async fn import_bundle_handler(
             entry_count: result.entry_count,
             missing_services: Vec::new(),
             rejected_overlaps,
+            rejected_domains,
         }),
     ))
 }

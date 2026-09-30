@@ -480,7 +480,7 @@ mod tests {
                 "instructions": [
                     { "type": "sampling_decider", "params": { "sample_interval": 5 } },
                     { "type": "conditional", "params": {
-                        "domain": { "type": "eq", "path": "payload.audit.trigger_shadow", "value": true },
+                        "domain": { "type": "eq", "path": "payload.audit.trigger_shadow", "value": true, "on_missing": "unsat" },
                         "then": { "type": "shadow_validate", "params": {} },
                         "else": { "type": "noop" }
                     } }
@@ -497,7 +497,7 @@ mod tests {
         let instr = serde_json::json!({
             "type": "while_loop",
             "params": {
-                "condition": { "type": "lt", "path": "payload.audit.evolution_count", "value": 3 },
+                "condition": { "type": "lt", "path": "payload.audit.evolution_count", "value": 3, "on_missing": "unsat" },
                 "body": [ { "type": "sampling_decider", "params": {} } ]
             }
         });
@@ -617,7 +617,7 @@ mod tests {
         // 读侧（domain.path）不受写侧禁令影响：payload.x 恰是正确读形态
         let doc = rs(serde_json::json!([
             { "type": "branch", "params": {
-                "domain": { "type": "eq", "path": "payload.system_state", "value": 1 },
+                "domain": { "type": "eq", "path": "payload.system_state", "value": 1, "on_missing": "unsat" },
                 "on_true": [],
                 "on_false": []
             } }

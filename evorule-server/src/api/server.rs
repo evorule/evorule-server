@@ -1190,12 +1190,23 @@ impl SessionApi {
     ///
     pub async fn reload_from_disk(
         &self,
-    ) -> Result<(usize, usize, Vec<RejectedOverlapEntry>), String> {
-        let (new_transforms, new_layout, rejected_overlaps) =
+    ) -> Result<
+        (
+            usize,
+            usize,
+            Vec<RejectedOverlapEntry>,
+            Vec<RejectedDomainEntry>,
+        ),
+        String,
+    > {
+        let (new_transforms, new_layout, rejected_overlaps, rejected_domains) =
             Self::load_merged_with_layout(&self.core_eval_path, &self.rules_dir)?;
 
         // O-135 装载防线横幅：reload 与启动共用（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
         Self::log_rejected_overlaps(&rejected_overlaps, "reload");
+
+        // T4b domain 求值装载门禁横幅（同款双态口径）
+        Self::log_rejected_domains(&rejected_domains, "reload");
 
         let new_len = new_transforms.len();
 
@@ -1236,7 +1247,12 @@ impl SessionApi {
             "session rules reloaded from disk"
         );
 
-        Ok((old_len_mgr.max(old_len_cache), new_len, rejected_overlaps))
+        Ok((
+            old_len_mgr.max(old_len_cache),
+            new_len,
+            rejected_overlaps,
+            rejected_domains,
+        ))
     }
 
     /// 从文件系统合并加载：TCB 宪法 core_eval.json（在前）+ rules_dir/*.json（在后，按文件名字典序）
@@ -1245,7 +1261,7 @@ impl SessionApi {
 
         rules_dir: &std::path::Path,
     ) -> Result<Vec<JsonValue>, String> {
-        Self::load_merged_with_layout(core_eval_path, rules_dir).map(|(rules, _, _)| rules)
+        Self::load_merged_with_layout(core_eval_path, rules_dir).map(|(rules, _, _, _)| rules)
     }
 
     /// 合并加载并产出规则集 layout（单一权威装载点）
@@ -1264,6 +1280,7 @@ impl SessionApi {
             Vec<JsonValue>,
             crate::api::hit_stats::RulesetLayout,
             Vec<RejectedOverlapEntry>,
+            Vec<RejectedDomainEntry>,
         ),
         String,
     > {
@@ -1286,9 +1303,16 @@ impl SessionApi {
         let (rules, sources, rejected_overlaps) =
             Self::reject_overlapped_io_rules(rules, sources, constitution_len);
 
+        // T4b domain 求值装载门禁（专项-20261001 方案 2' v4）：再剔除 eq/lt 域
+        // 「缺 on_missing 声明 / 声明非法值 / ValueLiteralAmbiguous 写作错误」条目
+        // （fail-closed 无警告通道；宪法前缀段豁免同 O-135；动态域=字符串形态
+        // `__` 引用天然豁免——域对象运行时才定形，归运行时防御层）
+        let (rules, sources, rejected_domains) =
+            Self::reject_undeclared_domain_rules(rules, sources, constitution_len);
+
         let layout = crate::api::hit_stats::RulesetLayout::from_rules(&rules, sources);
 
-        Ok((rules, layout, rejected_overlaps))
+        Ok((rules, layout, rejected_overlaps, rejected_domains))
     }
 
     // =========================================================================
@@ -1455,6 +1479,188 @@ impl SessionApi {
         }
 
         (kept_rules, kept_sources, rejected)
+    }
+
+    // =========================================================================
+    // T4b domain 求值装载门禁（2026-10-01，专项-domain求值静默false根修 方案 2' v4）
+    //
+    // 缺陷：eq/lt 域「状态侧静默 false」——路径缺失/类型不可比/value 被字面量化
+    // 三种情形与「真实比对为假」在输出上不可区分（审计不可归因），已致真实事故
+    // O-211（pack v1 eq 比对从未生效，部署后无人知）。
+    //
+    // 防线：装载期对字面 eq/lt 域对象三道拒收门（fail-closed，无警告通道——
+    // TCB/server 治理世界观没有警告，只有拒收与放行）：
+    //   ① missing_declaration：缺 on_missing 显式声明（作者必须显式决策——
+    //      error=Missing 拒绝执行 / unsat=Missing 走 on_false+归因落账）；
+    //   ② invalid_declaration：on_missing 非 error/unsat（声明值非法=显式拒收，
+    //      不静默回退缺省）；
+    //   ③ value_literal_ambiguous：value 字符串命中 exec 根段点路径形态（像路径
+    //      引用但缺 __ 前缀的写作错误，O-211 旧形态）——一律拒绝、无宽容选项；
+    //      判定谓词复用 TCB 导出 is_root_segment_dot_path（零镜像复算）。
+    //
+    // 豁免面：
+    //   - 宪法前缀段条目永不拒载（同 O-135；宪法内部组合由宪法维护者负责）；
+    //   - 动态域豁免：domain 值为 `__` 字符串引用（域对象运行时才定形）静态不可
+    //     判定——本门禁只对字面域对象生效，字符串形态 walk 天然不命中；动态到达
+    //     缺声明由 TCB 运行时防御层兜底（兼容缺省 unsat + 归因落账，T1/T2 范围）。
+    //
+    // 存量不追溯：已装载规则不受影响；重新装载/更新/导入时触发校验（渐进收敛）。
+    // =========================================================================
+
+    /// 单规则 domain 门禁违规提取（纯函数）：walk 整棵指令树，收集全部 eq/lt
+    /// 域对象的三道门违规。eq/lt 类型键仅域对象持有（transform_rule 5 元指令与
+    /// 指令层类型均不含 eq/lt），对象形态判定无误伤面。
+    fn domain_gate_violations(rule: &JsonValue) -> Vec<DomainViolation> {
+        const ON_MISSING_VALUES: [&str; 2] = ["error", "unsat"];
+
+        fn walk(v: &JsonValue, out: &mut Vec<DomainViolation>) {
+            match v {
+                JsonValue::Array(items) => {
+                    for it in items {
+                        walk(it, out);
+                    }
+                }
+                JsonValue::Object(map) => {
+                    let ty = map.get("type").and_then(|t| t.as_str());
+                    if matches!(ty, Some("eq") | Some("lt")) {
+                        let ty = ty.unwrap_or("");
+                        let path_desc = map
+                            .get("path")
+                            .and_then(|p| p.as_str())
+                            .map(|p| format!("path=\"{p}\""))
+                            .unwrap_or_else(|| "path 缺失".to_string());
+                        match map.get("on_missing") {
+                            None => out.push(DomainViolation {
+                                door: "missing_declaration".to_string(),
+                                detail: format!(
+                                    "{ty} 域 {path_desc} 缺 on_missing 显式声明（error=Missing 拒执行 / unsat=Missing 走 on_false+归因）"
+                                ),
+                            }),
+                            Some(d) => {
+                                if !matches!(d.as_str(), Some(s) if ON_MISSING_VALUES.contains(&s))
+                                {
+                                    out.push(DomainViolation {
+                                        door: "invalid_declaration".to_string(),
+                                        detail: format!(
+                                            "{ty} 域 {path_desc} on_missing 声明值非法（仅允许 error/unsat）"
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        if let Some(val) = map.get("value").and_then(|v| v.as_str()) {
+                            if evorule_tcb::domain::is_root_segment_dot_path(val) {
+                                out.push(DomainViolation {
+                                    door: "value_literal_ambiguous".to_string(),
+                                    detail: format!(
+                                        "{ty} 域 {path_desc} value=\"{val}\" 呈 exec 根段点路径形态但缺 __ 前缀（ValueLiteralAmbiguous 写作错误，运行时将被字面量化静默比对）"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    for child in map.values() {
+                        walk(child, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut out = Vec::new();
+        walk(rule, &mut out);
+        out
+    }
+
+    /// T4b domain 门禁装载判定（纯函数）：按序扫描合并列表，返回
+    /// `(kept_rules, kept_sources, rejected)`。宪法前缀段豁免同 O-135；
+    /// 剔除同步作用于合并列表与 sources（下标一致性不变式保持）。
+    fn reject_undeclared_domain_rules(
+        rules: Vec<JsonValue>,
+        sources: Vec<String>,
+        constitution_len: usize,
+    ) -> (Vec<JsonValue>, Vec<String>, Vec<RejectedDomainEntry>) {
+        let mut kept_rules = Vec::with_capacity(rules.len());
+        let mut kept_sources = Vec::with_capacity(sources.len());
+        let mut rejected = Vec::new();
+
+        for (idx, (rule, source)) in rules.into_iter().zip(sources).enumerate() {
+            let violations = Self::domain_gate_violations(&rule);
+            if !violations.is_empty() && idx >= constitution_len {
+                rejected.push(RejectedDomainEntry {
+                    index: idx,
+                    source,
+                    rule_summary: Self::rule_summary(&rule),
+                    violations,
+                });
+                continue; // 拒载：不进保留列表
+            }
+            kept_rules.push(rule);
+            kept_sources.push(source);
+        }
+
+        (kept_rules, kept_sources, rejected)
+    }
+
+    /// bundle 导入前置 domain 门禁预判（纯函数）：缺声明/非法声明/value 写作错误
+    /// 均为单条目绝对判定、不依赖装载基线（与 I/O 权利面重叠预判的「账本比对」
+    /// 不同），逐新条目独立 walk 即可；落盘前显式 Err（调用方 400）。
+    fn predict_import_undeclared_domains(
+        bundle_id: &str,
+        entries: &[(String, JsonValue)],
+    ) -> Vec<RejectedDomainEntry> {
+        let mut rejected = Vec::new();
+        for (pos, (entry_id, rule)) in entries.iter().enumerate() {
+            let violations = Self::domain_gate_violations(rule);
+            if !violations.is_empty() {
+                rejected.push(RejectedDomainEntry {
+                    index: pos,
+                    source: format!("bundles/{bundle_id}/{entry_id}"),
+                    rule_summary: Self::rule_summary(rule),
+                    violations,
+                });
+            }
+        }
+        rejected
+    }
+
+    /// T4b domain 门禁汇总横幅（启动 main.rs 与 reload 共用；对齐 O-135 双态口径）。
+    ///
+    /// - 0 拒载 → info（门禁干净）；
+    /// - >0 → 逐条 ERROR（下标/来源/特征/门类/明细）+ 汇总 ERROR。
+    pub fn log_rejected_domains(rejected: &[RejectedDomainEntry], context: &str) {
+        if rejected.is_empty() {
+            tracing::info!(
+                target: "domain_gate",
+                "domain 求值装载门禁汇总（{}）：0 拒载——eq/lt 域 on_missing 声明与 value 形态全部合规",
+                context
+            );
+            return;
+        }
+        for e in rejected {
+            let details = e
+                .violations
+                .iter()
+                .map(|v| format!("{}({})", v.door, v.detail))
+                .collect::<Vec<_>>()
+                .join("; ");
+            tracing::error!(
+                target: "domain_gate",
+                index = e.index,
+                source = %e.source,
+                "domain 求值装载门禁：拒载违规规则 [{}] {} — {}",
+                e.rule_summary, e.source, details
+            );
+        }
+        tracing::error!(
+            target: "domain_gate",
+            count = rejected.len(),
+            "domain 求值装载门禁汇总（{}）：{} 条规则被拒载（eq/lt 域必须显式声明 on_missing；\
+             value 不得呈缺 __ 前缀的 exec 根段点路径形态——状态侧静默 false 通道已从装载面关闭，\
+             补齐声明或修正 value 后可重新装载）",
+            context,
+            rejected.len()
+        );
     }
 
     /// bundle 导入前置 I/O 权利面重叠预判（纯函数）：落盘前以同一判定语义给出
@@ -2632,12 +2838,40 @@ impl SessionApi {
                      io_type）: {detail}",
                 ));
             }
+
+            // ③.6 T4b domain 求值装载门禁前置预判（仅规则包）：缺 on_missing 声明 /
+            // 声明非法值 / ValueLiteralAmbiguous 写作错误 → 落盘前显式 Err（调用方
+            // 400）。缺声明为单条目绝对判定（不依赖装载基线），与 ③.5 账本比对预判
+            // 不同源但同族（落盘前显式拒、替代半激活静默）。
+            let predicted_domains =
+                Self::predict_import_undeclared_domains(&bundle.bundle_id, &entries);
+            if !predicted_domains.is_empty() {
+                let detail = predicted_domains
+                    .iter()
+                    .map(|r| {
+                        let vs = r
+                            .violations
+                            .iter()
+                            .map(|v| format!("{}[{}]", v.door, v.detail))
+                            .collect::<Vec<_>>()
+                            .join("；");
+                        format!("`{}`({}) {}", r.source, r.rule_summary, vs)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("；");
+                return Err(format!(
+                    "快照包条目存在 domain 求值缺失策略未合规声明（eq/lt 域必须显式 \
+                     on_missing=error/unsat；value 不得呈缺 __ 前缀的 exec 根段点路径形态；\
+                     导入前置预判）: {detail}",
+                ));
+            }
         }
 
         if dry_run {
             return Ok(ImportOutcome {
                 result,
                 rejected_overlaps: Vec::new(),
+                rejected_domains: Vec::new(),
             });
         }
 
@@ -2645,6 +2879,7 @@ impl SessionApi {
         // Q12 W1 分流：知识包落 `{knowledge_dir}/bundles/`（与 rules_dir 物理隔离，
         // TCB 加载路径天然不触碰数据文件）；规则包落 `rules_dir/bundles/`（原语义）。
         let mut reload_rejected: Vec<RejectedOverlapEntry> = Vec::new();
+        let mut reload_rejected_domains: Vec<RejectedDomainEntry> = Vec::new();
         if is_knowledge {
             evorule_workspace::bundle_land::land_knowledge_bundle_atomically(
                 &self.knowledge_dir,
@@ -2661,8 +2896,10 @@ impl SessionApi {
             // ⑤b 触发既有 reload 链（新会话使用新规则；已存在会话不改 TCB 语义）。
             // 被拒重叠条目软结果透传到响应体（正常为空——③.5 前置预判已拦；
             // 非空=预判与 reload 之间 rules_dir 并发变更，半激活事实显式不静默）。
-            let (_, _, rejected) = self.reload_from_disk().await?;
+            // T4b domain 门禁拒载同款透传（③.6 前置预判已拦，正常为空）。
+            let (_, _, rejected, rejected_domains) = self.reload_from_disk().await?;
             reload_rejected = rejected;
+            reload_rejected_domains = rejected_domains;
         }
 
         // ⑥ T5 审计溯源：bundle 导入历史写入 workspace 元数据库（bundle_imports 表）。
@@ -2693,6 +2930,7 @@ impl SessionApi {
         Ok(ImportOutcome {
             result,
             rejected_overlaps: reload_rejected,
+            rejected_domains: reload_rejected_domains,
         })
     }
 
@@ -4759,11 +4997,39 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
                     rule_hits
                         .iter()
                         .map(|h| {
-                            serde_json::json!({
-                                "index": h.index,
-                                "instr_type": h.instr_type,
-                                "hit": h.hit,
-                            })
+                            // domain_attr 仅在 Some 时透出（None 省略）：
+                            // 既有消费方无感；branch/enforce 的三态域归因
+                            // （sat/unsat/missing + missing_reason）与
+                            // on_missing 声明值随事实面透传（专项-20261001）。
+                            let mut hit_obj = serde_json::Map::new();
+                            hit_obj.insert("index".into(), serde_json::json!(h.index));
+                            hit_obj.insert(
+                                "instr_type".into(),
+                                serde_json::Value::String(h.instr_type.clone()),
+                            );
+                            hit_obj.insert("hit".into(), serde_json::Value::Bool(h.hit));
+                            if let Some(attr) = &h.domain_attr {
+                                let mut attr_obj = serde_json::Map::new();
+                                attr_obj.insert(
+                                    "outcome".into(),
+                                    serde_json::Value::String(attr.outcome.clone()),
+                                );
+                                if let Some(reason) = &attr.missing_reason {
+                                    attr_obj.insert(
+                                        "missing_reason".into(),
+                                        serde_json::Value::String(reason.clone()),
+                                    );
+                                }
+                                if let Some(policy) = &attr.on_missing {
+                                    attr_obj.insert(
+                                        "on_missing".into(),
+                                        serde_json::Value::String(policy.clone()),
+                                    );
+                                }
+                                hit_obj
+                                    .insert("domain_attr".into(), serde_json::Value::Object(attr_obj));
+                            }
+                            serde_json::Value::Object(hit_obj)
                         })
                         .collect(),
                 ),
@@ -7554,6 +7820,28 @@ pub struct TraceHitDto {
     pub instr_type: String,
     /// 是否结构命中
     pub hit: bool,
+    /// 域判定归因（仅 branch/enforce 求值成功时出现，其余省略；
+    /// 专项-20261001 三态域判定：sat/unsat/missing 归因 + on_missing 声明值）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_attr: Option<DomainAttrDto>,
+}
+
+/// 域判定归因（branch/enforce 专属；专项-20261001 方案 2' v4）
+///
+/// 口径（与 `hit` 正交）：`hit` = 结构命中（有无生效路径）；
+/// `domain_attr.outcome` = 域条件三态求值结果；`on_missing` = 规则文本
+/// 静态声明值。R1 纪律：归因仅作审计用途，不回灌执行。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DomainAttrDto {
+    /// 域判定结果："sat" / "unsat" / "missing"
+    pub outcome: String,
+    /// Missing 分类（仅 outcome="missing" 时出现）："path_not_found" /
+    /// "incomparable" / "value_literal_ambiguous"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_reason: Option<String>,
+    /// 规则文本 `on_missing` 声明值："error" / "unsat"；未声明时省略
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_missing: Option<String>,
 }
 
 /// 将 core `Fact` 转换为强类型信封（附加版本号，字段与 `Fact::to_json` 对齐）
@@ -7628,6 +7916,11 @@ fn fact_to_envelope(fact: &Fact, version: u64) -> FactEnvelope {
                     index: h.index,
                     instr_type: h.instr_type.clone(),
                     hit: h.hit,
+                    domain_attr: h.domain_attr.as_ref().map(|a| DomainAttrDto {
+                        outcome: a.outcome.clone(),
+                        missing_reason: a.missing_reason.clone(),
+                        on_missing: a.on_missing.clone(),
+                    }),
                 })
                 .collect(),
         },
@@ -10775,6 +11068,30 @@ pub struct RejectedOverlapEntry {
     pub overlaps: Vec<RejectedOverlapDetail>,
 }
 
+/// T4b domain 求值装载门禁：被拒条目的单条违规明细
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DomainViolation {
+    /// 违规门类：`missing_declaration`（缺 on_missing 声明）/
+    /// `invalid_declaration`（on_missing 非 error/unsat）/
+    /// `value_literal_ambiguous`（value 呈 exec 根段点路径形态缺 __ 前缀）
+    pub door: String,
+    /// 违规位置与说明（含 domain.path 与修复指引）
+    pub detail: String,
+}
+
+/// T4b domain 求值装载门禁：被拒载的违规规则条目（审计面）
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RejectedDomainEntry {
+    /// 被拒条目在剔除前合并列表中的原始下标（与启动日志/hit-stats 下标口径一致）
+    pub index: usize,
+    /// 来源标签（rules_dir 相对路径；导入预判为 `bundles/{bundle_id}/{entry_id}`）
+    pub source: String,
+    /// 被拒规则特征摘要（顶层指令类型 + domain.instruction_type）
+    pub rule_summary: String,
+    /// 违规明细（三道门：缺声明/声明非法/value 写作错误）
+    pub violations: Vec<DomainViolation>,
+}
+
 /// bundle 导入结果（运行配置 + reload 期被拒重叠条目）
 ///
 /// `Deref` 到 [evorule_bundle::ImportResult]：既有运行配置字段访问面零迁移。
@@ -10785,6 +11102,9 @@ pub struct ImportOutcome {
     /// reload 期 I/O 权利面防线拒载的重叠条目（导入前置预判已拦，正常为空；
     /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式不静默）
     pub rejected_overlaps: Vec<RejectedOverlapEntry>,
+    /// reload 期 T4b domain 门禁拒载的违规条目（导入前置预判已拦，正常为空；
+    /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式不静默）
+    pub rejected_domains: Vec<RejectedDomainEntry>,
 }
 
 impl std::ops::Deref for ImportOutcome {
@@ -10812,6 +11132,10 @@ pub struct RulesReloadedResponse {
     /// O-135 装载防线：本次装载被拒载的重叠条目（空 = 无重叠）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected_overlaps: Vec<RejectedOverlapEntry>,
+
+    /// T4b domain 门禁：本次装载被拒载的违规条目（空 = 无违规）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejected_domains: Vec<RejectedDomainEntry>,
 }
 
 /// 规则热重载 handler
@@ -10843,7 +11167,7 @@ async fn reload_rules_handler(
     let old_len = sessions.core_eval_len();
 
     match sessions.reload_from_disk().await {
-        Ok((old, new_len, rejected_overlaps)) => Ok((
+        Ok((old, new_len, rejected_overlaps, rejected_domains)) => Ok((
             StatusCode::OK,
             Json(RulesReloadedResponse {
                 reload_ok: true,
@@ -10855,6 +11179,8 @@ async fn reload_rules_handler(
                 error: None,
 
                 rejected_overlaps,
+
+                rejected_domains,
             }),
         )),
 
@@ -10873,6 +11199,8 @@ async fn reload_rules_handler(
                     error: Some(e),
 
                     rejected_overlaps: Vec::new(),
+
+                    rejected_domains: Vec::new(),
                 }),
             ))
         }
@@ -11473,7 +11801,7 @@ mod tests {
         let core_eval_path = tmp.path().join("server_eval.json");
         std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
 
-        let (rules, _layout, rejected) =
+        let (rules, _layout, rejected, _rejected_domains) =
             SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).expect("装载不应失败");
 
         // 宪法 2 条 + e3 文件 2 条 − 拒 1 = 3
@@ -11509,7 +11837,7 @@ mod tests {
         let core_eval_path = tmp.path().join("server_eval.json");
         std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
 
-        let (rules, _layout, rejected) =
+        let (rules, _layout, rejected, _rejected_domains) =
             SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).unwrap();
 
         // 宪法 2 条 + t0 1 条 − 拒 1 = 2
@@ -11531,7 +11859,7 @@ mod tests {
         let core_eval_path = tmp.path().join("server_eval.json");
         std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
 
-        let (rules, _layout, rejected) =
+        let (rules, _layout, rejected, _rejected_domains) =
             SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).unwrap();
         // 宪法 2 条 + benign 文件 2 条（set + branch，均无 I/O 能力面）
         assert_eq!(rules.len(), 4);
@@ -11629,6 +11957,196 @@ mod tests {
         let (kept, _ks, rejected) = SessionApi::reject_overlapped_io_rules(rules, sources, 2);
         assert_eq!(kept.len(), 3, "参数化形态放行（诚实边界）");
         assert!(rejected.is_empty());
+    }
+
+    // =========================================================================
+    // T4b domain 求值装载门禁（专项-20261001 方案 2' v4 · DoD-C / DoD-A 前半）
+    // =========================================================================
+
+    /// T4b 辅助：构造携带指定域对象的最小 branch 规则 JSON
+    fn t4b_branch_rule(domain_obj: &str) -> String {
+        format!(
+            r#"{{"transform":[{{"type":"branch","params":{{"domain":{domain_obj},"on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}}]}}"#
+        )
+    }
+
+    /// 端到端（DoD-C + DoD-A 前半）：装载面为**双层门禁**——schema gate
+    /// （[`Self::passes_schema_gate`]，文件级 fail-closed）先行拒收缺 on_missing /
+    /// 非法声明 / O-211 旧形态 value 的规则文件；T4b walk 门禁（条目级 + 审计
+    /// 透传）为纵深面。本测试锁死：违规文件不进合并列表；声明齐全规则、动态域
+    /// （字符串形态豁免）与合法带点字面量正常放行。三道门的条目级判定语义由
+    /// [`t4b_domain_gate_pure_function_nesting_and_exempt`] 纯函数直调锁死；
+    /// 导入面（无 schema gate）由 ③.6 预判担主道（见导入预判测试）。
+    #[test]
+    fn t4b_domain_gate_end_to_end_reject_and_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+
+        // door ①：缺声明
+        std::fs::write(
+            rules_dir.join("a-missing.json"),
+            t4b_branch_rule(r#"{"type":"eq","path":"payload.status","value":"pending"}"#),
+        )
+        .unwrap();
+        // door ②：声明值非法（不在 error/unsat 值域）
+        std::fs::write(
+            rules_dir.join("b-invalid.json"),
+            t4b_branch_rule(
+                r#"{"type":"lt","path":"payload.count","value":5,"on_missing":"warn"}"#,
+            ),
+        )
+        .unwrap();
+        // door ③：O-211 旧形态写作错误（value 像 exec 路径但缺 __ 前缀）
+        std::fs::write(
+            rules_dir.join("c-ambiguous.json"),
+            t4b_branch_rule(
+                r#"{"type":"eq","path":"payload.milestone","value":"instruction.params.milestone_target","on_missing":"unsat"}"#,
+            ),
+        )
+        .unwrap();
+        // 合规放行：显式 error / 显式 unsat / 动态域字符串（豁免）/ 合法带点字面量（零误伤）
+        std::fs::write(
+            rules_dir.join("d-ok.json"),
+            format!(
+                r#"{{"transform":[
+                    {{"type":"branch","params":{{"domain":{{"type":"eq","path":"payload.role","value":"admin","on_missing":"error"}},"on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}},
+                    {{"type":"branch","params":{{"domain":{{"type":"lt","path":"payload.drift_count","value":3,"on_missing":"unsat"}},"on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}},
+                    {{"type":"branch","params":{{"domain":"__exec__.instruction.params.domain","on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}},
+                    {{"type":"branch","params":{{"domain":{{"type":"eq","path":"payload.scope","value":"meta_tool.pending_target_scope","on_missing":"unsat"}},"on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}}
+                ]}}"#
+            ),
+        )
+        .unwrap();
+        let core_eval_path = tmp.path().join("server_eval.json");
+        std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
+
+        let (rules, _layout, rejected_overlaps, rejected) =
+            SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir)
+                .expect("装载不应失败");
+
+        assert!(rejected_overlaps.is_empty(), "本样本不涉 I/O 权利面");
+        // schema gate 已把 a/b/c 三文件整体剔除（fail-closed），d-ok 4 条全放行：
+        // kept = 宪法 2 + d-ok 4 = 6；walk 门禁（纵深面）无条目到达 → 拒载明细为空
+        assert_eq!(rules.len(), 6, "违规 3 文件被 schema gate 剔除，不进合并列表");
+        assert!(
+            rejected.is_empty(),
+            "装载面违规已在 schema gate 文件级拦截（先于条目级 walk 门禁），不重复计数"
+        );
+    }
+
+    /// 纯函数：嵌套面（all.inner 内 eq 同检）+ value `__` 路径引用形态不误伤 +
+    /// 宪法前缀段豁免（有违规也不拒载，同 O-135 宪法优先语义）。
+    #[test]
+    fn t4b_domain_gate_pure_function_nesting_and_exempt() {
+        // 嵌套：all.inner 内 eq 缺声明同检（walk 整棵树）
+        let nested = o135_tcb(r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"all","inner":[
+                {"type":"exists","path":"payload.a"},
+                {"type":"eq","path":"payload.status","value":"x"}]},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#);
+        let violations = SessionApi::domain_gate_violations(&nested[0]);
+        assert_eq!(violations.len(), 1, "嵌套 inner 内 eq 同检");
+        assert_eq!(violations[0].door, "missing_declaration");
+
+        // 门 ②：on_missing 非法值（不在 error/unsat 值域）逐条目判定
+        let invalid = o135_tcb(r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"lt","path":"payload.count",
+             "value":5,"on_missing":"warn"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#);
+        let v2 = SessionApi::domain_gate_violations(&invalid[0]);
+        assert_eq!(v2.len(), 1, "声明值非法=显式拒收，不静默回退缺省");
+        assert_eq!(v2[0].door, "invalid_declaration");
+
+        // 门 ③：O-211 旧形态 value（像 exec 路径但缺 __ 前缀）一律拒、无宽容选项
+        let ambiguous = o135_tcb(r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"eq","path":"payload.milestone",
+             "value":"instruction.params.milestone_target","on_missing":"unsat"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#);
+        let v3 = SessionApi::domain_gate_violations(&ambiguous[0]);
+        assert_eq!(v3.len(), 1, "O-211 旧形态必须可判（DoD-A 前半）");
+        assert_eq!(v3[0].door, "value_literal_ambiguous");
+        assert!(v3[0].detail.contains("instruction.params.milestone_target"));
+        // 声明与写作错误同条并存时逐条开列（三道门独立判定）
+        let both = o135_tcb(r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"eq","path":"payload.milestone",
+             "value":"instruction.params.milestone_target","on_missing":"halt"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#);
+        let vb = SessionApi::domain_gate_violations(&both[0]);
+        assert_eq!(vb.len(), 2, "invalid_declaration + value_literal_ambiguous 并存");
+
+        // value `__` 路径引用形态（合法 path_ref，盘点 northstar r3/r4 形态）不触发门 ③
+        let path_ref = o135_tcb(r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"eq","path":"payload.a",
+             "value":"__exec__.payload.milestone_target","on_missing":"unsat"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#);
+        assert!(
+            SessionApi::domain_gate_violations(&path_ref[0]).is_empty(),
+            "__ 前缀路径引用是合法比较形态"
+        );
+
+        // 合法带点字面量（盘点实证 10 处形态：meta_*/MiniMax-*）零误伤
+        let dotted = o135_tcb(r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"eq","path":"payload.model",
+             "value":"MiniMax-M2.5","on_missing":"unsat"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#);
+        assert!(SessionApi::domain_gate_violations(&dotted[0]).is_empty());
+
+        // 非宪法条目违规 → 拒载；宪法条目（idx < constitution_len）违规 → 豁免放行
+        let mut rules = o135_tcb(O135_CONSTITUTION);
+        rules.push(nested[0].clone());
+        let sources = vec![
+            "core_eval".to_string(),
+            "core_eval".to_string(),
+            "x.json".to_string(),
+        ];
+        let (kept, _ks, rejected) =
+            SessionApi::reject_undeclared_domain_rules(rules, sources, 2);
+        assert_eq!(kept.len(), 2, "宪法 2 条保留，违规条目被拒");
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].index, 2, "被拒下标 = 原始合并下标口径");
+        assert_eq!(rejected[0].source, "x.json");
+
+        let constitution_violation = o135_tcb(&t4b_branch_rule(
+            r#"{"type":"eq","path":"p","value":"v"}"#,
+        ))[0]
+            .clone();
+        let (kept2, _ks2, rejected2) = SessionApi::reject_undeclared_domain_rules(
+            vec![constitution_violation],
+            vec!["core_eval".to_string()],
+            1,
+        );
+        assert!(rejected2.is_empty(), "宪法前缀段豁免（同 O-135）");
+        assert_eq!(kept2.len(), 1);
+    }
+
+    /// 导入前置预判（DoD-C 导入面）：缺声明 bundle 条目在落盘前被预判拒收，
+    /// 明细归因到 `bundles/{bundle_id}/{entry_id}`。
+    #[test]
+    fn t4b_import_prediction_rejects_undeclared_entries() {
+        let good = o135_tcb(&t4b_branch_rule(
+            r#"{"type":"eq","path":"payload.role","value":"admin","on_missing":"error"}"#,
+        ))[0]
+            .clone();
+        let bad = o135_tcb(&t4b_branch_rule(
+            r#"{"type":"lt","path":"payload.count","value":5}"#,
+        ))[0]
+            .clone();
+        let entries = vec![
+            ("good-entry".to_string(), good),
+            ("bad-entry".to_string(), bad),
+        ];
+        let predicted = SessionApi::predict_import_undeclared_domains("bdl-x", &entries);
+        assert_eq!(predicted.len(), 1, "仅缺声明条目被预判拒收");
+        assert_eq!(predicted[0].index, 1);
+        assert_eq!(predicted[0].source, "bundles/bdl-x/bad-entry");
+        assert_eq!(predicted[0].violations[0].door, "missing_declaration");
     }
 
     /// 接线点 ②（宪法 loader）：enforce 期宪法违规 fail-fast 拒启；warn 期放行。

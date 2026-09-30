@@ -273,6 +273,9 @@ mod tests {
                                 ("type", JsonValue::string("eq")),
                                 ("path", JsonValue::string("payload.x")),
                                 ("value", JsonValue::Integer(1)),
+                                // 专项-20261001 T4b：eq 域缺失策略为必填声明（schema
+                                // v1.0 收紧后缺 on_missing 即拒）
+                                ("on_missing", JsonValue::string("unsat")),
                             ]),
                         ),
                         (
