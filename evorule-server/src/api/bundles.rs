@@ -52,7 +52,7 @@ pub struct ImportResponse {
     /// reload 期 I/O 权利面防线拒载的重叠条目（导入前置预判已拦，正常为空数组；
     /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式到达调用方不静默）
     pub rejected_overlaps: Vec<RejectedOverlapEntry>,
-    /// reload 期 T4b domain 门禁拒载的违规条目（导入前置预判已拦，正常为空数组；
+    /// reload 期 domain 门禁拒载的违规条目（导入前置预判已拦，正常为空数组；
     /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式到达调用方不静默）
     pub rejected_domains: Vec<RejectedDomainEntry>,
 }

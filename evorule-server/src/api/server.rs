@@ -1205,7 +1205,7 @@ impl SessionApi {
         // 装载防线横幅：reload 与启动共用（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
         Self::log_rejected_overlaps(&rejected_overlaps, "reload");
 
-        // T4b domain 求值装载门禁横幅（同款双态口径）
+        // domain 求值装载门禁横幅（同款双态口径）
         Self::log_rejected_domains(&rejected_domains, "reload");
 
         let new_len = new_transforms.len();
@@ -1295,7 +1295,7 @@ impl SessionApi {
         let (rules, sources, rejected_overlaps) =
             Self::reject_overlapped_io_rules(rules, sources, constitution_len);
 
-        // T4b domain 求值装载门禁（专项-20261001 方案 2' v4）：再剔除 eq/lt 域
+        // domain 求值装载门禁（三态声明化方案 v4）：再剔除 eq/lt 域
         // 「缺 on_missing 声明 / 声明非法值 / ValueLiteralAmbiguous 写作错误」条目
         // （fail-closed 无警告通道；宪法前缀段豁免同装载防线；动态域=字符串形态
         // `__` 引用天然豁免——域对象运行时才定形，归运行时防御层）
@@ -1474,7 +1474,7 @@ impl SessionApi {
     }
 
     // =========================================================================
-    // T4b domain 求值装载门禁（2026-10-01，专项-domain求值静默false根修 方案 2' v4）
+    // domain 求值装载门禁（2026-10-01，静默 false 根修方案 2' v4）
     //
     // 缺陷：eq/lt 域「状态侧静默 false」——路径缺失/类型不可比/value 被字面量化
     // 三种情形与「真实比对为假」在输出上不可区分（审计不可归因），已致真实事故
@@ -1564,7 +1564,7 @@ impl SessionApi {
         out
     }
 
-    /// T4b domain 门禁装载判定（纯函数）：按序扫描合并列表，返回
+    /// domain 门禁装载判定（纯函数）：按序扫描合并列表，返回
     /// `(kept_rules, kept_sources, rejected)`。宪法前缀段豁免同装载防线；
     /// 剔除同步作用于合并列表与 sources（下标一致性不变式保持）。
     fn reject_undeclared_domain_rules(
@@ -1654,7 +1654,7 @@ impl SessionApi {
             .join("；")
     }
 
-    /// T4b domain 门禁汇总横幅（启动 main.rs 与 reload 共用；对齐装载防线双态口径）。
+    /// domain 门禁汇总横幅（启动 main.rs 与 reload 共用；对齐装载防线双态口径）。
     ///
     /// - 0 拒载 → info（门禁干净）；
     /// - >0 → 逐条 ERROR（下标/来源/特征/门类/明细）+ 汇总 ERROR。
@@ -2854,7 +2854,7 @@ impl SessionApi {
                 ));
             }
 
-            // ③.6 T4b domain 求值装载门禁前置预判（仅规则包）：缺 on_missing 声明 /
+            // ③.6 domain 求值装载门禁前置预判（仅规则包）：缺 on_missing 声明 /
             // 声明非法值 / ValueLiteralAmbiguous 写作错误 → 落盘前显式 Err（调用方
             // 400）。缺声明为单条目绝对判定（不依赖装载基线），与 ③.5 账本比对预判
             // 不同源但同族（落盘前显式拒、替代半激活静默）。
@@ -2899,7 +2899,7 @@ impl SessionApi {
             // ⑤b 触发既有 reload 链（新会话使用新规则；已存在会话不改 TCB 语义）。
             // 被拒重叠条目软结果透传到响应体（正常为空——③.5 前置预判已拦；
             // 非空=预判与 reload 之间 rules_dir 并发变更，半激活事实显式不静默）。
-            // T4b domain 门禁拒载同款透传（③.6 前置预判已拦，正常为空）。
+            // domain 门禁拒载同款透传（③.6 前置预判已拦，正常为空）。
             let (_, _, rejected, rejected_domains) = self.reload_from_disk().await?;
             reload_rejected = rejected;
             reload_rejected_domains = rejected_domains;
@@ -11067,7 +11067,7 @@ pub struct RejectedOverlapEntry {
     pub overlaps: Vec<RejectedOverlapDetail>,
 }
 
-/// T4b domain 求值装载门禁：被拒条目的单条违规明细
+/// domain 求值装载门禁：被拒条目的单条违规明细
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DomainViolation {
     /// 违规门类：`missing_declaration`（缺 on_missing 声明）/
@@ -11078,7 +11078,7 @@ pub struct DomainViolation {
     pub detail: String,
 }
 
-/// T4b domain 求值装载门禁：被拒载的违规规则条目（审计面）
+/// domain 求值装载门禁：被拒载的违规规则条目（审计面）
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RejectedDomainEntry {
     /// 被拒条目在剔除前合并列表中的原始下标（与启动日志/hit-stats 下标口径一致）
@@ -11092,7 +11092,7 @@ pub struct RejectedDomainEntry {
 }
 
 /// 合并装载产出四元组：合并规则列表（引擎输入）+ layout（下标→来源解析）
-/// + 装载防线被拒重叠条目 + T4b domain 门禁被拒条目。
+/// + 装载防线被拒重叠条目 + domain 门禁被拒条目。
 pub type MergedLoadOutcome = (
     Vec<JsonValue>,
     crate::api::hit_stats::RulesetLayout,
@@ -11110,7 +11110,7 @@ pub struct ImportOutcome {
     /// reload 期 I/O 权利面防线拒载的重叠条目（导入前置预判已拦，正常为空；
     /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式不静默）
     pub rejected_overlaps: Vec<RejectedOverlapEntry>,
-    /// reload 期 T4b domain 门禁拒载的违规条目（导入前置预判已拦，正常为空；
+    /// reload 期 domain 门禁拒载的违规条目（导入前置预判已拦，正常为空；
     /// 非空=预判与 reload 之间 rules_dir 并发变更的半激活事实，显式不静默）
     pub rejected_domains: Vec<RejectedDomainEntry>,
 }
@@ -11141,7 +11141,7 @@ pub struct RulesReloadedResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected_overlaps: Vec<RejectedOverlapEntry>,
 
-    /// T4b domain 门禁：本次装载被拒载的违规条目（空 = 无违规）
+    /// domain 门禁：本次装载被拒载的违规条目（空 = 无违规）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected_domains: Vec<RejectedDomainEntry>,
 }
@@ -11968,19 +11968,19 @@ mod tests {
     }
 
     // =========================================================================
-    // T4b domain 求值装载门禁（专项-20261001 方案 2' v4 · DoD-C / DoD-A 前半）
+    // domain 求值装载门禁（三态声明化方案 v4 · 端到端/装载面用例素材）
     // =========================================================================
 
-    /// T4b 辅助：构造携带指定域对象的最小 branch 规则 JSON
+    /// 测试辅助：构造携带指定域对象的最小 branch 规则 JSON
     fn t4b_branch_rule(domain_obj: &str) -> String {
         format!(
             r#"{{"transform":[{{"type":"branch","params":{{"domain":{domain_obj},"on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}}]}}"#
         )
     }
 
-    /// 端到端（DoD-C + DoD-A 前半）：装载面为**双层门禁**——schema gate
+    /// 端到端（导入面 + 装载面）：装载面为**双层门禁**——schema gate
     /// （[`Self::passes_schema_gate`]，文件级 fail-closed）先行拒收缺 on_missing /
-    /// 非法声明 / 历史写作错误旧形态 value 的规则文件；T4b walk 门禁（条目级 + 审计
+    /// 非法声明 / 历史写作错误旧形态 value 的规则文件；walk 门禁（条目级 + 审计
     /// 透传）为纵深面。本测试锁死：违规文件不进合并列表；声明齐全规则、动态域
     /// （字符串形态豁免）与合法带点字面量正常放行。三道门的条目级判定语义由
     /// [`t4b_domain_gate_pure_function_nesting_and_exempt`] 纯函数直调锁死；
@@ -12148,7 +12148,7 @@ mod tests {
         assert_eq!(kept2.len(), 1);
     }
 
-    /// 导入前置预判（DoD-C 导入面）：缺声明 bundle 条目在落盘前被预判拒收，
+    /// 导入前置预判（导入面）：缺声明 bundle 条目在落盘前被预判拒收，
     /// 明细归因到 `bundles/{bundle_id}/{entry_id}`。
     #[test]
     fn t4b_import_prediction_rejects_undeclared_entries() {

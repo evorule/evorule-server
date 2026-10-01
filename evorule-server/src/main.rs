@@ -1671,7 +1671,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 装载期 I/O 权利面独占防线：启动汇总横幅（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
     SessionApi::log_rejected_overlaps(&rejected_overlaps, "启动装载");
 
-    // T4b domain 求值装载门禁：启动汇总横幅（同款双态口径）
+    // domain 求值装载门禁：启动汇总横幅（同款双态口径）
     SessionApi::log_rejected_domains(&rejected_domains, "启动装载");
 
     // 影子强制汇总曝光（纪律门禁影子强制整改，2026-09-24）：装载完成后一次性上报

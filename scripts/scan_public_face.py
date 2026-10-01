@@ -130,6 +130,16 @@ INTERNAL_ID_PATTERNS = [
     re.compile(r'设计稿\s*\d+\s*号'),
     re.compile('PLANNING_' + r'FINALIZE'),
     re.compile(r'T[7' + r'8]\s*(?:缓办|调查报告)'),
+    # 内部批次编号 T 系（T1-T5 及 a/b 子批）。收窄形态防误伤：裸 T\d 不收
+    # （Rust 泛型参数 T1/T2 等代码形态会大面积误伤），只收批次词前缀/
+    # 「批」后缀/字母子批号三种形态。
+    re.compile('批次' + r'\s*T' + r'\d+(?:[ab])?\b'),
+    re.compile(r'\bT' + r'\d+(?:[ab])?\s*批'),
+    re.compile(r'\bT' + r'\d+[ab]\b'),
+    # DoD 系内部代号（DoD-A / DoD B-3 形态）；裸「B-3」不收（误伤面宽，
+    # 仅在 DoD 前缀语境下收）
+    re.compile(r'\bDoD\s*[-]?\s*[A-Z]\b'),
+    re.compile(r'\bDoD\s+[A-Z]-\d+\b'),
 ]
 # B 类行级豁免：法规/标准引文行（产品域合法内容，规则仓与体验包大量引用）
 LEGAL_CITATION_LINE_HINTS = re.compile(

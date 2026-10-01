@@ -481,7 +481,7 @@ pub struct TranslateToConditionalResponse {
 /// P0-03: 嵌套一律用 `inner`（not=单域对象, all=域数组），禁止旧 `domain`/`domains` 字段，
 /// 与固化 v1.0 Schema（records/70）及引擎 domain.rs 实现对齐。
 fn build_condition_domain(op: &str, field: &str, value: Value) -> Value {
-    // 专项-20261001 T4b：翻译器生成的 eq/lt 一律携带 on_missing="unsat" 显式声明
+    // domain 门禁批次约定：翻译器生成的 eq/lt 一律携带 on_missing="unsat" 显式声明
     //（schema v1.0 收紧后缺声明将被装载期拒收）。选 unsat = 保行为等价：改前
     // Missing 被压平为 false（not 组合下 gt/gte 的 Missing 语义本就翻转为 true），
     // 显式声明后行为不变且归因落账可见；error 会把 Missing 变 Err，属语义变更不选。
