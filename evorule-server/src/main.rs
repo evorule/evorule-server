@@ -1668,7 +1668,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         step_start.elapsed().as_millis()
     );
 
-    // O-135 装载期 I/O 权利面独占防线：启动汇总横幅（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
+    // 装载期 I/O 权利面独占防线：启动汇总横幅（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
     SessionApi::log_rejected_overlaps(&rejected_overlaps, "启动装载");
 
     // T4b domain 求值装载门禁：启动汇总横幅（同款双态口径）
@@ -1693,7 +1693,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 批次 W1：三层规则清单日志（分层=纯约定，语义见 设计方案 §2.1；
+    // 三层规则清单日志（分层=纯约定，语义见 设计方案 §2.1；
     // 运维启动时一眼核对层级文件数是否符合预期，异常增量即篡改信号）
     let tiers = SessionApi::tier_inventory(&cfg.core_eval, &cfg.rules_dir);
     let tier_summary = tiers
@@ -2305,7 +2305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // AppState 注入 metrics 和 readiness
     // H6: metrics 总是注入（PrometheusMetrics 实现 IoMetrics trait）
-    // 批次 W1:快照任务需要 SharedFactsLog,先 clone 一份再 move 进 AppState
+    // 快照任务需要 SharedFactsLog,先 clone 一份再 move 进 AppState
     let quota_shared = shared_facts.clone();
     let state = AppState::new(
         api,
@@ -2319,7 +2319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // :演示登录入口开关注入（经 auth/status 公开下发）
     .with_demo_auth(cfg.demo_auth);
 
-    // 批次 W1:应用配额快照后台任务(周期落 app_quota_snapshot 事件供重启
+    // 应用配额快照后台任务(周期落 app_quota_snapshot 事件供重启
     // 恢复;周期经 EVORULE_QUOTA_SNAPSHOT_SECS 配置,0=关闭;无配额应用时空跳)
     state.app_quota().spawn_snapshot_task(quota_shared);
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 会话级 caller_role 解析器（O-179，B-3 接缝的应用层实现）
+//! 会话级 caller_role 解析器（会话级声明通路，应用层接缝实现）
 //!
 //! # 机制（专项设计档 §三 方案 A′：声明随首因事实）
 //!
@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     use evorule_tcb::JsonValue;
 
-    /// O-179 resolver 单测矩阵（设计档 §七）：
+    /// resolver 单测矩阵（设计档 §七）：
     /// 1 声明 human/llm 链完整；2 未声明/非法值；3 IoResponse 恢复链；
     /// 4 深度上限/环/断链；5 链外事实不参与；6 gate 级判定覆盖。
     /// {"type":"call_service"} (+ 可选 __meta__.caller_role)

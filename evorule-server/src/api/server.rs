@@ -108,7 +108,7 @@ pub fn is_agent_tool_request(io_type: &IoType, params: &JsonValue) -> bool {
         && params.get("name").is_none()
 }
 
-/// bundle 自有探针形态判定（O-150 改造版）。
+/// bundle 自有探针形态判定（探针形态改造版）。
 ///
 /// `flow_probe` 为 bundle 层自有 io_type（平台 io_type 发射权部署面独占，bundle
 /// 规则的 io 往返正道），无内置 handler——此类 IoRequest **不由内置 IoSubscriber
@@ -438,7 +438,7 @@ pub struct SessionApi {
     /// 按 规则集版本×来源×下标 聚合；查询面 /api/rules/hit-stats 与 Prometheus 指标。
     hit_stats: Arc<crate::api::hit_stats::HitStatsAggregator>,
 
-    /// 会话级 caller_role 声明表（O-179）
+    /// 会话级 caller_role 声明表
     ///
     /// 会话创建时若声明 caller_role（"human"/"llm"），在此登记（内存辅助态）：
     /// 命令入口据此对声明会话提交的每条 Command 注入 instruction 根部
@@ -674,7 +674,7 @@ impl SessionApi {
             sessions: sessions.clone(),
 
             // fork-from-archive：归档链源目录（与 SessionManager/archive_cache 同源）
-            // 批次 W2 顺带修复：wal_dir 同时供本字段与 archive_cache 消费，
+            // 顺带修复：wal_dir 同时供本字段与 archive_cache 消费，
             // 需 clone 一次否则双重 move 编译失败
             wal_dir: wal_dir.clone(),
 
@@ -746,7 +746,7 @@ impl SessionApi {
                 initial_layout,
             )),
 
-            // 会话级 caller_role 声明表（O-179；默认空=全部会话不声明，零回归）
+            // 会话级 caller_role 声明表（默认空=全部会话不声明，零回归）
             caller_roles: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -783,7 +783,7 @@ impl SessionApi {
         });
     }
 
-    /// 为新会话 spawn IoSubscriber（O-185/O-182：create_session / from / fork
+    /// 为新会话 spawn IoSubscriber（create_session / from / fork
     /// 三处复用的公共构造段，防漂移）
     ///
     /// - 没有 IoSubscriber 时，session 的 IoRequest 会 60s 超时；
@@ -815,7 +815,7 @@ impl SessionApi {
 
                 let command_tx = session.command_tx.clone();
 
-                // O-179：注入会话级 caller_role resolver（B-3 接缝；
+                // 注入会话级 caller_role resolver（应用层接缝；
                 // 声明随 WAL 事实，回放确定性成立）
                 let gate = PermissionGate::new(Arc::new(self.shared_facts.clone()))
                     .with_caller_role_resolver(
@@ -844,19 +844,19 @@ impl SessionApi {
         }
     }
 
-    /// 读取会话的 caller_role 声明（O-179；未声明 = None）
+    /// 读取会话的 caller_role 声明（未声明 = None）
     fn declared_caller_role(&self, session_id: u64) -> Option<String> {
         self.caller_roles.lock().ok()?.get(&session_id).cloned()
     }
 
-    /// 移除会话声明（O-179；会话终结路径调用，防声明表无界增长）
+    /// 移除会话声明（会话终结路径调用，防声明表无界增长）
     fn remove_caller_role(&self, session_id: u64) {
         if let Ok(mut table) = self.caller_roles.lock() {
             table.remove(&session_id);
         }
     }
 
-    /// O-179：对声明过的会话向指令根部注入 `__meta__.caller_role`
+    /// 对声明过的会话向指令根部注入 `__meta__.caller_role`
     ///
     /// - 仅声明会话注入；未声明指令原样（零回归）；
     /// - 注入发生在 Schema 门禁之后（transform_rule 条目级键白名单针对用户/LLM
@@ -1184,7 +1184,7 @@ impl SessionApi {
     /// # 返回
     ///
     /// - `Ok((old_len, new_len, rejected_overlaps))`：旧规则数、新规则数（剔除后）、
-    ///   O-135 装载防线被拒重叠条目清单（审计面；同时已由 [`Self::log_rejected_overlaps`] 大声上报）
+    ///   装载防线被拒重叠条目清单（审计面；同时已由 [`Self::log_rejected_overlaps`] 大声上报）
     ///
     /// - `Err(String)`：读取/解析失败（失败时旧规则保持不变）
     ///
@@ -1202,7 +1202,7 @@ impl SessionApi {
         let (new_transforms, new_layout, rejected_overlaps, rejected_domains) =
             Self::load_merged_with_layout(&self.core_eval_path, &self.rules_dir)?;
 
-        // O-135 装载防线横幅：reload 与启动共用（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
+        // 装载防线横幅：reload 与启动共用（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
         Self::log_rejected_overlaps(&rejected_overlaps, "reload");
 
         // T4b domain 求值装载门禁横幅（同款双态口径）
@@ -1268,7 +1268,7 @@ impl SessionApi {
     ///
     /// 与 [`Self::load_merged_transforms_from_fs`] 同一次读取产出三件事：
     /// 合并规则列表（引擎输入）+ [`RulesetLayout`]（下标→来源/指令类型解析 +
-    /// 规则集版本哈希）+ O-135 装载防线被拒重叠条目清单（审计面）。
+    /// 规则集版本哈希）+ 装载防线被拒重叠条目清单（审计面）。
     /// 避免双份装载逻辑漂移——hit-stats 的下标解析正确性
     /// 依赖"layout 与引擎合并顺序一致"这一不变式（防线剔除同步作用于二者）。
     pub fn load_merged_with_layout(
@@ -1290,14 +1290,14 @@ impl SessionApi {
 
         sources.extend(extra_sources);
 
-        // O-135 装载期 I/O 权利面独占防线：先剔除重叠条目，再以剔除后列表构建
+        // 装载期 I/O 权利面独占防线：先剔除重叠条目，再以剔除后列表构建
         // layout（下标一致性不变式保持：layout 与引擎输入同源同长度）
         let (rules, sources, rejected_overlaps) =
             Self::reject_overlapped_io_rules(rules, sources, constitution_len);
 
         // T4b domain 求值装载门禁（专项-20261001 方案 2' v4）：再剔除 eq/lt 域
         // 「缺 on_missing 声明 / 声明非法值 / ValueLiteralAmbiguous 写作错误」条目
-        // （fail-closed 无警告通道；宪法前缀段豁免同 O-135；动态域=字符串形态
+        // （fail-closed 无警告通道；宪法前缀段豁免同装载防线；动态域=字符串形态
         // `__` 引用天然豁免——域对象运行时才定形，归运行时防御层）
         let (rules, sources, rejected_domains) =
             Self::reject_undeclared_domain_rules(rules, sources, constitution_len);
@@ -1308,7 +1308,7 @@ impl SessionApi {
     }
 
     // =========================================================================
-    // O-135 装载期 I/O 权利面独占防线（2026-09-27，立项档 §四）
+    // 装载期 I/O 权利面独占防线（2026-09-27，立项档 §四）
     //
     // 缺陷：同一 io_type 的 I/O 生命周期规则（发射 io_request / 消费
     // `__io_results__.{T}`）在合并规则集中多于一处时，TCB all-match 顺序执行
@@ -1403,7 +1403,7 @@ impl SessionApi {
         }
     }
 
-    /// O-135 权利面独占判定（纯函数）：按序扫描合并列表，返回
+    /// 权利面独占判定（纯函数）：按序扫描合并列表，返回
     /// `(kept_rules, kept_sources, rejected)`。
     ///
     /// - `constitution_len`：合并列表前缀中宪法条目数——宪法条目只声明权利、永不拒载；
@@ -1478,7 +1478,7 @@ impl SessionApi {
     //
     // 缺陷：eq/lt 域「状态侧静默 false」——路径缺失/类型不可比/value 被字面量化
     // 三种情形与「真实比对为假」在输出上不可区分（审计不可归因），已致真实事故
-    // O-211（pack v1 eq 比对从未生效，部署后无人知）。
+    // 历史事故：pack v1 eq 比对从未生效，部署后无人知。
     //
     // 防线：装载期对字面 eq/lt 域对象三道拒收门（fail-closed，无警告通道——
     // TCB/server 治理世界观没有警告，只有拒收与放行）：
@@ -1487,11 +1487,11 @@ impl SessionApi {
     //   ② invalid_declaration：on_missing 非 error/unsat（声明值非法=显式拒收，
     //      不静默回退缺省）；
     //   ③ value_literal_ambiguous：value 字符串命中 exec 根段点路径形态（像路径
-    //      引用但缺 __ 前缀的写作错误，O-211 旧形态）——一律拒绝、无宽容选项；
+    //      引用但缺 __ 前缀的历史写作错误形态）——一律拒绝、无宽容选项；
     //      判定谓词复用 TCB 导出 is_root_segment_dot_path（零镜像复算）。
     //
     // 豁免面：
-    //   - 宪法前缀段条目永不拒载（同 O-135；宪法内部组合由宪法维护者负责）；
+    //   - 宪法前缀段条目永不拒载（同装载防线豁免；宪法内部组合由宪法维护者负责）；
     //   - 动态域豁免：domain 值为 `__` 字符串引用（域对象运行时才定形）静态不可
     //     判定——本门禁只对字面域对象生效，字符串形态 walk 天然不命中；动态到达
     //     缺声明由 TCB 运行时防御层兜底（兼容缺省 unsat + 归因落账，T1/T2 范围）。
@@ -1565,7 +1565,7 @@ impl SessionApi {
     }
 
     /// T4b domain 门禁装载判定（纯函数）：按序扫描合并列表，返回
-    /// `(kept_rules, kept_sources, rejected)`。宪法前缀段豁免同 O-135；
+    /// `(kept_rules, kept_sources, rejected)`。宪法前缀段豁免同装载防线；
     /// 剔除同步作用于合并列表与 sources（下标一致性不变式保持）。
     fn reject_undeclared_domain_rules(
         rules: Vec<JsonValue>,
@@ -1654,7 +1654,7 @@ impl SessionApi {
             .join("；")
     }
 
-    /// T4b domain 门禁汇总横幅（启动 main.rs 与 reload 共用；对齐 O-135 双态口径）。
+    /// T4b domain 门禁汇总横幅（启动 main.rs 与 reload 共用；对齐装载防线双态口径）。
     ///
     /// - 0 拒载 → info（门禁干净）；
     /// - >0 → 逐条 ERROR（下标/来源/特征/门类/明细）+ 汇总 ERROR。
@@ -1782,7 +1782,7 @@ impl SessionApi {
         rejected
     }
 
-    /// O-135 装载防线汇总横幅（启动 main.rs 与 reload 共用；对齐 O-100 影子汇总双态口径）。
+    /// 装载防线汇总横幅（启动 main.rs 与 reload 共用；对齐影子汇总双态口径）。
     ///
     /// - 0 拒载 → info（权利面干净）；
     /// - >0 → 逐条 ERROR（下标/来源/特征/io_type/重叠面/首声明者）+ 汇总 ERROR。
@@ -2085,7 +2085,7 @@ impl SessionApi {
         out
     }
 
-    /// 三层规则清单（批次 W1：层级可观测，设计方案 §2.1）
+    /// 三层规则清单（层级可观测，设计方案 §2.1）
     ///
     /// 分层是**纯约定**（执行顺序由"core_eval 在前 + 完整路径字典序"保证，本函数不参与
     /// 加载路径，只做只读扫描）：
@@ -2235,7 +2235,7 @@ impl SessionApi {
     fn parse_rule_file(p: &std::path::Path, rules_dir: &std::path::Path) -> Option<Vec<JsonValue>> {
         let json = Self::load_rule_doc(p)?;
 
-        // 批次 W1：tier 层级门禁（正向+反向，见 passes_tier_gate 注释）
+        // tier 层级门禁（正向+反向，见 passes_tier_gate 注释）
         if !Self::passes_tier_gate(p, rules_dir, &json) {
             return None;
         }
@@ -3205,7 +3205,7 @@ impl evorule_workspace::SessionOps for SessionApi {
 
                         let command_tx = session.command_tx.clone();
 
-                        // O-179：注入会话级 caller_role resolver（B-3 接缝；
+                        // 注入会话级 caller_role resolver（应用层接缝；
                         // 声明随 WAL 事实，回放确定性成立）
                         let gate = PermissionGate::new(Arc::new(self.shared_facts.clone()))
                             .with_caller_role_resolver(
@@ -3287,7 +3287,7 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         match result {
             Ok(_) => {
-                // O-179：会话关闭，同步清理声明表
+                // 会话关闭，同步清理声明表
                 self.remove_caller_role(session_id);
 
                 Ok(())
@@ -3319,7 +3319,7 @@ impl evorule_workspace::SessionOps for SessionApi {
     ) -> evorule_workspace::WorkspaceResult<u64> {
         let id = self.next_id();
 
-        // O-179：声明会话注入 __meta__.caller_role（workspace 桥接路径，落账前注入；
+        // 声明会话注入 __meta__.caller_role（workspace 桥接路径，落账前注入；
         // TCB 引擎对根部额外键零消费）
         let mut command = command;
         self.inject_caller_role(session_id, &mut command);
@@ -3649,7 +3649,7 @@ pub struct AppState {
     /// 模板市场目录句柄
     marketplace_dir: MarketplaceDir,
 
-    /// 批次 W1:应用级配额限流管理器(per-app 速率+日配额;
+    /// 应用级配额限流管理器(per-app 速率+日配额;
     /// 创建时从最近快照恢复日计数,快照后台任务由 main 装配后 spawn)
     app_quota: std::sync::Arc<crate::api::app_quota::AppQuotaManager>,
 }
@@ -3673,7 +3673,7 @@ impl AppState {
         // W4：模板市场目录自 SessionApi 派生（rules_dir 父目录拼接）——
         // 同模块直读私有字段；先取路径再移动 sessions，避免 use-after-move
         let marketplace_dir = MarketplaceDir(sessions.marketplace_dir.clone());
-        // 批次 W1:配额管理器随 AppState 创建(从最近快照恢复日计数);
+        // 配额管理器随 AppState 创建(从最近快照恢复日计数);
         // 快照后台任务在 main 装配完成后 spawn(需要 Arc,测试路径不 spawn)
         let app_quota = std::sync::Arc::new(crate::api::app_quota::AppQuotaManager::start_recover(
             &shared_facts,
@@ -3709,7 +3709,7 @@ impl AppState {
         self.demo_auth
     }
 
-    /// 批次 W1:应用配额管理器(快照任务 spawn 用)
+    /// 应用配额管理器(快照任务 spawn 用)
     pub fn app_quota(&self) -> std::sync::Arc<crate::api::app_quota::AppQuotaManager> {
         self.app_quota.clone()
     }
@@ -4016,7 +4016,7 @@ pub struct PayloadUpdateRequest {
 
 // 由 description 说明其结构；固定结构字段一律强类型化。
 
-/// 会话创建请求体（O-179）
+/// 会话创建请求体
 ///
 /// 可选 body：缺省（无 body / 空 object）= 不声明，行为与既有会话完全一致
 /// （io 判定 Unknown → 默认策略 Deny，fail-closed 零回归）。
@@ -5376,7 +5376,7 @@ async fn update_payload(
     // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
     // 身份由认证中间件注入：认证启用时必注入（User/Service/App）；identity 为 None
     // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
-    // 批次 W2：App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
+    // App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
     if requires_service_identity(&req.path)
         && matches!(
             identity,
@@ -5667,7 +5667,7 @@ async fn create_session(
 
     body: Option<Json<CreateSessionRequest>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // O-179：可选 caller_role 声明（fail-closed——非法值 400 显式拒绝，不静默降级 Unknown）
+    // 可选 caller_role 声明（fail-closed——非法值 400 显式拒绝，不静默降级 Unknown）
     let declared_role: Option<String> = match body {
         Some(Json(req)) => match req.caller_role.as_deref() {
             None | Some("") => None,
@@ -5690,7 +5690,7 @@ async fn create_session(
         Ok(id) => {
             metrics.inc_sessions(); // 会话数 +1
 
-            // O-179：声明登记（创建成功才登记；失败路径无会话可声明）
+            // 声明登记（创建成功才登记；失败路径无会话可声明）
             if let Some(role) = declared_role {
                 if let Ok(mut table) = api.caller_roles.lock() {
                     table.insert(id, role);
@@ -5704,7 +5704,7 @@ async fn create_session(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
-            // 为新 session 的 reactor spawn IoSubscriber（O-185：公共构造段）
+            // 为新 session 的 reactor spawn IoSubscriber（公共构造段）
             // 没有 IoSubscriber 时，session 的 IoRequest 会 60s 超时
             // （声明登记已在上方完成，此处不重复继承）
             api.spawn_io_subscriber_for_session(id, metrics.clone(), None)
@@ -6040,7 +6040,7 @@ async fn create_session_from_parent(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
-            // O-185/O-182：fork 子会话补 IoSubscriber（原缺口：IoRequest 60s
+            // fork 子会话补 IoSubscriber（原缺口：IoRequest 60s
             // 超时无人应答）＋声明继承父会话（fork 语义 = 同主体派生）。
             // 父未声明 → 不登记（Unknown → Deny，fail-closed 与今日一致）；
             // fork-from-archive（archive_version.is_some()）父会话已不在内存、
@@ -6196,7 +6196,7 @@ async fn create_session_fork(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
-            // O-185/O-182：fork 子会话补 IoSubscriber＋声明继承（同 from 端点口径）
+            // fork 子会话补 IoSubscriber＋声明继承（同 from 端点口径）
             let inherited_role = api
                 .declared_caller_role(parent_id)
                 .filter(|_| archive_version.is_none());
@@ -6492,7 +6492,7 @@ async fn session_command(
 
     let id = api.next_id();
 
-    // O-179：声明会话注入 __meta__.caller_role（Schema 门禁已过，落账前注入；
+    // 声明会话注入 __meta__.caller_role（Schema 门禁已过，落账前注入；
     // 随 WAL 落账 = resolver 判定权威源）
     api.inject_caller_role(session_id, &mut instruction_value);
 
@@ -7328,7 +7328,7 @@ async fn session_payload(
     // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
     // 身份由认证中间件注入：认证启用时必注入（User/Service/App）；identity 为 None
     // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
-    // 批次 W2：App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
+    // App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
     if requires_service_identity(&req.path)
         && matches!(
             identity,
@@ -9796,7 +9796,7 @@ impl GovernanceServer {
             // W2b:统一认证中间件(双凭据:静态 user/service token 或
             // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
             // 内部调用方沿用静态 service token,无需改造。
-            // 批次 W1:State 增补 AppQuotaManager(per-app 配额检查)
+            // State 增补 AppQuotaManager(per-app 配额检查)
             .layer(axum::middleware::from_fn_with_state(
                 (
                     auth,
@@ -9916,7 +9916,7 @@ impl GovernanceServer {
         let metrics_router = Router::<AppState>::new().route("/metrics", get(metrics_handler));
 
         let metrics_router = if self.metrics_requires_auth {
-            // 批次 W1:State 增补 AppQuotaManager(与 protected_routes 同构)
+            // State 增补 AppQuotaManager(与 protected_routes 同构)
             metrics_router.layer(axum::middleware::from_fn_with_state(
                 (
                     self.auth.clone(),
@@ -10043,7 +10043,7 @@ impl GovernanceServer {
 
 // ====================================================================
 
-/// 单层规则清单项（批次 W1：层级可观测，设计方案 §2.1）
+/// 单层规则清单项（层级可观测，设计方案 §2.1）
 #[derive(Debug, Serialize, ToSchema)]
 
 pub struct RuleTierEntry {
@@ -10068,7 +10068,7 @@ pub struct RulesResponse {
     /// 当前生效的 transform 规则列表（core_eval）
     pub core_eval: Vec<serde_json::Value>,
 
-    /// 三层规则清单（批次 W1：L1 宪法 / L2 元规则 / L3 业务；分层为纯约定，执行顺序由"core_eval 在前 + 完整路径字典序"保证）
+    /// 三层规则清单（L1 宪法 / L2 元规则 / L3 业务；分层为纯约定，执行顺序由"core_eval 在前 + 完整路径字典序"保证）
     pub tiers: Vec<RuleTierEntry>,
 }
 
@@ -10120,7 +10120,7 @@ async fn get_rules(State(api): State<SessionApi>) -> Result<Json<RulesResponse>,
 
     let core_eval_serde: Vec<serde_json::Value> = core_eval.iter().map(tcb_to_serde).collect();
 
-    // 批次 W1：三层清单随响应返回（只读扫描，运维一眼核对层级是否被篡改）
+    // 三层清单随响应返回（只读扫描，运维一眼核对层级是否被篡改）
     let tiers = SessionApi::tier_inventory(&api.core_eval_path, &api.rules_dir);
 
     Ok(Json(RulesResponse {
@@ -10729,7 +10729,7 @@ pub async fn plugin_admin_approve(
     identity: Option<Extension<CallerIdentity>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
     // 审批 = 人工治理动作,自动化凭据(service/app key)拒绝(人类在场语义;
-    // 批次 W2:app key 通道同理 403)
+    // app key 通道同理 403)
     if matches!(
         identity,
         Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
@@ -10786,7 +10786,7 @@ pub async fn plugin_admin_reject(
     body: Option<Json<serde_json::Value>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
     // 审批 = 人工治理动作,自动化凭据(service/app key)拒绝(人类在场语义;
-    // 批次 W2:app key 通道同理 403)
+    // app key 通道同理 403)
     if matches!(
         identity,
         Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
@@ -11043,7 +11043,7 @@ async fn validate_rules_handler(
 
 // ============================================================================
 
-/// O-135 装载期 I/O 权利面独占防线：被拒条目的单条重叠明细
+/// 装载期 I/O 权利面独占防线：被拒条目的单条重叠明细
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RejectedOverlapDetail {
     /// 重叠的 io_type
@@ -11054,7 +11054,7 @@ pub struct RejectedOverlapDetail {
     pub claimed_by: String,
 }
 
-/// O-135 装载期 I/O 权利面独占防线：被拒载的重叠规则条目（审计面）
+/// 装载期 I/O 权利面独占防线：被拒载的重叠规则条目（审计面）
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RejectedOverlapEntry {
     /// 被拒条目在剔除前合并列表中的原始下标（与启动日志/hit-stats 下标口径一致）
@@ -11092,7 +11092,7 @@ pub struct RejectedDomainEntry {
 }
 
 /// 合并装载产出四元组：合并规则列表（引擎输入）+ layout（下标→来源解析）
-/// + O-135 被拒重叠条目 + T4b domain 门禁被拒条目。
+/// + 装载防线被拒重叠条目 + T4b domain 门禁被拒条目。
 pub type MergedLoadOutcome = (
     Vec<JsonValue>,
     crate::api::hit_stats::RulesetLayout,
@@ -11137,7 +11137,7 @@ pub struct RulesReloadedResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 
-    /// O-135 装载防线：本次装载被拒载的重叠条目（空 = 无重叠）
+    /// 装载防线：本次装载被拒载的重叠条目（空 = 无重叠）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected_overlaps: Vec<RejectedOverlapEntry>,
 
@@ -11289,7 +11289,7 @@ mod tests {
 
     use super::*;
 
-    // ===== O-179 caller_role 注入单元测试 =====
+    // ===== caller_role 注入单元测试 =====
 
     mod o179 {
         use super::*;
@@ -11348,12 +11348,12 @@ mod tests {
             assert_eq!(instr["__meta__"]["note"], "keep");
         }
 
-        /// O-179 差分验证（设计档 §八风险 1 退路判定）：
+        /// 差分验证（设计档 §八风险 1 退路判定）：
         /// 同一指令带/不带根部 `__meta__` 进 TCB execute_transition，
         /// 规则命中与转换结果完全一致 —— 根部额外键与 TCB 兼容，退路不触发。
         #[test]
         fn o179_tcb_differential_meta_key_has_no_rule_effect() {
-            // 宪法同构最小片段（与 O-135 宪法测试同源结构）：
+            // 宪法同构最小片段（与装载防线宪法测试同源结构）：
             // L1 直接规则（set counter）+ 桥接 branch（call_service → io_request）
             let core_eval = o135_tcb(O135_CONSTITUTION);
             let plain = serde_json::json!({
@@ -11420,7 +11420,7 @@ mod tests {
         }
     }
 
-    // ===== O-185 fork/from IoSubscriber + 声明继承（O-182 合并修复）=====
+    // ===== fork/from IoSubscriber + 声明继承（io 应答缺口合并修复）=====
 
     mod o185 {
         use super::*;
@@ -11468,7 +11468,7 @@ mod tests {
         }
 
         /// 核心验收：fork 子会话（经公共辅助 spawn IoSubscriber + 声明继承）
-        /// 发射 call_service io 时可被应答分发——O-182 缺口（60s 超时无人应答）
+        /// 发射 call_service io 时可被应答分发——io 应答缺口（60s 超时无人应答）
         /// 修复后的正向探针。
         #[tokio::test]
         async fn o185_fork_child_session_io_dispatches_with_inherited_role() {
@@ -11706,7 +11706,7 @@ mod tests {
         );
     }
 
-    // ===== O-135 装载期 I/O 权利面独占防线 =====
+    // ===== 装载期 I/O 权利面独占防线 =====
 
     /// serde_json transform 文档 → TCB JsonValue 列表
     fn o135_tcb(body: &str) -> Vec<JsonValue> {
@@ -11980,7 +11980,7 @@ mod tests {
 
     /// 端到端（DoD-C + DoD-A 前半）：装载面为**双层门禁**——schema gate
     /// （[`Self::passes_schema_gate`]，文件级 fail-closed）先行拒收缺 on_missing /
-    /// 非法声明 / O-211 旧形态 value 的规则文件；T4b walk 门禁（条目级 + 审计
+    /// 非法声明 / 历史写作错误旧形态 value 的规则文件；T4b walk 门禁（条目级 + 审计
     /// 透传）为纵深面。本测试锁死：违规文件不进合并列表；声明齐全规则、动态域
     /// （字符串形态豁免）与合法带点字面量正常放行。三道门的条目级判定语义由
     /// [`t4b_domain_gate_pure_function_nesting_and_exempt`] 纯函数直调锁死；
@@ -12005,7 +12005,7 @@ mod tests {
             ),
         )
         .unwrap();
-        // door ③：O-211 旧形态写作错误（value 像 exec 路径但缺 __ 前缀）
+        // door ③：历史写作错误形态（value 像 exec 路径但缺 __ 前缀）
         std::fs::write(
             rules_dir.join("c-ambiguous.json"),
             t4b_branch_rule(
@@ -12045,7 +12045,7 @@ mod tests {
     }
 
     /// 纯函数：嵌套面（all.inner 内 eq 同检）+ value `__` 路径引用形态不误伤 +
-    /// 宪法前缀段豁免（有违规也不拒载，同 O-135 宪法优先语义）。
+    /// 宪法前缀段豁免（有违规也不拒载，同装载防线宪法优先语义）。
     #[test]
     fn t4b_domain_gate_pure_function_nesting_and_exempt() {
         // 嵌套：all.inner 内 eq 缺声明同检（walk 整棵树）
@@ -12073,7 +12073,7 @@ mod tests {
         assert_eq!(v2.len(), 1, "声明值非法=显式拒收，不静默回退缺省");
         assert_eq!(v2[0].door, "invalid_declaration");
 
-        // 门 ③：O-211 旧形态 value（像 exec 路径但缺 __ 前缀）一律拒、无宽容选项
+        // 门 ③：历史写作错误形态 value（像 exec 路径但缺 __ 前缀）一律拒、无宽容选项
         let ambiguous = o135_tcb(
             r#"{"transform":[
             {"type":"branch","params":{"domain":{"type":"eq","path":"payload.milestone",
@@ -12082,7 +12082,7 @@ mod tests {
         ]}"#,
         );
         let v3 = SessionApi::domain_gate_violations(&ambiguous[0]);
-        assert_eq!(v3.len(), 1, "O-211 旧形态必须可判（DoD-A 前半）");
+        assert_eq!(v3.len(), 1, "历史写作错误形态必须可判");
         assert_eq!(v3[0].door, "value_literal_ambiguous");
         assert!(v3[0].detail.contains("instruction.params.milestone_target"));
         // 声明与写作错误同条并存时逐条开列（三道门独立判定）
@@ -12144,7 +12144,7 @@ mod tests {
             vec!["core_eval".to_string()],
             1,
         );
-        assert!(rejected2.is_empty(), "宪法前缀段豁免（同 O-135）");
+        assert!(rejected2.is_empty(), "宪法前缀段豁免");
         assert_eq!(kept2.len(), 1);
     }
 
@@ -13700,7 +13700,7 @@ mod tests {
         ));
     }
 
-    // --- bundle 自有探针形态判定（O-150 改造版：IoSubscriber 跳过谓词） ---
+    // --- bundle 自有探针形态判定（探针形态改造版：IoSubscriber 跳过谓词） ---
 
     #[test]
     fn test_is_flow_probe_request_shape() {
@@ -14923,7 +14923,7 @@ mod tests {
         assert_eq!(json["success"], true);
     }
 
-    // --- 批次 W2：应用级凭据（app key 通道端到端） ---
+    // --- 应用级凭据（app key 通道端到端） ---
 
     /// 在已启用认证的 router 上完成 bootstrap → login → 签发 app 凭据，
     /// 返回 (router, app_key, platform_token)。
@@ -15973,7 +15973,7 @@ mod tests {
     }
 
     // ====================================================================
-    // 批次 W1：tier 层级门禁单测（正向 / 反向 / 缺声明 / 子目录不算 L2）
+    // tier 层级门禁单测（正向 / 反向 / 缺声明 / 子目录不算 L2）
     // ====================================================================
 
     /// 构造临时规则文件并返回 (文件路径, 解析后 JSON)

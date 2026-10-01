@@ -879,7 +879,7 @@ pub async fn run_audited_chat(
     let headers = auth_headers(cfg)?;
 
     // 1. 一次性 sidecar 会话（声明 caller_role=llm：会话主体是 LLM 审计调用，
-    //    O-185 声明通路——服务端登记 caller_roles 表，PermissionGate 按角色判定）
+    //    会话声明通路——服务端登记 caller_roles 表，PermissionGate 按角色判定）
     let created = fetch_step(
         http,
         reqwest::Method::POST,
@@ -1721,7 +1721,7 @@ mod tests {
         assert_eq!(outcome.reply, "mock reply");
         assert_eq!(outcome.session_id, 1);
 
-        // 会话创建声明（O-185）：sidecar 会话主体是 LLM 审计调用，声明 caller_role=llm
+        // 会话创建声明：sidecar 会话主体是 LLM 审计调用，声明 caller_role=llm
         let creates = st.create_bodies.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(creates.len(), 1);
         assert_eq!(creates[0]["caller_role"], "llm");

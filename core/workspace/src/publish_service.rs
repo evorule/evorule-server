@@ -163,7 +163,7 @@ impl PublishService {
         // 4. 序列化规则集
         let final_candidate_rules = serde_json::to_string(&rules_json)?;
 
-        // 批次 W3: 元规则晋升校验 (kind=meta_promotion 时转写产物前置校验,
+        // 元规则晋升校验 (kind=meta_promotion 时转写产物前置校验,
         // 防落盘后 loader 拒载的废文件入库; 与 loader tier_gate/schema 门禁同口径)
         let meta_rule_content: Option<String> = match req.kind {
             PublishKind::Normal => None,
@@ -454,7 +454,7 @@ impl PublishService {
     ///
     /// 获取全局发布锁后按队列项类型分流:
     /// - Normal: 业务规则 DatasetBundle 落盘 bundles/ + 滚动 session 版本推进
-    /// - MetaPromotion (批次 W3): 约束文件 00_constraint_ 落盘 rules_dir 根目录,
+    /// - MetaPromotion (): 约束文件 00_constraint_ 落盘 rules_dir 根目录,
     ///   不推业务版本, 审计 meta_promoted
     ///
     /// 任一步骤失败 → 发布失败 (队列保持 pending 可重试), 杜绝绕过。
@@ -611,7 +611,7 @@ impl PublishService {
         Ok(result.new_ruleset_version)
     }
 
-    /// 执行元规则晋升落盘 (批次 W3 晋升通道核心)
+    /// 执行元规则晋升落盘 (晋升通道核心)
     ///
     /// 与普通发布 ([`Self::execute_normal_publish`]) 的差异:
     /// 1. 产物为 L2 约束文件 `rules_dir/00_constraint_promoted_{hash16}.json`
@@ -837,7 +837,7 @@ fn extract_promoted_from_versions(meta_rule_content: &str) -> Option<Vec<String>
     Some(ids)
 }
 
-/// 校验转写后的元规则内容 (批次 W3, 提交与落盘两侧共用单一权威实现)
+/// 校验转写后的元规则内容 (提交与落盘两侧共用单一权威实现)
 ///
 /// 与 loader 层级门禁 (`tier_gate_reason`) / Schema 门禁 (`passes_schema_gate`) 同口径:
 /// 1. 合法 JSON 对象;
@@ -1866,7 +1866,7 @@ mod tests {
         assert_ne!(h1, h3);
     }
 
-    // ===== 批次 W3: 元规则晋升通道 =====
+    // ===== 元规则晋升通道 =====
 
     /// 测试辅助: 构造元规则转写产物 JSON 字符串
     ///

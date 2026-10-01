@@ -47,7 +47,7 @@
                 { "$ref": "#/$defs/path_or_literal" },
                 { "not": { "type": "string", "pattern": "^(instruction|payload|queue)(\\.[A-Za-z0-9_]+)+$" } }
               ],
-              "description": "eq/lt 的字面量比较值；__ 前缀字符串按路径引用校验语法（语义上 eq/lt 比较字面量，见沙箱 P17）。not 子句=ValueLiteralAmbiguous 装载拒收门（判定谓词 SSOT=evorule-tcb is_root_segment_dot_path，常量 root-segment-dot-path.v1）：value 字符串呈 exec 根段（instruction/payload/queue）点路径形态但缺 __ 前缀 → 运行时将被字面量化静默比对（O-211 事故形态），提交期即拒。合法带点字面量（如 meta_tool.pending_target_scope 符号常量、MiniMax-M2.5 模型名）不受影响。"
+              "description": "eq/lt 的字面量比较值；__ 前缀字符串按路径引用校验语法（语义上 eq/lt 比较字面量，见沙箱 P17）。not 子句=ValueLiteralAmbiguous 装载拒收门（判定谓词 SSOT=evorule-tcb is_root_segment_dot_path，常量 root-segment-dot-path.v1）：value 字符串呈 exec 根段（instruction/payload/queue）点路径形态但缺 __ 前缀 → 运行时将被字面量化静默比对（历史静默失效事故形态），提交期即拒。合法带点字面量（如 meta_tool.pending_target_scope 符号常量、MiniMax-M2.5 模型名）不受影响。"
             }
           },
           "allOf": [
