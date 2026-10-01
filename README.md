@@ -23,9 +23,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.8.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.9.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.8.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.9.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 **Language / 语言**: [English](#english) · [中文 / Chinese](#chinese)
@@ -50,9 +50,11 @@
 
 ---
 
-> ## ✅ v0.8.0 — Stable Release (2026-09-27)
+> ## ✅ v0.9.0 — Stable Release (2026-10-01)
 >
 > This repo **releases independently**, not tied to other repos' release cadence; version numbers correspond only to this repo's [CHANGELOG](CHANGELOG.md).
+>
+> **0.9.0**: domain-evaluation load gates closing the "state-side silent false" channel (paired with core 0.8.0 tri-state semantics) — rule schema v1.0 tightens eq/lt domains to require `on_missing` (error/unsat) and rejects dot-path value literal ambiguity; entry-level load gates enforce three rejection classes (missing declaration / illegal declaration / value literal ambiguity) with constitution-prefix and dynamic-domain exemptions; `rejected_domains` audit details surfaced to the startup banner, reload responses, and import responses; bundle import pre-check rejects before persisting with an explicit 400; tri-state hit attribution (`TraceHitDto`/`DomainAttrDto`) recorded in FactsLog and streamed via SSE; `rule_translate` emits `on_missing=unsat` on generated eq/lt rules; core dependencies switched to plain crates.io 0.8.0 versions — the transitional `[patch.crates-io]` git overrides and the git-form `evorule-discipline` dependency are retired.
 >
 > **0.8.0**: load-time I/O-rights exclusivity — per `io_type`, emit/consume rights are held only by the first entry and overlapping entries are rejected at load with loud diagnostics, eliminating session infinite loops caused by emit/consume entry overlap; L2 discipline-gate verdict engine wiring with shadow-enforcement exposure; publish-queue nomination dedup gate; evolution-signal aggregation endpoint and read-only L2 constraint inventory; meta-rule entry-level key whitelist tightening (fail-fast); rule-load injection-order governance (total deterministic ordering); finance-config symmetric rejection audit; bundle sync endpoint, sandbox report directory absolutization, and call-service registry (reusing the echo verification endpoint).
 >
@@ -662,9 +664,9 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.8.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.9.0-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.8.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.9.0-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -681,9 +683,11 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 ---
 
-> ## ✅ v0.8.0 — 稳定发布 (2026-09-27)
+> ## ✅ v0.9.0 — 稳定发布 (2026-10-01)
 >
 > 本仓库**独立 release**,不绑其他仓的发布节奏;版本号只与本仓 [CHANGELOG](CHANGELOG.md) 对应。
+>
+> **0.9.0**:domain 求值装载门禁关闭「状态侧静默 false」通道(随核心 0.8.0 三态语义)——规则 schema v1.0 收紧 eq/lt 域必填 `on_missing`(error/unsat)、拒收 value 点路径形态字面量歧义;装载门禁条目级 walk 三道拒收(缺声明/声明非法/ValueLiteralAmbiguous),宪法前缀段与动态域豁免;`rejected_domains` 审计明细透传至启动横幅/reload 响应/导入响应;bundle 导入预判落盘前显式 400 拒载;三态命中归因(`TraceHitDto`/`DomainAttrDto`)落账 FactsLog 并经 SSE 透传;`rule_translate` 生成 eq/lt 自动补 `on_missing=unsat`;核心依赖切纯 crates.io 0.8.0——过渡期 `[patch.crates-io]` git 三件套与 git 形态 `evorule-discipline` 依赖退役。
 >
 > **0.8.0**:装载期 I/O 权利面独占防线——同 `io_type` 的发射/消费权利仅首条条目持有,重叠条目拒载并大声告警,根治发射/消费条目重叠导致的会话无限循环;L2 纪律门禁判定引擎接线与影子强制曝光;发布队列提名去重门禁;进化信号聚合端点与 L2 约束清单只读端点;元规则条目级键白名单收紧(fail-fast);规则装载注入序治理(全序确定);财务配置对称拒绝审计;bundle 同步端点、沙盒报告目录绝对化、call-service 服务注册(复用 echo 验证端点)。
 >

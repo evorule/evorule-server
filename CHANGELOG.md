@@ -25,6 +25,25 @@
 
 ---
 
+## [0.9.0] - 2026-10-01
+
+### 🔄 变更
+
+- **核心依赖切纯 version（同发同装收口）**：主仓 0.8.0 五包（tcb/reactor/governance/discipline/cli）发布 crates.io，`[patch.crates-io]` git 三件套退役，`evorule-discipline` 自 git 形态切纯 version；核心依赖 req 0.7 → 0.8；workspace 版本 0.8.0 → 0.9.0
+
+### ✨ 新增
+
+- **domain 求值装载门禁三道拒收**（随主仓 0.8.0 三态语义，根修「状态侧静默 false」）：规则 schema v1.0 收紧——domain eq/lt 必填 `on_missing`（error/unsat）、value not-pattern 拒收缺 `__` 前缀的 exec 根段点路径形态；装载门禁条目级 walk 三道门（缺声明 / 声明非法 / ValueLiteralAmbiguous），宪法前缀段豁免、动态域（字符串形态）豁免归运行时防御层；`rejected_domains` 审计明细透传至启动横幅 / reload 响应 / 导入响应
+- **bundle 导入预判拒载**：导入链无 schema gate，条目级明细落盘前显式 400
+- **FactsLog 三态命中归因透传**：`TraceHitDto`/`DomainAttrDto` 消费面扩展（Sat / Unsat / Missing+MissingReason，None 省略序列化与 reactor/hash/wal 三面口径一致），SSE TransitionTrace 同批透传
+- **rule_translate 随动**：生成的 eq/lt 规则自动补 `on_missing=unsat`（行为等价 + 归因可见）
+
+### 🧪 运维
+
+- resident-serve 参数表补 `--wal-dir`（会话审计链持久化）
+
+---
+
 ## [0.8.0] - 2026-09-27
 
 ### 🔄 变更

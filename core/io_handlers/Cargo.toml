@@ -8,10 +8,10 @@ repository = "https://gitee.com/evorule/evorule-server"
 publish = false
 
 [dependencies]
-# 核心层（主仓 gitee git 补丁形态，0.7 线，与 [patch.crates-io] 同源同实例）
+# 核心层（主仓 0.8.0 已发布 crates.io，纯 version）
 # H5: 仅依赖 evorule-reactor,不依赖 evorule-governance,避免循环
-evorule-tcb = { version = "0.7" }
-evorule-reactor = { version = "0.7" }
+evorule-tcb = { version = "0.8" }
+evorule-reactor = { version = "0.8" }
 
 # I/O SDK
 sqlx = { version = "0.8.1", features = ["runtime-tokio", "sqlite"] } # SQLite
