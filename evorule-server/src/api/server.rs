@@ -45,7 +45,7 @@ use evorule_governance::shared_facts_log::SharedFactsLog;
 
 use evorule_governance::{permission::PermissionGate, IoDispatcher, IoSubscriber};
 
-use evorule_reactor::{Fact, FactId, FactSender, FactsLog, IoType};
+use evorule_reactor::{Fact, FactId, FactSender, FactsLog, IoType, TraceHit};
 
 use evorule_tcb::JsonValue;
 
@@ -1275,15 +1275,7 @@ impl SessionApi {
         core_eval_path: &std::path::Path,
 
         rules_dir: &std::path::Path,
-    ) -> Result<
-        (
-            Vec<JsonValue>,
-            crate::api::hit_stats::RulesetLayout,
-            Vec<RejectedOverlapEntry>,
-            Vec<RejectedDomainEntry>,
-        ),
-        String,
-    > {
+    ) -> Result<MergedLoadOutcome, String> {
         let constitution = Self::load_core_eval_transforms(core_eval_path)?;
 
         let constitution_len = constitution.len();
@@ -1622,6 +1614,44 @@ impl SessionApi {
             }
         }
         rejected
+    }
+
+    /// ③.6 导入预判拒载明细组装（纯函数）：逐条目「来源(特征) 门[明细]」拼接。
+    fn format_import_domain_rejection(rejected: &[RejectedDomainEntry]) -> String {
+        rejected
+            .iter()
+            .map(|r| {
+                let vs = r
+                    .violations
+                    .iter()
+                    .map(|v| format!("{}[{}]", v.door, v.detail))
+                    .collect::<Vec<_>>()
+                    .join("；");
+                format!("`{}`({}) {}", r.source, r.rule_summary, vs)
+            })
+            .collect::<Vec<_>>()
+            .join("；")
+    }
+
+    /// ③.5 I/O 权利面重叠预判拒载明细组装（纯函数）：
+    /// 逐条目「来源(特征) 与已装载 权利人 重叠 [明细]」拼接。
+    fn format_import_io_rejection(predicted: &[RejectedOverlapEntry]) -> String {
+        predicted
+            .iter()
+            .map(|r| {
+                let ovs = r
+                    .overlaps
+                    .iter()
+                    .map(|o| format!("{} {}", o.kind, o.io_type))
+                    .collect::<Vec<_>>()
+                    .join("、");
+                format!(
+                    "`{}`({}) 与已装载 {} 重叠 [{}]",
+                    r.source, r.rule_summary, r.overlaps[0].claimed_by, ovs
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("；")
     }
 
     /// T4b domain 门禁汇总横幅（启动 main.rs 与 reload 共用；对齐 O-135 双态口径）。
@@ -2816,22 +2846,7 @@ impl SessionApi {
                 &entries,
             );
             if !predicted.is_empty() {
-                let detail = predicted
-                    .iter()
-                    .map(|r| {
-                        let ovs = r
-                            .overlaps
-                            .iter()
-                            .map(|o| format!("{} {}", o.kind, o.io_type))
-                            .collect::<Vec<_>>()
-                            .join("、");
-                        format!(
-                            "`{}`({}) 与已装载 {} 重叠 [{}]",
-                            r.source, r.rule_summary, r.overlaps[0].claimed_by, ovs
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("；");
+                let detail = Self::format_import_io_rejection(&predicted);
                 return Err(format!(
                     "快照包条目与当前装载规则集存在 I/O 权利面重叠（发射/消费权利首声明独占，\
                      导入前置预判；bundle 规则正道=使用自有 io_type，不得发射/消费平台保留 \
@@ -2846,23 +2861,11 @@ impl SessionApi {
             let predicted_domains =
                 Self::predict_import_undeclared_domains(&bundle.bundle_id, &entries);
             if !predicted_domains.is_empty() {
-                let detail = predicted_domains
-                    .iter()
-                    .map(|r| {
-                        let vs = r
-                            .violations
-                            .iter()
-                            .map(|v| format!("{}[{}]", v.door, v.detail))
-                            .collect::<Vec<_>>()
-                            .join("；");
-                        format!("`{}`({}) {}", r.source, r.rule_summary, vs)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("；");
                 return Err(format!(
                     "快照包条目存在 domain 求值缺失策略未合规声明（eq/lt 域必须显式 \
                      on_missing=error/unsat；value 不得呈缺 __ 前缀的 exec 根段点路径形态；\
-                     导入前置预判）: {detail}",
+                     导入前置预判）: {}",
+                    Self::format_import_domain_rejection(&predicted_domains),
                 ));
             }
         }
@@ -4993,46 +4996,7 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
 
             obj.insert(
                 "rule_hits".into(),
-                serde_json::Value::Array(
-                    rule_hits
-                        .iter()
-                        .map(|h| {
-                            // domain_attr 仅在 Some 时透出（None 省略）：
-                            // 既有消费方无感；branch/enforce 的三态域归因
-                            // （sat/unsat/missing + missing_reason）与
-                            // on_missing 声明值随事实面透传（专项-20261001）。
-                            let mut hit_obj = serde_json::Map::new();
-                            hit_obj.insert("index".into(), serde_json::json!(h.index));
-                            hit_obj.insert(
-                                "instr_type".into(),
-                                serde_json::Value::String(h.instr_type.clone()),
-                            );
-                            hit_obj.insert("hit".into(), serde_json::Value::Bool(h.hit));
-                            if let Some(attr) = &h.domain_attr {
-                                let mut attr_obj = serde_json::Map::new();
-                                attr_obj.insert(
-                                    "outcome".into(),
-                                    serde_json::Value::String(attr.outcome.clone()),
-                                );
-                                if let Some(reason) = &attr.missing_reason {
-                                    attr_obj.insert(
-                                        "missing_reason".into(),
-                                        serde_json::Value::String(reason.clone()),
-                                    );
-                                }
-                                if let Some(policy) = &attr.on_missing {
-                                    attr_obj.insert(
-                                        "on_missing".into(),
-                                        serde_json::Value::String(policy.clone()),
-                                    );
-                                }
-                                hit_obj
-                                    .insert("domain_attr".into(), serde_json::Value::Object(attr_obj));
-                            }
-                            serde_json::Value::Object(hit_obj)
-                        })
-                        .collect(),
-                ),
+                serde_json::Value::Array(rule_hits.iter().map(trace_hit_to_sse_value).collect()),
             );
         }
 
@@ -5062,6 +5026,41 @@ pub fn fact_to_sse_data(fact: &Fact) -> String {
     }
 
     serde_json::Value::Object(obj).to_string()
+}
+
+/// TraceHit → SSE JSON 值（TransitionTrace rule_hits 数组元素）。
+/// domain_attr 仅在 Some 时透出（None 省略）：既有消费方无感；branch/enforce
+/// 的三态域归因（sat/unsat/missing + missing_reason）与 on_missing 声明值
+/// 随事实面透传（专项-20261001）。
+fn trace_hit_to_sse_value(h: &TraceHit) -> serde_json::Value {
+    let mut hit_obj = serde_json::Map::new();
+    hit_obj.insert("index".into(), serde_json::json!(h.index));
+    hit_obj.insert(
+        "instr_type".into(),
+        serde_json::Value::String(h.instr_type.clone()),
+    );
+    hit_obj.insert("hit".into(), serde_json::Value::Bool(h.hit));
+    if let Some(attr) = &h.domain_attr {
+        let mut attr_obj = serde_json::Map::new();
+        attr_obj.insert(
+            "outcome".into(),
+            serde_json::Value::String(attr.outcome.clone()),
+        );
+        if let Some(reason) = &attr.missing_reason {
+            attr_obj.insert(
+                "missing_reason".into(),
+                serde_json::Value::String(reason.clone()),
+            );
+        }
+        if let Some(policy) = &attr.on_missing {
+            attr_obj.insert(
+                "on_missing".into(),
+                serde_json::Value::String(policy.clone()),
+            );
+        }
+        hit_obj.insert("domain_attr".into(), serde_json::Value::Object(attr_obj));
+    }
+    serde_json::Value::Object(hit_obj)
 }
 
 /// 健康检查 handler（向后兼容，等价于 liveness）
@@ -11092,6 +11091,15 @@ pub struct RejectedDomainEntry {
     pub violations: Vec<DomainViolation>,
 }
 
+/// 合并装载产出四元组：合并规则列表（引擎输入）+ layout（下标→来源解析）
+/// + O-135 被拒重叠条目 + T4b domain 门禁被拒条目。
+pub type MergedLoadOutcome = (
+    Vec<JsonValue>,
+    crate::api::hit_stats::RulesetLayout,
+    Vec<RejectedOverlapEntry>,
+    Vec<RejectedDomainEntry>,
+);
+
 /// bundle 导入结果（运行配置 + reload 期被拒重叠条目）
 ///
 /// `Deref` 到 [evorule_bundle::ImportResult]：既有运行配置字段访问面零迁移。
@@ -12008,27 +12016,28 @@ mod tests {
         // 合规放行：显式 error / 显式 unsat / 动态域字符串（豁免）/ 合法带点字面量（零误伤）
         std::fs::write(
             rules_dir.join("d-ok.json"),
-            format!(
-                r#"{{"transform":[
-                    {{"type":"branch","params":{{"domain":{{"type":"eq","path":"payload.role","value":"admin","on_missing":"error"}},"on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}},
-                    {{"type":"branch","params":{{"domain":{{"type":"lt","path":"payload.drift_count","value":3,"on_missing":"unsat"}},"on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}},
-                    {{"type":"branch","params":{{"domain":"__exec__.instruction.params.domain","on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}},
-                    {{"type":"branch","params":{{"domain":{{"type":"eq","path":"payload.scope","value":"meta_tool.pending_target_scope","on_missing":"unsat"}},"on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}}
-                ]}}"#
-            ),
+            r#"{"transform":[
+                    {"type":"branch","params":{"domain":{"type":"eq","path":"payload.role","value":"admin","on_missing":"error"},"on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}},
+                    {"type":"branch","params":{"domain":{"type":"lt","path":"payload.drift_count","value":3,"on_missing":"unsat"},"on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}},
+                    {"type":"branch","params":{"domain":"__exec__.instruction.params.domain","on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}},
+                    {"type":"branch","params":{"domain":{"type":"eq","path":"payload.scope","value":"meta_tool.pending_target_scope","on_missing":"unsat"},"on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+                ]}"#,
         )
         .unwrap();
         let core_eval_path = tmp.path().join("server_eval.json");
         std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
 
         let (rules, _layout, rejected_overlaps, rejected) =
-            SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir)
-                .expect("装载不应失败");
+            SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).expect("装载不应失败");
 
         assert!(rejected_overlaps.is_empty(), "本样本不涉 I/O 权利面");
         // schema gate 已把 a/b/c 三文件整体剔除（fail-closed），d-ok 4 条全放行：
         // kept = 宪法 2 + d-ok 4 = 6；walk 门禁（纵深面）无条目到达 → 拒载明细为空
-        assert_eq!(rules.len(), 6, "违规 3 文件被 schema gate 剔除，不进合并列表");
+        assert_eq!(
+            rules.len(),
+            6,
+            "违规 3 文件被 schema gate 剔除，不进合并列表"
+        );
         assert!(
             rejected.is_empty(),
             "装载面违规已在 schema gate 文件级拦截（先于条目级 walk 门禁），不重复计数"
@@ -12040,62 +12049,78 @@ mod tests {
     #[test]
     fn t4b_domain_gate_pure_function_nesting_and_exempt() {
         // 嵌套：all.inner 内 eq 缺声明同检（walk 整棵树）
-        let nested = o135_tcb(r#"{"transform":[
+        let nested = o135_tcb(
+            r#"{"transform":[
             {"type":"branch","params":{"domain":{"type":"all","inner":[
                 {"type":"exists","path":"payload.a"},
                 {"type":"eq","path":"payload.status","value":"x"}]},
              "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
-        ]}"#);
+        ]}"#,
+        );
         let violations = SessionApi::domain_gate_violations(&nested[0]);
         assert_eq!(violations.len(), 1, "嵌套 inner 内 eq 同检");
         assert_eq!(violations[0].door, "missing_declaration");
 
         // 门 ②：on_missing 非法值（不在 error/unsat 值域）逐条目判定
-        let invalid = o135_tcb(r#"{"transform":[
+        let invalid = o135_tcb(
+            r#"{"transform":[
             {"type":"branch","params":{"domain":{"type":"lt","path":"payload.count",
              "value":5,"on_missing":"warn"},
              "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
-        ]}"#);
+        ]}"#,
+        );
         let v2 = SessionApi::domain_gate_violations(&invalid[0]);
         assert_eq!(v2.len(), 1, "声明值非法=显式拒收，不静默回退缺省");
         assert_eq!(v2[0].door, "invalid_declaration");
 
         // 门 ③：O-211 旧形态 value（像 exec 路径但缺 __ 前缀）一律拒、无宽容选项
-        let ambiguous = o135_tcb(r#"{"transform":[
+        let ambiguous = o135_tcb(
+            r#"{"transform":[
             {"type":"branch","params":{"domain":{"type":"eq","path":"payload.milestone",
              "value":"instruction.params.milestone_target","on_missing":"unsat"},
              "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
-        ]}"#);
+        ]}"#,
+        );
         let v3 = SessionApi::domain_gate_violations(&ambiguous[0]);
         assert_eq!(v3.len(), 1, "O-211 旧形态必须可判（DoD-A 前半）");
         assert_eq!(v3[0].door, "value_literal_ambiguous");
         assert!(v3[0].detail.contains("instruction.params.milestone_target"));
         // 声明与写作错误同条并存时逐条开列（三道门独立判定）
-        let both = o135_tcb(r#"{"transform":[
+        let both = o135_tcb(
+            r#"{"transform":[
             {"type":"branch","params":{"domain":{"type":"eq","path":"payload.milestone",
              "value":"instruction.params.milestone_target","on_missing":"halt"},
              "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
-        ]}"#);
+        ]}"#,
+        );
         let vb = SessionApi::domain_gate_violations(&both[0]);
-        assert_eq!(vb.len(), 2, "invalid_declaration + value_literal_ambiguous 并存");
+        assert_eq!(
+            vb.len(),
+            2,
+            "invalid_declaration + value_literal_ambiguous 并存"
+        );
 
         // value `__` 路径引用形态（合法 path_ref，盘点 northstar r3/r4 形态）不触发门 ③
-        let path_ref = o135_tcb(r#"{"transform":[
+        let path_ref = o135_tcb(
+            r#"{"transform":[
             {"type":"branch","params":{"domain":{"type":"eq","path":"payload.a",
              "value":"__exec__.payload.milestone_target","on_missing":"unsat"},
              "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
-        ]}"#);
+        ]}"#,
+        );
         assert!(
             SessionApi::domain_gate_violations(&path_ref[0]).is_empty(),
             "__ 前缀路径引用是合法比较形态"
         );
 
         // 合法带点字面量（盘点实证 10 处形态：meta_*/MiniMax-*）零误伤
-        let dotted = o135_tcb(r#"{"transform":[
+        let dotted = o135_tcb(
+            r#"{"transform":[
             {"type":"branch","params":{"domain":{"type":"eq","path":"payload.model",
              "value":"MiniMax-M2.5","on_missing":"unsat"},
              "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
-        ]}"#);
+        ]}"#,
+        );
         assert!(SessionApi::domain_gate_violations(&dotted[0]).is_empty());
 
         // 非宪法条目违规 → 拒载；宪法条目（idx < constitution_len）违规 → 豁免放行
@@ -12106,17 +12131,14 @@ mod tests {
             "core_eval".to_string(),
             "x.json".to_string(),
         ];
-        let (kept, _ks, rejected) =
-            SessionApi::reject_undeclared_domain_rules(rules, sources, 2);
+        let (kept, _ks, rejected) = SessionApi::reject_undeclared_domain_rules(rules, sources, 2);
         assert_eq!(kept.len(), 2, "宪法 2 条保留，违规条目被拒");
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].index, 2, "被拒下标 = 原始合并下标口径");
         assert_eq!(rejected[0].source, "x.json");
 
-        let constitution_violation = o135_tcb(&t4b_branch_rule(
-            r#"{"type":"eq","path":"p","value":"v"}"#,
-        ))[0]
-            .clone();
+        let constitution_violation =
+            o135_tcb(&t4b_branch_rule(r#"{"type":"eq","path":"p","value":"v"}"#))[0].clone();
         let (kept2, _ks2, rejected2) = SessionApi::reject_undeclared_domain_rules(
             vec![constitution_violation],
             vec!["core_eval".to_string()],
