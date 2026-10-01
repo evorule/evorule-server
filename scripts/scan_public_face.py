@@ -118,6 +118,11 @@ INTERNAL_ID_PATTERNS = [
     re.compile(r'UV-\d{2,3}'),
     re.compile(r'INC-\d{2,3}'),
     re.compile(r'REM-\d+'),
+    # 内部登记编号 O-NN（存量问题登记册主键）；\b 前置天然排除
+    # ISO-8601 / TODO-123 等词中前缀（字母连续处无词边界，不误伤）
+    re.compile(r'\bO-' + r'\d{2,3}\b'),
+    # 内部批次编号「批次 W2」形态（批次词 + W 批次号）
+    re.compile('批次' + r'\s*W' + r'\d+'),
     # 「NN 号」内部档引用；负向断言排除法规令文号（令84号/〔2015〕43号）
     re.compile(r'(?<![令发〕])\d{2,3}\s*号'),
     re.compile(r'决策点\s*[①-⑨]'),
@@ -146,6 +151,7 @@ PRIVATE_PATH_PATTERNS = [
     re.compile('evorule' + r'-agent'),
     re.compile('evorule' + r'-application'),
     re.compile('evorule-' + r'backup'),
+    re.compile('evorule-' + r'core-backup'),
     re.compile(r'文档[\\/](design|implement|benchmarks|archive)'),
 ]
 
