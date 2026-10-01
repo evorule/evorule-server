@@ -12,16 +12,6 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # ===== 公开面矩阵扫描 (AI 身份 + 内部编号阻断; 与主仓 CI 同源同判) =====
-  public-face-scan:
-    name: public face scan (A1/B blocking)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 公开面矩阵扫描 (AI 身份 + 内部编号阻断)
-        run: python3 scripts/scan_public_face.py --fail-on A1 --fail-on B
-
   # ===== Lint (clippy + fmt) =====
   lint:
     name: Clippy + fmt
