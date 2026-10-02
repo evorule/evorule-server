@@ -6,6 +6,7 @@
     "finance-pack": { "enabled": true, "pack": "plugins/finance-pack/pack.json" },
     "hr-pack": { "enabled": true, "pack": "plugins/hr-pack/pack.json" },
     "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" },
-    "wasm-host": { "enabled": true, "manifest": "plugins/wasm-host/plugin.json" }
+    "wasm-host": { "enabled": true, "manifest": "plugins/wasm-host/plugin.json" },
+    "evorule-context-inspector": { "enabled": false, "manifest": "plugins/evorule-context-inspector/plugin.json" }
   }
 }

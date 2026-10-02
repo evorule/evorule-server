@@ -1,0 +1,15 @@
+{
+  "id": "evorule-context-inspector",
+  "contract_version": "1.2",
+  "version": "0.1.0",
+  "description": "LLM 上下文快照与健康评估审计链（manifest 型外部插件）：MITM 监听（19100/19101+，loopback-only）+ 独立 BLAKE3 审计链 + context 查询面",
+  "base_url": "http://127.0.0.1:19100",
+  "services": [
+    {
+      "name": "context_session_health",
+      "sensitive": false,
+      "description": "会话上下文健康摘要（压力档位/漂移/显式检测事件）。body={session_id}；返回压力、漂移万分比与事件列表",
+      "timeout_ms": 10000
+    }
+  ]
+}
