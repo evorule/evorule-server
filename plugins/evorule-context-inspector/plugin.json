@@ -10,6 +10,18 @@
       "sensitive": false,
       "description": "会话上下文健康摘要（压力档位/漂移/显式检测事件）。body={session_id}；返回压力、漂移万分比与事件列表",
       "timeout_ms": 10000
+    },
+    {
+      "name": "context_verify_chain",
+      "sensitive": false,
+      "description": "上下文审计链全量验证（强语义+全覆盖哈希）+ G-A1 自持锚点流验签。body={}；返回双报告",
+      "timeout_ms": 30000
+    },
+    {
+      "name": "context_reconcile",
+      "sensitive": false,
+      "description": "跨链对账：fact WAL 与 inspector WAL 各自全量校验 + cause_fact 存在性对账（时间窗对账不可实施：fact WAL 无墙钟时间戳，如实降级）。body={fact_log?, inspector_log?}（缺省取部署配置）",
+      "timeout_ms": 30000
     }
   ]
 }
