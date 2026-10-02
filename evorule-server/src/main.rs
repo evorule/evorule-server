@@ -1947,6 +1947,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => warn!("默认 Human I/O 权限种子写入失败（入口仲裁将 fail-closed）: {e}"),
             }
         }
+
+        // 启动种子：LLM 主体 call_service 开箱即用（与 Human 种子对称幂等；最小放大面
+        // =仅 io:call_service，其余 io 类型维持 fail-closed 默认 Deny）。声明 caller_role=llm
+        // 的会话（agent 后端/LLM 审计桥/插件回路）免部署后手工配置。收尾批 2026-10-02。
+        const LLM_ENTRY_ID: &str = "default-llm-allow-io";
+        let llm_seed_exists = PermissionTable::snapshot_at(&shared_facts, shared_facts.version())
+            .map(|t| t.get(LLM_ENTRY_ID).is_some())
+            .unwrap_or(false);
+        if !llm_seed_exists {
+            let mut entry = PermissionEntry::new(
+                LLM_ENTRY_ID,
+                Subject {
+                    subject_type: SubjectType::User,
+                    id: "llm".to_string(),
+                },
+                Resource {
+                    resource_type: ResourceType::IoAction,
+                    path: "io:call_service".to_string(),
+                },
+                Effect::Allow,
+            );
+            entry.state = PermissionState::Active;
+            entry.updated_by = "bootstrap".to_string();
+            match PermissionTable::store_entry(&shared_facts, &entry, 0) {
+                Ok(_) => info!("已写入默认 LLM call_service 放行权限条目（id={}）", LLM_ENTRY_ID),
+                Err(e) => warn!("默认 LLM call_service 权限种子写入失败（llm 声明会话 io 维持 fail-closed）: {e}"),
+            }
+        }
     }
 
     let dispatcher = IoDispatcher::builder()

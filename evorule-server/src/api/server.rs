@@ -3183,6 +3183,27 @@ async fn reap_once(
 #[async_trait::async_trait]
 
 impl evorule_workspace::SessionOps for SessionApi {
+    /// 会话主体声明登记（workspace 面）：登记后命令入口注入 `__meta__.caller_role`。
+    /// 声明值为内存态（与主会话声明同口径），serve 重启后随会话一同消失（fail-closed）。
+    async fn declare_caller_role(
+        &self,
+        session_id: u64,
+        role: &str,
+    ) -> evorule_workspace::WorkspaceResult<()> {
+        if let Ok(mut table) = self.caller_roles.lock() {
+            table.insert(session_id, role.to_string());
+            tracing::info!(
+                session_id,
+                "workspace 会话已声明 caller_role（命令入口将注入 __meta__）"
+            );
+            Ok(())
+        } else {
+            Err(evorule_workspace::WorkspaceError::invalid_input(
+                "caller_role 登记失败（声明表不可用）",
+            ))
+        }
+    }
+
     async fn create_session(&self) -> evorule_workspace::WorkspaceResult<u64> {
         let result = {
             let sessions = self.sessions.lock().await;

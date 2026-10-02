@@ -284,8 +284,28 @@ impl WorkspaceService {
             bound_rule_version_id = Some(rv_id);
         }
 
+        // 2a. 可选 caller_role 声明校验（创建前拒绝，避免白建会话；
+        //     非法值显式报错不静默降级 Unknown——与主会话创建口径一致）
+        let declared_role: Option<String> = match req.caller_role.as_deref() {
+            None | Some("") => None,
+            Some(r @ ("human" | "llm")) => Some(r.to_string()),
+            Some(other) => {
+                return Err(WorkspaceError::invalid_input(format!(
+                    "caller_role 非法: {other}（允许 human | llm）"
+                )));
+            }
+        };
+
         // 3. 调用 session_ops 创建底层会话
         let session_id = self.session_ops.create_session().await?;
+
+        // 3a. 声明登记（创建成功才登记；失败路径无会话可声明）。
+        // 登记失败不回滚会话但显式报错——避免「以为已声明实则 Unknown」的静默降级。
+        if let Some(role) = &declared_role {
+            self.session_ops
+                .declare_caller_role(session_id, role)
+                .await?;
+        }
 
         // 4. 记录到 db
         let now = Utc::now();
@@ -442,6 +462,7 @@ mod tests {
         next_id: AtomicU64,
         closed: Mutex<Vec<u64>>,
         commands: Mutex<Vec<(u64, Value)>>,
+        declared: Mutex<Vec<(u64, String)>>,
     }
 
     impl MockSessionOps {
@@ -450,6 +471,7 @@ mod tests {
                 next_id: AtomicU64::new(1000),
                 closed: Mutex::new(Vec::new()),
                 commands: Mutex::new(Vec::new()),
+                declared: Mutex::new(Vec::new()),
             }
         }
     }
@@ -458,6 +480,13 @@ mod tests {
     impl SessionOps for MockSessionOps {
         async fn create_session(&self) -> WorkspaceResult<u64> {
             Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+        }
+        async fn declare_caller_role(&self, session_id: u64, role: &str) -> WorkspaceResult<()> {
+            self.declared
+                .lock()
+                .unwrap()
+                .push((session_id, role.to_string()));
+            Ok(())
         }
         async fn fork_session(&self, parent: u64) -> WorkspaceResult<u64> {
             // 模拟 fork: 分配新 id
@@ -628,6 +657,7 @@ mod tests {
                     rule_id: None,
                     rule_version_id: None,
                     created_by: "owner-1".to_string(),
+                    caller_role: None,
                 },
             ))
             .unwrap();
@@ -637,6 +667,48 @@ mod tests {
         assert!(session.rule_version_id.is_none());
 
         // list
+        let list = rt.block_on(svc.list_sessions(&ws.id)).unwrap();
+        assert_eq!(list.len(), 1);
+    }
+
+    /// 会话主体声明:声明值登记进 session_ops;缺省不声明零登记;非法值显式拒绝
+    #[test]
+    fn test_create_session_declares_caller_role() {
+        let (svc, ops) = make_service();
+        let ws = make_workspace_sync(&svc, "team", "owner-1");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // 声明 human:创建成功且登记进 ops
+        let s1 = rt
+            .block_on(svc.create_session(
+                &ws.id,
+                CreateSessionRequest {
+                    rule_id: None,
+                    rule_version_id: None,
+                    created_by: "owner-1".to_string(),
+                    caller_role: Some("human".to_string()),
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            ops.declared.lock().unwrap().as_slice(),
+            [(s1.id, "human".to_string())]
+        );
+
+        // 非法声明:显式拒绝(不静默降级 Unknown),且无会话创建、无登记
+        let err = rt
+            .block_on(svc.create_session(
+                &ws.id,
+                CreateSessionRequest {
+                    rule_id: None,
+                    rule_version_id: None,
+                    created_by: "owner-1".to_string(),
+                    caller_role: Some("robot".to_string()),
+                },
+            ))
+            .unwrap_err();
+        assert!(matches!(err, WorkspaceError::InvalidInput(_)));
+        assert_eq!(ops.declared.lock().unwrap().len(), 1);
         let list = rt.block_on(svc.list_sessions(&ws.id)).unwrap();
         assert_eq!(list.len(), 1);
     }
@@ -654,6 +726,7 @@ mod tests {
                     rule_id: None,
                     rule_version_id: None,
                     created_by: "owner-1".to_string(),
+                    caller_role: None,
                 },
             ))
             .unwrap();
@@ -686,6 +759,7 @@ mod tests {
                     rule_id: None,
                     rule_version_id: None,
                     created_by: "owner-1".to_string(),
+                    caller_role: None,
                 },
             ))
             .unwrap_err();

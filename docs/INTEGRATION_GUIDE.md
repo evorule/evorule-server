@@ -718,7 +718,9 @@ POST /api/permissions/default-llm-allow-io/review
 {"approve": true}
 ```
 
-条目落共享事实账本（`SharedFactsLog`）；**持久性取决于 `--wal-dir` 启动参数**：配置时落 WAL 重启不丢，未配置时为纯内存态、重启后须重跑本配置脚本（幂等）。主体匹配按 `subject.id == caller_role` 字符串（`"human"`/`"llm"`/`"unknown"`）。内置种子 `default-human-allow-io`（human × `io:*` × allow）启动时幂等登记，不受该参数影响；llm 条目是否开箱即用属部署策略，当前由管理员显式配置。
+条目落共享事实账本（`SharedFactsLog`）；**持久性取决于 `--wal-dir` 启动参数**：配置时落 WAL 重启不丢，未配置时为纯内存态、重启后须重跑本配置脚本（幂等）。主体匹配按 `subject.id == caller_role` 字符串（`"human"`/`"llm"`/`"unknown"`）。
+
+**启动种子（开箱即用）**：服务启动时幂等写入两条种子条目——`default-human-allow-io`（human × `io:*` × allow）与 `default-llm-allow-io`（llm × `io:call_service` × allow，最小放大面；其余 io 类型维持 fail-closed）。新部署无需手工配置即可消费声明机制；`configure-llm-io-permission.ps1` 保留给旧部署升级与种子缺失的自愈场景。验证通路可跑配套探针 `scripts/verify-llm-io-probe.ps1`（声明 → `__meta__` 注入 → 审计归因 3 步断言，幂等）。
 
 > **注意**: 权限 API 是机制层原语，不包含具体业务角色定义。应用层（如 evorule-console）负责将业务角色（admin/editor/viewer）映射为具体的 PermissionEntry。
 

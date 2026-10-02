@@ -49,6 +49,15 @@ pub trait SessionOps: Send + Sync {
     /// 2. 返回新分配的 session_id
     async fn create_session(&self) -> WorkspaceResult<u64>;
 
+    /// 登记会话主体声明（可选能力，默认 no-op 零回归）
+    ///
+    /// 实现应把 (session_id, role) 登记进声明表（命令入口据此注入
+    /// `__meta__.caller_role`，权限门按声明判定）。缺省实现不登记——
+    /// 未声明会话 io 走 fail-closed 默认策略，与既有行为一致。
+    async fn declare_caller_role(&self, _session_id: u64, _role: &str) -> WorkspaceResult<()> {
+        Ok(())
+    }
+
     /// 从父会话 fork 新会话,返回新 session_id
     ///
     /// 实现应调用 SessionManager::create_session_from_parent_at_version()

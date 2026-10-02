@@ -860,6 +860,10 @@ pub struct CreateSessionRequest {
     /// 指定规则版本 ID (可选, 不指定则用 current_version)
     pub rule_version_id: Option<String>,
     pub created_by: String,
+    /// 可选的会话主体声明（"human" | "llm"）。声明后该会话命令入口注入
+    /// `__meta__.caller_role`，权限门按声明判定；缺省不声明 = 未声明会话
+    /// （io 走 fail-closed 默认策略），零回归。非法值显式拒绝（不静默降级）。
+    pub caller_role: Option<String>,
 }
 
 // =============================================================================
