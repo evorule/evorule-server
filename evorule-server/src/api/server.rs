@@ -18,6 +18,8 @@
 
 //! - `POST /api/payload` — 更新 payload 字段
 
+//! - `POST /api/sessions/{id}/payloads` — 批量更新会话 payload（一次 HTTP 多条写入）
+
 //! - `GET /api/state` — 获取当前状态快照
 
 //! - `GET /api/audit` — 获取审计报告
@@ -4029,6 +4031,54 @@ pub struct PayloadUpdateRequest {
     pub value: serde_json::Value,
 }
 
+/// 批量 PayloadUpdate 请求（跨仓挂账二：一次 HTTP 写入多条 payload）
+#[derive(Debug, Deserialize, ToSchema)]
+
+pub struct BatchPayloadUpdateRequest {
+    /// 逐条更新（path + value）
+    pub updates: Vec<PayloadUpdateRequest>,
+}
+
+/// 批量 PayloadUpdate 逐条结果
+#[derive(Debug, Serialize, ToSchema)]
+
+pub struct BatchPayloadItemResult {
+    /// 字段路径
+    pub path: String,
+
+    /// 本条是否成功
+    pub success: bool,
+
+    /// 会话侧事实 ID（成功时返回）
+    pub fact_id: Option<u64>,
+
+    /// 失败原因（成功时为 null）
+    pub error: Option<String>,
+}
+
+/// 批量 PayloadUpdate 响应
+#[derive(Debug, Serialize, ToSchema)]
+
+pub struct BatchPayloadResponse {
+    /// 全部成功才为 true
+    pub success: bool,
+
+    /// 汇总说明
+    pub message: String,
+
+    /// 总条数
+    pub total: usize,
+
+    /// 成功条数
+    pub succeeded: usize,
+
+    /// 失败条数
+    pub failed: usize,
+
+    /// 逐条结果
+    pub results: Vec<BatchPayloadItemResult>,
+}
+
 // ===== OpenAPI 响应 schema（单一真相源，P2）=====
 
 // 以下类型仅用于 `#[utoipa::path]` 标注中精确描述各端点的响应结构。
@@ -7449,6 +7499,208 @@ async fn session_payload(
     }
 }
 
+/// 会话批量 PayloadUpdate handler（跨仓挂账二）
+///
+/// `POST /api/sessions/:id/payloads` → 一次 HTTP 写入多条 payload。
+///
+/// 原子性语义（诚实契约）：
+/// - **预校验整批拒绝**：空批次 400；任一条目命中受保护域且身份不足 403
+///   （列出违规路径）；会话不存在 404——拒绝发生在任何写入之前；
+/// - **执行期逐条上报**：command_tx 关闭（reactor 退出）等执行期失败
+///   不回滚已写条目，逐条 `results[i]` 携带 success/fact_id/error；
+/// - `success=true` 当且仅当全部条目成功。
+#[utoipa::path(
+
+    post,
+
+    path = "/api/sessions/{id}/payloads",
+
+    tag = "sessions",
+
+    params(("id" = u64, Path, description = "会话 ID")),
+
+    request_body = BatchPayloadUpdateRequest,
+
+    responses(
+
+        (status = 200, description = "批量已处理（逐条结果见 results）", body = BatchPayloadResponse),
+
+        (status = 400, description = "空批次"),
+
+        (status = 403, description = "任一条目命中受保护域且身份不足（整批拒绝，未写入任何条目）"),
+
+        (status = 404, description = "会话不存在")
+
+    )
+
+)]
+#[allow(clippy::too_many_arguments)]
+async fn batch_session_payload(
+    State(api): State<SessionApi>,
+
+    State(shared_facts): State<SharedFactsLog>,
+
+    State(metrics): State<SharedMetrics>,
+
+    State(sanitizer): State<Arc<InputSanitizer>>,
+
+    Path(session_id): Path<u64>,
+
+    identity: Option<Extension<CallerIdentity>>,
+
+    Json(req): Json<BatchPayloadUpdateRequest>,
+) -> Result<(StatusCode, Json<BatchPayloadResponse>), (StatusCode, Json<BatchPayloadResponse>)> {
+    if req.updates.is_empty() {
+        tracing::warn!(session_id, "batch payload rejected: empty updates");
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(BatchPayloadResponse {
+                success: false,
+                message: "updates 不能为空".to_string(),
+                total: 0,
+                succeeded: 0,
+                failed: 0,
+                results: Vec::new(),
+            }),
+        ));
+    }
+
+    // 预校验：受保护域整批拒绝（任何写入发生之前）——与 session_payload
+    // 的 B5-server 单条语义同源（stable.llm / stable.system 仅受信服务管道）
+    let identity_limited = matches!(
+        identity,
+        Some(Extension(CallerIdentity::User)) | Some(Extension(CallerIdentity::App))
+    );
+    if identity_limited {
+        let offending: Vec<String> = req
+            .updates
+            .iter()
+            .filter(|u| requires_service_identity(&u.path))
+            .map(|u| u.path.clone())
+            .collect();
+        if !offending.is_empty() {
+            tracing::warn!(
+                session_id,
+                count = offending.len(),
+                "batch_session_payload 受保护域写入被整批拒绝（需 service 身份）"
+            );
+            let failed = req.updates.len();
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(BatchPayloadResponse {
+                    success: false,
+                    message: format!(
+                        "批量含 {} 条受保护域写入（如 {}）：stable.llm / stable.system 仅受信服务管道可写。整批拒绝，未写入任何条目。",
+                        offending.len(),
+                        offending[0]
+                    ),
+                    total: failed,
+                    succeeded: 0,
+                    failed,
+                    results: req
+                        .updates
+                        .iter()
+                        .map(|u| BatchPayloadItemResult {
+                            path: u.path.clone(),
+                            success: false,
+                            fact_id: None,
+                            error: Some(
+                                "UNAUTHORIZED: protected domain requires service identity"
+                                    .to_string(),
+                            ),
+                        })
+                        .collect(),
+                }),
+            ));
+        }
+    }
+
+    let sessions = api.sessions.lock().await;
+
+    sessions.touch_session(session_id);
+
+    let session = sessions.get_session(session_id).ok_or((
+        StatusCode::NOT_FOUND,
+        Json(BatchPayloadResponse {
+            success: false,
+            message: format!("session {session_id} not found"),
+            total: req.updates.len(),
+            succeeded: 0,
+            failed: req.updates.len(),
+            results: Vec::new(),
+        }),
+    ))?;
+
+    let mut results = Vec::with_capacity(req.updates.len());
+    for update in &req.updates {
+        // Phase 1: 输入净化（与单条端点同语义，静默改写 + 命中指标化）
+        let (sanitized_value, sanitize_report) = sanitizer.sanitize_value(&update.value);
+        if sanitize_report.has_hits() {
+            for rule in sanitize_report.unique_hits() {
+                metrics.inc_sanitize_hits(rule);
+            }
+        }
+        let value = serde_to_tcb(sanitized_value);
+        let id = api.next_id();
+
+        // R10 时序交换（与单条端点同语义）：先 send 后广播，origin 永不悬空
+        let send_result = session.command_tx.send(Fact::PayloadUpdate {
+            id,
+            path: update.path.clone(),
+            value: value.clone(),
+        });
+        if send_result.is_ok() && update.path.starts_with("shared.") {
+            if let Err(e) =
+                shared_facts.append_with_origin(&update.path, value, session_id, Some(id.0))
+            {
+                tracing::warn!(
+                    session_id,
+                    path = %update.path,
+                    "batch: SharedFactsLog append failed: {e}"
+                );
+            }
+        }
+
+        match send_result {
+            Ok(()) => results.push(BatchPayloadItemResult {
+                path: update.path.clone(),
+                success: true,
+                fact_id: Some(id.0),
+                error: None,
+            }),
+            Err(_) => results.push(BatchPayloadItemResult {
+                path: update.path.clone(),
+                success: false,
+                fact_id: None,
+                error: Some("SESSION_ERROR: command channel closed (reactor exited)".to_string()),
+            }),
+        }
+    }
+
+    let total = results.len();
+    let succeeded = results.iter().filter(|r| r.success).count();
+    let failed = total - succeeded;
+    tracing::info!(
+        session_id,
+        total,
+        succeeded,
+        failed,
+        "Batch payload processed"
+    );
+
+    Ok((
+        StatusCode::OK,
+        Json(BatchPayloadResponse {
+            success: failed == 0,
+            message: format!("batch processed: {succeeded}/{total} succeeded"),
+            total,
+            succeeded,
+            failed,
+            results,
+        }),
+    ))
+}
+
 /// SSE 事件流 handler
 ///
 /// `GET /api/sessions/:id/events` → 订阅指定会话的 event broadcast 通道，
@@ -9698,6 +9950,7 @@ impl GovernanceServer {
                 get(session_causal_chain),
             )
             .route("/api/sessions/{id}/payload", post(session_payload))
+            .route("/api/sessions/{id}/payloads", post(batch_session_payload))
             .route("/api/sessions/{id}/events", get(session_events))
             .route("/api/sessions/{id}/io_response", post(session_io_response))
             // 治理层演进 API（回放、时间旅行、集群协作）
@@ -14942,6 +15195,70 @@ mod tests {
             oneshot_json_with_token(router, "POST", &uri, "service_token", Some(body)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["success"], true);
+    }
+
+    /// 会话批量 payload 端点（跨仓挂账二）：一次 HTTP 多条写入；
+    /// 受保护域整批 403（预校验，未写入任何条目）；空批次 400
+    #[tokio::test]
+    async fn test_batch_session_payload_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_authed_router(&state, "user_token", "service_token");
+
+        // 创建会话（user token 即可）
+        let (status, json) =
+            oneshot_json_with_token(router.clone(), "POST", "/api/sessions", "user_token", None)
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        let session_id = json["session_id"].as_u64().unwrap();
+
+        let uri = format!("/api/sessions/{session_id}/payloads");
+
+        // 正常批量：两条非受保护域 → 200 全成功，逐条 fact_id
+        let body = r#"{"updates":[
+            {"path":"shared.default.stable.user.topic1","value":"a"},
+            {"path":"shared.default.events.e1","value":"b"}]}"#;
+        let (status, json) =
+            oneshot_json_with_token(router.clone(), "POST", &uri, "user_token", Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["succeeded"], 2);
+        assert_eq!(json["failed"], 0);
+        assert!(json["results"][0]["fact_id"].is_u64());
+        assert!(json["results"][1]["fact_id"].is_u64());
+
+        // 混入一条受保护域 + user token → 整批 403（含已通过校验的条目也未写入）
+        let body403 = r#"{"updates":[
+            {"path":"shared.default.stable.user.ok2","value":"a"},
+            {"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}]}"#;
+        let (status, json) =
+            oneshot_json_with_token(router.clone(), "POST", &uri, "user_token", Some(body403))
+                .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["success"], false);
+        assert_eq!(json["failed"], 2);
+        assert_eq!(json["succeeded"], 0);
+
+        // service token 同批 → 放行全成功
+        let (status, json) =
+            oneshot_json_with_token(router.clone(), "POST", &uri, "service_token", Some(body403))
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["succeeded"], 2);
+
+        // 空批次 → 400
+        let (status, json) = oneshot_json_with_token(
+            router,
+            "POST",
+            &uri,
+            "user_token",
+            Some(r#"{"updates":[]}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["success"], false);
     }
 
     // --- 应用级凭据（app key 通道端到端） ---

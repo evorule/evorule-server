@@ -1577,6 +1577,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!("{reason}");
         std::process::exit(1);
     }
+    // 域守卫裁定落档（跨仓挂账三-b，2026-10-03 项目方批准结清）：无认证启动
+    // （loopback + --insecure-serve）时受保护域准入（stable.llm / stable.system
+    // 需 service 身份）按"身份缺失=放行"的本地服务管道语义执行——域守卫与认证
+    // 解耦的裁定语义：守卫=f(路径, 身份)，来源域即信任域，不因部署模式降级
+    // （降标签方案否决）。此处显式告警，使豁免窗口在日志侧可见。
+    if cfg.auth_token.is_none() && cfg.insecure_serve {
+        warn!(
+            addr = %cfg.addr,
+            "insecure-serve 无认证模式：受保护域准入按本地服务管道放行（仅限 loopback 开发）；生产部署须配置 auth_token（O-271 三件套）"
+        );
+    }
     info!("日志格式: {}", cfg.log_format);
     info!(
         "日志输出: {}",

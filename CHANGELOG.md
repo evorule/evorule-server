@@ -25,6 +25,22 @@
 
 ---
 
+## [Unreleased] - 2026-10-03
+
+### 🆕 新增
+
+- 🆕 **`POST /api/sessions/{id}/payloads` 批量 payload 端点**（跨仓挂账二，配对 evo-agent `append_messages_batch` 真批量）：一次 HTTP 写入多条。原子性语义（诚实契约）：预校验整批拒绝（空批次 400 / 任一条目命中受保护域且身份不足 403 / 会话不存在 404，拒绝发生在任何写入之前）；执行期逐条上报（reactor 退出等不回滚已写条目，逐条 results 携带 success/fact_id/error）；`success=true` 当且仅当全部成功。OpenAPI schema 同步注册；测试 `test_batch_session_payload_oneshot`（正常批量/受保护域整批 403/service 放行/空批次 400）
+
+### 🔄 变更
+
+- 🔄 **域守卫裁定落档（跨仓挂账三-b）**：裁定②解耦语义成立——守卫=f(路径, 身份)，来源域即信任域，不因部署模式降级（降标签方案否决）。无认证启动（loopback + `--insecure-serve`）时受保护域准入按本地服务管道放行，启动日志显式告警豁免窗口（生产部署须配置 auth_token，O-271 三件套）
+
+### ✅ 向后兼容
+
+- ✅ 批量端点为纯新增路由，既有单条端点 `/api/sessions/{id}/payload` 行为不变（其响应本就携带 fact_id，供客户端证据链消费）
+
+---
+
 ## [0.9.0] - 2026-10-01
 
 ### 🔄 变更

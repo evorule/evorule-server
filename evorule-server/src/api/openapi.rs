@@ -162,6 +162,9 @@ use utoipa::OpenApi;
         crate::api::server::HealthResponse,
         crate::api::server::CommandRequest,
         crate::api::server::PayloadUpdateRequest,
+        crate::api::server::BatchPayloadUpdateRequest,
+        crate::api::server::BatchPayloadItemResult,
+        crate::api::server::BatchPayloadResponse,
         // 会话基础响应
         crate::api::server::SessionIdResponse,
         crate::api::server::SessionListResponse,
