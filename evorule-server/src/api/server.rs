@@ -14439,6 +14439,110 @@ mod tests {
 
     #[tokio::test]
 
+    async fn test_shared_facts_rollup_empty_batch_400_oneshot() {
+        let (state, _) = make_test_state();
+
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            "/api/shared/facts/rollup",
+            Some(r#"{"fact_ids": []}"#),
+        )
+        .await;
+
+        // R11（静默失败修复）：空批次显式 400，绝不静默 200
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        assert_eq!(json["success"], false);
+
+        assert!(json["message"].as_str().unwrap().contains("不能为空"));
+    }
+
+    #[tokio::test]
+
+    async fn test_shared_facts_rollup_unknown_id_404_partial_marking_oneshot() {
+        let (state, _) = make_test_state();
+
+        // 账本侧先落一条已知 fact（首条 fact_id=1）；请求混入未知 id 999
+        // ——典型事故形态：误用 payload 侧 fact_id（两个 ID 空间不通用）
+        state
+            .shared_facts
+            .append(
+                "shared.test.sessions.s1.summary",
+                JsonValue::string("s1"),
+                1,
+            )
+            .unwrap();
+
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            "/api/shared/facts/rollup",
+            Some(r#"{"fact_ids": [1, 999]}"#),
+        )
+        .await;
+
+        // R11：未知 id 必须显式 404 并逐个列出（部分标记语义：已知 id 正常入账）
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        assert_eq!(json["success"], false);
+
+        let message = json["message"].as_str().unwrap();
+
+        assert!(message.contains("999"), "应列出未知 id：{message}");
+
+        assert!(message.contains("已标记 1"), "应报告已标记数：{message}");
+
+        // 账本侧：已知 id 已入 rollup 标记，未知 id 不入（不给账本塞垃圾标记）
+        assert!(state.shared_facts.is_rolled_up(&FactId(1)));
+
+        assert!(!state.shared_facts.is_rolled_up(&FactId(999)));
+    }
+
+    #[tokio::test]
+
+    async fn test_shared_facts_rollup_all_known_ids_200_oneshot() {
+        let (state, _) = make_test_state();
+
+        state
+            .shared_facts
+            .append(
+                "shared.test.sessions.s1.summary",
+                JsonValue::string("s1"),
+                1,
+            )
+            .unwrap();
+
+        state
+            .shared_facts
+            .append(
+                "shared.test.sessions.s2.summary",
+                JsonValue::string("s2"),
+                1,
+            )
+            .unwrap();
+
+        let (status, json) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            "/api/shared/facts/rollup",
+            Some(r#"{"fact_ids": [1, 2]}"#),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+
+        assert_eq!(json["success"], true);
+
+        assert_eq!(json["message"], "2 facts marked as rolled up");
+
+        assert!(state.shared_facts.is_rolled_up(&FactId(1)));
+
+        assert!(state.shared_facts.is_rolled_up(&FactId(2)));
+    }
+
+    #[tokio::test]
+
     async fn test_session_reap_empty_oneshot() {
         let (state, _) = make_test_state();
 
