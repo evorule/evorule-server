@@ -15645,6 +15645,11 @@ mod tests {
                 domain: "d".into(),
                 tags: vec![],
                 dependencies: vec![],
+                // 知识资产化 A 批：规则条目四治理字段不携带（None）
+                knowledge_kind: None,
+                trust_level: None,
+                license_ref: None,
+                execution_contract: None,
             }],
             data_dependencies: None,
             tests: BundleTests {
@@ -15768,6 +15773,11 @@ mod tests {
                 domain: "physics".into(),
                 tags: vec![],
                 dependencies: vec![],
+                // 知识资产化 A 批：知识条目治理字段（本 fixture 不携带，None=旧格式字节兼容）
+                knowledge_kind: None,
+                trust_level: None,
+                license_ref: None,
+                execution_contract: None,
             }],
             data_dependencies: None,
             tests: BundleTests {
@@ -15916,6 +15926,11 @@ mod tests {
             domain: "physics".into(),
             tags: vec![],
             dependencies: vec![],
+            // 知识资产化 A 批：规则条目四治理字段不携带（None）
+            knowledge_kind: None,
+            trust_level: None,
+            license_ref: None,
+            execution_contract: None,
         });
         bundle.audit.content_hash = bundle.compute_content_hash();
 

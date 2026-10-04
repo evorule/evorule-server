@@ -321,6 +321,11 @@ mod tests {
                     rule_ref: "transform[0]".into(),
                     service_name: "payroll_svc".into(),
                 }],
+                // 知识资产化 A 批：规则条目四治理字段不携带（None）
+                knowledge_kind: None,
+                trust_level: None,
+                license_ref: None,
+                execution_contract: None,
             }],
             data_dependencies: Some(DataDependencies {
                 inputs: vec![],

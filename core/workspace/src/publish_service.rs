@@ -934,6 +934,11 @@ fn build_publish_bundle(
                 domain: "general".to_string(),
                 tags: Vec::new(),
                 dependencies: Vec::new(),
+                // 知识资产化 A 批：发布链产出为规则条目，四治理字段不携带（None）
+                knowledge_kind: None,
+                trust_level: None,
+                license_ref: None,
+                execution_contract: None,
             }
         })
         .collect();

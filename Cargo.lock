@@ -836,6 +836,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-bundle"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1851c1e7180d75773854adf6f206af0ced7b8b4f36293d8ced1dff1e0b49292"
+dependencies = [
+ "evorule-hash",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "evorule-debug-control"
 version = "0.9.0"
 dependencies = [
@@ -916,7 +929,7 @@ version = "0.9.0"
 dependencies = [
  "axum",
  "clap",
- "evorule-bundle",
+ "evorule-bundle 0.4.0",
  "evorule-rule-schema",
  "http",
  "http-body-util",
@@ -1020,12 +1033,13 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule"
-version = "0.3.2"
+version = "0.3.0"
+source = "git+https://gitee.com/evorule/evorule-rule.git?rev=28d35aef03d58b8916c4036ac4d55b808052162e#28d35aef03d58b8916c4036ac4d55b808052162e"
 dependencies = [
  "axum",
  "base64",
  "clap",
- "evorule-bundle",
+ "evorule-bundle 0.3.0",
  "evorule-hash",
  "http-body-util",
  "rand 0.8.7",
@@ -1100,7 +1114,7 @@ dependencies = [
  "blake3",
  "chrono",
  "clap",
- "evorule-bundle",
+ "evorule-bundle 0.4.0",
  "evorule-demo-services",
  "evorule-discipline",
  "evorule-governance",
@@ -1173,7 +1187,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
- "evorule-bundle",
+ "evorule-bundle 0.4.0",
  "evorule-hash",
  "evorule-rule-schema",
  "evorule-rule-tools",
@@ -4663,3 +4677,7 @@ dependencies = [
  "log",
  "simd-adler32",
 ]
+
+[[patch.unused]]
+name = "evorule-rule"
+version = "0.4.0"

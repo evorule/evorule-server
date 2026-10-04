@@ -29,6 +29,33 @@ use std::path::Path;
 use serde::Serialize;
 use utoipa::ToSchema;
 
+/// 运行契约 API 面投影（知识资产化 A 批；与 `evorule_bundle::ExecutionContract`
+/// 同构。独立视图型：外部类型无法实现 utoipa::ToSchema，投影即解耦——上游字段
+/// 演进不直接渗入 openapi schema）。
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
+pub struct ExecutionContractView {
+    /// 运行通路：`direct`（机器直行）| `injection`（检索注入）| `criterion`（判据评估）
+    pub pathway: String,
+    /// 判据引用（heuristic/model 类知识行权必填——治理侧校验）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub criterion_ref: Option<String>,
+    /// 消费面白名单（缺省 `["*"]` 全放行）
+    pub consumer_allowlist: Vec<String>,
+    /// 消费预算类（接执行侧消费预算分档）
+    pub budget_class: String,
+}
+
+impl From<evorule_bundle::ExecutionContract> for ExecutionContractView {
+    fn from(c: evorule_bundle::ExecutionContract) -> Self {
+        Self {
+            pathway: c.pathway,
+            criterion_ref: c.criterion_ref,
+            consumer_allowlist: c.consumer_allowlist,
+            budget_class: c.budget_class,
+        }
+    }
+}
+
 /// 单条数据资产记录（进程内索引项，W3 直读单元；Q12 段2 P1 兼作数据面响应组件）
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct KnowledgeEntryRecord {
@@ -46,6 +73,14 @@ pub struct KnowledgeEntryRecord {
     pub domain: String,
     /// 标签（段2 P1：manifest 携带，数据面过滤用；旧 manifest → 空）
     pub tags: Vec<String>,
+    /// 知识五分法谱系（知识资产化 A 批：manifest 携带；旧 manifest → None）
+    pub knowledge_kind: Option<String>,
+    /// 来源信任级 human | llm | external:{source}（旧 manifest → None）
+    pub trust_level: Option<String>,
+    /// 许可证域引用（external 信任级必带；旧 manifest → None）
+    pub license_ref: Option<String>,
+    /// 运行契约（A 批仅字段流通；行为约束在治理侧批次 B 落地；旧 manifest → None）
+    pub execution_contract: Option<ExecutionContractView>,
 }
 
 /// 执行侧数据资产库（进程内，BTreeMap 确定性索引）
@@ -133,6 +168,11 @@ impl KnowledgeStore {
                         source_version: manifest.source_version.clone(),
                         domain: ef.domain.clone().unwrap_or_default(),
                         tags: ef.tags.clone(),
+                        // 知识资产化 A 批：四治理字段从 manifest 条目映射流通（旧 manifest → None）
+                        knowledge_kind: ef.knowledge_kind.clone(),
+                        trust_level: ef.trust_level.clone(),
+                        license_ref: ef.license_ref.clone(),
+                        execution_contract: ef.execution_contract.clone().map(Into::into),
                     },
                 );
             }

@@ -269,6 +269,11 @@ mod tests {
                 domain: domain.into(),
                 tags: tags.iter().map(|s| s.to_string()).collect(),
                 dependencies: vec![],
+                // 知识资产化 A 批：知识条目治理字段（本 fixture 不携带，None=旧格式字节兼容）
+                knowledge_kind: None,
+                trust_level: None,
+                license_ref: None,
+                execution_contract: None,
             }],
             data_dependencies: None,
             tests: BundleTests {

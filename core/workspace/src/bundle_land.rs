@@ -79,6 +79,20 @@ pub struct EntryFileManifest {
     /// Knowledge 条目：标签（段2 P1 执行侧数据面过滤；空省略）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// 知识资产化 A 批：知识五分法谱系（fact/procedure/heuristic/narrative/model/custom:{name}）。
+    /// knowledge 条目携带；Rule 条目省略。旧 manifest 缺字段 → None（零迁移）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_kind: Option<String>,
+    /// 知识资产化 A 批：来源信任级（human | llm | external:{source}）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_level: Option<String>,
+    /// 知识资产化 A 批：许可证域引用（external 信任级必带，治理侧闸门保证）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_ref: Option<String>,
+    /// 知识资产化 A 批：运行契约（pathway/criterion_ref/consumer_allowlist/budget_class）。
+    /// A 批仅字段流通；行为约束（判据强制行权闸）在治理侧批次 B 落地。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_contract: Option<evorule_bundle::ExecutionContract>,
 }
 
 /// 条目文件哈希口径（批次F，SSOT）：`blake3:hex` over 文件字节，
@@ -269,6 +283,28 @@ fn land_bundle_core(
                     } else {
                         Vec::new()
                     },
+                    // 知识资产化 A 批：四治理字段随 knowledge 条目流通到落盘 manifest
+                    // （None 时不序列化，landed hash 与旧包字节兼容）；rule 条目不携带。
+                    knowledge_kind: if with_schema_ref {
+                        e.knowledge_kind.clone()
+                    } else {
+                        None
+                    },
+                    trust_level: if with_schema_ref {
+                        e.trust_level.clone()
+                    } else {
+                        None
+                    },
+                    license_ref: if with_schema_ref {
+                        e.license_ref.clone()
+                    } else {
+                        None
+                    },
+                    execution_contract: if with_schema_ref {
+                        e.execution_contract.clone()
+                    } else {
+                        None
+                    },
                 })
                 .collect(),
         };
@@ -406,6 +442,10 @@ mod landed_hash_tests {
                 schema_ref: None,
                 domain: None,
                 tags: Vec::new(),
+                knowledge_kind: None,
+                trust_level: None,
+                license_ref: None,
+                execution_contract: None,
             }],
         }
     }
