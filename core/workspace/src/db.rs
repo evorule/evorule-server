@@ -92,12 +92,26 @@ impl WorkspaceDb {
             return Ok(());
         }
 
-        migrate_v1(&conn)?;
-        migrate_v2(&conn)?;
-        migrate_v3(&conn)?;
-        migrate_v4(&conn)?;
-        migrate_v5(&conn)?;
-        migrate_v6(&conn)?;
+        // 逐版本跳过 (而非全量重放): v3/v5 的 ALTER TABLE 无幂等保护,
+        // 已应用列的库重放即炸 (duplicate column)。升级版本号时只跑增量。
+        if current < 1 {
+            migrate_v1(&conn)?;
+        }
+        if current < 2 {
+            migrate_v2(&conn)?;
+        }
+        if current < 3 {
+            migrate_v3(&conn)?;
+        }
+        if current < 4 {
+            migrate_v4(&conn)?;
+        }
+        if current < 5 {
+            migrate_v5(&conn)?;
+        }
+        if current < 6 {
+            migrate_v6(&conn)?;
+        }
         Ok(())
     }
 
@@ -2404,6 +2418,49 @@ mod tests {
     fn test_schema_version_after_migrate() {
         let db = make_db();
         assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    /// 低版本库增量升级回归: v5 库 (schema_migrations 记 5) 升 SCHEMA_VERSION=6
+    /// 只跑 v6 增量——全量重放会因 v3 的无幂等 ALTER (rules.metadata 列已存在)
+    /// 炸 duplicate column (生产启动阻塞实录 2026-10-06, PR-10 批修)。
+    #[test]
+    fn test_partial_version_db_upgrades_incrementally() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        // 模拟 v5 库最小形态: 迁移记录 5 + v3 已加列的 rules + v5 形态 publish_queue
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version INTEGER PRIMARY KEY,
+                 applied_at TEXT NOT NULL
+             );
+             INSERT INTO schema_migrations (version, applied_at) VALUES (5, 'seed');
+             CREATE TABLE rules (
+                 id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT, content TEXT,
+                 state TEXT, version INTEGER, metadata TEXT NOT NULL DEFAULT '{}'
+             );
+             CREATE TABLE publish_queue (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 kind TEXT NOT NULL DEFAULT 'normal',
+                 meta_rule_content TEXT
+             );",
+        )
+        .unwrap();
+        let db = WorkspaceDb {
+            conn: Mutex::new(conn),
+        };
+        db.migrate().expect("incremental upgrade v5→v6 must succeed");
+        assert_eq!(db.schema_version().unwrap(), 6);
+        // v6 增量生效: publish_queue.rule_version_ids 列存在
+        let conn = db.lock().unwrap();
+        let has_col: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('publish_queue') WHERE name='rule_version_ids'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap();
+        assert!(has_col, "v6 must add rule_version_ids column");
     }
 
     #[test]
