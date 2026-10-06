@@ -654,6 +654,12 @@ pub struct PublishQueueItem {
     /// 与 final_candidate_rules (业务规则原文, 溯源锚点) 分离存储:
     /// 前者回答"晋升自什么", 后者回答"落盘什么"。
     pub meta_rule_content: Option<String>,
+    /// 提交发布时锁定的规则版本 ID 集合 (JSON 数组字符串, 仅 normal 时非空)
+    ///
+    /// 发布成功后据此回写 rule 记录 candidate→active (记账一致性);
+    /// 提交时已校验均为各规则的 current 版本。v6 前的存量行为 None——
+    /// 回写逻辑跳过, 不影响既有语义。
+    pub rule_version_ids: Option<String>,
 }
 
 // =============================================================================

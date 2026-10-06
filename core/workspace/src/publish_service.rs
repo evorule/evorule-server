@@ -204,7 +204,9 @@ impl PublishService {
             self.ensure_no_meta_promotion_dup(&req.workspace_id, meta_json)?;
         }
 
-        // 5. 插入 publish_queue
+        // 5. 插入 publish_queue (rule_version_ids 随队列项落库: 发布成功后
+        //    回写 rule state 的记账依据, 消除 candidate 与生产已发布的双真相源)
+        let rule_version_ids_json = serde_json::to_string(&req.rule_version_ids)?;
         let id = self.db.insert_publish_queue_item(
             &req.workspace_id,
             &final_candidate_rules,
@@ -214,6 +216,7 @@ impl PublishService {
             req.description.as_deref(),
             req.kind,
             meta_rule_content.as_deref(),
+            Some(&rule_version_ids_json),
         )?;
 
         info!(
@@ -608,7 +611,61 @@ impl PublishService {
             )
             .await?;
 
+        // 6. 工作区记账回写: 发布已生效, 对应 rule 记录 candidate→active
+        //    (记账语义 fail-soft: 回写失败仅告警留痕, 不回滚已生效的发布主链)
+        self.mark_published_rules_active(item);
+
         Ok(result.new_ruleset_version)
+    }
+
+    /// 发布成功后回写 rule 记录状态 (candidate→active, 修双真相源)
+    ///
+    /// 队列项缺 rule_version_ids (v6 前存量行) 时跳过; 单条回写失败
+    /// 告警继续 (记账不阻塞发布语义), 全程留痕可追。
+    fn mark_published_rules_active(&self, item: &PublishQueueItem) {
+        use crate::models::RuleState;
+
+        let Some(ids_json) = item.rule_version_ids.as_deref() else {
+            tracing::warn!(
+                queue_id = item.id,
+                "publish queue item has no rule_version_ids (pre-v6 row); skip rule state write-back"
+            );
+            return;
+        };
+        let Ok(ids) = serde_json::from_str::<Vec<String>>(ids_json) else {
+            tracing::warn!(
+                queue_id = item.id,
+                "publish queue item rule_version_ids is not a JSON array; skip rule state write-back"
+            );
+            return;
+        };
+
+        for rv_id in &ids {
+            // 版本 → 所属规则 → 状态回写; update_rule_state 为无条件置位,
+            // 对已 active 规则重复执行幂等无害。
+            let outcome = self
+                .db
+                .get_rule_version(rv_id)
+                .and_then(|rv| self.db.update_rule_state(&rv.rule_id, RuleState::Active));
+            match outcome {
+                Ok(rule) => {
+                    info!(
+                        queue_id = item.id,
+                        rule_id = %rule.id,
+                        rule_version = %rv_id,
+                        "published rule state write-back: candidate -> active"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        queue_id = item.id,
+                        rule_version = %rv_id,
+                        error = %e,
+                        "rule state write-back failed after successful publish (ledger drift possible)"
+                    );
+                }
+            }
+        }
     }
 
     /// 执行元规则晋升落盘 (晋升通道核心)
@@ -994,7 +1051,8 @@ mod tests {
     use super::*;
     use crate::db::WorkspaceDb;
     use crate::models::{
-        CreateRuleRequest, CreateWorkspaceRequest, RuleVersionState, UpdateRuleContentRequest,
+        CreateRuleRequest, CreateWorkspaceRequest, RuleState, RuleVersionState,
+        UpdateRuleContentRequest,
     };
     use crate::rolling_session::RollingSessionService;
     use crate::session_bridge::SessionOps;
@@ -1238,7 +1296,7 @@ mod tests {
             .submit_publish(
                 SubmitPublishRequest {
                     workspace_id: ws_id.clone(),
-                    rule_version_ids: vec![rv_id],
+                    rule_version_ids: vec![rv_id.clone()],
                     test_report_sandbox_id: Some(sandbox_id),
                     description: None,
                     kind: PublishKind::Normal,
@@ -1310,6 +1368,66 @@ mod tests {
             .filter(|n| n.ends_with(".json") && n != evorule_bundle::BUNDLE_MANIFEST_FILE)
             .collect();
         assert_eq!(rule_files.len(), 1, "应落盘恰好一个规则条目文件");
+
+        // 发布成功回写 rule state (candidate→active, 记账一致): 已发布规则
+        // 不再停留 Candidate, 工作区账面与生产生效层同源
+        let rule_id = db.get_rule_version(&rv_id).unwrap().rule_id;
+        let rule = db.get_rule(&rule_id).unwrap();
+        assert_eq!(
+            rule.state,
+            RuleState::Active,
+            "已发布规则应回写为 active, 实际: {:?}",
+            rule.state
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_write_back_rule_state_active() {
+        // PR-10: 发布队列项携带 rule_version_ids 落库 + 发布成功回写记账
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let rule_id = db.get_rule_version(&rv_id).unwrap().rule_id;
+        assert_eq!(db.get_rule(&rule_id).unwrap().state, RuleState::Candidate);
+
+        let item = publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id.clone(),
+                    rule_version_ids: vec![rv_id.clone()],
+                    test_report_sandbox_id: Some(make_sandbox_evidence(&db, &ws_id)),
+                    description: None,
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
+                },
+                "head-1",
+                &PublishRole::DepartmentHead,
+            )
+            .await
+            .unwrap();
+
+        // 提交时 rule_version_ids 随队列项落库 (回写记账依据)
+        let stored = db.get_publish_queue_item(item.id).unwrap().unwrap();
+        assert_eq!(
+            stored.rule_version_ids,
+            Some(serde_json::to_string(&vec![rv_id.clone()]).unwrap()),
+            "队列项应携带 rule_version_ids"
+        );
+
+        publish_svc
+            .review_publish(
+                item.id,
+                ReviewPublishRequest {
+                    decision: "approved".to_string(),
+                    comment: None,
+                },
+                "admin-1",
+                &PublishRole::Admin,
+            )
+            .await
+            .unwrap();
+
+        // 回写生效: rule 记录 candidate→active
+        assert_eq!(db.get_rule(&rule_id).unwrap().state, RuleState::Active);
     }
 
     #[tokio::test]
@@ -1404,12 +1522,13 @@ mod tests {
             .await
             .unwrap();
 
-        // v2: 再发布一次 (相同规则)
+        // v2: 再发布一次 (发布回写后 rule 已 active, 按真实流程新建 candidate 规则)
+        let rv_id2 = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-2").await;
         let item2 = publish_svc
             .submit_publish(
                 SubmitPublishRequest {
                     workspace_id: ws_id.clone(),
-                    rule_version_ids: vec![rv_id],
+                    rule_version_ids: vec![rv_id2],
                     test_report_sandbox_id: Some(sandbox_id),
                     description: None,
                     kind: PublishKind::Normal,
@@ -1845,6 +1964,7 @@ mod tests {
             description: None,
             kind: PublishKind::Normal,
             meta_rule_content: None,
+            rule_version_ids: None,
         };
         let rules = vec![serde_json::json!({"key": "a"})];
 
@@ -2237,6 +2357,7 @@ mod tests {
                 "head-1",
                 None,
                 PublishKind::Normal,
+                None,
                 None,
             )
             .unwrap();

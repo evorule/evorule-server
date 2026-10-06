@@ -29,7 +29,7 @@ use crate::models::{
 };
 
 /// 当前 schema 版本
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 /// SQLite 数据库封装
 ///
@@ -97,6 +97,7 @@ impl WorkspaceDb {
         migrate_v3(&conn)?;
         migrate_v4(&conn)?;
         migrate_v5(&conn)?;
+        migrate_v6(&conn)?;
         Ok(())
     }
 
@@ -424,6 +425,21 @@ fn migrate_v5(conn: &Connection) -> WorkspaceResult<()> {
     )
     .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v5: {e}")))?;
     record_migration(conn, 5)
+}
+
+/// v6 迁移: 发布成功回写 rule state (修工作区 candidate 与生产已发布记账双真相源)
+///
+/// - `rule_version_ids`: 提交发布时锁定的规则版本 ID 集合 (JSON 数组字符串);
+///   发布流水线成功后据此把对应 rule 记录 candidate→active 回写。
+///   存量行 (v6 前提交) 为 NULL——回写时跳过, 不影响其既有语义。
+fn migrate_v6(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        ALTER TABLE publish_queue ADD COLUMN rule_version_ids TEXT;
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v6: {e}")))?;
+    record_migration(conn, 6)
 }
 
 // =============================================================================
@@ -1750,14 +1766,16 @@ impl WorkspaceDb {
         description: Option<&str>,
         kind: PublishKind,
         meta_rule_content: Option<&str>,
+        rule_version_ids: Option<&str>,
     ) -> WorkspaceResult<i64> {
         let conn = self.lock()?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO publish_queue
                 (workspace_id, final_candidate_rules, ruleset_hash, test_report_sandbox_id,
-                 submitted_by, submitted_at, status, description, kind, meta_rule_content)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8, ?9)",
+                 submitted_by, submitted_at, status, description, kind, meta_rule_content,
+                 rule_version_ids)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8, ?9, ?10)",
             params![
                 workspace_id,
                 final_candidate_rules,
@@ -1768,6 +1786,7 @@ impl WorkspaceDb {
                 description,
                 kind.as_str(),
                 meta_rule_content,
+                rule_version_ids,
             ],
         )
         .map_err(WorkspaceError::from)?;
@@ -1783,7 +1802,7 @@ impl WorkspaceDb {
                         test_report_sandbox_id, submitted_by, submitted_at,
                         reviewed_by, reviewed_at, review_comment,
                         published_version, published_at, status, description,
-                        kind, meta_rule_content
+                        kind, meta_rule_content, rule_version_ids
                  FROM publish_queue WHERE id = ?1",
                 params![id],
                 row_to_publish_queue,
@@ -1807,7 +1826,7 @@ impl WorkspaceDb {
                         test_report_sandbox_id, submitted_by, submitted_at,
                         reviewed_by, reviewed_at, review_comment,
                         published_version, published_at, status, description,
-                        kind, meta_rule_content
+                        kind, meta_rule_content, rule_version_ids
                  FROM publish_queue
                  WHERE (?1 IS NULL OR status = ?1)
                    AND (?2 IS NULL OR workspace_id = ?2)
@@ -2325,7 +2344,7 @@ fn row_to_production_audit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Producti
 /// 4=test_report_sandbox_id 5=submitted_by 6=submitted_at
 /// 7=reviewed_by 8=reviewed_at 9=review_comment
 /// 10=published_version 11=published_at 12=status 13=description
-/// 14=kind 15=meta_rule_content (v5, )
+/// 14=kind 15=meta_rule_content (v5) 16=rule_version_ids (v6)
 fn row_to_publish_queue(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublishQueueItem> {
     let status_str: String = row.get(12)?;
     let status = PublishStatus::from_str(&status_str).unwrap_or(PublishStatus::Pending);
@@ -2348,6 +2367,7 @@ fn row_to_publish_queue(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublishQueu
         description: row.get(13)?,
         kind,
         meta_rule_content: row.get(15)?,
+        rule_version_ids: row.get(16)?,
     })
 }
 
