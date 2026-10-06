@@ -2,14 +2,18 @@
   "echo_svc": {
     "url": "http://127.0.0.1:9100/api/echo",
     "method": "POST",
-    "headers": { "X-Source": "evorule-server" },
+    "headers": {
+      "X-Source": "evorule-server"
+    },
     "timeout_ms": 5000,
     "description": "Echo 验证服务（service_registry 示例）"
   },
   "llm_advisor": {
     "url": "http://127.0.0.1:1/llm_advisor",
     "method": "POST",
-    "headers": { "X-Source": "evorule-server" },
+    "headers": {
+      "X-Source": "evorule-server"
+    },
     "timeout_ms": 30000,
     "version": "1.0.0",
     "description": "C6 敏感服务凭据配置位（声明性占位：路由由原生 demo-services 命中，本 URL 在 mock 阶段不会被调用；Phase 3 归位 evo-agent 时在此配置真实端点/凭据）"
@@ -19,5 +23,25 @@
     "method": "POST",
     "timeout_ms": 5000,
     "description": "P0 演示服务：call_service 模板的落地端点（复用 echo 验证端点回显）"
+  },
+  "knowledge-propose": {
+    "url": "http://127.0.0.1:18081/v1/invoke/propose_knowledge_entry",
+    "method": "POST",
+    "headers": {
+      "X-Api-Key": "evorule_3dSg3P_sTT08lhYsuc77d0reJecl738r7J4COG7sbo4"
+    },
+    "timeout_ms": 10000,
+    "version": "1.0.0",
+    "description": "知识条目提议入账（Draft），治理闸在 evorule-rule 服务端"
+  },
+  "knowledge-transition": {
+    "url": "http://127.0.0.1:18081/v1/invoke/transition_entry",
+    "method": "POST",
+    "headers": {
+      "X-Api-Key": "evorule_wYMD1zsuN2_VJ8SjpPrwuGcSS1IyWBbv1B0O5ES0y3k"
+    },
+    "timeout_ms": 10000,
+    "version": "1.0.0",
+    "description": "知识条目机器行权（六检全过放行 Active），机器闸在 evorule-rule 服务端"
   }
 }
