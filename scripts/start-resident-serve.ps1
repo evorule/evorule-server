@@ -36,6 +36,8 @@ $ErrorActionPreference = 'Stop'
 
 $Exe = Join-Path $PSScriptRoot '..\target\release\evorule-server.exe'
 $Port = 18080
+# 数据/资源路径一律按仓库根相对解析（脚本可随仓库放置于任意位置）
+$Repo = Split-Path $PSScriptRoot -Parent
 
 if (-not (Test-Path $Exe)) {
     Write-Error "release 二进制不存在: $Exe —— 先跑 cargo build --release"
@@ -57,17 +59,17 @@ if ($existing) {
 $args = @(
     "--addr", "127.0.0.1:18080",
     "--insecure-serve",                                                  # 本地回环无认证（开发形态）
-    "--rules-dir", "D:\evorule-server\data\agent-governance\rules",
-    "--db-path", "D:\evorule-server\data\agent-governance\evorule.db",
-    "--workspace-db", "D:\evorule-server\data\agent-governance\workspace.db",
-    "--core-eval", "D:\evorule-server\resources\server_eval.json",
+    "--rules-dir", (Join-Path $Repo "data\agent-governance\rules"),
+    "--db-path", (Join-Path $Repo "data\agent-governance\evorule.db"),
+    "--workspace-db", (Join-Path $Repo "data\agent-governance\workspace.db"),
+    "--core-eval", (Join-Path $Repo "resources\server_eval.json"),
     "--no-rate-limit",
-    "--service-registry", "D:\evorule-server\service_registry.json",
+    "--service-registry", (Join-Path $Repo "service_registry.json"),
     "--io-warn-timeout-secs", "1800",
     "--io-error-timeout-secs", "3600",
     "--allow-loopback",                                                  # caller_role 接线批新增：放行 127.0.0.1:9100 桥接 dispatch（见头部留痕；生产禁用）
-    "--wal-dir", "D:\evorule-server\data\wal-live",                      # 审计链持久化修复批新增：会话事实 WAL 落盘（见头部留痕；勿指向含旧 WAL 的目录）
-    "--log-file", "D:\evorule-server\data\agent-governance\logs\server.log"
+    "--wal-dir", (Join-Path $Repo "data\wal-live"),                      # 审计链持久化修复批新增：会话事实 WAL 落盘（见头部留痕；勿指向含旧 WAL 的目录）
+    "--log-file", (Join-Path $Repo "data\agent-governance\logs\server.log")
 )
 
 $p = Start-Process -FilePath $Exe -ArgumentList $args -PassThru -WindowStyle Hidden

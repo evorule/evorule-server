@@ -6,7 +6,7 @@
 //! # 用法
 //!
 //! ```text
-//! evorule-hot-reload --rules-dir D:\evorule-server\data\agent-governance\rules --server-url http://127.0.0.1:18080 --api-port 8081
+//! evorule-hot-reload --rules-dir <rules-dir> --server-url http://127.0.0.1:18080 --api-port 8081
 //! ```
 //!
 //! 注意：`--rules-dir` 必须指向 evorule-server 的 `--rules-dir`——本服务监听

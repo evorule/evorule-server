@@ -6559,7 +6559,11 @@ const COMMAND_WAIT_SCAN_WINDOW: usize = 128;
 /// - `Violation{cause=提交事实}` → enforce 拦截（记录性事实，不推进版本，
 ///   故仅靠 version 轮询无法感知——本等待恰好补齐该缺口）；
 /// - 窗口耗尽 → [`CommandVerdict::Timeout`]（降级语义，不误判）。
-async fn wait_for_command_verdict(facts_log: &FactsLog, fact_id: u64, timeout: Duration) -> CommandVerdict {
+async fn wait_for_command_verdict(
+    facts_log: &FactsLog,
+    fact_id: u64,
+    timeout: Duration,
+) -> CommandVerdict {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         for (_, fact) in facts_log.history_last_with_versions(COMMAND_WAIT_SCAN_WINDOW) {
@@ -14872,7 +14876,7 @@ mod tests {
     /// ①a: reap_once 保活——生产会话被 touch,非生产会话 TTL 到期被回收。
     /// 内含对照组: 两会话同时创建同时到期,仅生产会话存活 ⇒ 存活来自保活而非 TTL 未到。
     #[tokio::test]
-    async fn test_reg079_reap_once_keeps_production_session_alive() {
+    async fn test_prodreg_reap_once_keeps_production_session_alive() {
         let mut instr = std::collections::BTreeMap::new();
         instr.insert("type".to_string(), JsonValue::string("noop"));
         let core_eval = vec![JsonValue::Object(instr)];
@@ -14890,7 +14894,7 @@ mod tests {
         let other_id = sessions.lock().await.create_session().unwrap();
 
         let db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
-        db.update_production_state(prod_id as i64, 0, "", "test:reg079")
+        db.update_production_state(prod_id as i64, 0, "", "test:prodreg")
             .unwrap();
 
         // 等待两会话空闲到期(150ms > 100ms TTL;reap_once 内 touch 会重置
@@ -14908,14 +14912,14 @@ mod tests {
     /// ①a: reap_once 自愈——幻影引用(current_session_id 指向不存在的
     /// 会话,原始形态)被检测并重建,版本/哈希保留。
     #[tokio::test]
-    async fn test_reg079_reap_once_recovers_phantom_production_reference() {
+    async fn test_prodreg_reap_once_recovers_phantom_production_reference() {
         let (state, _) = make_test_state();
         let api = state.sessions.clone();
         let db = api.workspace_db.clone().unwrap();
         let sessions = api.sessions.clone();
 
         // 构造幻影: 引用不存在的会话 999,版本 5/哈希 hash-abc
-        db.update_production_state(999, 5, "hash-abc", "test:reg079")
+        db.update_production_state(999, 5, "hash-abc", "test:prodreg")
             .unwrap();
 
         reap_once(&sessions, Some(&db), Some(&api)).await;
@@ -14936,7 +14940,7 @@ mod tests {
 
     /// ①b: DELETE 生产会话被 409 拒绝且会话存活;普通会话删除不受影响。
     #[tokio::test]
-    async fn test_reg079_close_production_session_rejected_409() {
+    async fn test_prodreg_close_production_session_rejected_409() {
         let (state, _) = make_test_state();
         let router = make_test_router(&state);
         let api = state.sessions.clone();
@@ -14949,7 +14953,7 @@ mod tests {
             let o = mgr.create_session().unwrap();
             (p, o)
         };
-        db.update_production_state(prod_id as i64, 0, "", "test:reg079")
+        db.update_production_state(prod_id as i64, 0, "", "test:prodreg")
             .unwrap();
 
         // 删除生产会话 → 409 拒绝(fail-fast,指引走治理流/重启)
@@ -16231,7 +16235,7 @@ mod tests {
     /// B2-形状: verdict=pass 但 subset 为空(零证据 pass)→ 显式拒绝,
     /// 封死绕过治理域手写伪造直 POST import 的路径。
     #[tokio::test]
-    async fn test_reg080_import_rejects_pass_without_traceable_subset() {
+    async fn test_importreg_import_rejects_pass_without_traceable_subset() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16256,9 +16260,9 @@ mod tests {
         );
 
         let mut bundle = q12_knowledge_bundle(
-            "bundle-reg080-shape",
-            "ds-reg080-shape",
-            "scn-reg080",
+            "bundle-importreg-shape",
+            "ds-importreg-shape",
+            "scn-importreg",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         // 零证据 pass: 空 subset
@@ -16283,7 +16287,7 @@ mod tests {
     /// resolver 环境与 test_knowledge_import_refresh 同构(schema URI 命中),
     /// 另接线 in-memory workspace_db(沙盒表为空)。
     #[tokio::test]
-    async fn test_reg080_import_rejects_phantom_sandbox_reference() {
+    async fn test_importreg_import_rejects_phantom_sandbox_reference() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16311,9 +16315,9 @@ mod tests {
         ));
 
         let mut bundle = q12_knowledge_bundle(
-            "bundle-reg080-ref",
-            "ds-reg080-ref",
-            "scn-reg080-ref",
+            "bundle-importreg-ref",
+            "ds-importreg-ref",
+            "scn-importreg-ref",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         // 引用不存在的沙盒 999
@@ -16337,7 +16341,7 @@ mod tests {
     /// B2-正路径: human:<actor> 显式人工背书 → 放行(无需存在性校验,
     /// 标记即显式降级声明)。
     #[tokio::test]
-    async fn test_reg080_import_allows_human_endorsement() {
+    async fn test_importreg_import_allows_human_endorsement() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16363,16 +16367,16 @@ mod tests {
 
         // q12_knowledge_bundle 的 subset 已是 human 背书形态
         let bundle = q12_knowledge_bundle(
-            "bundle-reg080-human",
-            "ds-reg080-human",
-            "scn-reg080-human",
+            "bundle-importreg-human",
+            "ds-importreg-human",
+            "scn-importreg-human",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         let result = sessions
             .import_bundle(&bundle, false)
             .await
             .expect("human 背书应放行(显式降级,无需存在性校验)");
-        assert_eq!(result.dataset_id, "ds-reg080-human");
+        assert_eq!(result.dataset_id, "ds-importreg-human");
         assert_eq!(result.entry_count, 1);
     }
 
@@ -16381,7 +16385,7 @@ mod tests {
     /// 在 in-memory db 造真实沙盒记录 + 磁盘报告文件(与 close_sandbox 落盘
     /// 同构:report_<facts basename>.json 于 SANDBOX_REPORT_DIR)。
     #[tokio::test]
-    async fn test_reg080_import_sandbox_reference_with_report_consistency() {
+    async fn test_importreg_import_sandbox_reference_with_report_consistency() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16414,13 +16418,13 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let ws_id = format!("ws-reg080-{ts}");
+        let ws_id = format!("ws-importreg-{ts}");
         {
             let now_dt = ws_db.get_production_state().unwrap().updated_at;
             let ws = evorule_workspace::models::WorkspaceRecord {
                 id: ws_id.clone(),
-                name: "ws-reg080".into(),
-                owner_id: "test:reg080".into(),
+                name: "ws-importreg".into(),
+                owner_id: "test:importreg".into(),
                 created_at: now_dt,
                 updated_at: now_dt,
                 archived_at: None,
@@ -16436,10 +16440,10 @@ mod tests {
         let facts_1 = format!("audit_sandbox_1_{ts}.json");
         let facts_2 = format!("audit_sandbox_2_{ts}.json");
         let sb_pass = ws_db
-            .insert_sandbox_session(None, &ws_id, 1, Some("hash-reg080"), 1, "test:reg080")
+            .insert_sandbox_session(None, &ws_id, 1, Some("hash-importreg"), 1, "test:importreg")
             .unwrap();
         let sb_fail = ws_db
-            .insert_sandbox_session(None, &ws_id, 1, Some("hash-reg080"), 1, "test:reg080")
+            .insert_sandbox_session(None, &ws_id, 1, Some("hash-importreg"), 1, "test:importreg")
             .unwrap();
         // insert 自增从 1 起;以实际返回 id 为准写报告与引用
         let export_1 = format!("{report_dir}/{facts_1}");
@@ -16460,9 +16464,9 @@ mod tests {
 
         // PASS 沙盒引用 → 放行
         let mut bundle = q12_knowledge_bundle(
-            "bundle-reg080-sb-pass",
-            "ds-reg080-sb-pass",
-            "scn-reg080-sb-pass",
+            "bundle-importreg-sb-pass",
+            "ds-importreg-sb-pass",
+            "scn-importreg-sb-pass",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         bundle.tests.subset = vec![format!("sandbox:{sb_pass}")];
@@ -16471,14 +16475,14 @@ mod tests {
             .import_bundle(&bundle, false)
             .await
             .expect("closed 沙盒 + PASS 报告引用应放行");
-        assert_eq!(result.dataset_id, "ds-reg080-sb-pass");
+        assert_eq!(result.dataset_id, "ds-importreg-sb-pass");
         assert_eq!(result.entry_count, 1);
 
         // FAIL 沙盒引用 → 拒收(报告一致性)
         let mut bundle = q12_knowledge_bundle(
-            "bundle-reg080-sb-fail",
-            "ds-reg080-sb-fail",
-            "scn-reg080-sb-fail",
+            "bundle-importreg-sb-fail",
+            "ds-importreg-sb-fail",
+            "scn-importreg-sb-fail",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
         bundle.tests.subset = vec![format!("sandbox:{sb_fail}")];

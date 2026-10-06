@@ -2448,7 +2448,8 @@ mod tests {
         let db = WorkspaceDb {
             conn: Mutex::new(conn),
         };
-        db.migrate().expect("incremental upgrade v5→v6 must succeed");
+        db.migrate()
+            .expect("incremental upgrade v5→v6 must succeed");
         assert_eq!(db.schema_version().unwrap(), 6);
         // v6 增量生效: publish_queue.rule_version_ids 列存在
         let conn = db.lock().unwrap();

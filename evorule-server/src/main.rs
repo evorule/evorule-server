@@ -1585,7 +1585,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cfg.auth_token.is_none() && cfg.insecure_serve {
         warn!(
             addr = %cfg.addr,
-            "insecure-serve 无认证模式：受保护域准入按本地服务管道放行（仅限 loopback 开发）；生产部署须配置 auth_token（O-271 三件套）"
+            "insecure-serve 无认证模式：受保护域准入按本地服务管道放行（仅限 loopback 开发）；生产部署须配置 auth_token"
         );
     }
     info!("日志格式: {}", cfg.log_format);
