@@ -38,6 +38,10 @@ use crate::error::WorkspaceResult;
 /// 会话操作抽象 trait
 ///
 /// 由 evorule-server 中的 `SessionApi` 实现。
+// clippy::double_must_use (clippy 1.99 新增): async_trait 宏为每个 trait 方法生成的
+// `#[must_use]` 与 boxed Future 自身的 must_use 语义重复, 错误源自宏展开而非手写码,
+// 整 trait 豁免。
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SessionOps: Send + Sync {
     // ===== 基础方法 (WORKSPACE_CRATE_DESIGN.md M5) =====

@@ -623,47 +623,60 @@ impl PublishService {
     /// 队列项缺 rule_version_ids (v6 前存量行) 时跳过; 单条回写失败
     /// 告警继续 (记账不阻塞发布语义), 全程留痕可追。
     fn mark_published_rules_active(&self, item: &PublishQueueItem) {
-        use crate::models::RuleState;
+        let Some(ids) = self.parse_rule_version_ids(item) else {
+            return;
+        };
+        for rv_id in &ids {
+            self.write_back_single_rule(item, rv_id);
+        }
+    }
 
+    /// 解析队列项 `rule_version_ids` (缺失/非 JSON 数组时告警留痕并返回 None)
+    fn parse_rule_version_ids(&self, item: &PublishQueueItem) -> Option<Vec<String>> {
         let Some(ids_json) = item.rule_version_ids.as_deref() else {
             tracing::warn!(
                 queue_id = item.id,
                 "publish queue item has no rule_version_ids (pre-v6 row); skip rule state write-back"
             );
-            return;
+            return None;
         };
-        let Ok(ids) = serde_json::from_str::<Vec<String>>(ids_json) else {
-            tracing::warn!(
-                queue_id = item.id,
-                "publish queue item rule_version_ids is not a JSON array; skip rule state write-back"
-            );
-            return;
-        };
+        match serde_json::from_str::<Vec<String>>(ids_json) {
+            Ok(ids) => Some(ids),
+            Err(_) => {
+                tracing::warn!(
+                    queue_id = item.id,
+                    "publish queue item rule_version_ids is not a JSON array; skip rule state write-back"
+                );
+                None
+            }
+        }
+    }
 
-        for rv_id in &ids {
-            // 版本 → 所属规则 → 状态回写; update_rule_state 为无条件置位,
-            // 对已 active 规则重复执行幂等无害。
-            let outcome = self
-                .db
-                .get_rule_version(rv_id)
-                .and_then(|rv| self.db.update_rule_state(&rv.rule_id, RuleState::Active));
-            match outcome {
-                Ok(rule) => {
-                    info!(
-                        queue_id = item.id,
-                        rule_id = %rule.id,
-                        rule_version = %rv_id,
-                        "published rule state write-back: candidate -> active"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        queue_id = item.id,
-                        rule_version = %rv_id,
-                        error = %e,
-                        "rule state write-back failed after successful publish (ledger drift possible)"
-                    );
-                }
+    /// 单条 rule 状态回写: 版本 → 所属规则 → 状态置 active
+    fn write_back_single_rule(&self, item: &PublishQueueItem, rv_id: &str) {
+        use crate::models::RuleState;
+
+        // update_rule_state 为无条件置位, 对已 active 规则重复执行幂等无害。
+        let outcome = self
+            .db
+            .get_rule_version(rv_id)
+            .and_then(|rv| self.db.update_rule_state(&rv.rule_id, RuleState::Active));
+        match outcome {
+            Ok(rule) => {
+                info!(
+                    queue_id = item.id,
+                    rule_id = %rule.id,
+                    rule_version = %rv_id,
+                    "published rule state write-back: candidate -> active"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    queue_id = item.id,
+                    rule_version = %rv_id,
+                    error = %e,
+                    "rule state write-back failed after successful publish (ledger drift possible)"
+                );
             }
         }
     }

@@ -23,9 +23,9 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.9.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.9.1-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.9.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.9.1-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 **Language / 语言**: [English](#english) · [中文 / Chinese](#chinese)
@@ -50,7 +50,7 @@
 
 ---
 
-> ## ✅ v0.9.0 — Stable Release (2026-10-01)
+> ## ✅ 0.9.0 — Stable Release (2026-10-01)
 >
 > This repo **releases independently**, not tied to other repos' release cadence; version numbers correspond only to this repo's [CHANGELOG](CHANGELOG.md).
 >
@@ -664,9 +664,9 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.9.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.9.1-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-stable--release--v0.9.0-brightgreen.svg)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-stable--release--v0.9.1-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
 
 [快速开始](#快速开始) ·
@@ -683,7 +683,7 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 ---
 
-> ## ✅ v0.9.0 — 稳定发布 (2026-10-01)
+> ## ✅ 0.9.0 — 稳定发布 (2026-10-01)
 >
 > 本仓库**独立 release**,不绑其他仓的发布节奏;版本号只与本仓 [CHANGELOG](CHANGELOG.md) 对应。
 >

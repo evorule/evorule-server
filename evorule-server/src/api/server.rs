@@ -6579,10 +6579,7 @@ async fn wait_for_command_verdict(
                     reason,
                     ..
                 } if cause.0 == fact_id => {
-                    return CommandVerdict::Rejected {
-                        rule_index: rule_index,
-                        reason,
-                    };
+                    return CommandVerdict::Rejected { rule_index, reason };
                 }
                 _ => {}
             }
@@ -7669,6 +7666,69 @@ async fn session_payload(
     }
 }
 
+/// 批量端点受保护域预校验（纯函数）：User/App 身份写入 stable.llm / stable.system
+/// 受保护域时返回 Some((命中条数, 首个命中路径))，供整批拒绝响应构造；None = 放行。
+fn batch_protected_offense(
+    updates: &[PayloadUpdateRequest],
+    identity_limited: bool,
+) -> Option<(usize, String)> {
+    if !identity_limited {
+        return None;
+    }
+    let offending: Vec<String> = updates
+        .iter()
+        .filter(|u| requires_service_identity(&u.path))
+        .map(|u| u.path.clone())
+        .collect();
+    let first = offending.first()?.clone();
+    Some((offending.len(), first))
+}
+
+/// 批量单条更新处理（与单条端点同语义）：净化 → 指标 → 发送 → shared 旁路 → 逐条结果
+fn process_batch_update(
+    api: &SessionApi,
+    session: &session::Session,
+    shared_facts: &SharedFactsLog,
+    metrics: &SharedMetrics,
+    sanitizer: &Arc<InputSanitizer>,
+    session_id: u64,
+    update: &PayloadUpdateRequest,
+) -> BatchPayloadItemResult {
+    // Phase 1: 输入净化（与单条端点同语义，静默改写 + 命中指标化）
+    let (sanitized_value, sanitize_report) = sanitizer.sanitize_value(&update.value);
+    sanitize_report
+        .unique_hits()
+        .into_iter()
+        .for_each(|rule| metrics.inc_sanitize_hits(rule));
+    let value = serde_to_tcb(sanitized_value);
+    let id = api.next_id();
+
+    // R10 时序交换（与单条端点同语义）：先 send 后广播，origin 永不悬空
+    let send_result = session.command_tx.send(Fact::PayloadUpdate {
+        id,
+        path: update.path.clone(),
+        value: value.clone(),
+    });
+    if send_result.is_ok() && update.path.starts_with("shared.") {
+        if let Err(e) = shared_facts.append_with_origin(&update.path, value, session_id, Some(id.0))
+        {
+            tracing::warn!(
+                session_id,
+                path = %update.path,
+                "batch: SharedFactsLog append failed: {e}"
+            );
+        }
+    }
+
+    let ok = send_result.is_ok();
+    BatchPayloadItemResult {
+        path: update.path.clone(),
+        success: ok,
+        fact_id: ok.then_some(id.0),
+        error: (!ok).then(|| "SESSION_ERROR: command channel closed (reactor exited)".to_string()),
+    }
+}
+
 /// 会话批量 PayloadUpdate handler（跨仓挂账二）
 ///
 /// `POST /api/sessions/:id/payloads` → 一次 HTTP 写入多条 payload。
@@ -7741,48 +7801,40 @@ async fn batch_session_payload(
         identity,
         Some(Extension(CallerIdentity::User)) | Some(Extension(CallerIdentity::App))
     );
-    if identity_limited {
-        let offending: Vec<String> = req
-            .updates
-            .iter()
-            .filter(|u| requires_service_identity(&u.path))
-            .map(|u| u.path.clone())
-            .collect();
-        if !offending.is_empty() {
-            tracing::warn!(
-                session_id,
-                count = offending.len(),
-                "batch_session_payload 受保护域写入被整批拒绝（需 service 身份）"
-            );
-            let failed = req.updates.len();
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(BatchPayloadResponse {
-                    success: false,
-                    message: format!(
-                        "批量含 {} 条受保护域写入（如 {}）：stable.llm / stable.system 仅受信服务管道可写。整批拒绝，未写入任何条目。",
-                        offending.len(),
-                        offending[0]
-                    ),
-                    total: failed,
-                    succeeded: 0,
-                    failed,
-                    results: req
-                        .updates
-                        .iter()
-                        .map(|u| BatchPayloadItemResult {
-                            path: u.path.clone(),
-                            success: false,
-                            fact_id: None,
-                            error: Some(
-                                "UNAUTHORIZED: protected domain requires service identity"
-                                    .to_string(),
-                            ),
-                        })
-                        .collect(),
-                }),
-            ));
-        }
+    if let Some((offending_count, first_path)) =
+        batch_protected_offense(&req.updates, identity_limited)
+    {
+        tracing::warn!(
+            session_id,
+            count = offending_count,
+            "batch_session_payload 受保护域写入被整批拒绝（需 service 身份）"
+        );
+        let failed = req.updates.len();
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(BatchPayloadResponse {
+                success: false,
+                message: format!(
+                    "批量含 {} 条受保护域写入（如 {}）：stable.llm / stable.system 仅受信服务管道可写。整批拒绝，未写入任何条目。",
+                    offending_count, first_path
+                ),
+                total: failed,
+                succeeded: 0,
+                failed,
+                results: req
+                    .updates
+                    .iter()
+                    .map(|u| BatchPayloadItemResult {
+                        path: u.path.clone(),
+                        success: false,
+                        fact_id: None,
+                        error: Some(
+                            "UNAUTHORIZED: protected domain requires service identity".to_string(),
+                        ),
+                    })
+                    .collect(),
+            }),
+        ));
     }
 
     let sessions = api.sessions.lock().await;
@@ -7803,48 +7855,15 @@ async fn batch_session_payload(
 
     let mut results = Vec::with_capacity(req.updates.len());
     for update in &req.updates {
-        // Phase 1: 输入净化（与单条端点同语义，静默改写 + 命中指标化）
-        let (sanitized_value, sanitize_report) = sanitizer.sanitize_value(&update.value);
-        if sanitize_report.has_hits() {
-            for rule in sanitize_report.unique_hits() {
-                metrics.inc_sanitize_hits(rule);
-            }
-        }
-        let value = serde_to_tcb(sanitized_value);
-        let id = api.next_id();
-
-        // R10 时序交换（与单条端点同语义）：先 send 后广播，origin 永不悬空
-        let send_result = session.command_tx.send(Fact::PayloadUpdate {
-            id,
-            path: update.path.clone(),
-            value: value.clone(),
-        });
-        if send_result.is_ok() && update.path.starts_with("shared.") {
-            if let Err(e) =
-                shared_facts.append_with_origin(&update.path, value, session_id, Some(id.0))
-            {
-                tracing::warn!(
-                    session_id,
-                    path = %update.path,
-                    "batch: SharedFactsLog append failed: {e}"
-                );
-            }
-        }
-
-        match send_result {
-            Ok(()) => results.push(BatchPayloadItemResult {
-                path: update.path.clone(),
-                success: true,
-                fact_id: Some(id.0),
-                error: None,
-            }),
-            Err(_) => results.push(BatchPayloadItemResult {
-                path: update.path.clone(),
-                success: false,
-                fact_id: None,
-                error: Some("SESSION_ERROR: command channel closed (reactor exited)".to_string()),
-            }),
-        }
+        results.push(process_batch_update(
+            &api,
+            &session,
+            &shared_facts,
+            &metrics,
+            &sanitizer,
+            session_id,
+            update,
+        ));
     }
 
     let total = results.len();
