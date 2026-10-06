@@ -106,11 +106,7 @@ impl FeatureTable {
     ) -> Option<GuardHit> {
         let lower = content.to_lowercase();
         for f in &self.features {
-            let Some(phrase) = f
-                .phrases
-                .iter()
-                .find(|p| lower.contains(&p.to_lowercase()))
-            else {
+            let Some(phrase) = f.phrases.iter().find(|p| lower.contains(&p.to_lowercase())) else {
                 continue;
             };
             let in_assembly = f.tools.iter().any(|t| assembled.contains(t));
@@ -138,12 +134,20 @@ pub fn parse_features(json: &Value) -> Option<FeatureTable> {
         let tools: Vec<String> = f
             .get("tools")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let phrases: Vec<String> = f
             .get("phrases")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         if tools.is_empty() || phrases.is_empty() {
             continue;
@@ -255,9 +259,7 @@ fn collect_tool_names_tcb(v: &evorule_tcb::JsonValue, out: &mut BTreeSet<String>
 ///   非空值来自同会话跨 run 残留——兜底语义宁漏判不误伤）。
 ///
 /// 使用零 clone 的 `for_each_fact_from`（长会话下全量 clone 构成 O(n²) 瓶颈）。
-pub fn extract_assembled_and_traced(
-    facts_log: &FactsLog,
-) -> (BTreeSet<String>, BTreeSet<String>) {
+pub fn extract_assembled_and_traced(facts_log: &FactsLog) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut assembled: BTreeSet<String> = BTreeSet::new();
     let mut traced: BTreeSet<String> = BTreeSet::new();
     facts_log.for_each_fact_from(0, |_, fact| {
@@ -283,9 +285,7 @@ pub fn extract_assembled_and_traced(
                     assembled = tools;
                 }
                 Some("tool_trace") => {
-                    if let Some(value) =
-                        instruction.get("params").and_then(|p| p.get("value"))
-                    {
+                    if let Some(value) = instruction.get("params").and_then(|p| p.get("value")) {
                         collect_tool_names_tcb(value, &mut traced);
                     }
                 }
@@ -353,10 +353,17 @@ mod tests {
     }
 
     fn full_assembly() -> BTreeSet<String> {
-        ["shell_exec", "file_write", "git_commit", "http_get", "retrieve", "search_memory"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        [
+            "shell_exec",
+            "file_write",
+            "git_commit",
+            "http_get",
+            "retrieve",
+            "search_memory",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     }
 
     fn set(items: &[&str]) -> BTreeSet<String> {
@@ -399,7 +406,10 @@ mod tests {
                 (
                     "params",
                     evorule_tcb::JsonValue::object_from_pairs(&[
-                        ("attr", evorule_tcb::JsonValue::string("meta_tool.tool_traces.0")),
+                        (
+                            "attr",
+                            evorule_tcb::JsonValue::string("meta_tool.tool_traces.0"),
+                        ),
                         (
                             "value",
                             evorule_tcb::JsonValue::object_from_pairs(&[
@@ -446,17 +456,29 @@ mod tests {
         let assembled = full_assembly();
         let called = BTreeSet::new();
         // 绕行样本：声称已执行命令 + 命令回显形态，装配面有 shell_exec、零调用
-        let hit = table.inspect("已执行命令 dir，输出如下：file1.txt file2.txt", &assembled, &called);
+        let hit = table.inspect(
+            "已执行命令 dir，输出如下：file1.txt file2.txt",
+            &assembled,
+            &called,
+        );
         assert!(
             matches!(&hit, Some(h) if h.domain == "shell_exec"),
             "bypass sample should hit shell_exec"
         );
-        let hit = table.inspect("已运行 npm test，运行结果如下：3 passed", &assembled, &called);
+        let hit = table.inspect(
+            "已运行 npm test，运行结果如下：3 passed",
+            &assembled,
+            &called,
+        );
         assert!(
             matches!(&hit, Some(h) if h.domain == "shell_exec"),
             "bypass sample should hit shell_exec"
         );
-        let hit = table.inspect("已写入文件 /data/out.txt，文件内容如下", &assembled, &called);
+        let hit = table.inspect(
+            "已写入文件 /data/out.txt，文件内容如下",
+            &assembled,
+            &called,
+        );
         assert!(
             matches!(&hit, Some(h) if h.domain == "file_write"),
             "bypass sample should hit file_write"
@@ -502,7 +524,11 @@ mod tests {
         let assembled = set(&["deploy_svc"]);
         let called = BTreeSet::new();
         assert!(table
-            .inspect("successfully deployed to cluster prod-1", &assembled, &called)
+            .inspect(
+                "successfully deployed to cluster prod-1",
+                &assembled,
+                &called
+            )
             .is_some());
     }
 
@@ -567,7 +593,9 @@ mod tests {
     #[test]
     fn test_extract_assembled_and_traced() {
         let log = FactsLog::new();
-        assert!(log.append(tcb_call_external(&["shell_exec", "http_get"])).is_ok());
+        assert!(log
+            .append(tcb_call_external(&["shell_exec", "http_get"]))
+            .is_ok());
         assert!(log.append(tcb_tool_trace("shell_exec")).is_ok());
         let (assembled, traced) = extract_assembled_and_traced(&log);
         assert_eq!(assembled, set(&["shell_exec", "http_get"]));
@@ -578,7 +606,9 @@ mod tests {
     fn test_extract_assembled_keeps_latest_snapshot() {
         let log = FactsLog::new();
         assert!(log.append(tcb_call_external(&["shell_exec"])).is_ok());
-        assert!(log.append(tcb_call_external(&["file_write", "git_commit"])).is_ok());
+        assert!(log
+            .append(tcb_call_external(&["file_write", "git_commit"]))
+            .is_ok());
         let (assembled, _) = extract_assembled_and_traced(&log);
         assert_eq!(assembled, set(&["file_write", "git_commit"]));
     }

@@ -785,6 +785,26 @@ impl SessionApi {
         });
     }
 
+    /// 为指定会话 spawn 回写转发任务（执行侧失败上报接线）
+    ///
+    /// 与 hit-stats 记录器同通道订阅、同生命周期；旗标缺省关
+    /// （`EVORULE_WRITEBACK_URL` 未配置时任务立即退出，零旁路开销）。
+    fn spawn_writeback_forwarder(&self, session_id: u64) {
+        let agg = self.hit_stats.clone();
+        let sessions = self.sessions.clone();
+        tokio::spawn(async move {
+            let rx = {
+                let sessions = sessions.lock().await;
+                sessions
+                    .get_session(session_id)
+                    .map(|s| s.event_tx.subscribe())
+            };
+            if let Some(rx) = rx {
+                crate::api::writeback_forward::run_forwarder(rx, (*agg).clone(), session_id).await;
+            }
+        });
+    }
+
     /// 为新会话 spawn IoSubscriber（create_session / from / fork
     /// 三处复用的公共构造段，防漂移）
     ///
@@ -3229,6 +3249,9 @@ impl evorule_workspace::SessionOps for SessionApi {
                 // spawn hit-stats 归因记录任务
                 self.spawn_hit_stats_recorder(id);
 
+                // spawn 回写转发任务（旗标缺省关）
+                self.spawn_writeback_forwarder(id);
+
                 if let Some(ref dispatcher) = self.dispatcher {
                     let sessions = self.sessions.lock().await;
 
@@ -3290,6 +3313,9 @@ impl evorule_workspace::SessionOps for SessionApi {
             Ok(id) => {
                 // spawn hit-stats 归因记录任务
                 self.spawn_hit_stats_recorder(id);
+
+                // spawn 回写转发任务（旗标缺省关）
+                self.spawn_writeback_forwarder(id);
 
                 Ok(id)
             }
@@ -4757,7 +4783,7 @@ fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
 }
 
 /// 将 evorule_tcb::JsonValue 转换为 serde_json::Value
-fn tcb_to_serde(v: &JsonValue) -> serde_json::Value {
+pub(crate) fn tcb_to_serde(v: &JsonValue) -> serde_json::Value {
     match v {
         JsonValue::Null => serde_json::Value::Null,
 
@@ -5784,6 +5810,9 @@ async fn create_session(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
+            // spawn 回写转发任务（旗标缺省关）
+            api.spawn_writeback_forwarder(id);
+
             // 为新 session 的 reactor spawn IoSubscriber（公共构造段）
             // 没有 IoSubscriber 时，session 的 IoRequest 会 60s 超时
             // （声明登记已在上方完成，此处不重复继承）
@@ -6120,6 +6149,9 @@ async fn create_session_from_parent(
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
 
+            // spawn 回写转发任务（旗标缺省关）
+            api.spawn_writeback_forwarder(id);
+
             // fork 子会话补 IoSubscriber（原缺口：IoRequest 60s
             // 超时无人应答）＋声明继承父会话（fork 语义 = 同主体派生）。
             // 父未声明 → 不登记（Unknown → Deny，fail-closed 与今日一致）；
@@ -6275,6 +6307,9 @@ async fn create_session_fork(
 
             // spawn hit-stats 归因记录任务
             api.spawn_hit_stats_recorder(id);
+
+            // spawn 回写转发任务（旗标缺省关）
+            api.spawn_writeback_forwarder(id);
 
             // fork 子会话补 IoSubscriber＋声明继承（同 from 端点口径）
             let inherited_role = api

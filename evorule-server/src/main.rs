@@ -2107,6 +2107,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         evorule_server::api::hit_stats::run_recorder(hit_rx, (*hit_agg).clone()).await;
     });
 
+    // 单反应器路径的回写转发任务（执行侧失败上报接线；旗标缺省关）
+    let wb_rx = event_tx.subscribe();
+    let wb_agg = hit_stats.clone();
+    tokio::spawn(async move {
+        evorule_server::api::writeback_forward::run_forwarder(wb_rx, (*wb_agg).clone(), 0).await;
+    });
+
     // 7. spawn 日志清理任务（定期清理过期和超大日志文件）
     if let Some(log_file) = &cfg.log_file {
         if let Some(log_dir) = log_file.parent() {
