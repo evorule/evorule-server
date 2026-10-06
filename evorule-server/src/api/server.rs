@@ -2166,8 +2166,9 @@ impl SessionApi {
     /// 扫描口径与 [`Self::tier_inventory`] 的 L2 层单一权威同源：rules_dir **根目录直置**
     /// 的 `00_constraint_*.json`（新权威前缀）或 `00_meta_*.json`（旧前缀兼容）且过层级门禁
     /// （[`Self::tier_gate_reason`]，拒载文件不投影）。
-    /// 输出为结构化投影——仅 `metadata.title` + `metadata.guard_for`，不包含
-    /// transform / enforce 等执行语义内容。
+    /// 输出为结构化投影——`metadata.title` + `metadata.guard_for` +
+    /// 晋升账三字段 `metadata.promoted_from/promoted_at/promoted_by`
+    /// （非晋升条目为 null），不包含 transform / enforce 等执行语义内容。
     ///
     /// fail-soft：rules_dir 不存在 / 单文件读取或解析失败 → 跳过该文件；
     /// 全部失败 → 空清单（count=0）。排序确定：按文件名排序。
@@ -2216,10 +2217,18 @@ impl SessionApi {
                 .unwrap_or(&p)
                 .to_string_lossy()
                 .replace('\\', "/");
+            let meta_str = |key: &str| -> Option<String> {
+                meta.and_then(|m| m.get(key))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            };
             files.push(L2InventoryEntry {
                 path,
                 title,
                 guard_for,
+                promoted_from: meta_str("promoted_from"),
+                promoted_at: meta_str("promoted_at"),
+                promoted_by: meta_str("promoted_by"),
             });
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -10535,7 +10544,8 @@ pub struct RulesResponse {
     pub tiers: Vec<RuleTierEntry>,
 }
 
-/// L2 约束（元规则）清单项（只读投影：仅 metadata.title + metadata.guard_for，不含任何执行语义）
+/// L2 约束（元规则）清单项（只读投影：metadata.title + metadata.guard_for +
+/// 晋升账三字段，不含任何执行语义）
 #[derive(Debug, Serialize, ToSchema)]
 
 pub struct L2InventoryEntry {
@@ -10547,6 +10557,15 @@ pub struct L2InventoryEntry {
 
     /// 守卫的指令类型清单（metadata.guard_for，缺省空数组）
     pub guard_for: Vec<String>,
+
+    /// 晋升源锚（metadata.promoted_from，形如 "rule_version:<版本id>"；非晋升条目为 null）
+    pub promoted_from: Option<String>,
+
+    /// 晋升时间（metadata.promoted_at；非晋升条目为 null）
+    pub promoted_at: Option<String>,
+
+    /// 晋升操作方（metadata.promoted_by；非晋升条目为 null）
+    pub promoted_by: Option<String>,
 }
 
 /// L2 约束规则清单响应
@@ -16946,7 +16965,8 @@ mod tests {
 
     #[test]
     fn test_l2_inventory_projects_constraint_prefix() {
-        // 新权威前缀（命名收敛 v3.0）：根目录 00_constraint_ 过门禁 → 同口径投影
+        // 新权威前缀（命名收敛 v3.0）：根目录 00_constraint_ 过门禁 → 同口径投影；
+        // 晋升条目（metadata 带 promoted_*）→ 晋升账三字段随投影透出
         let dir = std::env::temp_dir().join("l2inv_projects_constraint");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -16955,10 +16975,30 @@ mod tests {
             "00_constraint_new.json",
             r#"{"kind":"rule_set","metadata":{"tier":"constraint","title":"约束守卫","guard_for":["robot_move"]},"transform":[]}"#,
         );
+        tier_gate_fixture(
+            &dir,
+            "00_constraint_promoted_abc.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"constraint","title":"晋升约束",
+                "promoted_from":"rule_version:01M3BDCC39Y5FQVGYHSE034R36",
+                "promoted_at":"2026-09-25T04:33:05Z","promoted_by":"console"},"transform":[]}"#,
+        );
         let inv = SessionApi::l2_inventory(&dir);
-        assert_eq!(inv.count, 1, "新前缀 L2 文件应投影");
+        assert_eq!(inv.count, 2, "新前缀 L2 文件应投影");
         assert_eq!(inv.files[0].path, "00_constraint_new.json");
         assert_eq!(inv.files[0].title, "约束守卫");
+        // 非晋升条目：晋升账三字段为 null
+        assert_eq!(inv.files[0].promoted_from, None);
+        let promoted = &inv.files[1];
+        assert_eq!(promoted.path, "00_constraint_promoted_abc.json");
+        assert_eq!(
+            promoted.promoted_from.as_deref(),
+            Some("rule_version:01M3BDCC39Y5FQVGYHSE034R36")
+        );
+        assert_eq!(
+            promoted.promoted_at.as_deref(),
+            Some("2026-09-25T04:33:05Z")
+        );
+        assert_eq!(promoted.promoted_by.as_deref(), Some("console"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -17022,6 +17062,9 @@ mod tests {
             inv.files[0].guard_for.is_empty(),
             "guard_for 缺省应为空数组"
         );
+        assert_eq!(inv.files[0].promoted_from, None, "晋升账字段缺省应为 null");
+        assert_eq!(inv.files[0].promoted_at, None);
+        assert_eq!(inv.files[0].promoted_by, None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
