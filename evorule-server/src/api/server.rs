@@ -6479,9 +6479,123 @@ async fn fork_from_archive(
     }
 }
 
+/// 命令提交 query 参数
+#[derive(Debug, Deserialize)]
+pub struct CommandWaitParams {
+    /// `true` = 同请求等待该指令处理完成（StateTransition/Violation 落链）后应答；
+    /// 缺省/false = 既有 send 即返语义
+    pub wait: Option<bool>,
+}
+
+/// 命令提交响应（既有形态与 wait=true 形态的双形态包裹）
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum CommandSubmitResponse {
+    /// 既有 send 即返形态（wait 缺省/false，或 Schema 门禁/通道错误）
+    Ack(ApiResponse),
+    /// wait=true 同步等待形态
+    Waited(CommandWaitResponse),
+}
+
+/// wait=true 同步等待响应
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CommandWaitResponse {
+    /// 提交是否成功（结论事实落链即 true）
+    pub success: bool,
+
+    /// 消息
+    pub message: String,
+
+    /// 提交事实 ID（与既有 ApiResponse.fact_id 同义）
+    pub fact_id: u64,
+
+    /// 受理结论：`true`=指令受理（StateTransition 落链）；`false`=被 enforce
+    /// 拦截（Violation 落链）；`null`=等待窗口内结论未落定（消费方可退回
+    /// 既有的 version 轮询判据）
+    pub accepted: Option<bool>,
+
+    /// enforce 拦截详情（accepted=false 时填充）
+    pub violation: Option<CommandViolation>,
+
+    /// 稳定码：RULE_VIOLATION（拦截）/ WAIT_TIMEOUT（窗口超时）
+    pub code: Option<String>,
+}
+
+/// enforce 拦截详情（与链上 Violation 事实的 rule_index/reason 字段同源）
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CommandViolation {
+    /// 命中的 enforce 规则在合并规则列表中的下标
+    pub rule_index: u64,
+
+    /// 违规说明（enforce params.reason）
+    pub reason: String,
+}
+
+/// wait=true 单条指令的结论
+#[derive(Debug)]
+enum CommandVerdict {
+    /// 指令受理（StateTransition 落链；IoRequest 亦视为受理——指令已进入执行）
+    Accepted,
+    /// 被 enforce 拦截（Violation 落链）
+    Rejected { rule_index: u64, reason: String },
+    /// 等待窗口内结论未落定
+    Timeout,
+}
+
+/// wait=true 等待窗口（引擎毫秒级收敛，2s 上限覆盖深度队列；超时降级为
+/// 既有 send 即返语义，消费方按 accepted=null 退回轮询判据）
+const COMMAND_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// wait=true 轮询间隔（结论事实以 cause 精确匹配，高频低开销尾窗扫描）
+const COMMAND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// 每次轮询的尾窗扫描深度（结论事实紧跟提交事实落链，128 覆盖同窗并发提交）
+const COMMAND_WAIT_SCAN_WINDOW: usize = 128;
+
+/// 会话锁外轮询 facts_log，等待指定提交事实的结论事实落链
+///
+/// 判据（与链上事实一一对应，零新增判据源）：
+/// - `StateTransition{cause=提交事实}` / `IoRequest{cause=提交事实}` → 受理；
+/// - `Violation{cause=提交事实}` → enforce 拦截（记录性事实，不推进版本，
+///   故仅靠 version 轮询无法感知——本等待恰好补齐该缺口）；
+/// - 窗口耗尽 → [`CommandVerdict::Timeout`]（降级语义，不误判）。
+async fn wait_for_command_verdict(facts_log: &FactsLog, fact_id: u64, timeout: Duration) -> CommandVerdict {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        for (_, fact) in facts_log.history_last_with_versions(COMMAND_WAIT_SCAN_WINDOW) {
+            match fact {
+                Fact::StateTransition { cause, .. } | Fact::IoRequest { cause, .. }
+                    if cause.0 == fact_id =>
+                {
+                    return CommandVerdict::Accepted;
+                }
+                Fact::Violation {
+                    cause,
+                    rule_index,
+                    reason,
+                    ..
+                } if cause.0 == fact_id => {
+                    return CommandVerdict::Rejected {
+                        rule_index: rule_index,
+                        reason,
+                    };
+                }
+                _ => {}
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return CommandVerdict::Timeout;
+        }
+        tokio::time::sleep(COMMAND_WAIT_POLL_INTERVAL).await;
+    }
+}
+
 /// 会话命令提交 handler
 ///
-/// `POST /api/sessions/:id/command` → 提交命令到指定会话的反应器
+/// `POST /api/sessions/:id/command` → 提交命令到指定会话的反应器。
+/// `?wait=true` 时在同一请求内等待该指令的结论事实落链后应答
+/// （StateTransition=受理 / Violation=enforce 拦截；纯应答时序变化，
+/// 指令与 Violation 照常落链，账面语义不变）。
 #[utoipa::path(
 
     post,
@@ -6490,13 +6604,16 @@ async fn fork_from_archive(
 
     tag = "sessions",
 
-    params(("id" = u64, Path, description = "会话 ID")),
+    params(
+        ("id" = u64, Path, description = "会话 ID"),
+        ("wait" = Option<bool>, Query, description = "true=同请求等待指令处理完成（含 enforce 拦截结论）后应答")
+    ),
 
     request_body = CommandRequest,
 
     responses(
 
-        (status = 200, description = "命令已提交，返回 fact_id", body = ApiResponse),
+        (status = 200, description = "命令已提交/已处理，返回 fact_id（wait=true 时含受理结论）", body = CommandSubmitResponse),
 
         (status = 404, description = "会话不存在")
 
@@ -6511,8 +6628,10 @@ async fn session_command(
     State(sanitizer): State<Arc<InputSanitizer>>,
     Path(session_id): Path<u64>,
 
+    Query(params): Query<CommandWaitParams>,
+
     Json(req): Json<CommandRequest>,
-) -> Result<Json<ApiResponse>, StatusCode> {
+) -> Result<Json<CommandSubmitResponse>, StatusCode> {
     // Phase 1: 第一层输入净化（静默改写 Prompt 注入内容）
     let (mut instruction_value, sanitize_report) = sanitizer.sanitize_value(&req.instruction);
     if sanitize_report.has_hits() {
@@ -6550,7 +6669,7 @@ async fn session_command(
             session_id = session_id,
             "session_command 未通过 Schema 门禁，已拒绝提交: {detail}"
         );
-        return Ok(Json(ApiResponse {
+        return Ok(Json(CommandSubmitResponse::Ack(ApiResponse {
             success: false,
             message: format!(
                 "指令未通过 Schema 门禁（引擎原生结构非法，参见固化 rule_set v1.0 Schema，records/77）: {detail}"
@@ -6558,7 +6677,7 @@ async fn session_command(
             fact_id: None,
 
             code: Some("SCHEMA_GATE_FAILED".to_string()),
-        }));
+        })));
     }
 
     let id = api.next_id();
@@ -6583,18 +6702,65 @@ async fn session_command(
 
             session.audit_new();
 
-            Ok(Json(ApiResponse {
-                success: true,
+            if !params.wait.unwrap_or(false) {
+                return Ok(Json(CommandSubmitResponse::Ack(ApiResponse {
+                    success: true,
 
-                message: "Command submitted".to_string(),
+                    message: "Command submitted".to_string(),
 
-                fact_id: Some(id.0),
+                    fact_id: Some(id.0),
 
-                code: None,
+                    code: None,
+                })));
+            }
+
+            // 同步裁决等待（?wait=true）: 纯应用层等待语义——会话锁外轮询
+            // facts_log，直到该指令的结论事实落链（StateTransition/IoRequest=
+            // 受理；Violation=enforce 拦截）。指令与 Violation 照常落链，
+            // 账面/可回放语义不变，仅应答时序从「轮询感知」变「同步感知」。
+            let facts_log = session.facts_log.clone();
+            let auditor = session.auditor.clone();
+            drop(sessions);
+
+            let verdict = wait_for_command_verdict(&facts_log, id.0, COMMAND_WAIT_TIMEOUT).await;
+
+            // 结论事实刚落链，再刷一次审计链保账面及时
+            if let Ok(mut auditor) = auditor.lock() {
+                auditor.audit_new();
+            }
+
+            Ok(Json(match verdict {
+                CommandVerdict::Accepted => CommandSubmitResponse::Waited(CommandWaitResponse {
+                    success: true,
+                    message: "Command processed".to_string(),
+                    fact_id: id.0,
+                    accepted: Some(true),
+                    violation: None,
+                    code: None,
+                }),
+                CommandVerdict::Rejected { rule_index, reason } => {
+                    CommandSubmitResponse::Waited(CommandWaitResponse {
+                        success: true,
+                        message: format!("Command rejected by enforced rule: {reason}"),
+                        fact_id: id.0,
+                        accepted: Some(false),
+                        violation: Some(CommandViolation { rule_index, reason }),
+                        code: Some("RULE_VIOLATION".to_string()),
+                    })
+                }
+                CommandVerdict::Timeout => CommandSubmitResponse::Waited(CommandWaitResponse {
+                    success: true,
+                    message: "Command submitted (result not settled within wait window)"
+                        .to_string(),
+                    fact_id: id.0,
+                    accepted: None,
+                    violation: None,
+                    code: Some("WAIT_TIMEOUT".to_string()),
+                }),
             }))
         }
 
-        Err(_) => Ok(Json(ApiResponse {
+        Err(_) => Ok(Json(CommandSubmitResponse::Ack(ApiResponse {
             success: false,
 
             message: "Command channel closed (reactor exited)".to_string(),
@@ -6602,7 +6768,7 @@ async fn session_command(
             fact_id: None,
 
             code: Some("SESSION_ERROR".to_string()),
-        })),
+        }))),
     }
 }
 
@@ -13661,6 +13827,13 @@ mod tests {
 
         let core_eval = vec![JsonValue::Object(instr)];
 
+        make_test_state_with_core_eval(core_eval)
+    }
+
+    /// 可自定义宪法的测试 state 构造（wait=true 集成测用 set 分派宪法——
+    /// 缺省 noop 宪法非合法 transform，指令一律落无 cause 的 Error，
+    /// StateTransition 永不落链，wait 等待无从谈起）
+    fn make_test_state_with_core_eval(core_eval: Vec<JsonValue>) -> (AppState, ReadinessFlag) {
         let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
 
         let (tx, _rx, _event_tx, _handle, facts_log) = reactor.spawn();
@@ -14267,6 +14440,112 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         assert_eq!(json["message"], "Session closed");
+    }
+
+    /// wait=true 同步裁决: set 指令受理 → 同请求内 StateTransition 落链后应答
+    /// accepted=true（与既有 send 即返形态并存, 无 wait 参数走 Ack 形态）。
+    #[tokio::test]
+
+    async fn test_session_command_wait_true_accepted() {
+        // set 分派宪法（复刻生产 server_eval set 分派）: 指令受理落 StateTransition
+        // （缺省 noop 宪法非合法 transform, 指令一律落无 cause 的 Error, wait 无从判定）
+        let core_eval: Vec<JsonValue> = parse_transforms(
+            r#"{"transform":[
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"set"},"on_true":[
+                    {"type":"set","params":{"attr":"__exec__.instruction.params.attr","operation":"set","value":"__exec__.instruction.params.value"}}],"on_false":[]}}
+            ]}"#,
+        )
+        .into_iter()
+        .map(serde_to_tcb)
+        .collect();
+        let (state, _) = make_test_state_with_core_eval(core_eval);
+
+        // 创建会话
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let session_id = json["session_id"].as_u64().unwrap();
+
+        // wait=true 提交 set 指令: 同请求等待 StateTransition 落链后应答
+        let uri = format!("/api/sessions/{session_id}/command?wait=true");
+        let body = r#"{"instruction":{"type":"set","params":{"attr":"result","operation":"set","value":"ok"}}}"#;
+        let (status, json) = oneshot_json(make_test_router(&state), "POST", &uri, Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["accepted"], true);
+        assert!(json["fact_id"].is_number());
+        assert!(json["violation"].is_null());
+
+        // 无 wait 参数仍走既有 Ack 形态（send 即返, 无 accepted 字段）
+        let uri = format!("/api/sessions/{session_id}/command");
+        let (status, json) = oneshot_json(make_test_router(&state), "POST", &uri, Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+        assert!(json.get("accepted").is_none() || json["accepted"].is_null());
+    }
+
+    /// wait=true 结论判据三路径（函数级）: StateTransition/IoRequest=受理,
+    /// Violation=enforce 拦截（记录性事实不推进 version, 唯 cause 可判）,
+    /// 空窗=超时降级（短超时实测走完等待窗口, 不依赖 test-util 时钟）。
+    #[tokio::test]
+
+    async fn test_wait_for_command_verdict_paths() {
+        let empty_payload = serde_to_tcb(serde_json::json!({}));
+        let empty_instruction = serde_to_tcb(serde_json::json!({"type":"noop"}));
+        let no_wait = Duration::from_millis(10);
+
+        // StateTransition{cause=42} → Accepted
+        let log = FactsLog::new();
+        log.append(Fact::StateTransition {
+            id: FactId(2),
+            cause: FactId(42),
+            new_payload: empty_payload.clone(),
+            new_queue: vec![],
+        })
+        .unwrap();
+        assert!(matches!(
+            wait_for_command_verdict(&log, 42, no_wait).await,
+            CommandVerdict::Accepted
+        ));
+
+        // Violation{cause=42} → Rejected{rule_index, reason}
+        let log = FactsLog::new();
+        log.append(Fact::Violation {
+            id: FactId(3),
+            cause: FactId(42),
+            rule_index: 7,
+            reason: "out of sandbox".to_string(),
+            instruction: empty_instruction.clone(),
+        })
+        .unwrap();
+        match wait_for_command_verdict(&log, 42, no_wait).await {
+            CommandVerdict::Rejected { rule_index, reason } => {
+                assert_eq!(rule_index, 7);
+                assert_eq!(reason, "out of sandbox");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+
+        // IoRequest{cause=42} → 受理（指令已进入执行）
+        let log = FactsLog::new();
+        log.append(Fact::IoRequest {
+            id: FactId(4),
+            cause: FactId(42),
+            io_type: IoType::call_external(),
+            params: empty_payload.clone(),
+        })
+        .unwrap();
+        assert!(matches!(
+            wait_for_command_verdict(&log, 42, no_wait).await,
+            CommandVerdict::Accepted
+        ));
+
+        // 无结论事实 → Timeout（短超时实测走完等待窗口）
+        let log = FactsLog::new();
+        assert!(matches!(
+            wait_for_command_verdict(&log, 42, no_wait).await,
+            CommandVerdict::Timeout
+        ));
     }
 
     /// F5 回归（audit-chain 2026-08-28）：审计报告按需注入完整 Fact 内容。
