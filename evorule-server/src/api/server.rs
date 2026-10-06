@@ -9737,7 +9737,9 @@ async fn session_auto_verify_post(
 
         (status = 200, description = "IoResponse 已提交，返回 fact_id", body = ApiResponse),
 
-        (status = 404, description = "会话不存在")
+        (status = 404, description = "会话不存在"),
+
+        (status = 422, description = "输出门禁拒绝（enforce 模式命中绕工具特征，error=IO_GUARD_REJECTED）")
 
     )
 
@@ -9749,27 +9751,90 @@ async fn session_io_response(
     Path(session_id): Path<u64>,
 
     Json(req): Json<IoResponseRequest>,
-) -> Result<Json<ApiResponse>, StatusCode> {
+) -> Result<Json<ApiResponse>, (StatusCode, Json<serde_json::Value>)> {
     let id = api.next_id();
 
     let request_id = evorule_reactor::FactId(req.request_id);
 
-    let result = serde_to_tcb(req.result);
+    let result_tcb = serde_to_tcb(req.result.clone());
 
     let sessions = api.sessions.lock().await;
 
     sessions.touch_session(session_id);
 
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = sessions.get_session(session_id).ok_or((
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"error": "session not found"})),
+    ))?;
+
+    // 输出门禁（io_guard）：最终应答绕工具行为封堵。仅 is_finished=true 分支
+    // 触发；工具结果回喂路径与错误应答不触。observe=只落 Violation 账不阻断
+    // （缺省）；enforce=落账并以 422 拒绝（evo-agent 感知 422 后纠偏回喂重试）。
+    let io_guard_mode = super::io_guard::guard_mode();
+
+    if io_guard_mode != super::io_guard::IoGuardMode::Off {
+        if let Some(hit) = super::io_guard::detect_final_response_violation(
+            &api.rules_dir,
+            &session.facts_log,
+            &req.result,
+            req.error.as_deref(),
+        ) {
+            let reason = format!(
+                "输出门禁命中：收尾文本含「{}」动作特征（{} 域），但本会话未调用该域任何工具",
+                hit.phrase, hit.domain
+            );
+
+            let violation_id = api.next_id();
+
+            let instruction = serde_to_tcb(serde_json::json!({
+                "type": "io_guard",
+                "params": {
+                    "domain": hit.domain,
+                    "phrase": hit.phrase,
+                    "request_id": req.request_id,
+                    "mode": format!("{io_guard_mode:?}").to_lowercase(),
+                }
+            }));
+
+            // Violation 为记录性事实（不 bump version）；rule_index=u64::MAX
+            // 为保留值，标记特征表命中（区别于规则层 enforce 的规则下标）；
+            // cause 指向被拒的 IoResponse 事实
+            let _ = session.facts_log.append(evorule_reactor::Fact::Violation {
+                id: violation_id,
+                cause: request_id,
+                rule_index: u64::MAX,
+                reason: reason.clone(),
+                instruction,
+            });
+
+            tracing::info!(
+                session_id,
+                request_id = req.request_id,
+                domain = %hit.domain,
+                mode = ?io_guard_mode,
+                "io_guard hit on final response"
+            );
+
+            if io_guard_mode == super::io_guard::IoGuardMode::Enforce {
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({
+                        "error": "IO_GUARD_REJECTED",
+                        "code": "IO_GUARD_REJECTED",
+                        "message": reason,
+                        "domain": hit.domain,
+                    })),
+                ));
+            }
+        }
+    }
 
     match session.command_tx.send(Fact::IoResponse {
         id,
 
         request_id,
 
-        result,
+        result: result_tcb,
 
         error: req.error,
     }) {

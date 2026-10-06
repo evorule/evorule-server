@@ -14,6 +14,7 @@ pub mod audit_archive;
 pub mod bundles;
 pub mod caller_role_resolver;
 pub mod hit_stats;
+pub mod io_guard;
 pub mod knowledge;
 pub mod marketplace;
 pub mod openapi;
