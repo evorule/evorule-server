@@ -25,15 +25,6 @@
 
 ---
 
-## [Unreleased]
-
-### 🆕 新增 — 模板渲染：template-services 插件 + `/api/templates/render` 端点
-
-- 新增第四个进程内原生插件 `template-services`：确定性模板渲染纯函数引擎（上下文 + 模板 → JSON / Markdown / 纯文本）。语法 v1 最小集：`{{path}}` 变量替换、`{% if %}/{% else %}/{% endif %}` 条件、`{% for x in path %}/{% endfor %}` 迭代；v1 显式边界：无过滤器、无字面转义、无数组下标访问（不静默宽容）。变量缺失/null、for 迭代源缺失或非数组、模板语法错误均 fail-fast 并附 1 基行列诊断；执行预算：模板 1MiB / 渲染产物 8MiB / 循环总迭代 10 万次（超限如实报错，非静默截断）。
-- 新增 REST 端点 `POST /api/templates/render`（受统一认证保护，OpenAPI 已登记）：请求体 `{template, context?, format?}`；成功 `{"success":true,"format":...,"content":...}`，失败 400 `{"success":false,"message":...}`（message 带自诊断指引）；`format=json` 时对渲染产物做合法性校验。REST 与 NativeService 双入口共用同一引擎，行为逐字节一致。
-- 新增原生服务 `template_render`（非敏感，`call_service` 通路可调用）：声明 SSOT = `plugins/template-services/official_native_services.json`，治理侧服务目录种子经 sync-native-services.ps1 同步。
-- 数值域（浮点/超范围整数）经 TCB 值域转换字符串化（与 HTTP 服务注册表回落同一转换通路）；渲染为确定性纯函数：无时钟、无随机、无 IO，同输入逐字节同输出。
-
 ## [0.9.1] - 2026-10-03
 
 ### 🆕 新增
