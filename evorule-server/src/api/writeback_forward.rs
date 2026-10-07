@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! 回写转发（执行侧失败上报接线）：会话 Violation 族事实 → evorule-rule 回写收件端点

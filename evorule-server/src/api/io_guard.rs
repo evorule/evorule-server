@@ -239,7 +239,7 @@ fn collect_tool_names_tcb(v: &evorule_tcb::JsonValue, out: &mut BTreeSet<String>
         {
             out.insert(n.to_string());
         }
-        for (_, val) in obj.iter() {
+        for val in obj.values() {
             collect_tool_names_tcb(val, out);
         }
     } else if let Some(arr) = v.as_array() {
