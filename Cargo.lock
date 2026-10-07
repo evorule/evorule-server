@@ -1127,6 +1127,7 @@ dependencies = [
  "evorule-rule",
  "evorule-rule-schema",
  "evorule-tcb",
+ "evorule-template-services",
  "evorule-workspace",
  "futures-core",
  "governor",
@@ -1161,6 +1162,18 @@ name = "evorule-tcb"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca11df685555e3d1834e1254b0fee5b08886434dbf5f5a4d5a0c13636842a97"
+
+[[package]]
+name = "evorule-template-services"
+version = "0.9.1"
+dependencies = [
+ "async-trait",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "evorule-time-machine"

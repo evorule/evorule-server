@@ -153,6 +153,8 @@ use utoipa::OpenApi;
         crate::api::marketplace::delete_template_handler,
         // export 组
         crate::api::pdf_export::pdf_export_handler,
+        // templates 组（模板渲染 REST 消费面,与 NativeService template_render 同引擎 SSOT）
+        crate::api::template_render::template_render_handler,
         // openapi 元数据
         crate::api::openapi::openapi_json,
     ),

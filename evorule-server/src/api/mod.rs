@@ -24,6 +24,7 @@ pub mod platform_auth;
 pub mod plugin_packs;
 pub mod plugin_probe;
 pub mod server;
+pub mod template_render;
 pub mod writeback_forward;
 
 // H6: main.rs 直接从 `api::server::{...}` 导入所需类型,

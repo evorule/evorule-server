@@ -1,0 +1,25 @@
+[package]
+name = "evorule-template-services"
+version.workspace = true
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "确定性模板渲染原生服务 —— {{}} 家族语法(变量替换 + if/for 控制流最小集)的渲染引擎,上下文+模板→JSON/Markdown/纯文本,确定性纯函数,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
+repository = "https://gitee.com/evorule/evorule-server"
+publish = false
+
+[dependencies]
+# 核心层（主仓 0.8.0 已发布 crates.io，纯 version）
+evorule-tcb = { version = "0.8" }
+evorule-reactor = { version = "0.8" }
+# 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)
+evorule-plugin-kit = { path = "../../core/plugin-kit" }
+# format=json 时渲染产物合法性校验
+serde_json = "1"
+async-trait = "0.1"
+
+[dev-dependencies]
+# 测试用 async runtime（#[tokio::test] 需要 macros + rt），与既有插件同构
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

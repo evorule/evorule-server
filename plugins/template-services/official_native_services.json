@@ -1,0 +1,17 @@
+{
+  "$schema": "https://gitee.com/evorule/evorule-server/raw/main/plugins/schema/official_native_services.schema.json",
+  "$id": "https://gitee.com/evorule/evorule-server/plugins/template-services/official_native_services.json",
+  "title": "template-services 官方原生服务声明（第四个进程内插件）",
+  "version": "1.0.0",
+  "plugin_id": "template-services",
+  "description": "确定性模板渲染原生服务（上下文+模板→JSON/Markdown/纯文本，{{}} 家族语法 if/for 最小集）",
+  "license": "AGPL-3.0-or-later",
+  "$comment": "SSOT：执行侧 NATIVE_SERVICES 与治理侧服务目录种子均以本文件为准（sync-native-services.ps1 同步）。同步守卫锁定 name/sensitive/description 三字段与顺序。服务实现为确定性纯函数渲染（无墙钟/无随机/无网络/无 IO），时间等非确定量由调用方显式放入 context。",
+  "services": [
+    {
+      "name": "template_render",
+      "sensitive": false,
+      "description": "模板渲染(上下文+模板→JSON/Markdown/纯文本,{{}} 家族语法,if/for 最小集,确定性纯函数)"
+    }
+  ]
+}

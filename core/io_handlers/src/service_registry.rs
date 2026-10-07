@@ -433,7 +433,10 @@ impl IoHandler for ServiceRegistryHandler {
 /// `JsonValue` 无 Float 变体（TCB 确定性设计）：
 /// - 整数（i64 范围内）→ `JsonValue::Integer`
 /// - 浮点 / 超出 i64 的整数 → `JsonValue::String`（保留原样，调用方决定如何处理）
-fn serde_to_json_value(v: serde_json::Value) -> JsonValue {
+///
+/// 公开导出：`/api/templates/render` 等 REST 消费面复用同一转换
+/// （HTTP 域 serde_json ↔ TCB 值域的单一 SSOT，语义与 HTTP 服务注册表回落一致）。
+pub fn serde_to_json_value(v: serde_json::Value) -> JsonValue {
     match v {
         serde_json::Value::Null => JsonValue::Null,
         serde_json::Value::Bool(b) => JsonValue::Bool(b),

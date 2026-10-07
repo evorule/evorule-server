@@ -116,6 +116,7 @@ The core engine provides `execute_transition` pure function + reactor runtime; t
 │  ├── api/bundles       rule package import (6 validations + atomic commit) │
 │  ├── api/marketplace   template marketplace (CRUD + online edit + download) │
 │  ├── api/pdf_export    server-side PDF export (Chinese font subset embedded) │
+│  ├── api/templates     deterministic template rendering (JSON / Markdown / text) │
 │  ├── api/knowledge     execution-side data asset read-only channel │
 │  ├── api/openapi       OpenAPI single source of truth │
 │  ├── api/hit_stats     rule hit-stat aggregator + query surface │
@@ -130,7 +131,7 @@ The core engine provides `execute_transition` pure function + reactor runtime; t
 │  ├── core/rule_schema     rule Schema gatekeeper │
 │  ├── core/plugin-kit      plugin routing mechanism (plugins are thin-shell named delegates) │
 │  ├── core/workspace       multi-tenant workspace + rule metadata management │
-│  └── plugins/              business service plugins (demo / physics / indicator) │
+│  └── plugins/              business service plugins (demo / physics / indicator / template) │
 ├─────────────────────────────────────────────────────────────┤
 │  evorule core (crates.io dependency)                          │
 │  ├── evorule-tcb      pure-function execution + type safety     │
@@ -366,6 +367,7 @@ Capacity note: audit chain produces +1 hit-attribution fact per command (recordk
 | `/api/knowledge/{ds}/entries` `/{entry_id}` | GET | Entry query |
 | `/api/services` | GET | Bound services list (native / plugin / registry, 3 sources, with param contracts) |
 | `/api/export/pdf` | POST | Server-side PDF export (pure Rust text-mode, Chinese font subset embedded; body limit 32MB) |
+| `/api/templates/render` | POST | Deterministic template rendering: context + template → JSON / Markdown / plain text (`{{}}` family syntax, if/for minimal set) |
 | `/api/marketplace/templates` | GET/POST | Template marketplace: list / upload |
 | `/api/marketplace/templates/{id}` | GET/PATCH/DELETE | Template detail / online edit / delete |
 | `/api/marketplace/templates/{id}/download` | GET | Template download |
@@ -491,7 +493,7 @@ If file doesn't exist or parse fails, falls back to pure CLI/env-var startup (wa
 
 Plugins support **deployment-time enable/disable**: declare each plugin's enabled set via manifest file, change manifest + restart to take effect (no runtime hot-start/stop — runtime hot-change compatibility with deterministic audit chain is unproven). Manifest supports two entry types:
 
-- **builtin entries** — in-process native plugins (`plugins/` sub-crates, e.g., `demo-services`, `physics-services`, `indicator-services`): `enabled` + optional `services` subset;
+- **builtin entries** — in-process native plugins (`plugins/` sub-crates, e.g., `demo-services`, `physics-services`, `indicator-services`, `template-services`): `enabled` + optional `services` subset;
 - **external entries** — external plugin packages (independent process + self-contained data + `plugin.json` manifest, any language implementation, install/uninstall with zero host-code changes): `enabled` + `manifest` pointing to plugin-package manifest; spec & development guide in [Plugin Development Guide](docs/PLUGIN_GUIDE.md).
 
 ```bash
@@ -515,6 +517,10 @@ Manifest format (multi-plugin, key = plugin id; builtin `services` omitted = all
     "indicator-services": {
       "enabled": true,
       "services": ["indicator_sma", "indicator_ema", "indicator_macd", "indicator_rsi"]
+    },
+    "template-services": {
+      "enabled": true,
+      "services": ["template_render"]
     },
     "finance-config": {
       "enabled": true,
@@ -546,12 +552,13 @@ Validation is **fail-fast** (startup rejection, never silently ignored): unreada
     "demo-services": { "enabled": true, "services": ["config_persist"] },
     "physics-services": { "enabled": true, "services": ["physics_energy"] },
     "indicator-services": { "enabled": true, "services": ["indicator_sma"] },
+    "template-services": { "enabled": true, "services": ["template_render"] },
     "finance-config": { "enabled": true, "external": true, "services": ["finance_config_get", "finance_config_set"], "status": "online", "last_probe": 1788804515000, "last_ok": 1788804515000 }
   }
 }
 ```
 
-**Adding new native plugin/service** = add items to `NATIVE_SERVICES` declaration table in existing (or new) plugin crate + register declaration pointer in `src/main.rs` `PLUGIN_DEFS` registration table (manifest-parse/mount-chain/health-visibility mechanism code unchanged; router mechanism provided by [`core/plugin-kit`](core/plugin-kit) public crate, plugins are thin-shell named delegates) — deployer enables/disables per manifest; see [plugins/demo-services/README.md](plugins/demo-services/README.md), [plugins/physics-services/README.md](plugins/physics-services/README.md), [plugins/indicator-services/README.md](plugins/indicator-services/README.md).
+**Adding new native plugin/service** = add items to `NATIVE_SERVICES` declaration table in existing (or new) plugin crate + register declaration pointer in `src/main.rs` `PLUGIN_DEFS` registration table (manifest-parse/mount-chain/health-visibility mechanism code unchanged; router mechanism provided by [`core/plugin-kit`](core/plugin-kit) public crate, plugins are thin-shell named delegates) — deployer enables/disables per manifest; see [plugins/demo-services/README.md](plugins/demo-services/README.md), [plugins/physics-services/README.md](plugins/physics-services/README.md), [plugins/indicator-services/README.md](plugins/indicator-services/README.md), [plugins/template-services/README.md](plugins/template-services/README.md).
 
 **Adding new external plugin package** = implement independent HTTP service process + write plugin.json + one-line manifest registration (zero host-code changes, zero recompile, any language possible); spec/call-contract/management-surface/install-uninstall ops detailed in [Plugin Development Guide](docs/PLUGIN_GUIDE.md). Existing non-packaged HTTP services connect directly via `--service-registry` declaration file.
 
@@ -747,6 +754,7 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 │  ├── api/bundles       规则包导入(6 项校验+原子落盘)           │
 │  ├── api/marketplace   模板市场(CRUD + 在线编辑 + 下载)        │
 │  ├── api/pdf_export    服务端 PDF 导出(中文字体子集嵌入)       │
+│  ├── api/templates     确定性模板渲染(JSON/Markdown/纯文本)    │
 │  ├── api/knowledge     执行侧数据资产只读通道                  │
 │  ├── api/openapi       OpenAPI 单一真相源                      │
 │  ├── api/hit_stats     规则命中统计聚合器 + 查询面             │
@@ -761,7 +769,7 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 │  ├── core/rule_schema     规则 Schema 门禁                    │
 │  ├── core/plugin-kit      插件路由机制件(插件为薄壳具名委托)   │
 │  ├── core/workspace       多租户工作空间 + 规则元数据管理     │
-│  └── plugins/              业务服务插件(demo / physics / indicator) │
+│  └── plugins/              业务服务插件(demo / physics / indicator / template) │
 ├─────────────────────────────────────────────────────────────┤
 │  evorule 核心 (crates.io 依赖)                               │
 │  ├── evorule-tcb      纯函数执行 + 类型安全                   │
@@ -993,6 +1001,7 @@ evorule_rules_zero_hits
 | `/api/knowledge/{ds}/entries` ` /{entry_id}` | GET | 条目查询 |
 | `/api/services` | GET | 已绑定服务列表(native / plugin / registry 三来源,含参数契约) |
 | `/api/export/pdf` | POST | 服务端 PDF 导出(纯 Rust 文本型,中文字体子集嵌入;body 上限 32MB) |
+| `/api/templates/render` | POST | 确定性模板渲染:上下文+模板→JSON/Markdown/纯文本(`{{}}` 家族语法,if/for 最小集) |
 | `/api/marketplace/templates` | GET/POST | 模板市场:列表 / 上传 |
 | `/api/marketplace/templates/{id}` | GET/PATCH/DELETE | 模板详情 / 在线编辑 / 删除 |
 | `/api/marketplace/templates/{id}/download` | GET | 模板下载 |
@@ -1103,7 +1112,7 @@ evorule-server --config evorule.json
 
 插件支持**部署期启用/裁剪**:通过清单文件声明各插件启用集,改清单 + 重启即生效(不做运行时热启停——运行时热变更与确定性审计链的兼容性未论证)。清单支持两类条目:
 
-- **builtin 条目**——进程内原生插件(`plugins/` 下各 crate,如 `demo-services`、`physics-services`、`indicator-services`):`enabled` + 可选 `services` 子集;
+- **builtin 条目**——进程内原生插件(`plugins/` 下各 crate,如 `demo-services`、`physics-services`、`indicator-services`、`template-services`):`enabled` + 可选 `services` 子集;
 - **external 条目**——外部插件包(独立进程 + 自持数据 + `plugin.json` 清单,任意语言实现,装入/拔出零宿主代码改动):`enabled` + `manifest` 指向插件包清单;规范与开发指引见[《插件开发指南》](docs/PLUGIN_GUIDE.md)。
 
 ```bash
@@ -1127,6 +1136,10 @@ evorule-server --plugins ./plugin_manifest.json
     "indicator-services": {
       "enabled": true,
       "services": ["indicator_sma", "indicator_ema", "indicator_macd", "indicator_rsi"]
+    },
+    "template-services": {
+      "enabled": true,
+      "services": ["template_render"]
     },
     "finance-config": {
       "enabled": true,
@@ -1158,12 +1171,13 @@ evorule-server --plugins ./plugin_manifest.json
     "demo-services": { "enabled": true, "services": ["config_persist"] },
     "physics-services": { "enabled": true, "services": ["physics_energy"] },
     "indicator-services": { "enabled": true, "services": ["indicator_sma"] },
+    "template-services": { "enabled": true, "services": ["template_render"] },
     "finance-config": { "enabled": true, "external": true, "services": ["finance_config_get", "finance_config_set"], "status": "online", "last_probe": 1788804515000, "last_ok": 1788804515000 }
   }
 }
 ```
 
-**新增原生插件/服务** = 新建(或在既有)插件 crate 的 `NATIVE_SERVICES` 声明表追加服务项 + 在 `src/main.rs` 的 `PLUGIN_DEFS` 登记表登记声明表指针(清单解析/挂载链/健康可见性机制代码零改动;路由器机制件由 [`core/plugin-kit`](core/plugin-kit) 公共 crate 提供,插件为薄壳具名委托)——部署方按需在清单中启用;详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)、[plugins/physics-services/README.md](plugins/physics-services/README.md)、[plugins/indicator-services/README.md](plugins/indicator-services/README.md)。
+**新增原生插件/服务** = 新建(或在既有)插件 crate 的 `NATIVE_SERVICES` 声明表追加服务项 + 在 `src/main.rs` 的 `PLUGIN_DEFS` 登记表登记声明表指针(清单解析/挂载链/健康可见性机制代码零改动;路由器机制件由 [`core/plugin-kit`](core/plugin-kit) 公共 crate 提供,插件为薄壳具名委托)——部署方按需在清单中启用;详见 [plugins/demo-services/README.md](plugins/demo-services/README.md)、[plugins/physics-services/README.md](plugins/physics-services/README.md)、[plugins/indicator-services/README.md](plugins/indicator-services/README.md)、[plugins/template-services/README.md](plugins/template-services/README.md)。
 
 **新增外部插件包** = 实现独立 HTTP 服务进程 + 编写 plugin.json + 清单登记一行(零宿主代码改动、零重编,任意语言可实现);规范/调用契约/管理面/装卸操作详见[《插件开发指南》](docs/PLUGIN_GUIDE.md)。未打包为插件的既有 HTTP 服务经 `--service-registry` 声明文件直接绑定接入。
 
