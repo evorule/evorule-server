@@ -11,7 +11,10 @@
 //! - `EVORULE_WRITEBACK_DATASET`：事件归属数据集（缺省 `server-sessions`）。
 //!
 //! fail-soft：网络/远端失败仅 warn 留痕，绝不影响会话执行与事实链——转发是
-//! 观察面，不承载审计责任（审计链仍在 facts_log）。
+//! 观察面，不承载审计责任（审计链仍在 facts_log）。漏发不静默：进程级计数
+//! （misfires/dropped）随每条 warn 携带累计值，并经 [`health_snapshot`] 呈现
+//! 于 `GET /api/health` 的 `writeback` 节（先记后治——重试/持久队列留待
+//! 后续批次）。
 //!
 //! 事件映射（RuleFailureEvent，schema 单源 evorule-rule model::writeback）：
 //! - `entry_id` = 规则身份引用（hit_stats `resolve_rule_ref`：`{source}#{序号}`；
@@ -21,6 +24,7 @@
 //!   observed = instruction（TCB→serde 原样）；
 //! - `execution_ctx.fact_ids` = [violation id, cause id]（回溯锚点）。
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -41,6 +45,37 @@ struct WritebackConfig {
 }
 
 static CONFIG: OnceLock<Option<WritebackConfig>> = OnceLock::new();
+
+/// 进程级漏发计数（观察面登记，先记后治）：转发发送失败（非 2xx / 传输
+/// 错误）与事件流落后丢帧各自累计。转发是尽力而为的观察面（审计链仍在
+/// facts_log），漏发不重试不补发——但必须可见：计数经 warn 日志字段与
+/// `GET /api/health` 呈现，重试/持久队列等治理动作留待后续批次。
+static MISFIRES: AtomicU64 = AtomicU64::new(0);
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// 登记一次发送失败，返回累计值（供 warn 日志携带）
+fn record_misfire() -> u64 {
+    MISFIRES.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+/// 登记一次丢帧 n 条，返回累计值
+fn record_dropped(n: u64) -> u64 {
+    DROPPED.fetch_add(n, Ordering::Relaxed) + n
+}
+
+/// 漏发计数快照（原始读取，不受旗标门控；测试与观察面共用）
+pub fn misfire_counts() -> (u64, u64) {
+    (
+        MISFIRES.load(Ordering::Relaxed),
+        DROPPED.load(Ordering::Relaxed),
+    )
+}
+
+/// `/api/health` 呈现用快照：转发未配置（旗标关）返回 None（整节省略，
+/// 响应与未部署回写时逐字节兼容）；已配置返回 (misfires, dropped)
+pub fn health_snapshot() -> Option<(u64, u64)> {
+    config().map(|_| misfire_counts())
+}
 
 /// 解析配置（纯函数，便于单测）；URL 空/空白 = None（off）
 fn build_config(
@@ -153,24 +188,34 @@ pub async fn run_forwarder(
                         .await
                     {
                         Ok(resp) if resp.status().is_success() => {}
-                        Ok(resp) => tracing::warn!(
-                            status = %resp.status(),
-                            target = %target,
-                            "回写收件端点返回非 2xx（事件未入队）"
-                        ),
-                        Err(e) => tracing::warn!(
-                            error = %e,
-                            target = %target,
-                            "回写转发失败（fail-soft，不影响会话执行）"
-                        ),
+                        Ok(resp) => {
+                            let misfires_total = record_misfire();
+                            tracing::warn!(
+                                status = %resp.status(),
+                                target = %target,
+                                misfires_total,
+                                "回写收件端点返回非 2xx（事件未入队；漏发已计数）"
+                            );
+                        }
+                        Err(e) => {
+                            let misfires_total = record_misfire();
+                            tracing::warn!(
+                                error = %e,
+                                target = %target,
+                                misfires_total,
+                                "回写转发失败（fail-soft，不影响会话执行；漏发已计数）"
+                            );
+                        }
                     }
                 });
             }
             Ok(_) => {}
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                let dropped_total = record_dropped(n);
                 tracing::warn!(
                     dropped = n,
-                    "回写转发器事件流落后丢帧（观察面尽力而为；审计链不受影响）"
+                    dropped_total,
+                    "回写转发器事件流落后丢帧（观察面尽力而为，审计链不受影响；漏发已计数）"
                 );
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -221,5 +266,17 @@ mod tests {
         assert!(ts.ends_with('Z'), "{ts}");
         assert_eq!(&ts[4..5], "-");
         assert_eq!(&ts[10..11], "T");
+    }
+
+    #[test]
+    fn test_misfire_counters_monotonic() {
+        // 漏发计数进程级只增不减（先记后治观察面；多会话转发器共享累计）
+        let (m0, d0) = misfire_counts();
+        let m_after = record_misfire();
+        let d_after = record_dropped(3);
+        let (m1, d1) = misfire_counts();
+        assert_eq!(m_after, m0 + 1, "misfire 计数应恰增 1");
+        assert_eq!(d_after, d0 + 3, "dropped 计数应恰增 3");
+        assert!(m1 >= m_after && d1 >= d_after, "计数单调不减");
     }
 }

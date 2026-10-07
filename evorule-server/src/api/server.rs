@@ -4052,6 +4052,23 @@ pub struct HealthResponse {
     /// `true` = 全部 I/O 分发路径已注入守卫，入口仲裁生效（fail-closed）；
     /// `false` = 服务启动未启用守卫，I/O 走 fail-open（应由运维纠正）。
     pub guard_assembled: bool,
+
+    /// 回写转发漏发计数（观察面，先记后治）
+    ///
+    /// `EVORULE_WRITEBACK_URL` 未配置（转发未启用）时整节省略——响应与
+    /// 未部署回写时逐字节兼容。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub writeback: Option<WritebackHealth>,
+}
+
+/// 回写转发漏发计数快照（进程级累计；多会话转发器共享）
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WritebackHealth {
+    /// 转发发送失败累计（收件端点非 2xx / 传输错误；不重试不补发，仅可见性登记）
+    pub misfires: u64,
+
+    /// 事件流落后丢帧累计（broadcast Lagged）
+    pub dropped: u64,
 }
 
 /// PayloadUpdate 请求体
@@ -5205,6 +5222,9 @@ async fn health() -> Json<HealthResponse> {
         plugins,
         // C6 装配可观测信号（DEV-5）：外部据此区分守卫已装配 / 未装配
         guard_assembled: is_guard_assembled(),
+        // 回写转发漏发计数（未配置回写 → 省略该节，响应逐字节兼容）
+        writeback: crate::api::writeback_forward::health_snapshot()
+            .map(|(misfires, dropped)| WritebackHealth { misfires, dropped }),
     })
 }
 
