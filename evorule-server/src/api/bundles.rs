@@ -262,6 +262,320 @@ pub struct ListBundleImportsQuery {
     pub limit: Option<i64>,
 }
 
+// =============================================================================
+// 快照包导出端点 —— workspace 治理域带证据导出（部署链上游）
+//
+// - `POST /api/bundles/export`：把 workspace 的活规则集（state=Active）构造为
+//   自洽 DatasetBundle（确定性 bundle_id + 全包哈希 + 证据如实携带 + 可选策略
+//   快照入哈希链），供执行域 `bundle_import_dry_run` / `bundle_import` 消费，
+//   与既有导入端点构成部署闭环（导出≠发布：不落盘、不激活、不 reload）。
+//
+// 数据源语义：dataset_id = workspace_id（与发布链 `dataset_id=workspace_id`
+// 同口径，见 publish_service 构造）。workspace 域无历史版本快照链，仅支持
+// `version="current"` 活规则集导出，历史版显式 400（不静默伪造）。
+//
+// 证据纪律（与治理侧 export_with_tests 双闸同口径）：verdict=pass 必带可追溯
+// 标记（sandbox:<id> / human:<actor> 前缀），服务端 enforcement——客户端
+// 纪律不构成校验；verdict=fail 无此要求（fail 即"未验证"，无伪造风险）。
+// `sandbox:` 引用的存在性+报告一致性由 import 侧校验（双闸各管一层）。
+// =============================================================================
+
+/// 导出请求体（契约对齐治理侧 `ExportReq` 形状：dataset_id/version/tests/subset/recipe_snapshot）
+#[derive(Debug, Deserialize)]
+pub struct BundleExportReq {
+    /// 数据集 ID（workspace 治理域语义 = workspace_id）
+    pub dataset_id: String,
+    /// 要导出的版本：仅支持 `current`（活规则集；缺省即 current）
+    #[serde(default = "default_export_version")]
+    pub version: String,
+    /// 测试证据（闸门一产出随包携带；不新增治理存储模型）
+    #[serde(default)]
+    pub tests: evorule_bundle::BundleTests,
+    /// 裁剪视图语法（可选）：`tag:core` / `domain:tax` / `ids:id1,id2`
+    /// （多段以 `;` 分隔，交集语义；与治理侧同解析）
+    #[serde(default)]
+    pub subset: Option<String>,
+    /// 策略快照（可选，opaque 载荷）：调用方策略资产在打包时刻的固化副本，
+    /// 先入包再算全包哈希（随哈希链防篡改）；缺省 None 不序列化（字节兼容）
+    #[serde(default)]
+    pub recipe_snapshot: Option<evorule_bundle::RecipeSnapshot>,
+}
+
+fn default_export_version() -> String {
+    "current".to_string()
+}
+
+/// 导出规则输入（规则元数据 + 当前版本内容，供导出核纯函数消费）
+pub struct WorkspaceRuleInput {
+    /// 规则 ID（ULID，跨导出稳定 → entry_id 稳定）
+    pub rule_id: String,
+    /// 规则名称（workspaces 内唯一，入 provenance）
+    pub name: String,
+    /// 规则内容（JSON 字符串，原样零转译入包）
+    pub content: String,
+}
+
+/// 导出统一错误响应体
+fn export_err(status: StatusCode, msg: String) -> (StatusCode, Json<Value>) {
+    (status, Json(serde_json::json!({ "error": msg })))
+}
+
+/// workspace 治理域当前版导出核（纯函数，单测确定性入口）
+///
+/// 构造确定性（与发布链 build_publish_bundle 同族口径）：
+/// - `entry_id` = `rule-{rule_id}`（ULID 稳定标识，同规则跨导出稳定）；
+/// - `bundle_id` = `export-{条目内容哈希级联再哈希前 16 hex}`——同规则集同
+///   bundle_id，执行域导入天然幂等（单激活替换语义）；
+/// - 版本选择 `pinned` 到 `v1`（`Versioning::default` 链），无墙钟依赖；
+///   `exported_at` 为管理元数据（墙钟旁路，与发布链 audit 同口径）；
+/// - `data_dependencies = None`——workspace 规则为原生 JSON 规则文档，
+///   无服务依赖声明面（与发布链 MVP 同边界）；
+/// - `recipe_snapshot` 先入包再算全包哈希（evorule-bundle 哈希链覆盖可选字段）。
+///
+/// 失败显式（不静默）：空规则集 / 规则内容非法 JSON / 哈希前缀异常一律 Err。
+pub fn export_workspace_bundle(
+    dataset_id: &str,
+    rules: &[WorkspaceRuleInput],
+    tests: &evorule_bundle::BundleTests,
+    recipe_snapshot: Option<evorule_bundle::RecipeSnapshot>,
+    exported_at: &str,
+) -> Result<evorule_bundle::DatasetBundle, String> {
+    use evorule_bundle::{
+        BundleAudit, BundleDatasetMeta, BundleEntry, Provenance, VersionSelection,
+        VersionSelectionMode, Versioning, BUNDLE_SCHEMA_VERSION,
+    };
+
+    if rules.is_empty() {
+        return Err(
+            "导出拒绝：数据集无可导出条目（workspace 无 Active 规则；空包是部署事故面，显式失败不静默）"
+                .to_string(),
+        );
+    }
+    let mut entries = Vec::with_capacity(rules.len());
+    let mut cascade = String::new();
+    for r in rules {
+        let body: Value = serde_json::from_str(r.content.trim()).map_err(|e| {
+            format!(
+                "规则 `{}` 内容非法（应为规则 JSON 文档，不静默）: {e}",
+                r.name
+            )
+        })?;
+        let content_hash = evorule_hash::digest(r.content.trim().as_bytes());
+        cascade.push_str(&content_hash);
+        entries.push(BundleEntry {
+            entry_id: format!("rule-{}", r.rule_id),
+            entry_kind: Default::default(),
+            rule_body: body,
+            schema_ref: None,
+            provenance: Provenance {
+                source: format!("workspace:{}/{}", r.rule_id, r.name),
+                clause: None,
+                document_id: None,
+                effective_from: None,
+                effective_to: None,
+                last_verified: None,
+                verified_by: None,
+            },
+            domain: "general".to_string(),
+            tags: Vec::new(),
+            dependencies: Vec::new(),
+            // workspace 规则为规则条目，四治理字段不携带（None）
+            knowledge_kind: None,
+            trust_level: None,
+            license_ref: None,
+            execution_contract: None,
+        });
+    }
+    let cascade_digest = evorule_hash::digest(cascade.as_bytes());
+    let bundle_id = format!(
+        "export-{}",
+        cascade_digest.get(..16).unwrap_or(&cascade_digest)
+    );
+
+    let mut bundle = evorule_bundle::DatasetBundle {
+        bundle_schema_version: BUNDLE_SCHEMA_VERSION.to_string(),
+        bundle_id,
+        dataset: BundleDatasetMeta {
+            dataset_id: dataset_id.to_string(),
+            name: format!("export:{dataset_id}"),
+            tenant_id: "local".to_string(),
+            instance_id: "evorule-server".to_string(),
+            versioning: Versioning::default(),
+            version_selection: Some(VersionSelection {
+                mode: VersionSelectionMode::Pinned,
+                pinned_version: Some("v1".to_string()),
+                pinned_include_patch: None,
+            }),
+            law_ref: None,
+            view_of: None,
+            event_schemas: vec![],
+        },
+        entries,
+        data_dependencies: None,
+        recipe_snapshot,
+        tests: tests.clone(),
+        audit: BundleAudit {
+            exported_at: exported_at.to_string(),
+            exported_by: "evorule-server".to_string(),
+            source_version: "v1".to_string(),
+            content_hash: String::new(),
+            hash_algo: "blake3".to_string(),
+        },
+    };
+    bundle.audit.content_hash = bundle.compute_content_hash();
+    Ok(bundle)
+}
+
+/// 裁剪视图语法解析（与治理侧同解析：`;` 分段交集；tag:/domain:/ids:；
+/// 非法段显式错误不静默忽略；空裁剪结果由 BundleTrimmer 拒绝）
+fn apply_trim_spec(
+    bundle: &evorule_bundle::DatasetBundle,
+    spec: &str,
+    by: &str,
+    at: &str,
+) -> Result<evorule_bundle::DatasetBundle, String> {
+    use evorule_bundle::BundleTrimmer;
+    let mut view: Option<evorule_bundle::DatasetBundle> = None;
+    for seg in spec.split(';') {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        let (kind, value) = seg.split_once(':').ok_or_else(|| {
+            "subset 语法须为 tag:xxx / domain:xxx / ids:id1,id2（多段以 ; 分隔）".to_string()
+        })?;
+        let current = view.as_ref().unwrap_or(bundle);
+        let applied = match kind {
+            "tag" => BundleTrimmer::trim_by_filter(current, None, &[value], by, at),
+            "domain" => BundleTrimmer::trim_by_filter(current, Some(value), &[], by, at),
+            "ids" => {
+                let keep: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+                BundleTrimmer::trim_by_ids(current, &keep, by, at)
+            }
+            other => {
+                return Err(format!(
+                    "未知裁剪段 `{other}:`（合法 kind: tag / domain / ids）"
+                ))
+            }
+        };
+        view = Some(applied.map_err(|e| format!("裁剪视图构造失败: {e}"))?);
+    }
+    view.ok_or_else(|| "subset 为空裁剪表达式（无任何段）".to_string())
+}
+
+/// POST /api/bundles/export —— workspace 治理域带证据导出（部署链上游）
+///
+/// 把 workspace 活规则集构造为自洽 DatasetBundle 返回（不落盘不激活）；
+/// 校验失败一律 400/404 显式错误（不静默）。受保护路由（有效 token）。
+#[utoipa::path(
+    post,
+    path = "/api/bundles/export",
+    tag = "bundles",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "导出成功（自洽 DatasetBundle 快照包）", body = serde_json::Value),
+        (status = 400, description = "版本/证据形状/规则内容/裁剪语法校验失败（显式错误，不静默）", body = serde_json::Value),
+        (status = 401, description = "未认证"),
+        (status = 404, description = "数据集（workspace）不存在", body = serde_json::Value)
+    )
+)]
+pub async fn export_bundle_handler(
+    State(ws): State<evorule_workspace::WorkspaceState>,
+    Json(req): Json<BundleExportReq>,
+) -> Result<Json<evorule_bundle::DatasetBundle>, (StatusCode, Json<Value>)> {
+    // ① 版本门：workspace 域无历史快照链，仅当前版导出
+    if req.version != "current" {
+        return Err(export_err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "版本 `{}` 不可导出：workspace 治理域无历史版本快照链，仅支持 version=\"current\"（活规则集导出）",
+                req.version
+            ),
+        ));
+    }
+    // ② 证据形状校验（服务端 enforcement，与治理侧 export_with_tests 双闸同口径）
+    if req.tests.verdict == evorule_bundle::TestVerdict::Pass {
+        let traceable = !req.tests.subset.is_empty()
+            && req
+                .tests
+                .subset
+                .iter()
+                .all(|s| s.starts_with("sandbox:") || s.starts_with("human:"));
+        if !traceable {
+            return Err(export_err(
+                StatusCode::BAD_REQUEST,
+                "证据校验失败:verdict=pass 的导出必须携带可追溯测试标记\
+                 (tests.subset 须非空,且每项为 sandbox:<沙盒ID> 或 human:<操作者>)。\
+                 机器背书请传入沙盒报告引用,人工背书请传 human:<操作者>\
+                 (显式降级,导入侧可追溯);verdict=fail 无此要求"
+                    .to_string(),
+            ));
+        }
+    }
+    // ③ 数据集存在性（dataset_id = workspace_id；存在性查询失败如实 404 不静默）
+    ws.workspace_service
+        .get_workspace(&req.dataset_id)
+        .await
+        .map_err(|e| {
+            export_err(
+                StatusCode::NOT_FOUND,
+                format!(
+                    "数据集不存在（workspace `{}` 查询失败: {e}）",
+                    req.dataset_id
+                ),
+            )
+        })?;
+    // ④ 活规则集收集（state=Active 且有当前版本；内容读取失败显式 400）
+    let all_rules = ws
+        .rule_meta_service
+        .list_rules(&req.dataset_id)
+        .await
+        .map_err(|e| export_err(StatusCode::BAD_REQUEST, format!("规则清单读取失败: {e}")))?;
+    let mut inputs = Vec::new();
+    for r in all_rules.iter().filter(|r| {
+        r.state == evorule_workspace::RuleState::Active && r.current_version_id.is_some()
+    }) {
+        let vid = r.current_version_id.clone().unwrap_or_default();
+        let ver = ws
+            .rule_meta_service
+            .get_rule_version(&req.dataset_id, &r.id, &vid)
+            .await
+            .map_err(|e| {
+                export_err(
+                    StatusCode::BAD_REQUEST,
+                    format!("规则 `{}` 当前版本读取失败: {e}", r.name),
+                )
+            })?;
+        inputs.push(WorkspaceRuleInput {
+            rule_id: r.id.clone(),
+            name: r.name.clone(),
+            content: ver.content,
+        });
+    }
+    // ⑤ 构造自洽 bundle（确定性 bundle_id；全包哈希含策略快照）
+    let exported_at = chrono::Utc::now().to_rfc3339();
+    let bundle = export_workspace_bundle(
+        &req.dataset_id,
+        &inputs,
+        &req.tests,
+        req.recipe_snapshot,
+        &exported_at,
+    )
+    .map_err(|e| export_err(StatusCode::BAD_REQUEST, e))?;
+    // ⑥ 裁剪视图（可选；交集语法，视图引用原版本链）
+    let bundle = match req.subset.as_deref() {
+        Some(spec) => apply_trim_spec(&bundle, spec, "evorule-server", &exported_at)
+            .map_err(|e| export_err(StatusCode::BAD_REQUEST, e))?,
+        None => bundle,
+    };
+    Ok(Json(bundle))
+}
+
 // 测试豁免 C5（unwrap/expect/panic）与 L2 clippy
 #[cfg(test)]
 mod tests {
@@ -338,6 +652,7 @@ mod tests {
                     template: None,
                 }],
             }),
+            recipe_snapshot: None,
             tests: BundleTests {
                 // B2: pass 必带可追溯标记(执行域 import 侧校验);
                 // 测试意图=合法可导入包,人工背书形态
@@ -1226,5 +1541,158 @@ mod tests {
 
         let err = api.active_bundles().unwrap_err();
         assert!(err.contains("解析"), "应为显式解析错误: {err}");
+    }
+
+    // ===== 导出核（workspace 治理域带证据导出）=====
+
+    use crate::api::bundles::{export_workspace_bundle, WorkspaceRuleInput};
+
+    fn export_rule_input(id: &str, name: &str, content: &str) -> WorkspaceRuleInput {
+        WorkspaceRuleInput {
+            rule_id: id.to_string(),
+            name: name.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn export_core_happy_path_self_consistent() {
+        let rules = vec![
+            export_rule_input("01JR00000001", "r-one", r#"{"kind":"rule","id":"one"}"#),
+            export_rule_input("01JR00000002", "r-two", r#"{"kind":"rule","id":"two"}"#),
+        ];
+        let tests = BundleTests {
+            subset: vec!["sandbox:sb-1".into()],
+            fixtures: vec![],
+            verdict: TestVerdict::Pass,
+        };
+        let snapshot = evorule_bundle::RecipeSnapshot {
+            recipe_version: "memory-v1.0".into(),
+            recipe: serde_json::json!({"focus": "tax"}),
+            snapshot_at: "2026-10-08T00:00:00Z".into(),
+        };
+        let b = export_workspace_bundle(
+            "ws-export-1",
+            &rules,
+            &tests,
+            Some(snapshot),
+            "2026-10-08T01:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(b.entries.len(), 2);
+        assert_eq!(b.entries[0].entry_id, "rule-01JR00000001");
+        assert_eq!(b.tests.verdict, TestVerdict::Pass);
+        assert!(b.recipe_snapshot.is_some(), "快照应入包");
+        assert!(b.bundle_id.starts_with("export-"), "{b:?}",);
+        // 全包哈希自洽（含快照参与）
+        assert!(
+            b.verify_content_hash().is_ok(),
+            "导出包哈希应自洽: {:?}",
+            b.verify_content_hash()
+        );
+        // 确定性：同输入同 exported_at → 同 bundle_id 同哈希
+        let b2 = export_workspace_bundle(
+            "ws-export-1",
+            &rules,
+            &tests,
+            b.recipe_snapshot.clone(),
+            "2026-10-08T01:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(b.bundle_id, b2.bundle_id);
+        assert_eq!(b.audit.content_hash, b2.audit.content_hash);
+    }
+
+    #[test]
+    fn export_core_tamper_red() {
+        let rules = vec![export_rule_input(
+            "01JR00000003",
+            "r-tamper",
+            r#"{"kind":"rule","id":"t"}"#,
+        )];
+        let tests = BundleTests::unverified();
+        let mut b =
+            export_workspace_bundle("ws-t", &rules, &tests, None, "2026-10-08T01:00:00Z").unwrap();
+        b.entries[0].rule_body = serde_json::json!({"kind":"rule","id":"tampered"});
+        assert!(
+            b.verify_content_hash().is_err(),
+            "篡改条目后哈希应失配（防篡改红）"
+        );
+    }
+
+    #[test]
+    fn export_core_recipe_snapshot_in_hash_chain() {
+        let rules = vec![export_rule_input(
+            "01JR00000004",
+            "r-snap",
+            r#"{"kind":"rule","id":"s"}"#,
+        )];
+        let tests = BundleTests::unverified();
+        let snap = evorule_bundle::RecipeSnapshot {
+            recipe_version: "memory-v1.0".into(),
+            recipe: serde_json::json!({"k": "v"}),
+            snapshot_at: "2026-10-08T00:00:00Z".into(),
+        };
+        let with_snap =
+            export_workspace_bundle("ws-s", &rules, &tests, Some(snap), "2026-10-08T01:00:00Z")
+                .unwrap();
+        let without_snap =
+            export_workspace_bundle("ws-s", &rules, &tests, None, "2026-10-08T01:00:00Z").unwrap();
+        assert_ne!(
+            with_snap.audit.content_hash, without_snap.audit.content_hash,
+            "快照应参与全包哈希（入链）"
+        );
+        let mut tampered = with_snap.clone();
+        if let Some(s) = tampered.recipe_snapshot.as_mut() {
+            s.recipe = serde_json::json!({"k": "forged"});
+        }
+        assert!(
+            tampered.verify_content_hash().is_err(),
+            "篡改快照后哈希应失配"
+        );
+    }
+
+    #[test]
+    fn export_core_empty_rules_and_bad_json_rejected() {
+        let tests = BundleTests::unverified();
+        // 空规则集显式拒绝（不静默出空包）
+        assert!(export_workspace_bundle("ws-e", &[], &tests, None, "t").is_err());
+        // 内容非 JSON 显式拒绝
+        let bad = vec![export_rule_input("01JR00000005", "bad", "not-json{")];
+        let err = export_workspace_bundle("ws-e", &bad, &tests, None, "t").unwrap_err();
+        assert!(err.contains("非法"), "应显式报内容非法: {err}");
+    }
+
+    #[test]
+    fn export_trim_spec_ids_view_with_view_of() {
+        let rules = vec![
+            export_rule_input("01JR00000006", "keep", r#"{"kind":"rule","id":"k"}"#),
+            export_rule_input("01JR00000007", "drop", r#"{"kind":"rule","id":"d"}"#),
+        ];
+        let tests = BundleTests::unverified();
+        let b = export_workspace_bundle("ws-trim", &rules, &tests, None, "2026-10-08T01:00:00Z")
+            .unwrap();
+        let keep_id = b.entries[0].entry_id.clone();
+        let view = super::apply_trim_spec(
+            &b,
+            &format!("ids:{keep_id}"),
+            "evorule-server",
+            "2026-10-08T01:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].entry_id, keep_id);
+        assert_eq!(
+            view.dataset.view_of.as_ref().unwrap().original_dataset_id,
+            "ws-trim",
+            "裁剪视图应引用原版本链"
+        );
+        assert!(view.verify_content_hash().is_ok(), "视图哈希应重算自洽");
+        // 非法语法 / 未知段 / 空表达式显式红
+        assert!(super::apply_trim_spec(&b, "bogus", "x", "t").is_err());
+        assert!(super::apply_trim_spec(&b, "what:id1", "x", "t").is_err());
+        assert!(super::apply_trim_spec(&b, "  ", "x", "t").is_err());
+        // 空结果（ids 全不命中）由 Trimmer 显式拒
+        assert!(super::apply_trim_spec(&b, "ids:nope", "x", "t").is_err());
     }
 }

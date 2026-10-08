@@ -824,22 +824,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-bundle"
-version = "0.3.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "578b82584488febdded3a93130072706cc48aa985d48cf0fb92e4b984655a6dc"
-dependencies = [
- "evorule-hash",
- "jsonschema",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "evorule-bundle"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1851c1e7180d75773854adf6f206af0ced7b8b4f36293d8ced1dff1e0b49292"
+checksum = "35dcf17e8756de2bb23b11083d7812397d0dcfcf049a84622a4a928b2f3da598"
 dependencies = [
  "evorule-hash",
  "jsonschema",
@@ -929,7 +916,7 @@ version = "0.9.1"
 dependencies = [
  "axum",
  "clap",
- "evorule-bundle 0.4.0",
+ "evorule-bundle",
  "evorule-rule-schema",
  "http",
  "http-body-util",
@@ -1033,13 +1020,13 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule"
-version = "0.3.0"
-source = "git+https://gitee.com/evorule/evorule-rule.git?rev=28d35aef03d58b8916c4036ac4d55b808052162e#28d35aef03d58b8916c4036ac4d55b808052162e"
+version = "0.5.0"
 dependencies = [
+ "argon2",
  "axum",
  "base64",
  "clap",
- "evorule-bundle 0.3.0",
+ "evorule-bundle",
  "evorule-hash",
  "http-body-util",
  "rand 0.8.7",
@@ -1114,7 +1101,7 @@ dependencies = [
  "blake3",
  "chrono",
  "clap",
- "evorule-bundle 0.4.0",
+ "evorule-bundle",
  "evorule-demo-services",
  "evorule-discipline",
  "evorule-governance",
@@ -1200,7 +1187,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
- "evorule-bundle 0.4.0",
+ "evorule-bundle",
  "evorule-hash",
  "evorule-rule-schema",
  "evorule-rule-tools",
@@ -4690,7 +4677,3 @@ dependencies = [
  "log",
  "simd-adler32",
 ]
-
-[[patch.unused]]
-name = "evorule-rule"
-version = "0.4.0"

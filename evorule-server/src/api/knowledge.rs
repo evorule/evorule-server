@@ -276,6 +276,7 @@ mod tests {
                 execution_contract: None,
             }],
             data_dependencies: None,
+            recipe_snapshot: None,
             tests: BundleTests {
                 // B2: pass 必带可追溯标记(执行域 import 侧校验);
                 // 测试意图=合法可导入知识包,人工背书形态

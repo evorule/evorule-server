@@ -88,7 +88,8 @@ use utoipa::OpenApi;
         // rules 命中统计组
         crate::api::server::hit_stats_handler,
         crate::api::server::hit_stats_rule_handler,
-        // bundles 组（快照包导入 / T4 激活报告）
+        // bundles 组（快照包导出 / 导入 / T4 激活报告）
+        crate::api::bundles::export_bundle_handler,
         crate::api::bundles::import_bundle_handler,
         crate::api::bundles::import_bundle_dry_run_handler,
         crate::api::bundles::active_bundles_handler,

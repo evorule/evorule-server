@@ -44,7 +44,7 @@ evorule-rule-tools = { path = "../rule_tools" }
 # 发布链闭环（审计⑥ 批 B C1+C5）：发布审批通过时构造 DatasetBundle + BundleImporter 校验 + 原子落盘
 # 0.4.0：知识资产化 A 批——BundleEntry/EntryFileManifest 四治理字段流通
 # （本仓无本地 patch，crates.io 解析，与 CI 同构；原 [patch.crates-io] 段已随 0.9.0 过渡段退役移除）
-evorule-bundle = "0.4.0"
+evorule-bundle = "0.5.2"
 # HTTP API (与 evorule-server 保持一致: axum 0.8)
 axum = "0.8"
 # OpenAPI 单一真相源 (P2-1): workspace 端点标注 + 独立 OpenApi 聚合,由 evorule-server 合并

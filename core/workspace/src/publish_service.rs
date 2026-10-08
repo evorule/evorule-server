@@ -1033,6 +1033,9 @@ fn build_publish_bundle(
         },
         entries,
         data_dependencies: None,
+        // 策略快照（可选字段，serde 缺省不序列化字节兼容）：发布链不携带——
+        // 快照固化走导出端点（调用方策略资产随包），发布产物无 LLM 策略槽来源
+        recipe_snapshot: None,
         tests: BundleTests {
             // : 证据如实携带——闸门一已验证沙盒 closed + 报告 failed==0,
             // subset 携带 sandbox:<id> 可追溯标记(旧实现硬编码空 subset + Pass,

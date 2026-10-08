@@ -10343,6 +10343,12 @@ impl GovernanceServer {
                 "/api/bundles/import/dry-run",
                 post(crate::api::bundles::import_bundle_dry_run_handler),
             )
+            // 快照包导出端点（workspace 治理域带证据导出，部署链上游）——
+            // 与 import/dry-run 构成部署闭环；导出不落盘不激活；受保护路由
+            .route(
+                "/api/bundles/export",
+                post(crate::api::bundles::export_bundle_handler),
+            )
             .route(
                 "/api/workspaces/{id}/bundle-sync",
                 post(crate::api::server::bundle_sync_handler),
@@ -16096,6 +16102,7 @@ mod tests {
                 execution_contract: None,
             }],
             data_dependencies: None,
+            recipe_snapshot: None,
             tests: BundleTests {
                 // B2: pass 必带可追溯标记(篡改用例在哈希层先拒,此处形状合规)
                 subset: vec!["human:itest".into()],
@@ -16224,6 +16231,7 @@ mod tests {
                 execution_contract: None,
             }],
             data_dependencies: None,
+            recipe_snapshot: None,
             tests: BundleTests {
                 // B2: pass 必带可追溯标记(执行域 import 侧校验);
                 // 测试意图=合法可导入知识包,人工背书形态

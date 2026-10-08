@@ -1026,3 +1026,168 @@ async fn test_shared_fact_origin_fact_id_cross_chain() {
     //    各链独立编址决定，此处不断言具体关系，仅确认双侧均可独立寻址。
     assert!(shared_fact_id > 0 && session_side_fact_id > 0);
 }
+
+// ===== workspace 治理域带证据导出（部署链上游，与 import/dry-run 构成闭环）=====
+
+/// 全链真实调用：建工作区 → 建规则 → submit → activate → 导出（自洽快照包）
+/// → 负向四路（历史版 / 零证据 pass / 未知数据集 / 未知裁剪段）→ 裁剪+快照导出
+#[tokio::test]
+async fn bundle_export_workspace_current_rules_end_to_end() {
+    let state = make_state();
+
+    // 1. 建工作区
+    let (st, json) = send(
+        &state,
+        "POST",
+        "/api/workspaces",
+        Some(r#"{"name":"export-e2e","owner_id":"u1","description":null}"#),
+    )
+    .await;
+    assert_eq!(st, axum::http::StatusCode::CREATED, "建工作区: {json}");
+    let ws_id = json["id"].as_str().unwrap().to_string();
+
+    // 2. 建规则（合法 set 元指令，同发布链 e2e 用例）
+    let (st, json) = send(
+        &state,
+        "POST",
+        &format!("/api/workspaces/{ws_id}/rules"),
+        Some(
+            r#"{"name":"rule-exp","content":"{\"transform\":[{\"type\":\"set\",\"params\":{\"attr\":\"result\",\"operation\":\"set\",\"value\":\"ok\"}}]}","created_by":"u1","description":null}"#,
+        ),
+    )
+    .await;
+    assert_eq!(st, axum::http::StatusCode::CREATED, "建规则: {json}");
+    let rule_id = json["id"].as_str().unwrap().to_string();
+
+    // 3. Draft → Candidate → Active（状态机合法迁移链）
+    let (st, json) = send(
+        &state,
+        "POST",
+        &format!("/api/workspaces/{ws_id}/rules/{rule_id}/submit"),
+        None,
+    )
+    .await;
+    assert_eq!(st, axum::http::StatusCode::OK, "submit: {json}");
+    let (st, json) = send(
+        &state,
+        "POST",
+        &format!("/api/workspaces/{ws_id}/rules/{rule_id}/activate"),
+        None,
+    )
+    .await;
+    assert_eq!(st, axum::http::StatusCode::OK, "activate: {json}");
+
+    // 4. 导出（verdict=fail 显式未验证导出；不应默认 Pass）
+    let (st, bundle) = send(
+        &state,
+        "POST",
+        "/api/bundles/export",
+        Some(&format!(
+            r#"{{"dataset_id":"{ws_id}","version":"current","tests":{{"verdict":"fail","subset":[]}}}}"#
+        )),
+    )
+    .await;
+    assert_eq!(st, axum::http::StatusCode::OK, "导出: {bundle}");
+    assert_eq!(bundle["dataset"]["dataset_id"], ws_id, "{bundle}");
+    assert!(
+        bundle["bundle_id"].as_str().unwrap().starts_with("export-"),
+        "{bundle}"
+    );
+    assert_eq!(bundle["entries"].as_array().unwrap().len(), 1, "{bundle}");
+    assert_eq!(
+        bundle["entries"][0]["entry_id"],
+        format!("rule-{rule_id}"),
+        "entry_id 应为 rule-{{rule_id}} 稳定形态"
+    );
+    assert_eq!(
+        bundle["entries"][0]["rule_body"]["transform"][0]["type"], "set",
+        "{bundle}"
+    );
+    assert_eq!(bundle["tests"]["verdict"], "fail", "{bundle}");
+    assert!(
+        bundle["audit"]["content_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("blake3:"),
+        "{bundle}"
+    );
+
+    // 5. 负向：历史版本显式 400（workspace 域无快照链，不静默伪造）
+    let (st, e) = send(
+        &state,
+        "POST",
+        "/api/bundles/export",
+        Some(&format!(
+            r#"{{"dataset_id":"{ws_id}","version":"v2","tests":{{"verdict":"fail","subset":[]}}}}"#
+        )),
+    )
+    .await;
+    assert_eq!(st, axum::http::StatusCode::BAD_REQUEST, "历史版应 400: {e}");
+
+    // 6. 负向：verdict=pass 零证据显式 400（双闸同口径，服务端 enforcement）
+    let (st, e) = send(
+        &state,
+        "POST",
+        "/api/bundles/export",
+        Some(&format!(
+            r#"{{"dataset_id":"{ws_id}","version":"current","tests":{{"verdict":"pass","subset":[]}}}}"#
+        )),
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::BAD_REQUEST,
+        "零证据 pass 应 400: {e}"
+    );
+
+    // 7. 负向：未知数据集显式 404
+    let (st, e) = send(
+        &state,
+        "POST",
+        "/api/bundles/export",
+        Some(r#"{"dataset_id":"ws-nope","version":"current","tests":{"verdict":"fail","subset":[]}}"#),
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::NOT_FOUND,
+        "未知数据集应 404: {e}"
+    );
+
+    // 8. 负向：未知裁剪段显式 400
+    let (st, e) = send(
+        &state,
+        "POST",
+        "/api/bundles/export",
+        Some(&format!(
+            r#"{{"dataset_id":"{ws_id}","version":"current","tests":{{"verdict":"fail","subset":[]}},"subset":"what:x"}}"#
+        )),
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::BAD_REQUEST,
+        "未知裁剪段应 400: {e}"
+    );
+
+    // 9. 裁剪视图 + 策略快照：ids 命中 1 条目、view_of 引用原版本链、快照透传入包
+    let (st, view) = send(
+        &state,
+        "POST",
+        "/api/bundles/export",
+        Some(&format!(
+            r#"{{"dataset_id":"{ws_id}","version":"current","tests":{{"verdict":"fail","subset":[]}},"subset":"ids:rule-{rule_id}","recipe_snapshot":{{"recipe_version":"memory-v1.0","recipe":{{"k":"v"}},"snapshot_at":"2026-10-08T00:00:00Z"}}}}"#
+        )),
+    )
+    .await;
+    assert_eq!(st, axum::http::StatusCode::OK, "裁剪+快照导出: {view}");
+    assert_eq!(view["entries"].as_array().unwrap().len(), 1, "{view}");
+    assert_eq!(
+        view["dataset"]["view_of"]["original_dataset_id"], ws_id,
+        "裁剪视图应引用原版本链: {view}"
+    );
+    assert_eq!(
+        view["recipe_snapshot"]["recipe_version"], "memory-v1.0",
+        "{view}"
+    );
+}
