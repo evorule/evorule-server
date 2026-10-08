@@ -1,7 +1,8 @@
 # WASM UDF 编写指南
 
 > 适用版本：evorule-server 0.6.0+（wasm-host 插件契约 v1.2）
-> 范本：[`plugins/wasm-host/examples/udf-finance-tax-calc/`](../plugins/wasm-host/examples/udf-finance-tax-calc/)（Rust guest）、
+> 范本：[`plugins/wasm-host/examples/udf-finance-tax-calc/`](../plugins/wasm-host/examples/udf-finance-tax-calc/)（Rust guest，单税率平坦计算）、
+> [`plugins/wasm-host/examples/udf-finance-tax-bracket/`](../plugins/wasm-host/examples/udf-finance-tax-bracket/)（Rust guest，税档级联 + 结构化数组出参，宏形态示例）、
 > [`plugins/wasm-host/examples/udf-finance-tax-calc-as/`](../plugins/wasm-host/examples/udf-finance-tax-calc-as/)（AssemblyScript guest，证明 ABI 语言无关）
 > 外部插件包通用规范（plugin.json / 挂载 / 探活 / 管理面）见 [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md)——本指南只讲 UDF 特有部分。
 
@@ -19,7 +20,7 @@ UDF（User-Defined Function，自定义函数）是**在 WASM 沙箱内运行的
   → 执行 plugins/wasm/{服务名}.wasm
 ```
 
-**与外部插件包的分工**：任意语言实现、有状态、需审批、需要网络/文件/数据库能力的业务能力 → 外部插件包（自管进程）；**纯计算、必须确定性、不碰任何外部世界**的函数 → UDF。二者都经 `GET /api/services` 对账清单呈现，调用方无感知差异。
+**与外部插件包的分工**：任意语言实现、有状态、需审批、需要网络/文件/数据库能力的业务能力 → 外部插件包（自管进程）；**纯计算、必须确定性、不碰任何外部世界**的函数 → UDF。二者都经 `GET /api/services` 对账清单呈现，调用方无感知差异。UDF 还有一种面向编排场景的应用形态——**宏**（接收模板上下文、返回结构化出参的 UDF），见 §五。
 
 **沙箱的核心承诺（也是对 UDF 的硬要求）**：同入参 → 逐字节同出参。沙箱内**不存在**时钟、随机数、环境变量、文件、网络——不是"不建议用"，是物理上不存在（零 import，见 §一）。做不到确定性的逻辑不适用 UDF 形态。
 
@@ -71,7 +72,7 @@ UDF（User-Defined Function，自定义函数）是**在 WASM 沙箱内运行的
 | 单模块内存上限 | 16 MiB | `WASM_HOST_MAX_MEM` | `memory.grow` 被拒绝 → guest 分配失败 → trap → 422（宿主进程不受影响） |
 | 表元素上限 | 10,000 | （固定） | `table.grow` 被拒绝 → trap |
 
-三项均有随仓负面测试实证（见 §八）：死循环模块在 fuel 耗尽时被精确拦截、巨型分配模块被内存上限即时拒绝、含 WASI import 的模块在**加载期**即被拒——宿主全程存活，失败秒级返回。
+三项均有随仓负面测试实证（见 §九）：死循环模块在 fuel 耗尽时被精确拦截、巨型分配模块被内存上限即时拒绝、含 WASI import 的模块在**加载期**即被拒——宿主全程存活，失败秒级返回。
 
 设计含义：
 
@@ -135,9 +136,67 @@ cargo build --release --target wasm32-unknown-unknown
 
 ---
 
-## 五、部署与启停
+## 五、宏：UDF 的应用形态
 
-### 5.1 上线一个新 UDF（两种模式）
+宏不是新机制——它是 UDF 的一种**应用形态**：接收模板上下文（JSON 入参）→ 返回渲染所需的结构化出参（或直接可用的文本）的 UDF。通路、沙箱、fuel/内存约束、IO 审计与普通 UDF **完全一致**（零新增）：宿主零改动，写一个 `.wasm` + 在 `plugin.json` 声明即上线。宏的意义在于把「复杂/数据驱动的计算」与「文档生成」「简单封闭计算」在编排里各就其位。
+
+### 5.1 三者选型边界（compute / template_render / 宏）
+
+| 能力 | 适合 | 不适合 | 特征 |
+|------|------|--------|------|
+| **compute 函数目录**（evo-agent workflow_dag 节点内纯函数，v1.3 共 27 函数） | 简单封闭计算：四则、比较、日期差、钳制等 | 任何需要循环/分段聚合的逻辑；任何业务口径扩展 | 进程内最短审计链；目录封闭（新增函数 = 治理评审 + schema 版本变更） |
+| **template_render**（模板渲染服务） | 文档/消息生成：上下文 + 模板 → JSON/Markdown/文本 | 任何计算（模板无算术能力，只做替换/分支/循环） | 确定性纯函数；语法 v1（`{{}}` 家族） |
+| **宏**（UDF 应用形态） | 复杂/数据驱动的计算：分段级联、查表、结构化转换等 compute 目录表达不了的纯计算 | 需要网络/文件/状态（走外部插件包）；简单四则（杀鸡用牛刀） | 进程外沙箱、fuel 计量、逻辑更新 = 重发 `.wasm`（部署面动作，不改工作流结构） |
+
+判据一句话：**算术够用 → compute；只拼文档 → template_render；逻辑复杂或口径需数据驱动 → 宏**。
+
+反例（勿用）：
+- 勿用宏做简单四则——compute 节点更短、更快、审计链更近；
+- 勿用 compute 硬展开分段逻辑——档位表级联写进 DAG 是 20-30 节点的组合爆炸，且口径变更要改工作流结构；宏形态下档位表是**数据**（入参），同一段代码算任意表。
+
+### 5.2 示例宏走读：`udf_finance_tax_bracket`
+
+范本：[`examples/udf-finance-tax-bracket/`](../plugins/wasm-host/examples/udf-finance-tax-bracket/)。与既有 `udf_finance_tax_calc`（单税率平坦计算）互补：前者是算术级示例，本例演示**分段级联 + 结构化数组出参**。
+
+- 入参：`{"taxable_cents": 50000000}`（年度应税所得，分）；可选 `brackets` 档位表 `[{"from_cents":0,"to_cents":3600000,"rate_bp":300}, ..., {"from_cents":96000000,"to_cents":null,"rate_bp":4500}]`（`to_cents=null` = 顶档；缺省 = 内置 7 档年化综合所得税率表 3%~45%，**示例口径非生产费率表**）；
+- 出参：`{taxable_cents, brackets_used, tax_cents, effective_rate_bp, breakdown[]}`——`breakdown` 逐档明细 `{from_cents, to_cents, rate_bp, taxable_in_bracket_cents, tax_cents}`，只列税基 > 0 的档；
+- 计算口径：段内税基 = `min(taxable, to) - from`，段内税 = `round_half_up(税基 × rate_bp / 10000)`，逐段四舍五入到分后求和；`effective_rate_bp = round_half_up(tax_cents × 10000 / taxable_cents)`（taxable=0 时定义为 0）；
+- 校验 fail-fast（出 `{"error":...}` → 宿主 422；经 server REST invoke 则统一 502 脱敏信封，与全部外部服务一致）：缺参/负数/空数组/档位断裂交叉/`from >= to`/`rate_bp` 越界/首档非 0/顶档缺失非唯一不在末位；
+- 整数定点红线同 §一（金额=分、税率=基点），中间运算 i128 防溢出。
+
+### 5.3 组合模式：宏出参 → template_render
+
+宏的 `breakdown` 数组天然是 template_render `for` 循环的标准 context——**计算域产出数据，文档转换域消费数据**：
+
+```
+① POST /api/services/udf_finance_tax_bracket/invoke   ← 税档级联（计算域）
+   {"taxable_cents": 50000000}
+② POST /api/templates/render                          ← 明细渲染（文档域）
+   {"format": "markdown", "context": <①的出参>, "template": "..."}
+```
+
+模板片段（可直接复制）：
+
+```
+年度应税所得：{{taxable_cents}} 分；总税额：{{tax_cents}} 分
+
+| 档位下界 | 档位上界 | 税率(基点) | 段内税额 |
+|---|---|---|---|
+{% for b in breakdown %}| {{b.from_cents}} | {% if b.to_cents %}{{b.to_cents}}{% else %}顶档{% endif %} | {{b.rate_bp}} | {{b.tax_cents}} |
+{% endfor %}
+```
+
+注：顶档 `to_cents` 为 null，模板值字符串化拒绝 null——用 `{% if %}` 分支显式处理（上例）；循环内仍可访问 context 根字段。工作流侧（evo-agent）由 compute 节点承担简单封闭计算（如应税所得核定），宏与渲染经 call_service 由 agent 会话消费，见 `rules/workflows/tax_statement.json` 示例资产。
+
+### 5.4 部署指引
+
+与普通 UDF 完全一致（零新增）：静态声明制四步见 §6.1（`.wasm` 放 `plugins/wasm/` + plugin.json 声明 + 重启 host/server），服务名 = 文件名去扩展名。
+
+---
+
+## 六、部署与启停
+
+### 6.1 上线一个新 UDF（两种模式）
 
 **静态声明制（缺省，四步）**：
 
@@ -156,9 +215,9 @@ cargo build --release --target wasm32-unknown-unknown
 > （显式声明永远优先，不被自动发现覆盖）。完整语义（发现/合入/失败降级/loopback 约束）
 > 见 [PLUGIN_GUIDE §3.3](PLUGIN_GUIDE.md#33-auto_discover自动发现策略表模式)。
 
-> 静态声明制的注意点：声明是**静态**的——plugin.json 里声明的服务必须与 `plugins/wasm/` 实际模块一一对应。声明了但无模块（或反之）不会静默：宿主 `/health` 对账判 503（§六），server 探活随即报警。auto_discover 模式下「实载有、策略表无」是合法形态（自动发现接管），仅「策略表声明了但实载没有」仍判 503。
+> 静态声明制的注意点：声明是**静态**的——plugin.json 里声明的服务必须与 `plugins/wasm/` 实际模块一一对应。声明了但无模块（或反之）不会静默：宿主 `/health` 对账判 503（§七），server 探活随即报警。auto_discover 模式下「实载有、策略表无」是合法形态（自动发现接管），仅「策略表声明了但实载没有」仍判 503。
 
-### 5.2 启停顺序：先 host，后 server
+### 6.2 启停顺序：先 host，后 server
 
 ```
 ① evorule-wasm-host（先起，/health 就绪）
@@ -170,13 +229,13 @@ cargo build --release --target wasm32-unknown-unknown
 验证就绪：
 
 ```bash
-# host 侧：200 = 声明与实载一致（对账语义见 §六）
+# host 侧：200 = 声明与实载一致（对账语义见 §七）
 curl http://127.0.0.1:9140/health
 # server 侧：plugins 节出现 wasm-host 且 status=online
 curl http://127.0.0.1:18080/api/health
 ```
 
-### 5.3 本地启停参数
+### 6.3 本地启停参数
 
 | 进程 | 关键参数 |
 |------|---------|
@@ -185,7 +244,7 @@ curl http://127.0.0.1:18080/api/health
 
 ---
 
-## 六、探活与健康对账（server 怎么看 host 死活）
+## 七、探活与健康对账（server 怎么看 host 死活）
 
 wasm-host 的 `/health` 不是简单的"进程活着"：
 
@@ -201,13 +260,13 @@ wasm-host 的 `/health` 不是简单的"进程活着"：
 
 ---
 
-## 七、敏感服务守卫
+## 八、敏感服务守卫
 
 plugin.json 声明 `sensitive: true` 的 UDF 服务，REST 直调一律 **403**——敏感操作必须经会话 `call_service` 指令走审计与审批链（治理语义同 [PLUGIN_GUIDE §八](PLUGIN_GUIDE.md#八安全与信任模型)）。纯计算 UDF 一般无需敏感标记；涉及业务敏感口径（如内部费率表）时如实声明。
 
 ---
 
-## 八、验证资产（随仓回归）
+## 九、验证资产（随仓回归）
 
 | 资产 | 覆盖 |
 |------|------|
@@ -227,7 +286,7 @@ python plugins/wasm-host/tests/verify_t6_sensitive_guard.py
 
 ---
 
-## 九、常见陷阱速查
+## 十、常见陷阱速查
 
 | 症状 | 根因 | 处置 |
 |------|------|------|

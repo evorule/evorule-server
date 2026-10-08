@@ -26,6 +26,35 @@
       "timeout_ms": 10000
     },
     {
+      "name": "udf_finance_tax_bracket",
+      "sensitive": false,
+      "description": "税档级联计算 UDF 示例（Rust guest，整数定点）：入参 {taxable_cents, brackets?} → {taxable_cents, brackets_used, tax_cents, effective_rate_bp, breakdown[]}。brackets 缺省为内置 7 档年化综合所得税率表（3%~45%，示例口径非生产费率表），可经入参整表替换（数据驱动：from_cents/to_cents(null=顶档)/rate_bp，须覆盖 [0,+inf)、升序无断裂、顶档唯一且在末位）。段内税基=min(taxable,to)-from，段内税=round_half_up(税基×rate_bp/10000)，effective_rate_bp=round_half_up(tax_cents×10000/taxable_cents)。缺参/违约 → 422。⚠️ 入参必须整数——TCB JsonValue 无 Float 变体，浮点会被降级成字符串而到不了 UDF",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "taxable_cents": {
+            "type": "integer",
+            "description": "年度应税所得，单位：分（例 50000000 = 50 万元），>= 0"
+          },
+          "brackets": {
+            "type": "array",
+            "description": "可选档位表，元素 {from_cents, to_cents, rate_bp}，to_cents=null 表示顶档；缺省用内置 7 档表",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from_cents": { "type": "integer", "description": "档位下界（含），单位：分" },
+                "to_cents": { "type": ["integer", "null"], "description": "档位上界（含），null=顶档" },
+                "rate_bp": { "type": "integer", "description": "档位税率，单位：基点，[0,10000]" }
+              },
+              "required": ["from_cents", "to_cents", "rate_bp"]
+            }
+          }
+        },
+        "required": ["taxable_cents"]
+      },
+      "timeout_ms": 10000
+    },
+    {
       "name": "udf_finance_tax_calc_as",
       "sensitive": false,
       "description": "税额计算 UDF 示例（AssemblyScript guest）：语义与 Rust 版完全相同，用于证明 ABI 语言无关——同参调用输出逐字节一致（已实测 5 组参数）。入参/出参契约同 udf_finance_tax_calc；区别：AS 版中间量为 i64，amount_cents 上界 9e14 分",

@@ -17,7 +17,7 @@
 - `template`：必填字符串，非空，长度 ≤ 1 MiB；
 - `context`：可选对象（缺省空对象），模板变量的取值来源；数值域为 TCB 值系统（仅整数，无浮点）；
 - `format`：可选 `text | markdown | json`（缺省 `text`）；声明 `json` 时渲染产物额外做合法性校验（不是合法 JSON 即报错）；
-- 成功返回：`{"status":"ok","format":<声明值>,"content":<渲染文本>}`。
+- 成功返回：`{"success":true,"format":<声明值>,"content":<渲染文本>}`。
 
 ## 语法 v1（与 pack 模板 `{{}}` 家族对齐）
 
@@ -79,7 +79,9 @@
 
 - **pack 规则模板**（`{{pack}}/{{template}}/{{form.*}}` 静态骨架参数替换）：规则实例化域；
   本服务语法与其同属 `{{}}` 家族，后续 pack 侧是否接入控制流另行评审，本插件不改 pack 语义；
-- **evo-agent task_template**（`{node_id}` 单花括号，上游结果替换）：agent 编排域，不同域不强行统一。
+- **evo-agent task_template**（`{node_id}` 单花括号，上游结果替换）：agent 编排域，不同域不强行统一；
+- **UDF 宏**（WASM UDF 应用形态，如 `udf_finance_tax_bracket`）：计算域——本服务无任何计算能力，
+  宏等计算服务产出结构化数据后经 `context` 入参进入本服务渲染（组合模式见 WASM_UDF_GUIDE §5.3）。
 
 ## 服务声明
 
