@@ -37,10 +37,13 @@ pub struct AuthConfig {
     enabled: bool,
 }
 
-/// B5-server：调用方身份（凭据分层）
+/// 调用方身份（凭据分层）
 ///
 /// 由 [`AuthConfig::identity`] 按凭据归属判定；认证禁用时中间件不注入
 /// 身份，handler 侧按放行处理（开发模式语义不变）。
+///
+/// 例外：认证禁用但配置了 service token 时，受保护域写入守卫独立武装
+/// （见 [`ServiceGateArmed`]）——此时中间件可注入 [`CallerIdentity::Service`]。
 ///
 /// 专项 W2：新增 [`CallerIdentity::App`]（应用级凭据，外部应用以
 /// 独立 app key 接入）。与 [`CallerIdentity::User`] 同受"受保护域仅
@@ -54,6 +57,16 @@ pub enum CallerIdentity {
     /// 应用级凭据（外部应用独立 app key，请求按 app 归因入审计链）
     App,
 }
+
+/// 受保护域写入守卫的武装标记（请求扩展注入）。
+///
+/// 认证禁用但服务端配置了 service token 时，由认证中间件注入：表示
+/// 受保护域写入（`shared.*.stable.llm.*` / `stable.system.*`）须凭有效
+/// service token，handler 层据此拒绝无凭证/无效凭证的写入——守卫与
+/// 全局认证开关解耦（认证禁用的显式豁免只覆盖非受保护域）。未配置
+/// service token 时不注入，零配置开发模式语义不变。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceGateArmed;
 
 impl AuthConfig {
     /// 创建新认证配置
@@ -178,6 +191,29 @@ impl AuthConfig {
         }
         CallerIdentity::User
     }
+
+    /// 是否配置了 service token（受保护域写入守卫的武装判定）
+    ///
+    /// 认证禁用时若返回 true，守卫仍然武装：受保护域写入须凭有效
+    /// service token（见 [`ServiceGateArmed`]）。
+    pub fn has_service_tokens(&self) -> bool {
+        !self.current_service_tokens.is_empty()
+    }
+
+    /// 仅按 service token 列表校验（不含 user token）
+    ///
+    /// 与 [`Self::validate`] 的差异：跳过 user/previous 列表且不受
+    /// `enabled` 开关影响——认证禁用模式下受保护域写入守卫的独立
+    /// 校验通道。恒定时间比较、不因匹配提前返回，语义与 validate 一致。
+    pub fn validate_service_only(&self, token: &str) -> bool {
+        let mut found = false;
+        for t in self.current_service_tokens.iter() {
+            if Self::ct_eq(token, t) {
+                found = true;
+            }
+        }
+        found
+    }
 }
 
 /// B5-server：路径是否属于受保护域（仅 service 身份可写）
@@ -222,6 +258,42 @@ mod tests {
     fn test_enabled_with_empty_tokens_rejects_all() {
         let config = AuthConfig::new(vec![], true);
         assert!(!config.validate("anything"));
+    }
+
+    #[test]
+    fn test_service_gate_helpers_armed_disabled() {
+        // 认证禁用 + service token：守卫武装判定与仅 service 校验
+        let config = AuthConfig::disabled().with_service_tokens(vec!["svc-1".to_string()]);
+        assert!(config.has_service_tokens());
+        assert!(config.validate_service_only("svc-1"));
+        assert!(!config.validate_service_only("svc-2"));
+        assert!(!config.validate_service_only(""));
+        assert!(!config.is_enabled());
+    }
+
+    #[test]
+    fn test_service_gate_helpers_unarmed() {
+        // 认证禁用且未配置 service token：守卫未武装
+        let config = AuthConfig::disabled();
+        assert!(!config.has_service_tokens());
+        assert!(!config.validate_service_only("anything"));
+    }
+
+    #[test]
+    fn test_validate_service_only_excludes_user_tokens() {
+        // 仅 service 列表参与校验：user token 不得经此通道过闸
+        let config = AuthConfig::new(vec!["user-1".to_string()], true)
+            .with_service_tokens(vec!["svc-1".to_string()]);
+        assert!(config.validate_service_only("svc-1"));
+        assert!(!config.validate_service_only("user-1"));
+    }
+
+    #[test]
+    fn test_service_tokens_empty_filtered_disarms_gate() {
+        // 空 token 过滤：全空列表 = 未武装（防 "Bearer " 空凭据过闸）
+        let config = AuthConfig::disabled().with_service_tokens(vec!["".to_string()]);
+        assert!(!config.has_service_tokens());
+        assert!(!config.validate_service_only(""));
     }
 
     #[test]

@@ -229,12 +229,13 @@ struct Cli {
     #[arg(long, env = "EVORULE_AUTH_TOKEN")]
     auth_token: Option<String>,
 
-    /// B5-server：受信服务管道 token（service 身份，可写受保护域）
+    /// 受信服务管道 token（service 身份，可写受保护域）
     ///
     /// 与 `EVORULE_AUTH_TOKEN` 独立的 env/CLI（凭据分层）：user token 禁止写
     /// `shared.*.stable.llm.*` / `stable.system.*` 受保护域，service token 可写。
-    /// 仅在认证启用（设置了 auth_token）时生效；认证禁用（显式豁免模式）
-    /// 时服务 token 被忽略且不注入身份。
+    /// 独立于认证开关生效：认证启用时按身份区分放行；认证禁用（显式豁免
+    /// 模式）时受保护域写入守卫仍然武装——写入须携带有效 service token，
+    /// 其余端点保持匿名可达；未配置时零配置语义不变。
     #[arg(long, env = "EVORULE_SERVICE_TOKEN")]
     service_token: Option<String>,
 
@@ -2383,14 +2384,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let step_start = Instant::now();
     let auth = match &cfg.auth_token {
         Some(token) => {
-            // B5-server：service token 仅在认证启用时生效（disabled 模式无身份区分）
+            // service token 独立于认证开关生效（见下方 disabled 分支）
             AuthConfig::new(vec![token.clone()], true)
                 .with_service_tokens(cfg.service_token.iter().cloned().collect())
         }
         None => {
             if cfg.service_token.is_some() {
                 warn!(
-                    "EVORULE_SERVICE_TOKEN 已设置但认证未启用（无 auth_token），服务 token 被忽略"
+                    "EVORULE_SERVICE_TOKEN 已设置且认证未启用：受保护域写入（stable.llm / \
+                     stable.system）仍须携带有效 service token；其余端点按显式豁免语义匿名可达"
                 );
             }
             // 回归验证 修复（显式豁免安全策略）：无 token 时按"绑定地址 × 显式声明"
@@ -2408,9 +2410,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
             if cfg.auth_token.is_none() {
-                info!("🔓 无认证模式（显式豁免 --insecure-serve，仅限本机回环：所有受保护端点匿名可达，勿绑定非回环地址）");
+                if cfg.service_token.is_some() {
+                    info!("🔓 无认证模式（显式豁免 --insecure-serve，仅限本机回环）：service token 已配置，受保护域写入须凭据，其余端点匿名可达");
+                } else {
+                    info!("🔓 无认证模式（显式豁免 --insecure-serve，仅限本机回环：所有受保护端点匿名可达，勿绑定非回环地址）");
+                }
             }
+            // 受保护域写入守卫与全局认证开关解耦：认证禁用（显式豁免）
+            // 时 service token 仍然生效——受保护域写入须凭有效凭据，
+            // 零配置（未配置 service token）保持完全匿名语义。
             AuthConfig::disabled()
+                .with_service_tokens(cfg.service_token.iter().cloned().collect())
         }
     };
     let server = GovernanceServer::new(

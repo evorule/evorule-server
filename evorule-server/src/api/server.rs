@@ -29,7 +29,7 @@
 //! - `GET /api/health` — 健康检查
 
 use crate::api::audit_archive;
-use crate::auth::{requires_service_identity, AuthConfig, CallerIdentity};
+use crate::auth::{requires_service_identity, AuthConfig, CallerIdentity, ServiceGateArmed};
 use crate::input_sanitizer::InputSanitizer;
 use axum::http::Method;
 use axum::Extension;
@@ -5465,6 +5465,26 @@ async fn submit_command(
     }
 }
 
+/// 受保护域写入准入判定（三条 payload 写入路径共用）。
+///
+/// - 守卫武装（认证禁用但服务端配置了 service token，中间件已注入
+///   武装标记）：仅 Service 身份放行，无凭证/无效凭证一律拒绝；
+/// - 守卫未武装：User/App 拒绝；None（认证禁用且未配置 service token）
+///   放行——零配置开发模式语义不变。
+fn protected_write_denied(
+    identity: &Option<Extension<CallerIdentity>>,
+    gate: &Option<Extension<ServiceGateArmed>>,
+) -> bool {
+    if gate.is_some() {
+        !matches!(identity, Some(Extension(CallerIdentity::Service)))
+    } else {
+        matches!(
+            identity,
+            Some(Extension(CallerIdentity::User)) | Some(Extension(CallerIdentity::App))
+        )
+    }
+}
+
 /// PayloadUpdate handler
 
 #[utoipa::path(
@@ -5497,18 +5517,18 @@ async fn update_payload(
 
     identity: Option<Extension<CallerIdentity>>,
 
+    gate: Option<Extension<ServiceGateArmed>>,
+
     Json(req): Json<PayloadUpdateRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse>), StatusCode> {
-    // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
-    // 身份由认证中间件注入：认证启用时必注入（User/Service/App）；identity 为 None
-    // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
-    // App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
-    if requires_service_identity(&req.path)
-        && matches!(
-            identity,
-            Some(Extension(CallerIdentity::User)) | Some(Extension(CallerIdentity::App))
-        )
-    {
+    // 受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
+    // 认证启用：身份由中间件注入（User/Service/App），User/App 拒绝（外部
+    // 应用与普通用户均非受信服务管道）。
+    // 认证禁用但配置了 service token：守卫独立武装（中间件注入武装标记），
+    // 须携带有效 service token，无凭证/无效凭证一律拒绝——守卫与全局认证
+    // 开关解耦，认证禁用的显式豁免只覆盖非受保护域。
+    // 认证禁用且未配置 service token：放行（零配置开发模式语义不变）。
+    if requires_service_identity(&req.path) && protected_write_denied(&identity, &gate) {
         tracing::warn!(path = %req.path, "update_payload 受保护域写入被拒绝（需 service 身份）");
         return Ok((
             StatusCode::FORBIDDEN,
@@ -7610,6 +7630,7 @@ async fn session_audit_import_compressed(
 )]
 // payload 读写路径:权限/保护域/版本分支多,详见 GATE_REFERENCE.md §六(豁免索引)
 #[allow(clippy::cognitive_complexity)]
+#[allow(clippy::too_many_arguments)]
 async fn session_payload(
     State(api): State<SessionApi>,
 
@@ -7623,20 +7644,16 @@ async fn session_payload(
 
     identity: Option<Extension<CallerIdentity>>,
 
+    gate: Option<Extension<ServiceGateArmed>>,
+
     Json(req): Json<PayloadUpdateRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse>), StatusCode> {
     let id = api.next_id();
 
-    // B5-server：受保护域准入——`shared.*.stable.llm.*` / `stable.system.*` 仅 service 身份可写。
-    // 身份由认证中间件注入：认证启用时必注入（User/Service/App）；identity 为 None
-    // 即认证禁用（loopback 开发模式），按放行处理（开发模式语义不变）。
-    // App（应用级凭据）与 User 同受限制——外部应用非受信服务管道。
-    if requires_service_identity(&req.path)
-        && matches!(
-            identity,
-            Some(Extension(CallerIdentity::User)) | Some(Extension(CallerIdentity::App))
-        )
-    {
+    // 受保护域准入——与 update_payload 同源三态语义（守卫武装=凭有效
+    // service token；未武装=User/App 拒绝、认证禁用且未配置 service
+    // token 放行），判定逻辑见 protected_write_denied。
+    if requires_service_identity(&req.path) && protected_write_denied(&identity, &gate) {
         tracing::warn!(session_id, path = %req.path, "session_payload 受保护域写入被拒绝（需 service 身份）");
         return Ok((
             StatusCode::FORBIDDEN,
@@ -7730,8 +7747,10 @@ async fn session_payload(
     }
 }
 
-/// 批量端点受保护域预校验（纯函数）：User/App 身份写入 stable.llm / stable.system
+/// 批量端点受保护域预校验（纯函数）：受限身份写入 stable.llm / stable.system
 /// 受保护域时返回 Some((命中条数, 首个命中路径))，供整批拒绝响应构造；None = 放行。
+/// 受限身份判定走 [`protected_write_denied`]（守卫武装态下无有效 service
+/// 凭据即受限，未武装态下 User/App 受限）。
 fn batch_protected_offense(
     updates: &[PayloadUpdateRequest],
     identity_limited: bool,
@@ -7842,6 +7861,8 @@ async fn batch_session_payload(
 
     identity: Option<Extension<CallerIdentity>>,
 
+    gate: Option<Extension<ServiceGateArmed>>,
+
     Json(req): Json<BatchPayloadUpdateRequest>,
 ) -> Result<(StatusCode, Json<BatchPayloadResponse>), (StatusCode, Json<BatchPayloadResponse>)> {
     if req.updates.is_empty() {
@@ -7860,11 +7881,9 @@ async fn batch_session_payload(
     }
 
     // 预校验：受保护域整批拒绝（任何写入发生之前）——与 session_payload
-    // 的 B5-server 单条语义同源（stable.llm / stable.system 仅受信服务管道）
-    let identity_limited = matches!(
-        identity,
-        Some(Extension(CallerIdentity::User)) | Some(Extension(CallerIdentity::App))
-    );
+    // 的单条语义同源（stable.llm / stable.system 仅受信服务管道；守卫
+    // 武装态下无有效 service 凭据即受限）
+    let identity_limited = protected_write_denied(&identity, &gate);
     if let Some((offending_count, first_path)) =
         batch_protected_offense(&req.updates, identity_limited)
     {
@@ -15937,7 +15956,8 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED, "吊销须即时生效");
     }
 
-    /// 认证禁用（loopback 开发模式）时不注入身份 → 受保护域按放行处理（语义不变）
+    /// 认证禁用且未配置 service token（守卫未武装）时不注入身份 →
+    /// 受保护域按放行处理（零配置开发模式语义不变）
     #[tokio::test]
     async fn test_b5_dev_mode_allows_protected_domain_oneshot() {
         let (state, _) = make_test_state();
@@ -15949,6 +15969,118 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["success"], true);
+    }
+
+    /// 构造"认证禁用 + service token 已配置"的测试 Router（守卫武装的
+    /// 显式豁免形态：受保护域写入须凭据，其余端点匿名可达）
+    fn make_armed_insecure_router(state: &AppState, service_token: &str) -> Router {
+        GovernanceServer::new(
+            state.clone(),
+            AuthConfig::disabled().with_service_tokens(vec![service_token.to_string()]),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            // S2：测试中 /metrics 无需认证
+            false,
+            // 测试不挂载 Swagger UI
+            false,
+            // 测试不启用 abort
+            false,
+            None,
+        )
+        .build_router()
+    }
+
+    /// 守卫武装 + 无凭据 → 受保护域写入 403（守卫与认证开关解耦：
+    /// 显式豁免不再敞开受保护域）
+    #[tokio::test]
+    async fn test_b5_armed_insecure_rejects_unauthenticated_protected_write_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_armed_insecure_router(&state, "svc-secret");
+
+        let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}"#;
+
+        let (status, json) =
+            oneshot_json(router, "POST", "/api/payload", Some(body)).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["success"], false);
+        assert_eq!(json["code"], "UNAUTHORIZED");
+    }
+
+    /// 守卫武装 + 错误凭据 → 受保护域写入 403（无效 token 不得借道）
+    #[tokio::test]
+    async fn test_b5_armed_insecure_rejects_wrong_token_protected_write_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_armed_insecure_router(&state, "svc-secret");
+
+        let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}"#;
+
+        let (status, _) = oneshot_json_with_token(
+            router,
+            "POST",
+            "/api/payload",
+            "not-the-service-token",
+            Some(body),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// 守卫武装 + 有效 service token → 受保护域写入放行
+    #[tokio::test]
+    async fn test_b5_armed_insecure_allows_service_token_protected_write_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_armed_insecure_router(&state, "svc-secret");
+
+        let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"extracted"}"#;
+
+        let (status, json) =
+            oneshot_json_with_token(router, "POST", "/api/payload", "svc-secret", Some(body)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+    }
+
+    /// 守卫武装 + 无凭据 → 非受保护 shared 路径仍放行（显式豁免语义
+    /// 只收窄受保护域，不波及普通写入面）
+    #[tokio::test]
+    async fn test_b5_armed_insecure_allows_non_protected_write_without_token_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_armed_insecure_router(&state, "svc-secret");
+
+        let body = r#"{"path":"shared.default.summary.latest","value":"open"}"#;
+
+        let (status, json) = oneshot_json(router, "POST", "/api/payload", Some(body)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["success"], true);
+    }
+
+    /// 守卫武装 + 无凭据 → 批量端点含受保护域条目时整批 403（与单条
+    /// 端点同源判定）
+    #[tokio::test]
+    async fn test_b5_armed_insecure_batch_rejects_protected_write_oneshot() {
+        let (state, _) = make_test_state();
+
+        let router = make_armed_insecure_router(&state, "svc-secret");
+
+        let body = r#"{"updates":[
+            {"path":"shared.default.summary.latest","value":"open"},
+            {"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}
+        ]}"#;
+
+        let (status, json) = oneshot_json(router, "POST", "/api/sessions/1/payloads", Some(body)).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["success"], false);
+        assert_eq!(json["succeeded"], 0, "整批拒绝：未写入任何条目");
     }
 
     // ====================================================================

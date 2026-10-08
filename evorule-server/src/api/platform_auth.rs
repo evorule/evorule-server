@@ -966,7 +966,11 @@ pub struct AuthedActor(pub String);
 ///
 /// **三凭据语义**(扩展;判定顺序 静态 token → 平台会话 → app key):
 ///
-/// 1. AuthConfig 未启用(开发模式)→ 放行,语义不变;
+/// 1. AuthConfig 未启用(开发模式)→ 放行;例外:配置了 service token 时
+///    受保护域写入守卫独立武装——有效 service token 注入
+///    [`crate::auth::CallerIdentity::Service`],否则注入武装标记
+///    [`crate::auth::ServiceGateArmed`](handler 层对受保护域写入拒绝);
+///    未配置 service token → 不注入任何身份,零配置语义不变;
 /// 2. Bearer token 命中静态 user/service token → 放行并注入
 ///    [`crate::auth::CallerIdentity`](evo-agent 侧车审计桥走此通道,即"白名单");
 /// 3. 否则按平台会话校验(库存 blake3 哈希)→ 命中注入 `CallerIdentity::User`
@@ -996,6 +1000,7 @@ pub async fn unified_auth_middleware(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     if !auth_config.is_enabled() {
+        inject_disabled_mode_extensions(&mut req, &auth_config);
         return next.run(req).await;
     }
     let raw = req
@@ -1079,6 +1084,31 @@ pub async fn unified_auth_middleware(
     );
     tracing::debug!(app_id = %creds.app_id, "应用凭据认证通过");
     next.run(req).await
+}
+
+/// 认证禁用模式的请求扩展注入（受保护域写入守卫与全局认证开关解耦）。
+///
+/// 配置了 service token 时守卫仍然武装——携带有效 service token 的请求
+/// 注入 Service 身份；其余请求仅注入武装标记 [`crate::auth::ServiceGateArmed`]，
+/// 由 handler 层对受保护域写入（stable.llm / stable.system）按无凭证拒绝，
+/// 非受保护端点不受影响（显式豁免语义只覆盖非受保护域）。未配置 service
+/// token 时不注入任何身份，零配置开发模式语义不变。
+fn inject_disabled_mode_extensions(req: &mut axum::extract::Request, auth_config: &crate::auth::AuthConfig) {
+    if !auth_config.has_service_tokens() {
+        return;
+    }
+    req.extensions_mut().insert(crate::auth::ServiceGateArmed);
+    let raw = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .to_string();
+    if !raw.is_empty() && auth_config.validate_service_only(&raw) {
+        req.extensions_mut()
+            .insert(crate::auth::CallerIdentity::Service);
+    }
 }
 
 /// 静态 token 通道的身份注入:平台用户凭据无个人身份(静态 token),记固定
@@ -2596,6 +2626,99 @@ mod tests {
         // 4. 未知 token → 401
         let resp = send(app, Some("bogus-token".into())).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// 认证禁用 + service token：受保护域写入守卫独立武装。
+    ///
+    /// 有效 service token → 注入 Service 身份；无/无效凭据 → 仅注入
+    /// 武装标记（handler 层拒绝受保护域写入的依据）；未配置 service
+    /// token → 无任何注入（零配置开发模式语义不变）。
+    #[tokio::test]
+    async fn test_unified_auth_middleware_disabled_service_gate() {
+        use axum::body::Body;
+        use axum::extract::Extension;
+        use axum::http::Request as HttpRequest;
+        use axum::middleware;
+        use tower::ServiceExt;
+
+        let shared = shared_log();
+        ensure_seed(&shared).unwrap();
+
+        let probe = |identity: Option<Extension<crate::auth::CallerIdentity>>,
+                     gate: Option<Extension<crate::auth::ServiceGateArmed>>| async move {
+            format!(
+                "identity={:?} gate={}",
+                identity.map(|e| e.0),
+                gate.is_some()
+            )
+        };
+
+        let make_app = |auth_config: crate::auth::AuthConfig| {
+            Router::new()
+                .route("/api/ping", get(probe))
+                .layer(middleware::from_fn_with_state(
+                    (
+                        auth_config,
+                        shared.clone(),
+                        Arc::new(crate::api::app_quota::AppQuotaManager::new()),
+                    ),
+                    unified_auth_middleware,
+                ))
+        };
+
+        let send = |app: Router, token: Option<String>| {
+            let mut builder = HttpRequest::builder().uri("/api/ping");
+            if let Some(t) = token {
+                builder = builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {t}"));
+            }
+            app.oneshot(builder.body(Body::empty()).unwrap())
+        };
+        let body_text = |resp: axum::response::Response| async move {
+            let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        };
+
+        // 武装态：认证禁用 + service token 已配置
+        let armed = make_app(
+            crate::auth::AuthConfig::disabled().with_service_tokens(vec!["svc-gate".into()]),
+        );
+
+        // 1. 有效 service token → 注入 Service 身份 + 武装标记
+        let resp = send(armed.clone(), Some("svc-gate".into())).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(resp).await,
+            "identity=Some(Service) gate=true",
+            "有效 service token 须注入 Service 身份"
+        );
+
+        // 2. 无凭据 → 仅武装标记（受保护域写入由 handler 层拒绝）
+        let resp = send(armed.clone(), None).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(resp).await,
+            "identity=None gate=true",
+            "无凭据仅注入武装标记，不注入身份"
+        );
+
+        // 3. 无效凭据 → 仅武装标记（不得借道取得 Service 身份）
+        let resp = send(armed, Some("bogus".into())).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(resp).await,
+            "identity=None gate=true",
+            "无效凭据不得注入 Service 身份"
+        );
+
+        // 未武装态：认证禁用且未配置 service token → 无任何注入
+        let bare = make_app(crate::auth::AuthConfig::disabled());
+        let resp = send(bare, Some("svc-gate".into())).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(resp).await,
+            "identity=None gate=false",
+            "未配置 service token 时零配置语义不变"
+        );
     }
 
     // ------------------------- 应用级凭据 -------------------------
