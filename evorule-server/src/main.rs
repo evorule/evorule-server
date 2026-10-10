@@ -2454,8 +2454,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 受保护域写入守卫与全局认证开关解耦：认证禁用（显式豁免）
             // 时 service token 仍然生效——受保护域写入须凭有效凭据，
             // 零配置（未配置 service token）保持完全匿名语义。
-            AuthConfig::disabled()
-                .with_service_tokens(cfg.service_token.iter().cloned().collect())
+            AuthConfig::disabled().with_service_tokens(cfg.service_token.iter().cloned().collect())
         }
     };
     let server = GovernanceServer::new(

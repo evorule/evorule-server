@@ -1093,7 +1093,10 @@ pub async fn unified_auth_middleware(
 /// 由 handler 层对受保护域写入（stable.llm / stable.system）按无凭证拒绝，
 /// 非受保护端点不受影响（显式豁免语义只覆盖非受保护域）。未配置 service
 /// token 时不注入任何身份，零配置开发模式语义不变。
-fn inject_disabled_mode_extensions(req: &mut axum::extract::Request, auth_config: &crate::auth::AuthConfig) {
+fn inject_disabled_mode_extensions(
+    req: &mut axum::extract::Request,
+    auth_config: &crate::auth::AuthConfig,
+) {
     if !auth_config.has_service_tokens() {
         return;
     }

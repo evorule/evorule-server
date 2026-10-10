@@ -207,7 +207,9 @@ mod tests {
             serde_json::Value::String(s) => JsonValue::String(s.into()),
             serde_json::Value::Array(arr) => JsonValue::Array(arr.into_iter().map(tcb).collect()),
             serde_json::Value::Object(obj) => JsonValue::Object(
-                obj.into_iter().map(|(k, val)| (k.into(), tcb(val))).collect(),
+                obj.into_iter()
+                    .map(|(k, val)| (k.into(), tcb(val)))
+                    .collect(),
             ),
         }
     }
@@ -230,7 +232,11 @@ mod tests {
             "model": "m",
             "messages": [{"role": "user", "content": "hi"}],
         });
-        assert!(matches_shape(&IO_CONTRACT_V1_SHAPES[0], &ext(), &tcb(audit.clone())));
+        assert!(matches_shape(
+            &IO_CONTRACT_V1_SHAPES[0],
+            &ext(),
+            &tcb(audit.clone())
+        ));
         assert!(is_external_executor_request(&ext(), &tcb(audit)));
 
         // 有 service_name → 平台路由形态，不跳过
@@ -247,7 +253,11 @@ mod tests {
     #[test]
     fn test_agent_tool_shape_equivalence() {
         let tool = serde_json::json!({"tool_name": "file_write", "args": {}});
-        assert!(matches_shape(&IO_CONTRACT_V1_SHAPES[1], &svc(), &tcb(tool.clone())));
+        assert!(matches_shape(
+            &IO_CONTRACT_V1_SHAPES[1],
+            &svc(),
+            &tcb(tool.clone())
+        ));
         assert!(is_external_executor_request(&svc(), &tcb(tool)));
 
         // service_name/name 形态 → ServiceRegistryHandler 应答，不跳过
@@ -262,7 +272,10 @@ mod tests {
 
     #[test]
     fn test_flow_probe_shape_equivalence() {
-        assert!(is_external_executor_request(&probe(), &tcb(serde_json::json!({}))));
+        assert!(is_external_executor_request(
+            &probe(),
+            &tcb(serde_json::json!({}))
+        ));
         // 纯 io_type 判定：参数形状无关（历史 is_flow_probe_request 同款）
         assert!(is_external_executor_request(
             &probe(),
@@ -286,14 +299,21 @@ mod tests {
         // 表内 io_type+键集唯一性（防两形态意外重叠致 skip 歧义）
         let mut seen = std::collections::HashSet::new();
         for s in &resp.shapes {
-            assert!(seen.insert((s.io_type, s.required_keys, s.forbidden_keys)),
-                "duplicate shape signature: {}", s.shape);
+            assert!(
+                seen.insert((s.io_type, s.required_keys, s.forbidden_keys)),
+                "duplicate shape signature: {}",
+                s.shape
+            );
         }
         // 消费方标注完备
-        assert!(resp.shapes.iter().any(|s| s.shape == "llm_audit"
-            && s.consumer == IoShapeConsumer::LlmAuditBridge));
-        assert!(resp.shapes.iter().any(|s| s.shape == "agent_tool"
-            && s.consumer == IoShapeConsumer::AgentToolExecutor));
+        assert!(resp
+            .shapes
+            .iter()
+            .any(|s| s.shape == "llm_audit" && s.consumer == IoShapeConsumer::LlmAuditBridge));
+        assert!(resp
+            .shapes
+            .iter()
+            .any(|s| s.shape == "agent_tool" && s.consumer == IoShapeConsumer::AgentToolExecutor));
     }
 
     // --- 快照锁定（改形状必红：bump 版本+更新快照=显式人为动作） ---
@@ -302,8 +322,12 @@ mod tests {
     fn test_io_contract_snapshot_pinned() {
         let pinned = include_str!("../../tests/io_contract_v1.snapshot.json");
         let live = io_contract_snapshot_json();
+        // 行尾归一后比对：快照文件随 checkout 配置呈 LF/CRLF（autocrlf），
+        // trim 只去首尾去不掉行中差异——归一消除假阳性漂移
+        let norm = |s: &str| s.replace("\r\n", "\n").trim().to_string();
         assert_eq!(
-            live.trim(), pinned.trim(),
+            norm(&live),
+            norm(pinned),
             "io 契约与 pinned 快照漂移：若为有意形状变更，请 bump IO_CONTRACT_VERSION \
              并重新生成 tests/io_contract_v1.snapshot.json（版本演进规则）"
         );

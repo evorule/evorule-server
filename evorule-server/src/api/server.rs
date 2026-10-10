@@ -132,7 +132,6 @@ pub fn is_external_executor_request(io_type: &IoType, params: &JsonValue) -> boo
         || is_flow_probe_request(io_type, params)
 }
 
-
 /// L2 约束层文件名判定（单一权威，tier_inventory / l2_inventory / tier_gate 三处共用）。
 ///
 /// 新权威前缀 `00_constraint_`（命名收敛 v3.0）；旧前缀 `00_meta_` 保持
@@ -10200,7 +10199,10 @@ impl GovernanceServer {
             // 契约固化：IO 形状契约导出——skip 谓词真相源的
             // 机读形态，供 evo-agent 启动协商与双侧交叉锁测。免认证定位同
             // openapi.json（仅契约元数据，无业务数据）。
-            .route("/api/io-contract", get(crate::api::io_contract::io_contract_endpoint))
+            .route(
+                "/api/io-contract",
+                get(crate::api::io_contract::io_contract_endpoint),
+            )
             // C5：执行侧已绑定服务能力对账（仅只读能力元数据，不改状态）——
             // 供场景包导入前服务需求预检与治理侧服务目录（GET /v1/services）核对。
             .route("/api/services", get(list_services_handler))
@@ -16017,8 +16019,7 @@ mod tests {
 
         let body = r#"{"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}"#;
 
-        let (status, json) =
-            oneshot_json(router, "POST", "/api/payload", Some(body)).await;
+        let (status, json) = oneshot_json(router, "POST", "/api/payload", Some(body)).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(json["success"], false);
@@ -16091,7 +16092,8 @@ mod tests {
             {"path":"shared.default.stable.llm.gpt-4o.summary","value":"forged"}
         ]}"#;
 
-        let (status, json) = oneshot_json(router, "POST", "/api/sessions/1/payloads", Some(body)).await;
+        let (status, json) =
+            oneshot_json(router, "POST", "/api/sessions/1/payloads", Some(body)).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(json["success"], false);
