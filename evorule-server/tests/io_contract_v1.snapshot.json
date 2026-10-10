@@ -1,0 +1,43 @@
+{
+  "contract_version": 1,
+  "supported_versions": [
+    1
+  ],
+  "shapes": [
+    {
+      "shape": "llm_audit",
+      "io_type": "call_external",
+      "required_keys": [
+        "messages"
+      ],
+      "forbidden_keys": [
+        "service_name",
+        "name"
+      ],
+      "consumer": "llm_audit_bridge",
+      "semantics": "LLM 审计形态：留给外部执行者本地跑 LLM 并经审计链回写 io_response；内置订阅者抢先应答会使外部回写被 stale 拒绝，审计回路永久断链"
+    },
+    {
+      "shape": "agent_tool",
+      "io_type": "call_service",
+      "required_keys": [
+        "tool_name"
+      ],
+      "forbidden_keys": [
+        "service_name",
+        "name"
+      ],
+      "consumer": "agent_tool_executor",
+      "semantics": "消费方本地工具形态：留给 evo-agent 本地执行工具后回写 io_response；抢先应答 missing service_name 会消费 request 致工具循环断链"
+    },
+    {
+      "shape": "flow_probe",
+      "io_type": "flow_probe",
+      "required_keys": [],
+      "forbidden_keys": [],
+      "consumer": "flow_probe",
+      "semantics": "bundle 自有探针形态：平台 io_type 发射权部署面独占，bundle 规则 io 往返正道；无内置 handler，外部经 POST /api/sessions/{id}/io_response 应答"
+    }
+  ],
+  "generated_from": "evorule-server/src/api/io_contract.rs"
+}
