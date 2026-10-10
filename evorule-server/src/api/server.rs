@@ -559,6 +559,8 @@ impl SessionApi {
             // 便捷构造保持引擎缺省（30s/60s），缺省常量随动防漂移
             session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            // E-9：0=引擎缺省 TTL（便捷构造不改行为）
+            0,
         )
     }
 
@@ -616,6 +618,8 @@ impl SessionApi {
         io_warn_timeout_secs: u64,
 
         io_error_timeout_secs: u64,
+
+        session_ttl_secs: u64,
     ) -> Self {
         let ce_cloned = core_eval.clone();
 
@@ -631,7 +635,14 @@ impl SessionApi {
                 core_eval,
                 max_rounds,
                 session::DEFAULT_MAX_SESSIONS,
-                session::DEFAULT_SESSION_TTL,
+                // E-9（31 号档 F3）：TTL 配置面——main 三层解析注入；缺省
+                // DEFAULT_SESSION_TTL(1800s) 行为不变。启动断言在 main.rs
+                // （TTL ≥ io_error_timeout+余量,同 E-7 warn/enforce 语义）。
+                if session_ttl_secs == 0 {
+                    session::DEFAULT_SESSION_TTL
+                } else {
+                    std::time::Duration::from_secs(session_ttl_secs)
+                },
                 wal_dir.clone(),
                 session::DEFAULT_SHARD_COUNT,
                 wal_fsync,
@@ -16123,6 +16134,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+                  0, // E-9: 0=引擎缺省 TTL
         );
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
@@ -16416,6 +16428,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+                  0, // E-9: 0=引擎缺省 TTL
         );
         assert!(
             sessions.knowledge_load_error().is_none(),
@@ -16493,6 +16506,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+                  0, // E-9: 0=引擎缺省 TTL
         );
 
         let mut bundle = q12_knowledge_bundle(
@@ -16562,6 +16576,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+                  0, // E-9: 0=引擎缺省 TTL
         );
 
         let mut bundle = q12_knowledge_bundle(
@@ -16614,6 +16629,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            0, // E-9: 0=引擎缺省 TTL
         )
         .with_workspace_db(Arc::new(
             evorule_workspace::WorkspaceDb::in_memory().unwrap(),
@@ -16668,6 +16684,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+                  0, // E-9: 0=引擎缺省 TTL
         );
 
         // q12_knowledge_bundle 的 subset 已是 human 背书形态
@@ -16713,6 +16730,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            0, // E-9: 0=引擎缺省 TTL
         )
         .with_workspace_db(ws_db.clone());
 
@@ -16824,6 +16842,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+                  0, // E-9: 0=引擎缺省 TTL
         );
 
         // 不注入领域 schema → resolver 未命中

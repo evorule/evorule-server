@@ -117,6 +117,8 @@ struct FileServerConfig {
     /// pending I/O 超时错误阈值（秒，缺省 60=引擎缺省；多轮编排窗口按任务
     /// 墙钟预算放宽——`io_request→io_response` 窗口承载整个 agent 循环）
     io_error_timeout_secs: Option<u64>,
+    /// 会话无活动超时（秒，缺省 1800=引擎缺省；E-9 配置面）
+    session_ttl_secs: Option<u64>,
     /// :演示登录入口开关（缺省 true；生产部署建议 false）
     demo_auth: Option<bool>,
     /// 批次C：pack 编译服务 base_url 端口白名单（空/缺省 = 仅黑名单 18080/18081）
@@ -280,6 +282,11 @@ struct Cli {
     /// pending I/O 超时错误阈值（秒，缺省 60=引擎缺省；长程任务按墙钟预算放宽）
     #[arg(long, env = "EVORULE_IO_ERROR_TIMEOUT_SECS")]
     io_error_timeout_secs: Option<u64>,
+
+    /// 会话无活动超时（秒，缺省 1800=引擎缺省 DEFAULT_SESSION_TTL；E-9 配置面：
+    /// TTL 必须 ≥ io_error_timeout+余量——长工具期不 touch 时 io_response 落空风险）
+    #[arg(long, env = "EVORULE_SESSION_TTL_SECS")]
+    session_ttl_secs: Option<u64>,
 
     /// 日志级别（error/warn/info/debug/trace）
     #[arg(long, env = "EVORULE_LOG_LEVEL")]
@@ -445,6 +452,8 @@ struct ResolvedConfig {
     io_warn_timeout_secs: u64,
     /// pending I/O 超时错误阈值（秒，CLI > env > file > default 60）
     io_error_timeout_secs: u64,
+    /// 会话无活动超时（秒，CLI > env > file > default 1800；E-9 配置面）
+    session_ttl_secs: u64,
     log_level: String,
     log_format: String,
     log_file: Option<PathBuf>,
@@ -539,6 +548,10 @@ impl ResolvedConfig {
                 .io_error_timeout_secs
                 .or(file.server.io_error_timeout_secs)
                 .unwrap_or(60),
+            session_ttl_secs: cli
+                .session_ttl_secs
+                .or(file.server.session_ttl_secs)
+                .unwrap_or(1800),
             log_level: cli
                 .log_level
                 .or(file.log.level)
@@ -2141,6 +2154,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let step_start = Instant::now();
     let auditor = Auditor::new(facts_log.clone());
     let api = GovernanceApi::new(tx.clone(), facts_log, auditor);
+    // E-9（31 号档 F3）：TTL ≥ io_error_timeout+余量 启动断言。
+    // 界约「最大步间隙<TTL」原为隐式无校验——io_error_timeout 放宽(生产 live 已见
+    // 3600s>TTL 1800s)或长工具期不 touch 时,会话可能先于 pending io_response 被 reap,
+    // io_response 落空。默认 warn;EVORULE_TTL_ENFORCE=1 硬 fail(与 E-7 同语义)。
+    // 余量 60s:覆盖 touch 节点间隔与 reap 扫描周期。
+    {
+        let required = cfg.io_error_timeout_secs + 60;
+        if cfg.session_ttl_secs < required {
+            let msg = format!(
+                "session_ttl ({}s) < io_error_timeout ({}) + 60s margin ({}s): pending io_response \
+                 可能晚于会话 reap,io_response 落空(31号档 E-9);调大 session-ttl-secs 或调小 \
+                 io-error-timeout-secs",
+                cfg.session_ttl_secs, cfg.io_error_timeout_secs, required
+            );
+            if std::env::var("EVORULE_TTL_ENFORCE").as_deref() == Ok("1") {
+                eprintln!("FATAL: {msg}");
+                std::process::exit(2);
+            }
+            eprintln!("WARN: {msg} (enforce via EVORULE_TTL_ENFORCE=1)");
+        }
+    }
     let session_api = SessionApi::new_with_full_config(
         core_eval,
         cfg.max_rounds,
@@ -2154,6 +2188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.rules_dir.clone(),
         cfg.io_warn_timeout_secs,
         cfg.io_error_timeout_secs,
+        cfg.session_ttl_secs,
     )
     .with_dispatcher(session_dispatcher)
     .with_bound_services(registry_names)
