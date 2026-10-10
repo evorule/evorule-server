@@ -7384,8 +7384,8 @@ async fn session_audit_export(
 /// 4. 导入后会自动调用 `verify` 验证审计链完整性
 ///
 /// # 返回
-/// - `200 OK`：导入成功且审计链验证通过
-/// - `202 Accepted`：导入成功但审计链验证失败（数据可能已损坏）
+/// - `200 OK`：导入成功（验证失败不换状态码，以响应体 `verify_ok=false` /
+///   `status="verify_failed"` 表达，数据可能已损坏）
 /// - `400 Bad Request`：JSON 解析失败或字段缺失
 /// - `404 Not Found`：会话不存在
 #[utoipa::path(
@@ -7402,9 +7402,7 @@ async fn session_audit_export(
 
     responses(
 
-        (status = 200, description = "导入成功且验证通过", body = AuditImportResponse),
-
-        (status = 202, description = "导入成功但验证失败", body = AuditImportResponse),
+        (status = 200, description = "导入成功（验证失败以响应体 verify_ok/status 字段表达）", body = AuditImportResponse),
 
         (status = 400, description = "JSON 解析失败或字段缺失"),
 
@@ -7551,9 +7549,7 @@ async fn session_audit_export_compressed(
 
     responses(
 
-        (status = 200, description = "导入成功且验证通过", body = AuditImportResponse),
-
-        (status = 202, description = "导入成功但验证失败", body = AuditImportResponse),
+        (status = 200, description = "导入成功（验证失败以响应体 verify_ok/status 字段表达）", body = AuditImportResponse),
 
         (status = 400, description = "请求体为空或解析失败"),
 
