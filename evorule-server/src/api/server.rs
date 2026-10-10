@@ -82,11 +82,13 @@ static SHADOW_VIOLATION_FILES: AtomicUsize = AtomicUsize::new(0);
 /// 它们经 sidecar 会话把 prompt 全文入审计链、本地执行 LLM 后回写 io_response。
 /// 若内置订阅者抢先错误应答，外部执行者的 io_response 会被反应器按
 /// Unknown IoResponse 忽略，审计回路永远失败。
+///
+/// **E-8 契约固化（34 号档）**：本函数已改为表驱动委托——形状真相源=
+/// [`crate::api::io_contract::IO_CONTRACT_V1_SHAPES`]（`llm_audit` 条目），
+/// 契约导出与谓词判定同表同源；行为与历史实现逐一等价（等价锁定测试见
+/// io_contract.rs tests：test_llm_audit_shape_equivalence）。
 pub fn is_llm_audit_request(io_type: &IoType, params: &JsonValue) -> bool {
-    io_type.as_str() == "call_external"
-        && params.get("messages").is_some()
-        && params.get("service_name").is_none()
-        && params.get("name").is_none()
+    crate::api::io_contract::shape_matches("llm_audit", io_type, params)
 }
 
 /// 消费方本地工具形态判定（2026-09-07）
@@ -104,10 +106,7 @@ pub fn is_llm_audit_request(io_type: &IoType, params: &JsonValue) -> bool {
 ///   （"IoResponse for unknown/stale request_id"），工具循环断链。
 ///   与 `is_llm_audit_request` 防御的 call_external 形态完全同构。
 pub fn is_agent_tool_request(io_type: &IoType, params: &JsonValue) -> bool {
-    io_type.as_str() == "call_service"
-        && params.get("tool_name").is_some()
-        && params.get("service_name").is_none()
-        && params.get("name").is_none()
+    crate::api::io_contract::shape_matches("agent_tool", io_type, params)
 }
 
 /// bundle 自有探针形态判定（探针形态改造版）。
@@ -123,7 +122,7 @@ pub fn is_agent_tool_request(io_type: &IoType, params: &JsonValue) -> bool {
 /// 跳过语义：请求保持 pending（审计链留 IoRequest 事实，透明可查），直至外部
 /// 应答到达或 io 超时预算兜底——不存在静默吞没。
 pub fn is_flow_probe_request(io_type: &IoType, _params: &JsonValue) -> bool {
-    io_type.as_str() == "flow_probe"
+    crate::api::io_contract::shape_matches("flow_probe", io_type, _params)
 }
 
 /// 内置 IoSubscriber 的合并 skip 谓词：任一外部执行者形态命中即跳过自动应答
@@ -132,6 +131,7 @@ pub fn is_external_executor_request(io_type: &IoType, params: &JsonValue) -> boo
         || is_agent_tool_request(io_type, params)
         || is_flow_probe_request(io_type, params)
 }
+
 
 /// L2 约束层文件名判定（单一权威，tier_inventory / l2_inventory / tier_gate 三处共用）。
 ///
@@ -10186,6 +10186,10 @@ impl GovernanceServer {
             // OpenAPI 单一真相源：仅暴露规范元数据（无业务数据），故免认证，
             // 便于前端 codegen 与运维查阅。Swagger UI 交互界面由 --openapi-ui 单独控制。
             .route("/api/openapi.json", get(crate::api::openapi::openapi_json))
+            // E-8 契约固化（34 号档）：IO 形状契约导出——skip 谓词真相源的
+            // 机读形态，供 evo-agent 启动协商与双侧交叉锁测。免认证定位同
+            // openapi.json（仅契约元数据，无业务数据）。
+            .route("/api/io-contract", get(crate::api::io_contract::io_contract_endpoint))
             // C5：执行侧已绑定服务能力对账（仅只读能力元数据，不改状态）——
             // 供场景包导入前服务需求预检与治理侧服务目录（GET /v1/services）核对。
             .route("/api/services", get(list_services_handler))
