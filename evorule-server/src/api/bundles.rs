@@ -719,6 +719,7 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
+            None, // 锚点链：测试/旁路构造不启用
         )
         .with_bound_services(["payroll_svc".to_string()])
     }

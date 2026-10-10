@@ -2189,6 +2189,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.io_warn_timeout_secs,
         cfg.io_error_timeout_secs,
         cfg.session_ttl_secs,
+        // G-A2 锚点链：环境变量注入（EVORULE_ANCHOR_SEED 等；未配置=锚点关）
+        evorule_server::anchor_setup::anchor_config_from_env(),
     )
     .with_dispatcher(session_dispatcher)
     .with_bound_services(registry_names)

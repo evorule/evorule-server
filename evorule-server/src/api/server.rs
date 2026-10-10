@@ -59,7 +59,7 @@ use utoipa::ToSchema;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use std::sync::Arc;
 
@@ -298,6 +298,27 @@ impl GovernanceApi {
         let auditor = self.auditor.lock().await;
 
         auditor.verify()
+    }
+
+    /// 已封审计锚点快照（G-A2）
+    pub async fn audit_anchors(&self) -> Vec<evorule_governance::anchor::AuditAnchor> {
+        let auditor = self.auditor.lock().await;
+        auditor.anchors().to_vec()
+    }
+
+    /// 立即封一个审计锚点（G-A2；未启用锚点链时 Err）
+    pub async fn seal_anchor_now(
+        &self,
+    ) -> Result<evorule_governance::anchor::AuditAnchor, evorule_governance::anchor::AnchorError>
+    {
+        let mut auditor = self.auditor.lock().await;
+        auditor.seal_anchor_now()
+    }
+
+    /// 验证锚点链+事实链绑定（G-A2；keys: key_id → 验签公钥 hex）
+    pub async fn verify_anchors(&self, keys: BTreeMap<String, String>) -> Result<(), String> {
+        let auditor = self.auditor.lock().await;
+        auditor.verify_anchors(&keys)
     }
 
     /// 获取审计器引用（用于高级操作）
@@ -560,6 +581,8 @@ impl SessionApi {
             session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             // 0=引擎缺省 TTL（便捷构造不改行为）
             0,
+            // 锚点链缺省关（便捷构造不改行为；部署面经 main 注入）
+            None,
         )
     }
 
@@ -619,6 +642,8 @@ impl SessionApi {
         io_error_timeout_secs: u64,
 
         session_ttl_secs: u64,
+
+        anchor_config: Option<session::SessionAnchorConfig>,
     ) -> Self {
         let ce_cloned = core_eval.clone();
 
@@ -629,33 +654,37 @@ impl SessionApi {
             vec!["core_eval".to_string(); ce_cloned.len()],
         );
 
-        let sessions = Arc::new(Mutex::new(
-            session::SessionManager::with_limits_and_wal_and_auto_verify(
-                core_eval,
-                max_rounds,
-                session::DEFAULT_MAX_SESSIONS,
-                // TTL 配置面——main 三层解析注入；缺省
-                // DEFAULT_SESSION_TTL(1800s) 行为不变。启动断言在 main.rs
-                // （TTL ≥ io_error_timeout+余量,warn/enforce 语义同 step budget 断言）。
-                if session_ttl_secs == 0 {
-                    session::DEFAULT_SESSION_TTL
-                } else {
-                    std::time::Duration::from_secs(session_ttl_secs)
-                },
-                wal_dir.clone(),
-                session::DEFAULT_SHARD_COUNT,
-                wal_fsync,
-                max_wal_size_bytes,
-                auto_verify,
-                auto_verify_threshold,
-                auto_verify_interval,
-            )
-            .with_io_timeouts(
-                Some(std::time::Duration::from_secs(io_warn_timeout_secs)),
-                Some(std::time::Duration::from_secs(io_error_timeout_secs)),
-                None,
-            ),
-        ));
+        let mut session_mgr = session::SessionManager::with_limits_and_wal_and_auto_verify(
+            core_eval,
+            max_rounds,
+            session::DEFAULT_MAX_SESSIONS,
+            // TTL 配置面——main 三层解析注入；缺省
+            // DEFAULT_SESSION_TTL(1800s) 行为不变。启动断言在 main.rs
+            // （TTL ≥ io_error_timeout+余量,warn/enforce 语义同 step budget 断言）。
+            if session_ttl_secs == 0 {
+                session::DEFAULT_SESSION_TTL
+            } else {
+                std::time::Duration::from_secs(session_ttl_secs)
+            },
+            wal_dir.clone(),
+            session::DEFAULT_SHARD_COUNT,
+            wal_fsync,
+            max_wal_size_bytes,
+            auto_verify,
+            auto_verify_threshold,
+            auto_verify_interval,
+        )
+        .with_io_timeouts(
+            Some(std::time::Duration::from_secs(io_warn_timeout_secs)),
+            Some(std::time::Duration::from_secs(io_error_timeout_secs)),
+            None,
+        );
+        // G-A2 锚点链装配：配置注入即启用（None=锚点关，行为与旧版逐位一致）
+        if let Some(cfg) = anchor_config {
+            session_mgr = session_mgr.with_anchor_config(cfg);
+        }
+
+        let sessions = Arc::new(Mutex::new(session_mgr));
 
         // Q12 W2：knowledge 数据资产目录与 rules_dir 物理隔离（`{rules 父目录}/knowledge`），
         // 启动即加载数据资产库。目录不存在 → 空库（执行侧可只跑规则不承载数据资产）；
@@ -7235,6 +7264,159 @@ async fn session_audit_verify(
     })))
 }
 
+/// 会话锚点链查询 handler（G-A2）
+///
+/// `GET /api/sessions/:id/anchors` → 返回已封审计锚点列表
+///
+/// 空列表 = 锚点链未启用（SessionManager 未配置 anchor）或尚未封条。
+#[utoipa::path(
+    get,
+    path = "/api/sessions/{id}/anchors",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "锚点列表（enabled 标志锚点链是否已封出至少一个锚点）"),
+        (status = 404, description = "会话不存在")
+    )
+)]
+async fn session_anchors(
+    State(api): State<SessionApi>,
+    Path(session_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = api.sessions.lock().await;
+    sessions.touch_session(session_id);
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    // 兜底刷新：确保自动封条间隔已到的事实先入链再取快照
+    let _new_count = session.audit_new();
+    let anchors: Vec<serde_json::Value> = session
+        .anchors()
+        .into_iter()
+        .map(anchor_to_json)
+        .collect();
+    let count = anchors.len();
+    drop(sessions);
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "count": count,
+        "anchors": anchors,
+    })))
+}
+
+/// AuditAnchor → JSON（AuditAnchor 未实现 Serialize，部署面手动映射；
+/// 字段与 evorule-governance anchor 模块一一对应）
+fn anchor_to_json(a: evorule_governance::anchor::AuditAnchor) -> serde_json::Value {
+    serde_json::json!({
+        "seq": a.seq,
+        "session_id": a.session_id,
+        "fact_range": {"lo": a.fact_range.lo, "hi": a.fact_range.hi},
+        "chain_head": a.chain_head,
+        "key_id": a.key_id,
+        "engine_id": a.engine_id,
+        "logical_time": a.logical_time,
+        "anchor_hash": a.anchor_hash,
+        "signature": a.signature,
+    })
+}
+
+/// 会话锚点封条 handler（G-A2）
+///
+/// `POST /api/sessions/:id/anchors/seal` → 立即封一个锚点（会话结束封条/手动强制封）
+///
+/// 未启用锚点链时返回 409（与启用与否可区分，不与 404 混淆）。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/anchors/seal",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "封出的锚点"),
+        (status = 404, description = "会话不存在"),
+        (status = 409, description = "锚点链未启用（SessionManager 未配置 anchor）")
+    )
+)]
+async fn session_anchor_seal(
+    State(api): State<SessionApi>,
+    Path(session_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = api.sessions.lock().await;
+    sessions.touch_session(session_id);
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let _new_count = session.audit_new();
+    let anchor = session.seal_anchor_now().map_err(|e| {
+        tracing::warn!(session_id, "anchor seal unavailable: {e}");
+        StatusCode::CONFLICT
+    })?;
+    let anchor_json = anchor_to_json(anchor);
+    drop(sessions);
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "sealed": true,
+        "anchor": anchor_json,
+    })))
+}
+
+/// 会话锚点验证 handler（G-A2）
+///
+/// `POST /api/sessions/:id/anchors/verify` → 验证锚点链结构+签名+与事实链绑定
+///
+/// 请求体（可选）：`{"public_keys": {"key_id": "<hex 公钥>"}}`；
+/// 未提供 public_keys 时使用 server 本部署面配置的公钥（同一 seed 派生）。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/anchors/verify",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "验证结果（valid/anchor_count/错误明细）"),
+        (status = 404, description = "会话不存在")
+    )
+)]
+async fn session_anchor_verify(
+    State(api): State<SessionApi>,
+    Path(session_id): Path<u64>,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let external_keys: BTreeMap<String, String> = match body {
+        Some(Json(v)) => v
+            .get("public_keys")
+            .and_then(|k| k.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        None => BTreeMap::new(),
+    };
+    let keys = if external_keys.is_empty() {
+        // 未提供时用部署面公钥（anchor_setup 配置的同 seed 派生）
+crate::anchor_setup::deployment_public_keys()
+            .unwrap_or_default()
+    } else {
+        external_keys
+    };
+    let sessions = api.sessions.lock().await;
+    sessions.touch_session(session_id);
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let _new_count = session.audit_new();
+    let anchors = session.anchors();
+    let result = session.verify_anchors(&keys);
+    drop(sessions);
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "valid": result.is_ok(),
+        "anchor_count": anchors.len(),
+        "error": result.err(),
+    })))
+}
+
 /// 会话因果链查询 handler
 ///
 /// `GET /api/sessions/:id/audit/causal/:fact_id` → 追溯指定 Fact 的因果链
@@ -10282,6 +10464,9 @@ impl GovernanceServer {
             .route("/api/sessions/{id}/state", get(session_state))
             .route("/api/sessions/{id}/audit", get(session_audit))
             .route("/api/sessions/{id}/audit/verify", get(session_audit_verify))
+            .route("/api/sessions/{id}/anchors", get(session_anchors))
+            .route("/api/sessions/{id}/anchors/seal", post(session_anchor_seal))
+            .route("/api/sessions/{id}/anchors/verify", post(session_anchor_verify))
             .route("/api/sessions/{id}/audit/export", get(session_audit_export))
             .route(
                 "/api/sessions/{id}/audit/import",
@@ -14023,6 +14208,64 @@ mod tests {
             "仅 registry 绑定的服务不被去重误伤"
         );
     }
+
+    // ===== G-A2 锚点三端点（未启用态：与旧版行为一致） =====
+
+    #[tokio::test]
+    async fn g_a2_anchor_endpoints_disabled_by_default() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let sid = body["session_id"].as_u64().unwrap();
+
+        // GET /anchors：空表（未启用）
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/anchors"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "anchors 应成功: {body}");
+        assert_eq!(body["count"], 0, "未启用锚点链 count 必须为 0");
+
+        // POST /anchors/seal：409（与未启用可区分，不与 404 混淆）
+        let (status, _) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/{sid}/anchors/seal"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "未启用时 seal 必须 409");
+
+        // POST /anchors/verify：0 锚点结构验证通过
+        let (status, body) = oneshot_json(
+            router,
+            "POST",
+            &format!("/api/sessions/{sid}/anchors/verify"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "verify 应成功: {body}");
+        assert_eq!(body["valid"], true, "空锚点链（未启用）验证必须通过");
+        assert_eq!(body["anchor_count"], 0);
+
+        // 404 面：不存在会话
+        let (state2, _) = make_test_state();
+        let router2 = make_test_router(&state2);
+        let (status, _) = oneshot_json(
+            router2,
+            "GET",
+            "/api/sessions/999999/anchors",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
     fn make_test_state() -> (AppState, ReadinessFlag) {
         let mut instr = std::collections::BTreeMap::new();
 
@@ -16133,6 +16376,7 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
+            None, // 锚点链：测试构造不启用
         );
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
@@ -16427,6 +16671,7 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
+            None, // 锚点链：测试构造不启用
         );
         assert!(
             sessions.knowledge_load_error().is_none(),
@@ -16505,7 +16750,8 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
-        );
+                    None, // 锚点链：测试构造不启用
+);
 
         let mut bundle = q12_knowledge_bundle(
             "bundle-q12-mixed",
@@ -16575,7 +16821,8 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
-        );
+                    None, // 锚点链：测试构造不启用
+);
 
         let mut bundle = q12_knowledge_bundle(
             "bundle-importreg-shape",
@@ -16628,7 +16875,8 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
-        )
+                    None, // 锚点链：测试构造不启用
+)
         .with_workspace_db(Arc::new(
             evorule_workspace::WorkspaceDb::in_memory().unwrap(),
         ));
@@ -16683,7 +16931,8 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
-        );
+                    None, // 锚点链：测试构造不启用
+);
 
         // q12_knowledge_bundle 的 subset 已是 human 背书形态
         let bundle = q12_knowledge_bundle(
@@ -16729,7 +16978,8 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
-        )
+                    None, // 锚点链：测试构造不启用
+)
         .with_workspace_db(ws_db.clone());
 
         // 先建 workspace 行(沙盒记录外键依赖) + 两个 closed 沙盒记录: PASS / FAIL
@@ -16841,7 +17091,8 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0, // 0=引擎缺省 TTL
-        );
+                    None, // 锚点链：测试构造不启用
+);
 
         // 不注入领域 schema → resolver 未命中
         let bundle = q12_knowledge_bundle(

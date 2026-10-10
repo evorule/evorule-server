@@ -15,6 +15,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod api;
+pub mod anchor_setup;
 pub mod auth;
 pub mod input_sanitizer;
 pub mod knowledge_store;

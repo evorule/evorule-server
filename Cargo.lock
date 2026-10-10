@@ -496,7 +496,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -772,7 +772,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -882,9 +882,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-governance"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f37d83d191fd639361076fd907ed577779c41425a563c1bfcd1d66f32b88199f"
+checksum = "01f170025072515dce42e05c43a78755a57b46a4a65c344d655ade3ce6d61d34"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -1006,9 +1006,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-reactor"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b495bd76c3f8ee601ce8b4b9f6a9c61b1dcc2dea7833fa87eab23183ec71e74"
+checksum = "ae93124b6146150e8026aa29dabc8d87ab17d035f43ee0ad7373c6b4d9420edb"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1146,9 +1146,9 @@ version = "0.9.1"
 
 [[package]]
 name = "evorule-tcb"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ca11df685555e3d1834e1254b0fee5b08886434dbf5f5a4d5a0c13636842a97"
+checksum = "5caa11f42b0e0385faefd35bf88b0ef9e84efd08247781568b48907a5ec4f22d"
 
 [[package]]
 name = "evorule-template-services"
@@ -2650,7 +2650,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3006,7 +3006,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3574,7 +3574,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4298,7 +4298,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
