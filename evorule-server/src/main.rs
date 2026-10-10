@@ -117,7 +117,7 @@ struct FileServerConfig {
     /// pending I/O 超时错误阈值（秒，缺省 60=引擎缺省；多轮编排窗口按任务
     /// 墙钟预算放宽——`io_request→io_response` 窗口承载整个 agent 循环）
     io_error_timeout_secs: Option<u64>,
-    /// 会话无活动超时（秒，缺省 1800=引擎缺省；E-9 配置面）
+    /// 会话无活动超时（秒，缺省 1800=引擎缺省；TTL 配置面）
     session_ttl_secs: Option<u64>,
     /// :演示登录入口开关（缺省 true；生产部署建议 false）
     demo_auth: Option<bool>,
@@ -283,7 +283,7 @@ struct Cli {
     #[arg(long, env = "EVORULE_IO_ERROR_TIMEOUT_SECS")]
     io_error_timeout_secs: Option<u64>,
 
-    /// 会话无活动超时（秒，缺省 1800=引擎缺省 DEFAULT_SESSION_TTL；E-9 配置面：
+    /// 会话无活动超时（秒，缺省 1800=引擎缺省 DEFAULT_SESSION_TTL；TTL 配置面：
     /// TTL 必须 ≥ io_error_timeout+余量——长工具期不 touch 时 io_response 落空风险）
     #[arg(long, env = "EVORULE_SESSION_TTL_SECS")]
     session_ttl_secs: Option<u64>,
@@ -452,7 +452,7 @@ struct ResolvedConfig {
     io_warn_timeout_secs: u64,
     /// pending I/O 超时错误阈值（秒，CLI > env > file > default 60）
     io_error_timeout_secs: u64,
-    /// 会话无活动超时（秒，CLI > env > file > default 1800；E-9 配置面）
+    /// 会话无活动超时（秒，CLI > env > file > default 1800；TTL 配置面）
     session_ttl_secs: u64,
     log_level: String,
     log_format: String,
@@ -2154,17 +2154,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let step_start = Instant::now();
     let auditor = Auditor::new(facts_log.clone());
     let api = GovernanceApi::new(tx.clone(), facts_log, auditor);
-    // E-9（31 号档 F3）：TTL ≥ io_error_timeout+余量 启动断言。
+    // TTL ≥ io_error_timeout+余量 启动断言。
     // 界约「最大步间隙<TTL」原为隐式无校验——io_error_timeout 放宽(生产 live 已见
     // 3600s>TTL 1800s)或长工具期不 touch 时,会话可能先于 pending io_response 被 reap,
-    // io_response 落空。默认 warn;EVORULE_TTL_ENFORCE=1 硬 fail(与 E-7 同语义)。
+    // io_response 落空。默认 warn;EVORULE_TTL_ENFORCE=1 硬 fail(与 step budget 断言同语义)。
     // 余量 60s:覆盖 touch 节点间隔与 reap 扫描周期。
     {
         let required = cfg.io_error_timeout_secs + 60;
         if cfg.session_ttl_secs < required {
             let msg = format!(
                 "session_ttl ({}s) < io_error_timeout ({}) + 60s margin ({}s): pending io_response \
-                 可能晚于会话 reap,io_response 落空(31号档 E-9);调大 session-ttl-secs 或调小 \
+                 可能晚于会话 reap,io_response 落空(TTL margin violation);调大 session-ttl-secs 或调小 \
                  io-error-timeout-secs",
                 cfg.session_ttl_secs, cfg.io_error_timeout_secs, required
             );

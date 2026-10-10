@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! IO 形状契约 v1（E-8 集成契约固化，34 号档）
+//! IO 形状契约 v1（集成契约固化）
 //!
 //! **单一真相源 = 本模块的形状表**（[`IO_CONTRACT_V1_SHAPES`]）：
 //! 内置 IoSubscriber 的 skip 谓词（server.rs `is_external_executor_request`）
@@ -13,7 +13,7 @@
 //!
 //! 契约消费方（evo-agent）侧持有本契约的 pinned 副本（带生成锚 sha256），
 //! 启动期协商：端点 404=旧 server（未固化期）warn 通过；版本不在支持集
-//! =hard fail fail-closed（34 号档 §2.2）。
+//! =hard fail fail-closed。
 //!
 //! **版本演进规则**（改动任何形状字段前必读）：
 //! - 加/删 required/forbidden 键、改互斥形态 = 破坏性 → bump
@@ -127,7 +127,7 @@ pub fn matches_shape(spec: &IoShapeSpec, io_type: &IoType, params: &JsonValue) -
         && spec.forbidden_keys.iter().all(|k| !obj.contains_key(*k))
 }
 
-/// 按形态名做表驱动匹配（server.rs 历史谓词的统一委托入口，E-8 契约固化）
+/// 按形态名做表驱动匹配（server.rs 历史谓词的统一委托入口）
 pub fn shape_matches(shape: &str, io_type: &IoType, params: &JsonValue) -> bool {
     IO_CONTRACT_V1_SHAPES
         .iter()
@@ -137,7 +137,7 @@ pub fn shape_matches(shape: &str, io_type: &IoType, params: &JsonValue) -> bool 
 }
 
 /// `GET /api/io-contract` 端点（免认证，与 /api/openapi.json 同款定位：
-/// 仅暴露契约元数据）——evo-agent 启动协商的数据源（34 号档 §2.2）。
+/// 仅暴露契约元数据）——evo-agent 启动协商的数据源。
 #[utoipa::path(
     get,
     path = "/api/io-contract",
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(
             live.trim(), pinned.trim(),
             "io 契约与 pinned 快照漂移：若为有意形状变更，请 bump IO_CONTRACT_VERSION \
-             并重新生成 tests/io_contract_v1.snapshot.json（34 号档版本演进规则）"
+             并重新生成 tests/io_contract_v1.snapshot.json（版本演进规则）"
         );
     }
 }

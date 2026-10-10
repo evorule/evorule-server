@@ -83,7 +83,7 @@ static SHADOW_VIOLATION_FILES: AtomicUsize = AtomicUsize::new(0);
 /// 若内置订阅者抢先错误应答，外部执行者的 io_response 会被反应器按
 /// Unknown IoResponse 忽略，审计回路永远失败。
 ///
-/// **E-8 契约固化（34 号档）**：本函数已改为表驱动委托——形状真相源=
+/// **契约固化**：本函数已改为表驱动委托——形状真相源=
 /// [`crate::api::io_contract::IO_CONTRACT_V1_SHAPES`]（`llm_audit` 条目），
 /// 契约导出与谓词判定同表同源；行为与历史实现逐一等价（等价锁定测试见
 /// io_contract.rs tests：test_llm_audit_shape_equivalence）。
@@ -559,7 +559,7 @@ impl SessionApi {
             // 便捷构造保持引擎缺省（30s/60s），缺省常量随动防漂移
             session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            // E-9：0=引擎缺省 TTL（便捷构造不改行为）
+            // 0=引擎缺省 TTL（便捷构造不改行为）
             0,
         )
     }
@@ -635,9 +635,9 @@ impl SessionApi {
                 core_eval,
                 max_rounds,
                 session::DEFAULT_MAX_SESSIONS,
-                // E-9（31 号档 F3）：TTL 配置面——main 三层解析注入；缺省
+                // TTL 配置面——main 三层解析注入；缺省
                 // DEFAULT_SESSION_TTL(1800s) 行为不变。启动断言在 main.rs
-                // （TTL ≥ io_error_timeout+余量,同 E-7 warn/enforce 语义）。
+                // （TTL ≥ io_error_timeout+余量,warn/enforce 语义同 step budget 断言）。
                 if session_ttl_secs == 0 {
                     session::DEFAULT_SESSION_TTL
                 } else {
@@ -10197,7 +10197,7 @@ impl GovernanceServer {
             // OpenAPI 单一真相源：仅暴露规范元数据（无业务数据），故免认证，
             // 便于前端 codegen 与运维查阅。Swagger UI 交互界面由 --openapi-ui 单独控制。
             .route("/api/openapi.json", get(crate::api::openapi::openapi_json))
-            // E-8 契约固化（34 号档）：IO 形状契约导出——skip 谓词真相源的
+            // 契约固化：IO 形状契约导出——skip 谓词真相源的
             // 机读形态，供 evo-agent 启动协商与双侧交叉锁测。免认证定位同
             // openapi.json（仅契约元数据，无业务数据）。
             .route("/api/io-contract", get(crate::api::io_contract::io_contract_endpoint))
@@ -16134,7 +16134,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // E-9: 0=引擎缺省 TTL
+                  0, // 0=引擎缺省 TTL
         );
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
@@ -16428,7 +16428,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // E-9: 0=引擎缺省 TTL
+                  0, // 0=引擎缺省 TTL
         );
         assert!(
             sessions.knowledge_load_error().is_none(),
@@ -16506,7 +16506,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // E-9: 0=引擎缺省 TTL
+                  0, // 0=引擎缺省 TTL
         );
 
         let mut bundle = q12_knowledge_bundle(
@@ -16576,7 +16576,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // E-9: 0=引擎缺省 TTL
+                  0, // 0=引擎缺省 TTL
         );
 
         let mut bundle = q12_knowledge_bundle(
@@ -16629,7 +16629,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // E-9: 0=引擎缺省 TTL
+            0, // 0=引擎缺省 TTL
         )
         .with_workspace_db(Arc::new(
             evorule_workspace::WorkspaceDb::in_memory().unwrap(),
@@ -16684,7 +16684,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // E-9: 0=引擎缺省 TTL
+                  0, // 0=引擎缺省 TTL
         );
 
         // q12_knowledge_bundle 的 subset 已是 human 背书形态
@@ -16730,7 +16730,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // E-9: 0=引擎缺省 TTL
+            0, // 0=引擎缺省 TTL
         )
         .with_workspace_db(ws_db.clone());
 
@@ -16842,7 +16842,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // E-9: 0=引擎缺省 TTL
+                  0, // 0=引擎缺省 TTL
         );
 
         // 不注入领域 schema → resolver 未命中
