@@ -16136,7 +16136,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // 0=引擎缺省 TTL
+            0, // 0=引擎缺省 TTL
         );
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
@@ -16430,7 +16430,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // 0=引擎缺省 TTL
+            0, // 0=引擎缺省 TTL
         );
         assert!(
             sessions.knowledge_load_error().is_none(),
@@ -16508,7 +16508,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // 0=引擎缺省 TTL
+            0, // 0=引擎缺省 TTL
         );
 
         let mut bundle = q12_knowledge_bundle(
@@ -16578,7 +16578,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // 0=引擎缺省 TTL
+            0, // 0=引擎缺省 TTL
         );
 
         let mut bundle = q12_knowledge_bundle(
@@ -16686,7 +16686,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // 0=引擎缺省 TTL
+            0, // 0=引擎缺省 TTL
         );
 
         // q12_knowledge_bundle 的 subset 已是 human 背书形态
@@ -16844,7 +16844,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-                  0, // 0=引擎缺省 TTL
+            0, // 0=引擎缺省 TTL
         );
 
         // 不注入领域 schema → resolver 未命中
