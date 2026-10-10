@@ -25,6 +25,24 @@
 
 ---
 
+## [0.9.2] - 2026-10-10
+
+### 🆕 新增
+
+- 🆕 **审计锚点链 server 装配面（G-A2，配对 evorule-governance 0.8.1）**：BLAKE3 事实链之上的 ed25519 签名锚点链在 server 暴露为三端点——`GET /api/sessions/{id}/anchors`（锚点列表）、`POST /api/sessions/{id}/anchors/seal`（立即封条，未启用返回 409 与 404 可区分）、`POST /api/sessions/{id}/anchors/verify`（锚点链结构+签名+与事实链绑定三层验证；请求体可携带外部公钥表，缺省用部署面公钥）。防整链重算/整链替换/前缀截断/fork 伪造四类攻击，密钥不在攻击者手即无法从头伪造审计史
+- 🆕 **部署面注入 `anchor_setup` 模块**：环境变量 `EVORULE_ANCHOR_SEED`（64-hex 严格校验，非法即关不降级）/`EVORULE_ANCHOR_KEY_ID`/`EVORULE_ANCHOR_ENGINE_ID`/`EVORULE_ANCHOR_INTERVAL`；密钥仅存 server 进程内存，不落日志/WAL/审计资产（TCB 零污染）；`SessionApi::new_with_full_config` 增锚点配置参数
+- 🆕 依赖对齐 evorule-tcb/reactor/governance 0.8.1（crates.io 纯版本）
+
+### ✅ 向后兼容
+
+- ✅ 未配置 `EVORULE_ANCHOR_SEED` 时锚点链完全关闭，行为与 0.9.1 逐位一致（含专项端到端测试：空表/409/空链验证通过）
+
+### 🧪 测试
+
+- 🧪 未启用态端到端 1 件（anchors 空表 / seal 409 / verify valid / 会话 404 面）；全量 460/460；clippy 0 新增；公开面扫描阻断 0
+
+---
+
 ## [0.9.1] - 2026-10-03
 
 ### 🆕 新增
