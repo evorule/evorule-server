@@ -7307,7 +7307,9 @@ async fn session_anchors(
 /// AuditAnchor → JSON（AuditAnchor 未实现 Serialize，部署面手动映射；
 /// 字段与 evorule-governance anchor 模块一一对应）
 fn anchor_to_json(a: evorule_governance::anchor::AuditAnchor) -> serde_json::Value {
+    // anchor_format：签名载荷格式版本（独立验证器按此分派验签目标）
     serde_json::json!({
+        "anchor_format": evorule_governance::anchor::ANCHOR_FORMAT,
         "seq": a.seq,
         "session_id": a.session_id,
         "fact_range": {"lo": a.fact_range.lo, "hi": a.fact_range.hi},
