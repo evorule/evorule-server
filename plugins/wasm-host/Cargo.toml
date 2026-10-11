@@ -34,6 +34,13 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# 分发完整性（107 号 P5 一期）：blake3 内容寻址 + ed25519 分离签名。
+# 与核心仓审计锚点（evorule-governance::signing）格式级同族（RFC 8032 确定性签名），
+# 由测试向量交叉锁定，零跨仓代码依赖。
+blake3 = "1"
+ed25519-dalek = "2"
+getrandom = "0.3"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

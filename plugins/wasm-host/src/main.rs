@@ -10,6 +10,13 @@
 //! **刻意进程外**（ADR-0001 决策 1）：`evorule-server` 二进制零膨胀、
 //! 源码零改动，wasmtime 依赖树不进入 server 的 `Cargo.lock`。
 //!
+//! # 子命令（107 号 P5 一期：分发完整性 CLI；无参数 = 服务模式）
+//! | 子命令 | 说明 |
+//! |---|---|
+//! | `keygen` | 生成 ed25519 密钥对（种子私钥私密保存，公钥入信任锚） |
+//! | `sign` | 为 `.wasm` 生成 per-module 清单 + 分离签名（分发三件套） |
+//! | `verify` | 离线验证目录内全部模块（发布者自检 / 边缘前置 / CI 门禁） |
+//!
 //! # 端点
 //! | 方法 | 路径 | 说明 |
 //! |---|---|---|
@@ -22,11 +29,9 @@
 //! - 可判定的不一致（0 个模块 / 声明了但未加载 / 加载了但未声明）→ **503**
 //!   → server 判 `offline` 并记 `platform.event.plugin_offline` 告警。
 //!
-//! 为何必须落在状态码上：server 侧 `plugin_probe::classify_response` 只看
-//! 「状态码是否 2xx」+「body 是否 JSON」，body 里写再多诊断也改变不了判定。
-//! 若这里恒返 200，则「探活 online」只能证明**进程存活**，不能证明**服务可用**。
-//! 无法对账（找不到 plugin.json）时维持 200 但 body 显式标注 `unavailable`——
-//! 把"无法判定"当故障会制造假警（详见 `declaration` 模块头的取舍说明）。
+//! 完整性结论随 `/health` body 的 `integrity` 字段外化（verified /
+//! accepted_unverified / unchecked）——server 探活判定只看状态码，
+//! 完整性不改变 200/503 语义（拒载在加载期已发生，表现为对账不一致）。
 //!
 //! **路径为何是 `/services/{name}`（契约 v1.2 硬性）**：server 装载外部插件包时按
 //! `base_url + /services/{name}` 派生路由（`main.rs::load_external_plugins`），
@@ -56,11 +61,17 @@
 //!   `<WASM_HOST_DIR>/../wasm-host/plugin.json` 探测（不认 cwd，见 `declaration` 模块）
 //! - `WASM_HOST_FUEL` fuel 预算，默认 `100_000_000`
 //! - `WASM_HOST_MAX_MEM` 单模块内存上限字节，默认 `16777216`（16 MiB）
+//! - `WASM_HOST_SIGN_POLICY` 验签策略 `warn|enforce|off`，默认 `warn`
+//!   （warn=材料缺失放行/存在则全量校验；enforce=三件套强制；off=等价既有行为）
+//! - `WASM_HOST_TRUSTED_KEYS` 信任锚文件，缺省按
+//!   `<WASM_HOST_DIR>/../wasm-host/trusted-keys.json` 探测；enforce 策略下缺失即拒启动
 
 mod declaration;
 mod engine;
+mod integrity;
 mod registry;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -68,13 +79,42 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use engine::UdfRuntime;
+use integrity::{Integrity, SignPolicy, TrustedKeys, Verifier};
+use registry::UdfRegistry;
 use serde_json::{json, Value};
 
-use crate::engine::UdfRuntime;
-use crate::registry::UdfRegistry;
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("keygen") => cli_keygen(),
+        Some("sign") => cli_sign(&args[2..]),
+        Some("verify") => cli_verify(&args[2..]),
+        Some(other) => {
+            eprintln!(
+                "未知子命令 `{other}`。用法:\n  \
+                 evorule-wasm-host               # 服务模式\n  \
+                 evorule-wasm-host keygen        # 生成密钥对\n  \
+                 evorule-wasm-host sign --wasm <path> --version <v> --key <seed_hex> --key-id <id> [--notes <t>] [--engine-min <v>]\n  \
+                 evorule-wasm-host verify --dir <path> --keys <trusted.json> [--policy warn|enforce|off]"
+            );
+            std::process::exit(2);
+        }
+        None => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("tokio runtime 构建失败: {e}"))
+            .and_then(|rt| rt.block_on(async { serve().await }))
+            .unwrap_or_else(|e| {
+                eprintln!("evorule-wasm-host: {e}");
+                std::process::exit(1);
+            }),
+    }
+}
 
-#[tokio::main]
-async fn main() {
+// ---------------- 服务模式 ----------------
+
+async fn serve() -> Result<(), String> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -93,24 +133,39 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(16 * 1024 * 1024);
 
+    // 验签策略（非法值 fail-visible：拼错策略名不能等价于关掉防线）
+    let policy = match std::env::var("WASM_HOST_SIGN_POLICY") {
+        Ok(raw) => SignPolicy::parse(&raw)?,
+        Err(_) => SignPolicy::Warn,
+    };
+    let dir_path = std::path::Path::new(&dir).to_path_buf();
+    let trusted_path = std::env::var("WASM_HOST_TRUSTED_KEYS").ok();
+    let trusted = load_trusted_keys(&dir_path, trusted_path.as_deref(), policy)?;
+
+    tracing::info!(
+        "分发完整性策略: {}（信任锚: {}）",
+        policy.as_str(),
+        if trusted.is_some() {
+            "已装载"
+        } else {
+            "未配置"
+        }
+    );
+
     let runtime = match UdfRuntime::new(fuel, max_mem) {
         Ok(r) => Arc::new(r),
-        Err(e) => {
-            eprintln!("evorule-wasm-host: 运行时初始化失败: {e}");
-            std::process::exit(1);
-        }
+        Err(e) => return Err(format!("运行时初始化失败: {e}")),
     };
 
+    let verifier = Verifier::new(policy, trusted.as_ref());
     let registry = match UdfRegistry::load_dir(
         Arc::clone(&runtime),
-        std::path::Path::new(&dir),
+        &dir_path,
         std::env::var("WASM_HOST_PLUGIN_JSON").ok().as_deref(),
+        &verifier,
     ) {
         Ok(r) => Arc::new(r),
-        Err(e) => {
-            eprintln!("evorule-wasm-host: UDF 加载失败（fail-fast）: {e}");
-            std::process::exit(1);
-        }
+        Err(e) => return Err(format!("UDF 加载失败（fail-fast）: {e}")),
     };
 
     tracing::info!(
@@ -160,19 +215,49 @@ async fn main() {
         .route("/services/{name}", post(call_udf))
         .with_state(registry);
 
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("evorule-wasm-host: bind {addr} failed: {e}");
-            std::process::exit(1);
-        }
-    };
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| format!("bind {addr} failed: {e}"))?;
 
     tracing::info!("evorule-wasm-host listening on {addr}");
-    if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("evorule-wasm-host: serve failed: {e}");
-        std::process::exit(1);
-    }
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| format!("serve failed: {e}"))
+}
+
+/// 信任锚装载：显式路径 or `<WASM_HOST_DIR>/../wasm-host/trusted-keys.json` 缺省探测。
+///
+/// enforce 策略下信任锚必需（没有公钥的 enforce 无意义）→ 缺失/解析失败拒启动；
+/// warn/off 下缺失允许（warn 对"带签名材料的模块"会因不可验而拒载，见 integrity 模块头）。
+fn load_trusted_keys(
+    wasm_dir: &std::path::Path,
+    explicit: Option<&str>,
+    policy: SignPolicy,
+) -> Result<Option<TrustedKeys>, String> {
+    let path = match explicit {
+        Some(p) => std::path::PathBuf::from(p),
+        None => wasm_dir
+            .parent()
+            .unwrap_or(wasm_dir)
+            .join("wasm-host")
+            .join("trusted-keys.json"),
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if policy == SignPolicy::Enforce {
+                return Err(format!(
+                    "enforce 策略要求信任锚文件: {}（缺失即拒启动）",
+                    path.display()
+                ));
+            }
+            return Ok(None);
+        }
+        Err(e) => return Err(format!("读取信任锚 {} 失败: {e}", path.display())),
+    };
+    let keys: TrustedKeys = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("信任锚 {} 解析失败: {e}", path.display()))?;
+    Ok(Some(keys))
 }
 
 /// 探活：`{base_url}/health` 必须 2xx + JSON（历史批次 plugin_probe 契约）。
@@ -188,6 +273,10 @@ async fn health(State(reg): State<Arc<UdfRegistry>>) -> (StatusCode, Json<Value>
         StatusCode::OK
     };
     let status = if rec.is_degraded() { "degraded" } else { "ok" };
+    let mut integrity_map: BTreeMap<String, Value> = BTreeMap::new();
+    for name in reg.names() {
+        integrity_map.insert(name.clone(), reg.integrity_of(&name).to_json());
+    }
     (
         code,
         Json(json!({
@@ -197,6 +286,8 @@ async fn health(State(reg): State<Arc<UdfRegistry>>) -> (StatusCode, Json<Value>
             "udfs": reg.names(),
             // 探活可信度：可服务性对账（声明 × 实载）。字段含义见 declaration 模块。
             "reconciliation": rec.to_json(),
+            // 分发完整性（107 号 P5 一期）：verified / accepted_unverified / unchecked
+            "integrity": integrity_map,
         })),
     )
 }
@@ -280,5 +371,193 @@ async fn call_udf(
                 "error": format!("UDF 返回值不是合法 JSON: {e}"),
             })),
         ),
+    }
+}
+
+// ---------------- CLI 子命令（分发完整性，107 号 P5 一期） ----------------
+
+fn cli_keygen() {
+    match integrity::generate_keys() {
+        Ok((seed_hex, pk_hex)) => {
+            // 机器友好形态（`标签 值`）：发布指南/脚本按 token 解析；
+            // 种子=私密保存永不落仓，公钥=入 trusted-keys.json
+            println!("seed_hex {seed_hex}");
+            println!("public_key_hex {pk_hex}");
+        }
+        Err(e) => {
+            eprintln!("keygen 失败: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// 极简 flag 解析（`--flag value`；本 CLI 参数面固定，不引依赖）
+struct Flags {
+    map: BTreeMap<String, String>,
+}
+
+impl Flags {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let mut map = BTreeMap::new();
+        let mut i = 0;
+        while i < args.len() {
+            let a = &args[i];
+            if let Some(flag) = a.strip_prefix("--") {
+                let value = args.get(i + 1).ok_or_else(|| format!("`{a}` 缺值"))?;
+                map.insert(flag.to_string(), value.clone());
+                i += 2;
+            } else {
+                return Err(format!(
+                    "非预期参数 `{a}`（本 CLI 只接受 --flag value 形态）"
+                ));
+            }
+        }
+        Ok(Self { map })
+    }
+
+    fn get(&self, key: &str) -> Result<&str, String> {
+        self.map
+            .get(key)
+            .map(String::as_str)
+            .ok_or_else(|| format!("缺少 --{key}"))
+    }
+
+    fn opt(&self, key: &str) -> Option<&str> {
+        self.map.get(key).map(String::as_str)
+    }
+}
+
+fn cli_sign(args: &[String]) {
+    let flags = match Flags::parse(args) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("参数错误: {e}");
+            std::process::exit(2);
+        }
+    };
+    let outcome = (|| -> Result<(), String> {
+        let wasm_path = flags.get("wasm")?;
+        let version = flags.get("version")?;
+        let key_hex = flags.get("key")?;
+        let key_id = flags.get("key-id")?;
+        let seed_vec = integrity::hex_decode(key_hex)?;
+        let seed: [u8; 32] = seed_vec
+            .try_into()
+            .map_err(|_| "--key 必须是 64 位 hex（32 字节种子）".to_string())?;
+
+        let path = std::path::Path::new(wasm_path);
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("无法从文件名推导模块名: {wasm_path}"))?;
+        let wasm_bytes = std::fs::read(path).map_err(|e| format!("读取 {wasm_path} 失败: {e}"))?;
+
+        // ① 清单（含 .wasm 内容哈希）
+        let mut manifest = integrity::build_manifest(name, version, &wasm_bytes);
+        manifest.release_notes = flags.opt("notes").map(str::to_string);
+        manifest.engine_min = flags.opt("engine-min").map(str::to_string);
+        let manifest_path = path.with_file_name(format!("{name}.plugin-module.json"));
+        let manifest_json =
+            serde_json::to_vec_pretty(&manifest).map_err(|e| format!("清单序列化失败: {e}"))?;
+        std::fs::write(&manifest_path, &manifest_json)
+            .map_err(|e| format!("写清单 {} 失败: {e}", manifest_path.display()))?;
+
+        // ② 分离签名：ed25519 over 清单文件精确字节（sig → 清单 → blake3 → .wasm 链）
+        let sig = integrity::sign(seed, &manifest_json);
+        let sig_doc = integrity::DetachedSignature {
+            module: name.to_string(),
+            key_id: key_id.to_string(),
+            signature: integrity::hex_encode(&sig),
+        };
+        let sig_path = path.with_file_name(format!("{name}.wasm.sig"));
+        let sig_json =
+            serde_json::to_vec_pretty(&sig_doc).map_err(|e| format!("签名序列化失败: {e}"))?;
+        std::fs::write(&sig_path, &sig_json)
+            .map_err(|e| format!("写签名 {} 失败: {e}", sig_path.display()))?;
+
+        println!(
+            "已签发 `{name}` v{version}:\n  清单 {} (blake3 {})\n  签名 {} (key_id={key_id})",
+            manifest_path.display(),
+            manifest.blake3,
+            sig_path.display()
+        );
+        Ok(())
+    })();
+    if let Err(e) = outcome {
+        eprintln!("sign 失败: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn cli_verify(args: &[String]) {
+    let flags = match Flags::parse(args) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("参数错误: {e}");
+            std::process::exit(2);
+        }
+    };
+    let outcome = (|| -> Result<bool, String> {
+        let dir = flags.get("dir")?;
+        let keys_path = flags.get("keys")?;
+        let policy = match flags.opt("policy") {
+            Some(raw) => SignPolicy::parse(raw)?,
+            None => SignPolicy::Enforce, // verify 默认按最严口径离线自检
+        };
+        let keys_bytes =
+            std::fs::read(keys_path).map_err(|e| format!("读取信任锚 {keys_path} 失败: {e}"))?;
+        let trusted: TrustedKeys =
+            serde_json::from_slice(&keys_bytes).map_err(|e| format!("信任锚解析失败: {e}"))?;
+
+        let verifier = Verifier::new(policy, Some(&trusted));
+        let mut all_pass = true;
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .map_err(|e| format!("读取目录 {dir} 失败: {e}"))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wasm"))
+            .collect();
+        entries.sort();
+        if entries.is_empty() {
+            println!("目录无 .wasm 模块: {dir}");
+            return Ok(true);
+        }
+        for path in entries {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("(unknown)")
+                .to_string();
+            let wasm_bytes =
+                std::fs::read(&path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+            match verifier.verify_module(&name, &wasm_bytes, std::path::Path::new(dir)) {
+                Ok(v) => {
+                    println!("PASS {name} ({})", integrity_desc(&v));
+                }
+                Err(e) => {
+                    println!("FAIL {name}: {e}");
+                    all_pass = false;
+                }
+            }
+        }
+        Ok(all_pass)
+    })();
+    match outcome {
+        Ok(true) => println!("verify: 全部通过"),
+        Ok(false) => {
+            println!("verify: 存在未通过模块");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("verify 失败: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn integrity_desc(v: &Integrity) -> &'static str {
+    match v {
+        Integrity::Verified { .. } => "签名已验证",
+        Integrity::AcceptedUnverified { .. } => "未验证放行(warn)",
+        Integrity::Unchecked => "未检查(off)",
     }
 }

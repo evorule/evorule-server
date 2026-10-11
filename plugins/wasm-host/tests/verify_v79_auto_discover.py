@@ -98,7 +98,7 @@ def kill_port(port: int) -> None:
     if os.name != "nt":
         subprocess.run(["pkill", "-f", f".*{port}.*"], capture_output=True)
         return
-    r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True)
+    r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, errors="replace")
     pids: set[str] = set()
     for line in r.stdout.splitlines():
         if f"127.0.0.1:{port} " in line and "LISTENING" in line:
@@ -288,12 +288,14 @@ def main() -> int:
         if status == 200:
             services_doc = json.loads(body)
             names = services_doc.get("services", [])
+            # 实载数量动态对齐 plugins/wasm/ 目录（写死数字曾因 P4 宏示例 third .wasm 入目录而漂移）
+            expected = len(list((REPO / "plugins" / "wasm").glob("*.wasm")))
             ok_s1 = (
-                services_doc.get("count") == 2
+                services_doc.get("count") == expected
                 and UDF_POLICY in names
                 and UDF_DISCOVERED in names
             )
-        check(ok_s1, "host GET /services 自报实载清单（2 个 UDF，S1）", body[:120])
+        check(ok_s1, "host GET /services 自报实载清单（S1，数量=目录 .wasm 数）", body[:120])
 
         # S3：对账 Ok（实载超出策略表合法，undeclared 留痕）
         status, body = http(f"http://127.0.0.1:{HOST_PORT}/health")

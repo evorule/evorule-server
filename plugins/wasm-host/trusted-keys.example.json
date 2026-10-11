@@ -1,0 +1,11 @@
+{
+  "_doc": "WASM 插件信任锚示例（复制为 trusted-keys.json 后登记官方公钥；登记/轮换为治理动作须留痕）。public_key=32 字节压缩公钥 hex（evorule-wasm-host keygen 产出）；enabled=false 视同未登记。",
+  "keys": [
+    {
+      "key_id": "official-2026Q4",
+      "public_key": "<64-hex>",
+      "note": "官方插件签名钥（公钥指纹另经多渠道公布，比对一致方可登记）",
+      "enabled": true
+    }
+  ]
+}

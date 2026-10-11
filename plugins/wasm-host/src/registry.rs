@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! UDF 模块注册表：扫描目录 → 编译 → 按服务名索引 → **声明对账**。
+//! UDF 模块注册表：扫描目录 → **完整性校验（前置）** → 编译 → 按服务名索引 → **声明对账**。
 //!
 //! **服务名 = `.wasm` 文件名（去扩展名）**，对齐历史批次 `udf_finance_tax_calc` 口径。
 //! 该口径必须与 `plugin.json` 的 `services[].name` 一致——由加载期对账强制
 //! （见 `declaration` 模块），不一致不再静默。
+//!
+//! **加载序（107 号 P5 一期）**：完整性校验（`integrity` 模块：清单哈希/验签/纯度
+//! 声明/ABI 兼容，策略 warn|enforce|off）**先于编译**——被拒模块不进 wasmtime，
+//! 拒载原因点名到模块。校验放行后才进入引擎零能力防线（import 枚举非空即拒）；
+//! 清单声明 `zero-import` 而实测 import 非空时，拒载消息融合「纯度声明与实测不符」
+//! 定性（声明×实载对账，declaration.rs 同族范式）。
 //!
 //! 用 `BTreeMap` 而非 `HashMap`：加载顺序与 `/health` 的 UDF 列表顺序**确定性**
 //! （本项目全局确定性纪律：键序不应随运行时哈希种子变化）。
@@ -18,19 +24,21 @@ use wasmtime::Module;
 
 use crate::declaration::Reconciliation;
 use crate::engine::UdfRuntime;
+use crate::integrity::{Integrity, Verifier};
 
-/// 已加载的 UDF 模块集合 (+ 一次性算定的声明对账结论)
+/// 已加载的 UDF 模块集合 (+ 一次性算定的完整性结论 + 声明对账结论)
 pub struct UdfRegistry {
     runtime: Arc<UdfRuntime>,
     /// 服务名 → 已编译模块
     modules: BTreeMap<String, Arc<Module>>,
-    /// 声明 × 实载对账结论。模块集在进程生命周期内不变，故只算一次；
-    /// 结论经 `/health` 状态码外化（见 `declaration` 模块头）。
+    /// 服务名 → 完整性结论（/health 外化）。模块集在进程生命周期内不变，只算一次。
+    integrity: BTreeMap<String, Integrity>,
+    /// 声明 × 实载对账结论。结论经 `/health` 状态码外化（见 `declaration` 模块头）。
     reconciliation: Reconciliation,
 }
 
 impl UdfRegistry {
-    /// 扫描目录并编译其中所有 `*.wasm`，随后做一次声明对账。
+    /// 扫描目录并编译其中所有 `*.wasm`（完整性校验前置），随后做一次声明对账。
     ///
     /// **目录不存在 → Err（fail-fast）**：目录给错（如误传 MSYS 风格路径）时
     /// 旧实现只打一条 warn 就带着 0 个 UDF 启动，进程活着、能力为零，
@@ -40,8 +48,10 @@ impl UdfRegistry {
         runtime: Arc<UdfRuntime>,
         dir: &Path,
         declaration_path: Option<&str>,
+        verifier: &Verifier<'_>,
     ) -> Result<Self, String> {
         let mut modules = BTreeMap::new();
+        let mut integrity = BTreeMap::new();
         if !dir.is_dir() {
             return Err(format!(
                 "WASM 目录不存在或不是目录: {}（自诊断: ① 检查 WASM_HOST_DIR 是否指向 \
@@ -53,27 +63,55 @@ impl UdfRegistry {
         let entries = std::fs::read_dir(dir)
             .map_err(|e| format!("读取 WASM 目录失败 {}: {e}", dir.display()))?;
 
+        // 先收集全部 .wasm 路径再逐个处理（BTreeMap 键序保证确定性加载顺序）
+        let mut wasm_paths: Vec<PathBuf> = Vec::new();
         for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(e) => return Err(format!("遍历 WASM 目录失败: {e}")),
-            };
-            let path: PathBuf = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("wasm") {
-                continue;
+            let entry = entry.map_err(|e| format!("遍历 WASM 目录失败: {e}"))?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("wasm") {
+                wasm_paths.push(path);
             }
+        }
+        wasm_paths.sort();
+        for path in wasm_paths {
             let name = match path.file_stem().and_then(|s| s.to_str()) {
                 Some(n) => n.to_string(),
                 None => return Err(format!("无法从文件名推导服务名: {}", path.display())),
             };
+            let wasm_bytes = std::fs::read(&path)
+                .map_err(|e| format!("读取模块 {} 失败: {e}", path.display()))?;
+
+            // ① 完整性校验（前置，见模块头加载序）
+            let verdict = verifier.verify_module(&name, &wasm_bytes, dir)?;
+            if let Integrity::AcceptedUnverified { reason } = &verdict {
+                tracing::warn!(
+                    "模块 `{name}` 未验证放行（warn 策略）: {reason} —— 生产环境建议 enforce + 官方签名"
+                );
+            }
+
+            // ② 引擎加载（零能力防线①：import 枚举非空即拒）
             let module = match runtime.load(&path) {
                 Ok(m) => m,
                 Err(e) => {
-                    // fail-fast：单个坏模块拒绝启动，避免"运行时才发现某个 UDF 不可用"
-                    return Err(format!("加载 UDF `{name}` 失败: {e}"));
+                    // fail-fast：单个坏模块拒绝启动，避免"运行时才发现某个 UDF 不可用"；
+                    // 清单在场的场景融合纯度对账定性（声明 zero-import × 实测 import 非空）
+                    let fused = if verdict != Integrity::Unchecked {
+                        format!(
+                            "加载 UDF `{name}` 失败: {e}\
+                             \n  —— 纯度对账：清单声明 zero-import 与实测 import 不符（声明×实载不一致，拒载）"
+                        )
+                    } else {
+                        format!("加载 UDF `{name}` 失败: {e}")
+                    };
+                    return Err(fused);
                 }
             };
-            tracing::info!("UDF 已加载: {name} <- {}", path.display());
+            tracing::info!(
+                "UDF 已加载: {name} <- {} ({})",
+                path.display(),
+                integrity_tag(&verdict)
+            );
+            integrity.insert(name.clone(), verdict);
             modules.insert(name, Arc::new(module));
         }
 
@@ -82,6 +120,7 @@ impl UdfRegistry {
         Ok(Self {
             runtime,
             modules,
+            integrity,
             reconciliation,
         })
     }
@@ -89,6 +128,14 @@ impl UdfRegistry {
     /// 声明对账结论（`/health` 的 degraded 判定与诊断正文来源）
     pub fn reconciliation(&self) -> &Reconciliation {
         &self.reconciliation
+    }
+
+    /// 完整性结论（/health 外化：verified / accepted_unverified / unchecked）
+    pub fn integrity_of(&self, name: &str) -> Integrity {
+        self.integrity
+            .get(name)
+            .cloned()
+            .unwrap_or(Integrity::Unchecked)
     }
 
     /// 已加载的 UDF 服务名（确定性顺序）
@@ -108,5 +155,13 @@ impl UdfRegistry {
     /// 取运行时（供 `spawn_blocking` 移入阻塞线程）
     pub fn runtime(&self) -> Arc<UdfRuntime> {
         Arc::clone(&self.runtime)
+    }
+}
+
+fn integrity_tag(v: &Integrity) -> &'static str {
+    match v {
+        Integrity::Verified { .. } => "签名已验证",
+        Integrity::AcceptedUnverified { .. } => "未验证放行(warn)",
+        Integrity::Unchecked => "完整性检查关闭(off)",
     }
 }

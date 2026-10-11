@@ -92,7 +92,7 @@ def kill_port(port: int) -> None:
     if os.name != "nt":
         subprocess.run(["pkill", "-f", f".*{port}.*"], capture_output=True)
         return
-    r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True)
+    r = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, errors="replace")
     pids: set[str] = set()
     for line in r.stdout.splitlines():
         if f"127.0.0.1:{port} " in line and "LISTENING" in line:
