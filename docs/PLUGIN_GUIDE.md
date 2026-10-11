@@ -272,6 +272,42 @@ POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留�
 - **sensitive 守卫**：声明 `sensitive: true` 的服务，REST 直调一律 403——敏感操作只能经会话链（审计 + 审批门）。
 - **最小暴露面**：管理面 token 环境变量强制；缺省拒绝。
 
+### 8.1 WASM 插件分发完整性（wasm-host 专属，107 号 P5）
+
+WASM UDF 的分发物为**三件套**，由 `evorule-wasm-host` 在加载期做前置校验（先验签后编译）：
+
+| 文件 | 内容 |
+|---|---|
+| `{name}.wasm` | 模块二进制（服务名 = 文件名去扩展名，既有口径不变） |
+| `{name}.plugin-module.json` | 分发清单：module / version / abi / blake3（内容哈希）/ purity（纯度声明）/ engine_min / release_notes |
+| `{name}.wasm.sig` | 分离签名：ed25519（RFC 8032 确定性）over **清单文件精确字节** |
+
+**签名链**：`sig → 清单字节 → blake3 → .wasm 字节`——一份签名锚定两份文件，任一环被篡改在加载期 fail-visible 拒载。
+
+**纯度声明对账**：清单 `purity: "zero-import"` 与引擎实测 import 集合交叉（零 host function 沙箱不变——没有可授权的 host 能力，纯度对账是把"模块自称纯计算"升级为"宿主实测验证其自称"；谎报即拒载）。`abi` 与宿主不符 = 结构性不兼容，拒载；`engine_min` 为提示性字段。
+
+**信任锚**：`wasm-host/trusted-keys.json`（key_id / public_key / note / enabled）。登记与轮换是**治理动作**（运维显式操作），验签是**工程动作**——双层模型是 §八"运维显式登记即可信"在 WASM 通道的细化，不替换。
+
+**验签策略**（env `WASM_HOST_SIGN_POLICY`）：
+
+| 策略 | 行为 |
+|---|---|
+| `warn`（默认，迁移期） | 清单/签名**缺失** → WARN 放行；**存在则全量校验**，校验失败（哈希不符/验签不过/信任锚未知/ABI 不符）→ 拒载（存在的材料造假 = 篡改信号，不因 warn 放行） |
+| `enforce`（生产推荐） | 三件套必须齐备且全量校验通过，否则拒载；信任锚文件缺失即拒启动 |
+| `off` | 完全跳过（等价既有行为），启动日志明示 |
+
+**发布者 CLI**（`evorule-wasm-host` 子命令，离线可用）：
+
+```
+evorule-wasm-host keygen                                     # 生成密钥对（种子私钥永不落仓）
+evorule-wasm-host sign --wasm <path> --version <v> \
+    --key <seed_hex> --key-id <id> [--notes <t>] [--engine-min <v>]
+evorule-wasm-host verify --dir <dir> --keys <trusted.json> \
+    [--policy enforce]                                       # 离线自检 / CI 门禁 / 边缘前置
+```
+
+签名格式与核心仓审计锚点（`evorule-governance::signing`）同族（RFC 8032 确定性），由测试向量交叉锁定。完整性结论随 wasm-host `/health` body 的 `integrity` 字段外化（verified / accepted_unverified / unchecked），server 侧探活与对账告警语义不变。
+
 ---
 
 ## 九、任意语言实现要点（最小要求清单）
