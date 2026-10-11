@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://evorule.org/schemas/_shared/v1.0.json",
   "title": "evorule 共享定义 v1.0（固化版）",
-  "description": "跨 kind 共享的 $defs 单一事实源（SSOT，records/70）。transform_rule / domain / instruction 权威源为 evorule-tcb 源码（executor.rs 5 元指令 + domain.rs 7 基础域）；service_entry 权威源为 evorule-server io_handlers/src/service_registry.rs。rule_set / migration 等 schema 通过跨文件 $ref 引用本文件，禁止复制粘贴导致漂移。",
+  "description": "跨 kind 共享的 $defs 单一事实源（SSOT，records/70）。transform_rule / domain / instruction 权威源为 evorule-tcb 源码（executor.rs 5 元指令 + domain.rs 7 基础域）；service_entry 权威源为 evorule-server io_handlers/src/service_registry.rs；llm_verdict（LLM 判定事实载荷）权威源即本定义，消费面为 evorule-rule 事实条目 schema_ref 与 evo-agent 判定产出侧。rule_set / migration 等 schema 通过跨文件 $ref 引用本文件，禁止复制粘贴导致漂移。",
   "$defs": {
     "path": {
       "type": "string",
@@ -38,26 +38,16 @@
               "description": "7 基础域类型（权威源 evorule-tcb/src/domain.rs L128-139）。派生域（gt/or/le/ge/ne）是 core_eval 用 all/not/lt/eq 组合出来的，不在枚举内。嵌套一律用 inner，禁止 domain/domains 字段（P0-03）。"
             },
             "path": { "$ref": "#/$defs/path", "description": "eq/lt/exists/has_fields 的求值路径（必填，纯路径语义，同 resolve_exec_path）" },
-            "on_missing": {
-              "enum": ["error", "unsat"],
-              "description": "eq/lt 域缺失策略显式声明（专项-20261001 方案 2' v4，权威源 evorule-tcb domain.rs）：error=路径缺失/类型不可比时 Err 拒绝执行；unsat=Missing 走 on_false+归因落账（显式声明下的 false，非静默）。缺声明/声明非法值在装载期被 evorule-server domain 门禁拒收（fail-closed 无警告通道）；value 呈 exec 根段点路径形态（ValueLiteralAmbiguous 写作错误）一律拒、无宽容选项。动态域（本 def 字符串分支）豁免静态校验，运行时防御层兜底（兼容缺省 unsat+归因）。"
-            },
-            "value": {
-              "allOf": [
-                { "$ref": "#/$defs/path_or_literal" },
-                { "not": { "type": "string", "pattern": "^(instruction|payload|queue)(\\.[A-Za-z0-9_]+)+$" } }
-              ],
-              "description": "eq/lt 的字面量比较值；__ 前缀字符串按路径引用校验语法（语义上 eq/lt 比较字面量，见沙箱 P17）。not 子句=ValueLiteralAmbiguous 装载拒收门（判定谓词 SSOT=evorule-tcb is_root_segment_dot_path，常量 root-segment-dot-path.v1）：value 字符串呈 exec 根段（instruction/payload/queue）点路径形态但缺 __ 前缀 → 运行时将被字面量化静默比对（历史静默失效事故形态），提交期即拒。合法带点字面量（如 meta_tool.pending_target_scope 符号常量、MiniMax-M2.5 模型名）不受影响。"
-            }
+            "value": { "$ref": "#/$defs/path_or_literal", "description": "eq/lt 的字面量比较值；__ 前缀字符串按路径引用校验语法（语义上 eq/lt 比较字面量，见沙箱 P17）" }
           },
           "allOf": [
             {
               "if": { "properties": { "type": { "const": "eq" } } },
-              "then": { "required": ["path", "value", "on_missing"] }
+              "then": { "required": ["path", "value"] }
             },
             {
               "if": { "properties": { "type": { "const": "lt" } } },
-              "then": { "required": ["path", "value", "on_missing"] }
+              "then": { "required": ["path", "value"] }
             },
             {
               "if": { "properties": { "type": { "const": "exists" } } },
@@ -302,6 +292,62 @@
       },
       "additionalProperties": true,
       "description": "服务注册条目（权威源 service_registry.rs ServiceEntry）。解析器只读取 url/method/headers/timeout_ms，未知字段静默忽略——因此 additionalProperties 开放以向前兼容。body_template 在文档中宣称但解析器未读取，慎用。"
+    },
+    "llm_verdict": {
+      "type": "object",
+      "required": ["kind", "key", "verdict", "prompt_hash", "model", "origin"],
+      "properties": {
+        "kind": {
+          "const": "llm_verdict",
+          "description": "事实类型标识，恒为 llm_verdict"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z0-9_][a-z0-9_.\\-]*$",
+          "description": "判定键（如 content.safety）：规则条件经 payload 注入路径（facts.llm_verdict.<key>）用现有 exists/eq 原子消费此键；键名小写点分，防路径文法歧义"
+        },
+        "verdict": {
+          "type": ["boolean", "string"],
+          "description": "判定结果：boolean；或字符串形态 pass/fail（二元判定惯例）。value 形态（判定产出数值/枚举值）时必须携带 value 字段"
+        },
+        "value": {
+          "description": "判定产出的结构化值（verdict 为 value 形态时必填）；类型不限——具体键的业务类型由消费侧治理（evorule-rule 条目治理面）约束"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "可选，判定置信度（0-1）。仅供人类复核与观测面；不得进规则条件——不确定性不得写成确定性阈值假象"
+        },
+        "evidence": {
+          "type": "string",
+          "description": "判定依据摘录（输入原文片段），供审计链外的人类复核"
+        },
+        "prompt_hash": {
+          "type": "string",
+          "pattern": "^blake3:[0-9a-f]{64}$",
+          "description": "判定所用 prompt 的 BLAKE3 指纹（存储口径带 blake3: 前缀，B 族哈希口径）——保「判了什么/依据什么」可溯源；不承诺判定可复现"
+        },
+        "model": {
+          "type": "string",
+          "description": "执行判定的模型标识（如 MiniMax-M2.5）"
+        },
+        "origin": {
+          "const": "llm",
+          "description": "事实来源恒为 llm——与机器归纳（sediment）/人类声明（stable）等其他来源 fact 区分；生命周期治理（Draft→审批→Active）由 evorule-rule 治理面承载"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "verdict": { "const": "value" } },
+            "required": ["verdict"]
+          },
+          "then": { "required": ["value"] }
+        }
+      ],
+      "additionalProperties": false,
+      "description": "LLM 判定事实载荷 v1.0：LLM 在 agent 层完成语义判定后的事实化结构——判定事实化（结构化+落审计链+prompt 指纹）后，规则面以现有原子（exists/eq）消费，引擎零 LLM 依赖。design rationale：confidence 与 origin 不参与确定性求值面；本 $def 为校验层定义，不改变引擎已消费的机器语义（schema-evolution-sop 红线合规）。"
     }
   }
 }
