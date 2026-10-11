@@ -12867,10 +12867,23 @@ mod tests {
             6,
             "违规 3 文件被 schema gate 剔除，不进合并列表"
         );
-        assert!(
-            rejected.is_empty(),
-            "装载面违规已在 schema gate 文件级拦截（先于条目级 walk 门禁），不重复计数"
-        );
+        // 拒载明细逐文件各留 1 条汇总记录（fail-visible：剔除原因可查）；
+        // 未被剔除的文件不再有条目级重复计数（walk 门禁纵深面零新增）
+        assert_eq!(rejected.len(), 3, "被剔 3 文件各留 1 条拒载明细");
+        for r in &rejected {
+            assert!(
+                r.source.starts_with("a-missing")
+                    || r.source.starts_with("b-invalid")
+                    || r.source.starts_with("c-ambiguous"),
+                "拒载明细只含被剔文件: {}",
+                r.source
+            );
+            assert_eq!(
+                r.violations.len(),
+                1,
+                "每文件 1 条汇总明细（不逐条目重复计数）"
+            );
+        }
     }
 
     /// 纯函数：嵌套面（all.inner 内 eq 同检）+ value `__` 路径引用形态不误伤 +
