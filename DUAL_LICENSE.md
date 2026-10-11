@@ -34,6 +34,7 @@ EvoRule 以 **AGPL-3.0-or-later** 为基础许可证，并为需要闭源使用�
 | **A** | AGPL-3.0-or-later（开源合规路线） | 免费 | 愿意开源修改版、个人、内部使用 |
 | **B** | 免费商业豁免（FCL, Free Commercial License） | 免费 | 符合资格的实体（见下），需闭源嵌入/分发 |
 | **C** | 付费商业许可（Commercial License） | 付费 | 不符合 FCL 资格、需买断 copyleft 义务的实体 |
+| **D** | 社区贡献授权（Contribution Grant） | 免费 | 开源社区/学术科研项目需将 EvoRule 贡献物以其宽松协议（Apache-2.0）纳入其仓 |
 
 **核心原则**：
 
@@ -55,6 +56,7 @@ EvoRule 以 **AGPL-3.0-or-later** 为基础许可证，并为需要闭源使用�
 | 高校 / 科研院所 | **B. FCL** | 免费 | 同上 |
 | 非营利组织 | **B. FCL** | 免费 | 同上 |
 | 愿意把修改版开源的任何实体 | **A. AGPL** | 免费 | 同 AGPL 义务 |
+| 开源社区/学术科研项目（需以 Apache-2.0 等宽松协议纳入 EvoRule 贡献物） | **D. Contribution Grant** | 免费 | 按 [CONTRIBUTION_GRANT.md](CONTRIBUTION_GRANT.md) 签发 |
 | 企业年营收 **≥ ¥1 亿** 且不愿开源的其他实体 | **C. Commercial** | 付费 | 联系 <evorulelab@gmail.com> 获取协议 |
 
 > **B2B2B 场景说明**：你是软件二次开发商，把 EvoRule 嵌入你的产品/服务交付给终端用户 ——
@@ -86,6 +88,10 @@ EvoRule 以 **AGPL-3.0-or-later** 为基础许可证，并为需要闭源使用�
 
 详见 [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md)。**买断** AGPL §4-6 与 §13 的全部 copyleft 义务，闭源自由使用。联系 <evorulelab@gmail.com>。
 
+## 五D、社区贡献授权（D / Contribution Grant）
+
+详见 [CONTRIBUTION_GRANT.md](CONTRIBUTION_GRANT.md)。面向开源社区与学术科研生态（评测基准、研究框架、会议 artifact）：当目标社区仓（如 Apache-2.0 仓）无法接纳 AGPL 传染性贡献物时，由版权人对**明确列明的贡献物清单**（含其编译产物内含的生态源码子集）签发 Apache-2.0 再授权——生态 AGPL 主线不变，主仓局部再授权。**单签即生效**（唯一版权人）。
+
 ---
 
 ## 六、协议分离（关键）
@@ -94,6 +100,7 @@ EvoRule 以 **AGPL-3.0-or-later** 为基础许可证，并为需要闭源使用�
 |---|---|---|
 | **代码**（Rust） | AGPL-3.0-or-later | copyleft，保护 EvoRule 当前实现，阻止"白嫖 fork 后卖闭源 SaaS" |
 | **`core_eval.json`**（宪法） | **CC0 1.0 公共领域** | 解释器规范，任何人都可自由实现兼容引擎，无需保留版权声明 |
+| **社区贡献物**（经通道 D 签发） | **Apache-2.0（局部再授权）** | 贡献物+其编译产物内含生态子集，按 CONTRIBUTION_GRANT.md 清单签发；主仓主线仍 AGPL |
 
 这把"标准"和"实现"分开，类似 HTTP 规范（W3C 公共）vs Apache HTTP Server（版权）。
 
@@ -129,6 +136,10 @@ EvoRule 以 **AGPL-3.0-or-later** 为基础许可证，并为需要闭源使用�
 
 **A**: 可以走 **AGPL**（开源修改版并对外服务）。若大厂要**闭源嵌入 / 运营**，须购买 **Commercial**（FCL 仅对 <¥1 亿 等合格实体免费）。
 
+### Q8: 我想把 EvoRule 组件贡献给一个 Apache-2.0 的开源社区/学术项目，AGPL 传染怎么办？
+
+**A**: 走 **通道 D（Contribution Grant）**——版权人对明确列明的贡献物清单（含编译产物内含的生态源码子集）签发 Apache-2.0 再授权，社区可合规接纳。见 [CONTRIBUTION_GRANT.md](CONTRIBUTION_GRANT.md)。
+
 ---
 
 ## 八、联系信息
@@ -154,8 +165,9 @@ EvoRule 的知识产权归 EvoRule Project 所有。
 | 1.0 | 2026-07-19 | 初版 |
 | 2.0 | 2026-09-08 | C1 三选项重写：$10M 门槛（含关联合并）、FCL 免费闭源豁免、B2B2B 说明；删除 $1M-$10M 分层收费表与"内部使用建议买商业许可"表述 |
 | 2.1 | 2026-09-08 | 营收门槛改为人民币基准 ¥1 亿（含关联公司合并计算），外币实体按认定日央行中间价折算 |
+| 2.2 | 2026-10-11 | 新增通道 D 社区贡献授权（Contribution Grant）：开源社区/学术科研生态以宽松协议接纳 EvoRule 贡献物的局部再授权机制；概述表/身份表/§五D/协议分离表/FAQ Q8 五处联动 |
 
 ---
 
-**最后更新**: 2026-09-08
-**文档版本**: 2.0
+**最后更新**: 2026-10-11
+**文档版本**: 2.2
