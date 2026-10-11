@@ -206,11 +206,9 @@ mod tests {
             }
             serde_json::Value::String(s) => JsonValue::String(s.into()),
             serde_json::Value::Array(arr) => JsonValue::Array(arr.into_iter().map(tcb).collect()),
-            serde_json::Value::Object(obj) => JsonValue::Object(
-                obj.into_iter()
-                    .map(|(k, val)| (k, tcb(val)))
-                    .collect(),
-            ),
+            serde_json::Value::Object(obj) => {
+                JsonValue::Object(obj.into_iter().map(|(k, val)| (k, tcb(val))).collect())
+            }
         }
     }
 

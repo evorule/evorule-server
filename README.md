@@ -23,7 +23,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.9.1-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.9.2-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-stable--release--v0.9.2-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
@@ -675,7 +675,7 @@ EvoRule Server uses **AGPL + Commercial dual-license** (consistent with [core re
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.9.1-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.9.2-green.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-stable--release--v0.9.2-brightgreen.svg)](CHANGELOG.md)
 [![Built with](https://img.shields.io/badge/built--with-Axum%200.8-blue.svg)](https://github.com/tokio-rs/axum)
