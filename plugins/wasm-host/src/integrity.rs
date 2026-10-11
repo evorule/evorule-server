@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! 分发完整性：per-module 清单 + blake3 内容哈希 + ed25519 分离签名 + 信任锚 + 验签策略。
 //!
-//! # 分发物三件套（107 号 P5 一期定案）
+//! # 分发物三件套（一期定案）
 //! - `{name}.wasm`                —— 模块二进制（服务名 = 文件名去扩展名，既有口径不变）
 //! - `{name}.plugin-module.json`  —— 分发清单（身份/版本/ABI/内容哈希/纯度声明）
 //! - `{name}.wasm.sig`            —— 分离签名（ed25519 over **清单文件精确字节**）
@@ -31,7 +31,7 @@
 //! - `enforce`：清单+签名必须存在且全量校验通过，否则拒载——生产推荐。
 //! - `off`：完全跳过（等价既有行为），启动日志明示。
 //!
-//! # 纯度声明对账（67 号 P5 任务 3 重定义，D-1 已批）
+//! # 纯度声明对账（零 host function 模型下无可授权能力——原案权限声明让位于纯度对账）
 //! 清单 `purity: "zero-import"` 与引擎实测 import 集合交叉：引擎「import 非空
 //! 即拒」（`engine::load` 零能力防线①）不变，本模块在拒载消息上融合「清单
 //! 纯度声明与实测不符」定性——声明×实载对账范式（declaration.rs 同族）。

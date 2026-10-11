@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-"""分发完整性端到端实证（107 号 P5 一期：per-module 清单 + blake3 + ed25519 分离签名）
+"""分发完整性端到端实证（per-module 清单 + blake3 + ed25519 分离签名）
 
 全程在**临时目录**进行（复制一个在役 .wasm 作 fixture），零现网污染、零 server 依赖。
-按 107 号 §六 验收判据分三轮：
+按立项方案验收判据分三轮：
 
   轮 A（CLI 签发 + 离线验证）：keygen → sign → verify(enforce) 全过；
       篡改 .wasm 单字节 → verify FAIL（内容哈希不符）；

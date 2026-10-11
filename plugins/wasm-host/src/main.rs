@@ -10,7 +10,7 @@
 //! **刻意进程外**（ADR-0001 决策 1）：`evorule-server` 二进制零膨胀、
 //! 源码零改动，wasmtime 依赖树不进入 server 的 `Cargo.lock`。
 //!
-//! # 子命令（107 号 P5 一期：分发完整性 CLI；无参数 = 服务模式）
+//! # 子命令（分发完整性 CLI；无参数 = 服务模式）
 //! | 子命令 | 说明 |
 //! |---|---|
 //! | `keygen` | 生成 ed25519 密钥对（种子私钥私密保存，公钥入信任锚） |
@@ -286,7 +286,7 @@ async fn health(State(reg): State<Arc<UdfRegistry>>) -> (StatusCode, Json<Value>
             "udfs": reg.names(),
             // 探活可信度：可服务性对账（声明 × 实载）。字段含义见 declaration 模块。
             "reconciliation": rec.to_json(),
-            // 分发完整性（107 号 P5 一期）：verified / accepted_unverified / unchecked
+            // 分发完整性（一期）：verified / accepted_unverified / unchecked
             "integrity": integrity_map,
         })),
     )
@@ -374,7 +374,7 @@ async fn call_udf(
     }
 }
 
-// ---------------- CLI 子命令（分发完整性，107 号 P5 一期） ----------------
+// ---------------- CLI 子命令（分发完整性） ----------------
 
 fn cli_keygen() {
     match integrity::generate_keys() {

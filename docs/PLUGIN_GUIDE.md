@@ -272,7 +272,7 @@ POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留�
 - **sensitive 守卫**：声明 `sensitive: true` 的服务，REST 直调一律 403——敏感操作只能经会话链（审计 + 审批门）。
 - **最小暴露面**：管理面 token 环境变量强制；缺省拒绝。
 
-### 8.1 WASM 插件分发完整性（wasm-host 专属，107 号 P5）
+### 8.1 WASM 插件分发完整性（wasm-host 专属）
 
 WASM UDF 的分发物为**三件套**，由 `evorule-wasm-host` 在加载期做前置校验（先验签后编译）：
 
