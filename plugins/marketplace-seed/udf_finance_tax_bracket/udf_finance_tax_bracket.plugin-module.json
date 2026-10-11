@@ -1,0 +1,8 @@
+{
+  "module": "udf_finance_tax_bracket",
+  "version": "1.0.0",
+  "abi": 1,
+  "blake3": "blake3:1eeb75da9bea04032bde47ef13dda55e254e2abbb365b11645aaf183b14944a0",
+  "purity": "zero-import",
+  "release_notes": "官方示例插件（演示钥签名，生产环境须换正式钥匙）"
+}

@@ -1,0 +1,8 @@
+{
+  "module": "udf_text_normalize",
+  "version": "1.0.0",
+  "abi": 1,
+  "blake3": "blake3:69ab3fa812aaaef3d4b88169d1e89fcefa4e4e2d86bb23ca606656774d5d1e42",
+  "purity": "zero-import",
+  "release_notes": "官方示例插件（演示钥签名，生产环境须换正式钥匙）"
+}

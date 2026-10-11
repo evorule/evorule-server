@@ -1,0 +1,6 @@
+{
+  "_doc": "演示信任锚（仅本地试跑 enforce 模式用；demo-2026 为公开演示钥，生产环境必须用 keygen 生成正式钥匙并走发布指南流程）",
+  "keys": [
+    {"key_id": "demo-2026", "public_key": "d3103d1c7369c50d049e1d1b573d34d2b7fc948e12521fb73bdd6e5558d92b36", "note": "演示钥（公开，勿用于生产）", "enabled": true}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "module": "udf_finance_tax_calc",
+  "version": "1.0.0",
+  "abi": 1,
+  "blake3": "blake3:b7de5e25a8fb01de2de13176cd0ee4ff03b4d1f1e478fbc5e1242b9b1dcca2a7",
+  "purity": "zero-import",
+  "release_notes": "官方示例插件（演示钥签名，生产环境须换正式钥匙）"
+}

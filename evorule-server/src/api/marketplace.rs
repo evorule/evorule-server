@@ -25,8 +25,8 @@
 //! - 单租户本地 server，无跨用户身份体系：DELETE 不做所有权校验（认证由统一
 //!   中间件把关）；多租户/审核流属后续项，触发条件 = 模板市场对外开放
 
-use axum::extract::{Multipart, Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{header, StatusCode};
 use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde_json::Value;
@@ -56,6 +56,11 @@ pub fn marketplace_router() -> Router<AppState> {
         .route(
             "/api/marketplace/templates/{id}/download",
             get(download_template),
+        )
+        .route("/api/marketplace/plugins", get(list_plugins))
+        .route(
+            "/api/marketplace/plugins/{id}/download",
+            get(download_plugin),
         )
 }
 
@@ -593,6 +598,266 @@ async fn delete_template_handler(
 }
 
 // ============================================================================
+// WASM 插件类目（官方审核制只读；分发物三件套由运维放置，P5 二期）
+// ============================================================================
+//
+// 与模板类目的职责差异（如实登记）：
+// - 模板 = 用户上传制（POST/PATCH/DELETE 全开，单租户无审核流）；
+// - 插件 = **官方审核制**（一期只读：无上传/删除/编辑端点）——分发物含可执行
+//   二进制，准入门槛高于模板；资产放置 = 运维按《插件发布指南》拷入目录，
+//   重启 server（扫描式列表，目录即事实源）。
+//
+// 存储布局（与 templates/ 同级物理隔离，不入规则加载路径）：
+//
+// ```text
+// {marketplace_dir}/plugins/{plugin_id}/
+// ├── {plugin_id}.wasm                 模块二进制（服务名 = plugin_id）
+// ├── {plugin_id}.plugin-module.json   分发清单（wasm-host integrity 一期格式）
+// ├── {plugin_id}.wasm.sig             分离签名（可缺省——市场只报材料状态）
+// └── meta.json                        发布元数据（author/description/下载计数）
+// ```
+//
+// **市场不绕闸**：本类目只陈列材料状态（has_signature/key_id/哈希比对），
+// 签名真伪与纯度的**机器验证在 wasm-host 加载期**（enforce 策略）——市场列表
+// 不构成信任背书，`integrity_mismatch`（清单哈希 × 实测不符）只做 fail-visible
+// 标注，不阻断下载（审查者需要能看到坏样本）。
+
+/// 插件分发物清单（wasm-host integrity 一期格式的只读投影；字段缺失容忍——
+/// 市场陈列对清单取超集读取，严格校验归 wasm-host 加载期）
+#[derive(serde::Deserialize)]
+struct PluginPartQuery {
+    part: Option<String>,
+}
+
+/// 扫描插件目录并列出全部分发物材料状态（plugin_id 字典序，确定性）
+fn list_plugins_from(marketplace_dir: &std::path::Path) -> Result<Vec<Value>, String> {
+    let root = marketplace_dir.join("plugins");
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut ids: Vec<String> = Vec::new();
+    let entries = std::fs::read_dir(&root)
+        .map_err(|e| format!("扫描插件目录失败({}): {e}", root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("遍历插件目录失败: {e}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                ids.push(name.to_string());
+            }
+        }
+    }
+    ids.sort();
+
+    let mut out = Vec::new();
+    for id in ids {
+        if !valid_id(&id) {
+            tracing::warn!("插件目录名非法（跳过）: {id}");
+            continue;
+        }
+        if let Some(item) = read_plugin_entry(&root, &id)? {
+            out.push(item);
+        } // else：不完整目录已 warn，跳过
+    }
+    Ok(out)
+}
+
+/// 读取单个插件的分发物材料状态。`Ok(None)` = 目录不完整（跳过，已 warn）。
+fn read_plugin_entry(root: &std::path::Path, id: &str) -> Result<Option<Value>, String> {
+    let dir = root.join(id);
+    let wasm_path = dir.join(format!("{id}.wasm"));
+    let manifest_path = dir.join(format!("{id}.plugin-module.json"));
+    let sig_path = dir.join(format!("{id}.wasm.sig"));
+    if !wasm_path.is_file() || !manifest_path.is_file() {
+        tracing::warn!(
+            "插件目录不完整（缺 .wasm 或分发清单，跳过）: {}",
+            dir.display()
+        );
+        return Ok(None);
+    }
+    let wasm_bytes = std::fs::read(&wasm_path).map_err(|e| format!("读插件模块失败({id}): {e}"))?;
+    // 服务端权威重算（对齐模板类目 content_hash 惯例）
+    let actual_hash = blake3::hash(&wasm_bytes).to_string();
+
+    let manifest: Value = read_meta(&manifest_path)?;
+    let declared_hash = manifest
+        .get("blake3")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    // "blake3:<hex>" → 裸 hex 比对（清单形态带前缀，marketplace meta 不带）
+    let declared_bare = declared_hash
+        .strip_prefix("blake3:")
+        .unwrap_or(declared_hash);
+    let integrity_mismatch = !declared_bare.is_empty() && declared_bare != actual_hash;
+
+    let mut item = serde_json::json!({
+        "id": id,
+        "name": id,
+        "download_url": format!("/api/marketplace/plugins/{id}/download"),
+        "content_hash": actual_hash,
+        "has_signature": sig_path.is_file(),
+        "integrity_mismatch": integrity_mismatch,
+    });
+    let obj = match item.as_object_mut() {
+        Some(o) => o,
+        None => return Err(format!("插件 `{id}` 列表项构造异常（非对象）")),
+    };
+    for key in ["version", "abi", "purity", "engine_min"] {
+        if let Some(v) = manifest.get(key) {
+            obj.insert(key.into(), v.clone());
+        }
+    }
+    if let Some(key_id) = sig_path
+        .is_file()
+        .then(|| std::fs::read_to_string(&sig_path).ok())
+        .flatten()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|s| s.get("key_id").and_then(|v| v.as_str()).map(str::to_string))
+    {
+        obj.insert("key_id".into(), Value::String(key_id));
+    }
+    // meta.json 可缺省（清单是身份事实源；meta 只补展示字段）
+    let meta_path = dir.join("meta.json");
+    if meta_path.is_file() {
+        if let Ok(meta) = read_meta(&meta_path) {
+            for key in ["description", "author", "download_count", "created_at"] {
+                if let Some(v) = meta.get(key) {
+                    obj.insert(key.into(), v.clone());
+                }
+            }
+        }
+    }
+    Ok(Some(item))
+}
+
+/// 读取插件分发物指定部件的字节（part = wasm | manifest | signature）
+fn load_plugin_part(
+    marketplace_dir: &std::path::Path,
+    id: &str,
+    part: &str,
+) -> Result<(Vec<u8>, &'static str, &'static str), String> {
+    if !valid_id(id) {
+        return Err(format!("非法插件 ID: {id:?}（只允许字母数字与 - _）"));
+    }
+    let dir = marketplace_dir.join("plugins").join(id);
+    let (path, ctype, ext): (std::path::PathBuf, &'static str, &'static str) = match part {
+        "wasm" => (dir.join(format!("{id}.wasm")), "application/wasm", "wasm"),
+        "manifest" => (
+            dir.join(format!("{id}.plugin-module.json")),
+            "application/json",
+            "plugin-module.json",
+        ),
+        "signature" => (
+            dir.join(format!("{id}.wasm.sig")),
+            "application/json",
+            "sig",
+        ),
+        other => {
+            return Err(format!(
+                "未知 part=`{other}`（合法值: wasm | manifest | signature）"
+            ))
+        }
+    };
+    if !path.is_file() {
+        return Err(format!(
+            "插件 `{id}` 的 {part} 部件不存在（可刷新市场列表核对材料状态）"
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("读取失败({}): {e}", path.display()))?;
+    Ok((bytes, ctype, ext))
+}
+
+/// 递增插件下载计数（meta.json download_count；失败仅告警不阻断——统计位）
+fn bump_plugin_download_count(marketplace_dir: &std::path::Path, id: &str) {
+    let meta_path = marketplace_dir.join("plugins").join(id).join("meta.json");
+    if !meta_path.is_file() {
+        return; // 无 meta 的插件不记计数（清单为主身份，容忍）
+    }
+    let Ok(mut meta) = read_meta(&meta_path) else {
+        tracing::warn!("插件下载计数更新失败（meta 不可读）: {id}");
+        return;
+    };
+    let count = meta
+        .get("download_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert("download_count".into(), Value::from(count + 1));
+    }
+    match serde_json::to_vec_pretty(&meta) {
+        Ok(bytes) => {
+            if let Err(e) = atomic_write(&meta_path, &bytes) {
+                tracing::warn!("插件下载计数回写失败: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("插件下载计数序列化失败: {e}"),
+    }
+}
+
+/// `GET /api/marketplace/plugins` → 列出插件分发物材料状态
+#[utoipa::path(
+    get,
+    path = "/api/marketplace/plugins",
+    tag = "marketplace",
+    responses(
+        (status = 200, description = "插件列表（plugin_id 字典序）", body = serde_json::Value),
+        (status = 500, description = "存储扫描失败", body = serde_json::Value)
+    )
+)]
+async fn list_plugins(
+    State(dir): State<MarketplaceDir>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let plugins =
+        list_plugins_from(&dir.0).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let count = plugins.len();
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "count": count,
+        "plugins": plugins,
+    })))
+}
+
+/// `GET /api/marketplace/plugins/{id}/download?part=wasm|manifest|signature`
+///
+/// 下载分发物部件（wasm 为二进制原样字节，manifest/signature 为 JSON 文本）；
+/// 每次下载计 1（meta.json download_count，缺失 meta 的插件不计数）。
+#[utoipa::path(
+    get,
+    path = "/api/marketplace/plugins/{id}/download",
+    tag = "marketplace",
+    params(
+        ("id" = String, Path, description = "插件 ID（=目录名=服务名）"),
+        ("part" = Option<String>, Query, description = "wasm（默认）| manifest | signature")
+    ),
+    responses(
+        (status = 200, description = "部件字节（wasm=application/wasm，其余 application/json）"),
+        (status = 400, description = "非法 ID 或未知 part", body = serde_json::Value),
+        (status = 404, description = "插件或部件不存在", body = serde_json::Value)
+    )
+)]
+async fn download_plugin(
+    State(dir): State<MarketplaceDir>,
+    Path(id): Path<String>,
+    Query(q): Query<PluginPartQuery>,
+) -> Result<(StatusCode, [(header::HeaderName, String); 2], Vec<u8>), (StatusCode, Json<Value>)> {
+    let part = q.part.as_deref().unwrap_or("wasm");
+    let (bytes, ctype, ext) =
+        load_plugin_part(&dir.0, &id, part).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    bump_plugin_download_count(&dir.0, &id);
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, ctype.to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{id}.{ext}\""),
+            ),
+        ],
+        bytes,
+    ))
+}
+
+// ============================================================================
 // 单测（tempdir 直测存储逻辑，无 HTTP 层）
 // ============================================================================
 
@@ -928,5 +1193,109 @@ mod tests {
         );
         let (_meta, content) = load_template(dir, &id).unwrap();
         assert_eq!(content.len(), 1024 * 1024);
+    }
+
+    // ---- 插件类目（官方审核制只读）----
+
+    fn seed_plugin(dir: &std::path::Path, id: &str, wasm: &[u8], with_sig: bool) {
+        let d = dir.join("plugins").join(id);
+        std::fs::create_dir_all(&d).unwrap();
+        let hash = blake3::hash(wasm).to_string();
+        std::fs::write(d.join(format!("{id}.wasm")), wasm).unwrap();
+        std::fs::write(
+            d.join(format!("{id}.plugin-module.json")),
+            format!(
+                r#"{{"module":"{id}","version":"1.0.0","abi":1,"blake3":"blake3:{hash}","purity":"zero-import"}}"#
+            ),
+        )
+        .unwrap();
+        if with_sig {
+            std::fs::write(
+                d.join(format!("{id}.wasm.sig")),
+                format!(r#"{{"module":"{id}","key_id":"demo-2026","signature":"00"}}"#),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            d.join("meta.json"),
+            r#"{"description":"演示插件","author":"official","download_count":0}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn plugin_listing_reports_material_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        seed_plugin(dir, "demo", b"demo-wasm-bytes", true);
+        let list = list_plugins_from(dir).unwrap();
+        assert_eq!(list.len(), 1);
+        let p = &list[0];
+        assert_eq!(p["id"], "demo");
+        assert_eq!(p["has_signature"], true);
+        assert_eq!(p["key_id"], "demo-2026");
+        assert_eq!(p["integrity_mismatch"], false);
+        assert_eq!(p["purity"], "zero-import");
+        assert_eq!(p["abi"], 1);
+        assert_eq!(
+            p["content_hash"].as_str().unwrap(),
+            blake3::hash(b"demo-wasm-bytes").to_string()
+        );
+        assert_eq!(p["description"], "演示插件");
+    }
+
+    #[test]
+    fn plugin_listing_integrity_mismatch_visible_not_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        seed_plugin(dir, "demo", b"original", true);
+        // 事后换 .wasm 内容（清单哈希与实测不符）→ 列表标注而非隐藏
+        std::fs::write(dir.join("plugins/demo/demo.wasm"), b"tampered").unwrap();
+        let list = list_plugins_from(dir).unwrap();
+        assert_eq!(list.len(), 1, "坏样本仍陈列（审查者需可见）");
+        assert_eq!(list[0]["integrity_mismatch"], true);
+    }
+
+    #[test]
+    fn plugin_listing_skips_incomplete_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        seed_plugin(dir, "good", b"x", false);
+        // 残缺目录（缺清单）→ 跳过并 warn，不影响其余
+        let bad = dir.join("plugins").join("bad~");
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::write(bad.join("bad~.wasm"), b"y").unwrap();
+        let list = list_plugins_from(dir).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["id"], "good");
+        assert_eq!(list[0]["has_signature"], false, "无签名如实陈列");
+    }
+
+    #[test]
+    fn plugin_part_download_all_parts_and_unknown_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        seed_plugin(dir, "demo", b"wasm-bytes-here", true);
+        let (bytes, _, ext) = load_plugin_part(dir, "demo", "wasm").unwrap();
+        assert_eq!(bytes, b"wasm-bytes-here");
+        assert_eq!(ext, "wasm");
+        let (bytes, _, _) = load_plugin_part(dir, "demo", "manifest").unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("zero-import"));
+        let (bytes, _, _) = load_plugin_part(dir, "demo", "signature").unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("demo-2026"));
+        assert!(load_plugin_part(dir, "demo", "source").is_err());
+        assert!(load_plugin_part(dir, "ghost", "wasm").is_err());
+        assert!(load_plugin_part(dir, "../escape", "wasm").is_err());
+    }
+
+    #[test]
+    fn plugin_download_count_bumps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        seed_plugin(dir, "demo", b"x", false);
+        bump_plugin_download_count(dir, "demo");
+        bump_plugin_download_count(dir, "demo");
+        let meta = read_meta(&dir.join("plugins/demo/meta.json")).unwrap();
+        assert_eq!(meta["download_count"], 2);
     }
 }

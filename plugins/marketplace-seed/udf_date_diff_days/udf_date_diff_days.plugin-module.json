@@ -1,0 +1,8 @@
+{
+  "module": "udf_date_diff_days",
+  "version": "1.0.0",
+  "abi": 1,
+  "blake3": "blake3:2f2049de3280f389b23d0a7206546b3536989edccc40f79223477825fc000f59",
+  "purity": "zero-import",
+  "release_notes": "官方示例插件（演示钥签名，生产环境须换正式钥匙）"
+}

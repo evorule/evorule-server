@@ -21,7 +21,10 @@
             "description": "税率，单位：基点（600 = 6%；合法区间 [0,10000]）"
           }
         },
-        "required": ["amount_cents", "rate_bp"]
+        "required": [
+          "amount_cents",
+          "rate_bp"
+        ]
       },
       "timeout_ms": 10000
     },
@@ -42,15 +45,33 @@
             "items": {
               "type": "object",
               "properties": {
-                "from_cents": { "type": "integer", "description": "档位下界（含），单位：分" },
-                "to_cents": { "type": ["integer", "null"], "description": "档位上界（含），null=顶档" },
-                "rate_bp": { "type": "integer", "description": "档位税率，单位：基点，[0,10000]" }
+                "from_cents": {
+                  "type": "integer",
+                  "description": "档位下界（含），单位：分"
+                },
+                "to_cents": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "档位上界（含），null=顶档"
+                },
+                "rate_bp": {
+                  "type": "integer",
+                  "description": "档位税率，单位：基点，[0,10000]"
+                }
               },
-              "required": ["from_cents", "to_cents", "rate_bp"]
+              "required": [
+                "from_cents",
+                "to_cents",
+                "rate_bp"
+              ]
             }
           }
         },
-        "required": ["taxable_cents"]
+        "required": [
+          "taxable_cents"
+        ]
       },
       "timeout_ms": 10000
     },
@@ -70,9 +91,26 @@
             "description": "税率，单位：基点（600 = 6%；合法区间 [0,10000]）"
           }
         },
-        "required": ["amount_cents", "rate_bp"]
+        "required": [
+          "amount_cents",
+          "rate_bp"
+        ]
       },
       "timeout_ms": 10000
+    },
+    {
+      "name": "udf_text_normalize",
+      "sensitive": false,
+      "description": "字符串规范化（trim+小写+空白折叠）；入参 {text}，出参 {normalized,length}",
+      "parameters": {},
+      "timeout_ms": 10
+    },
+    {
+      "name": "udf_date_diff_days",
+      "sensitive": false,
+      "description": "两日期相差天数（严格公历含闰年）；入参 {from,to}，出参 {days}",
+      "parameters": {},
+      "timeout_ms": 10
     }
   ]
 }
