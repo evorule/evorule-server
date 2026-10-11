@@ -25,11 +25,10 @@ pub fn anchor_config_from_env() -> Option<SessionAnchorConfig> {
     let seed_hex = std::env::var("EVORULE_ANCHOR_SEED").ok()?;
     let seed = decode_seed(&seed_hex)?;
 
-    let key_id = std::env::var("EVORULE_ANCHOR_KEY_ID")
-        .unwrap_or_else(|_| "anchor-key-1".to_string());
-    let engine_id = std::env::var("EVORULE_ANCHOR_ENGINE_ID").unwrap_or_else(|_| {
-        format!("evorule-server/{}", env!("CARGO_PKG_VERSION"))
-    });
+    let key_id =
+        std::env::var("EVORULE_ANCHOR_KEY_ID").unwrap_or_else(|_| "anchor-key-1".to_string());
+    let engine_id = std::env::var("EVORULE_ANCHOR_ENGINE_ID")
+        .unwrap_or_else(|_| format!("evorule-server/{}", env!("CARGO_PKG_VERSION")));
     let interval = std::env::var("EVORULE_ANCHOR_INTERVAL")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -75,8 +74,8 @@ fn decode_seed(hex: &str) -> Option<[u8; 32]> {
 pub fn deployment_public_keys() -> Option<BTreeMap<String, String>> {
     let seed_hex = std::env::var("EVORULE_ANCHOR_SEED").ok()?;
     let seed = decode_seed(&seed_hex)?;
-    let key_id = std::env::var("EVORULE_ANCHOR_KEY_ID")
-        .unwrap_or_else(|_| "anchor-key-1".to_string());
+    let key_id =
+        std::env::var("EVORULE_ANCHOR_KEY_ID").unwrap_or_else(|_| "anchor-key-1".to_string());
     let signer = evorule_governance::signing::AuditSigner::from_bytes(seed);
     let mut keys = BTreeMap::new();
     keys.insert(key_id, signer.verifying_hex());

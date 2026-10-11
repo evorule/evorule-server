@@ -7290,11 +7290,8 @@ async fn session_anchors(
         .ok_or(StatusCode::NOT_FOUND)?;
     // 兜底刷新：确保自动封条间隔已到的事实先入链再取快照
     let _new_count = session.audit_new();
-    let anchors: Vec<serde_json::Value> = session
-        .anchors()
-        .into_iter()
-        .map(anchor_to_json)
-        .collect();
+    let anchors: Vec<serde_json::Value> =
+        session.anchors().into_iter().map(anchor_to_json).collect();
     let count = anchors.len();
     drop(sessions);
     Ok(Json(serde_json::json!({
@@ -7397,8 +7394,7 @@ async fn session_anchor_verify(
     };
     let keys = if external_keys.is_empty() {
         // 未提供时用部署面公钥（anchor_setup 配置的同 seed 派生）
-crate::anchor_setup::deployment_public_keys()
-            .unwrap_or_default()
+        crate::anchor_setup::deployment_public_keys().unwrap_or_default()
     } else {
         external_keys
     };
@@ -10468,7 +10464,10 @@ impl GovernanceServer {
             .route("/api/sessions/{id}/audit/verify", get(session_audit_verify))
             .route("/api/sessions/{id}/anchors", get(session_anchors))
             .route("/api/sessions/{id}/anchors/seal", post(session_anchor_seal))
-            .route("/api/sessions/{id}/anchors/verify", post(session_anchor_verify))
+            .route(
+                "/api/sessions/{id}/anchors/verify",
+                post(session_anchor_verify),
+            )
             .route("/api/sessions/{id}/audit/export", get(session_audit_export))
             .route(
                 "/api/sessions/{id}/audit/import",
@@ -14258,13 +14257,7 @@ mod tests {
         // 404 面：不存在会话
         let (state2, _) = make_test_state();
         let router2 = make_test_router(&state2);
-        let (status, _) = oneshot_json(
-            router2,
-            "GET",
-            "/api/sessions/999999/anchors",
-            None,
-        )
-        .await;
+        let (status, _) = oneshot_json(router2, "GET", "/api/sessions/999999/anchors", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -16377,7 +16370,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // 0=引擎缺省 TTL
+            0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         );
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
@@ -16672,7 +16665,7 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // 0=引擎缺省 TTL
+            0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         );
         assert!(
@@ -16751,9 +16744,9 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // 0=引擎缺省 TTL
-                    None, // 锚点链：测试构造不启用
-);
+            0,    // 0=引擎缺省 TTL
+            None, // 锚点链：测试构造不启用
+        );
 
         let mut bundle = q12_knowledge_bundle(
             "bundle-q12-mixed",
@@ -16822,9 +16815,9 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // 0=引擎缺省 TTL
-                    None, // 锚点链：测试构造不启用
-);
+            0,    // 0=引擎缺省 TTL
+            None, // 锚点链：测试构造不启用
+        );
 
         let mut bundle = q12_knowledge_bundle(
             "bundle-importreg-shape",
@@ -16876,9 +16869,9 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // 0=引擎缺省 TTL
-                    None, // 锚点链：测试构造不启用
-)
+            0,    // 0=引擎缺省 TTL
+            None, // 锚点链：测试构造不启用
+        )
         .with_workspace_db(Arc::new(
             evorule_workspace::WorkspaceDb::in_memory().unwrap(),
         ));
@@ -16932,9 +16925,9 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // 0=引擎缺省 TTL
-                    None, // 锚点链：测试构造不启用
-);
+            0,    // 0=引擎缺省 TTL
+            None, // 锚点链：测试构造不启用
+        );
 
         // q12_knowledge_bundle 的 subset 已是 human 背书形态
         let bundle = q12_knowledge_bundle(
@@ -16979,9 +16972,9 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // 0=引擎缺省 TTL
-                    None, // 锚点链：测试构造不启用
-)
+            0,    // 0=引擎缺省 TTL
+            None, // 锚点链：测试构造不启用
+        )
         .with_workspace_db(ws_db.clone());
 
         // 先建 workspace 行(沙盒记录外键依赖) + 两个 closed 沙盒记录: PASS / FAIL
@@ -17092,9 +17085,9 @@ mod tests {
             rules_dir.clone(),
             evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-            0, // 0=引擎缺省 TTL
-                    None, // 锚点链：测试构造不启用
-);
+            0,    // 0=引擎缺省 TTL
+            None, // 锚点链：测试构造不启用
+        );
 
         // 不注入领域 schema → resolver 未命中
         let bundle = q12_knowledge_bundle(

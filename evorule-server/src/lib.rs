@@ -14,8 +14,8 @@
 // C5 (unwrap/expect/panic = deny) 仅约束生产代码;测试代码保留 unwrap 惯例
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-pub mod api;
 pub mod anchor_setup;
+pub mod api;
 pub mod auth;
 pub mod input_sanitizer;
 pub mod knowledge_store;
