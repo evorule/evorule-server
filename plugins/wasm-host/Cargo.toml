@@ -27,7 +27,7 @@ wasmtime = { version = "=48.0.4", default-features = false, features = [
     "cranelift",    # 编译后端
 ] }
 
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "multipart"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

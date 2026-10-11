@@ -75,8 +75,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::UdfRuntime;
@@ -140,7 +141,8 @@ async fn serve() -> Result<(), String> {
     };
     let dir_path = std::path::Path::new(&dir).to_path_buf();
     let trusted_path = std::env::var("WASM_HOST_TRUSTED_KEYS").ok();
-    let trusted = load_trusted_keys(&dir_path, trusted_path.as_deref(), policy)?;
+    let trusted =
+        load_trusted_keys(&dir_path, trusted_path.as_deref(), policy)?.map(std::sync::Arc::new);
 
     tracing::info!(
         "分发完整性策略: {}（信任锚: {}）",
@@ -157,12 +159,14 @@ async fn serve() -> Result<(), String> {
         Err(e) => return Err(format!("运行时初始化失败: {e}")),
     };
 
-    let verifier = Verifier::new(policy, trusted.as_ref());
+    let verifier = Verifier::new(policy, trusted.as_deref());
     let registry = match UdfRegistry::load_dir(
         Arc::clone(&runtime),
         &dir_path,
         std::env::var("WASM_HOST_PLUGIN_JSON").ok().as_deref(),
         &verifier,
+        trusted.clone(),
+        policy,
     ) {
         Ok(r) => Arc::new(r),
         Err(e) => return Err(format!("UDF 加载失败（fail-fast）: {e}")),
@@ -209,10 +213,29 @@ async fn serve() -> Result<(), String> {
         }
     }
 
-    let app = Router::new()
+    // 管理面（安装自动化三期）：缺省关闭——WASM_HOST_ADMIN_TOKEN 未配置时
+    // 三端点**整体不注册**（404 形态=端点不存在，不暴露能力面）
+    let admin_token = std::env::var("WASM_HOST_ADMIN_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    let mut app = Router::new()
         .route("/health", get(health))
         .route("/services", get(list_services))
-        .route("/services/{name}", post(call_udf))
+        .route("/services/{name}", post(call_udf));
+    if admin_token.is_some() {
+        tracing::info!("管理面已开启: /admin/install|uninstall|disable（Bearer token 鉴权）");
+        app = app
+            .route("/admin/install", post(admin_install))
+            .route("/admin/uninstall/{name}", post(admin_uninstall))
+            .route("/admin/disable/{name}", post(admin_disable));
+    } else {
+        tracing::info!("管理面关闭（WASM_HOST_ADMIN_TOKEN 未配置）——安装自动化通道不可用");
+    }
+    let app = app
+        .layer(axum::middleware::from_fn_with_state(
+            admin_token.map(|t| AdminToken(t.into())),
+            admin_auth_middleware,
+        ))
         .with_state(registry);
 
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -560,4 +583,176 @@ fn integrity_desc(v: &Integrity) -> &'static str {
         Integrity::AcceptedUnverified { .. } => "未验证放行(warn)",
         Integrity::Unchecked => "未检查(off)",
     }
+}
+
+// ---------------- 管理面（安装自动化三期） ----------------
+
+/// 管理 token 的 newtype（axum 中间件 state 载体）
+#[derive(Clone)]
+struct AdminToken(Arc<str>);
+
+/// 管理 token 校验中间件：只拦 `/admin/*`；Bearer 不匹配 → 401（不区分
+/// 「未配置」与「错误」的文案细节——token 未配置时端点本就不注册）。
+async fn admin_auth_middleware(
+    State(expected): State<Option<AdminToken>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if req.uri().path().starts_with("/admin") {
+        let ok = expected.as_ref().is_some_and(|t| {
+            req.headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .is_some_and(|given| given == t.0.as_ref())
+        });
+        if !ok {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "ok": false, "error": "admin token 缺失或不匹配" })),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
+/// `POST /admin/install`：multipart 三件套（wasm / manifest / signature 可缺省）
+/// + 可选字段 allow_downgrade。全程阶段计时回显（透明性）。
+async fn admin_install(
+    State(reg): State<Arc<UdfRegistry>>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let mut wasm: Option<Vec<u8>> = None;
+    let mut manifest: Option<Vec<u8>> = None;
+    let mut signature: Option<Vec<u8>> = None;
+    let mut allow_downgrade = false;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| err_json(StatusCode::BAD_REQUEST, format!("multipart 解析失败: {e}")))?
+    {
+        match field.name().unwrap_or("") {
+            "wasm" => wasm = Some(field.bytes().await.map_err(bad_req)?.to_vec()),
+            "manifest" => manifest = Some(field.bytes().await.map_err(bad_req)?.to_vec()),
+            "signature" => signature = Some(field.bytes().await.map_err(bad_req)?.to_vec()),
+            "allow_downgrade" => {
+                allow_downgrade = field.text().await.unwrap_or_default().trim() == "true";
+            }
+            _ => {}
+        }
+    }
+    let manifest_bytes = manifest.ok_or_else(|| {
+        err_json(
+            StatusCode::BAD_REQUEST,
+            "缺少 manifest 字段（分发清单 JSON）",
+        )
+    })?;
+    let module_name = serde_json::from_slice::<Value>(&manifest_bytes)
+        .ok()
+        .and_then(|m| m.get("module").and_then(|v| v.as_str()).map(str::to_string))
+        .ok_or_else(|| {
+            err_json(
+                StatusCode::BAD_REQUEST,
+                "清单缺少 module 字段（无法推导模块名）",
+            )
+        })?;
+    let wasm_bytes =
+        wasm.ok_or_else(|| err_json(StatusCode::BAD_REQUEST, "缺少 wasm 字段（模块二进制）"))?;
+
+    // 编译 CPU 密集 → spawn_blocking（与 call_udf 同款纪律）
+    let name_for_resp = module_name.clone();
+    let reg2 = std::sync::Arc::clone(&reg);
+    let outcome = tokio::task::spawn_blocking(move || {
+        reg2.install(
+            &module_name,
+            wasm_bytes,
+            manifest_bytes,
+            signature,
+            allow_downgrade,
+        )
+    })
+    .await
+    .map_err(|e| {
+        err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("阻塞任务失败: {e}"),
+        )
+    })?;
+
+    match outcome {
+        Ok(stages) => {
+            let snap = reg.snapshot();
+            Ok(Json(json!({
+                "ok": true,
+                "installed": name_for_resp,
+                "stages": stages.to_json(),
+                "modules": snap.modules.len(),
+                "integrity": snap.integrity.get(&name_for_resp).map(|i| i.to_json()),
+                // 静态制部署提示：新服务需 plugin.json 补声明或开启 auto_discover 才可被 server 路由
+                "reconciliation": snap.reconciliation.to_json(),
+            })))
+        }
+        Err(e) => Err(err_json(StatusCode::UNPROCESSABLE_ENTITY, e)),
+    }
+}
+
+/// `POST /admin/uninstall/{name}`：快照移除+三件套物理删除（不可逆）
+async fn admin_uninstall(
+    State(reg): State<Arc<UdfRegistry>>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let name_for_resp = name.clone();
+    let reg2 = std::sync::Arc::clone(&reg);
+    let outcome = tokio::task::spawn_blocking(move || reg2.uninstall(&name))
+        .await
+        .map_err(|e| {
+            err_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("阻塞任务失败: {e}"),
+            )
+        })?;
+    match outcome {
+        Ok(stages) => Ok(Json(json!({
+            "ok": true, "uninstalled": name_for_resp, "stages": stages.to_json(),
+            "modules": reg.len(),
+        }))),
+        Err(e) => Err(err_json(StatusCode::UNPROCESSABLE_ENTITY, e)),
+    }
+}
+
+/// `POST /admin/disable/{name}`：仅运行时下线（文件保留，重启恢复在役）
+async fn admin_disable(
+    State(reg): State<Arc<UdfRegistry>>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let name_for_resp = name.clone();
+    let reg2 = std::sync::Arc::clone(&reg);
+    let outcome = tokio::task::spawn_blocking(move || reg2.disable(&name))
+        .await
+        .map_err(|e| {
+            err_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("阻塞任务失败: {e}"),
+            )
+        })?;
+    match outcome {
+        Ok(stages) => Ok(Json(json!({
+            "ok": true, "disabled": name_for_resp, "stages": stages.to_json(),
+            "modules": reg.len(),
+            "note": "运行时下线（文件保留，重启后恢复在役）",
+        }))),
+        Err(e) => Err(err_json(StatusCode::UNPROCESSABLE_ENTITY, e)),
+    }
+}
+
+fn bad_req(e: axum::extract::multipart::MultipartError) -> (StatusCode, Json<Value>) {
+    err_json(StatusCode::BAD_REQUEST, format!("字段读取失败: {e}"))
+}
+
+fn err_json(status: StatusCode, message: impl Into<String>) -> (StatusCode, Json<Value>) {
+    (
+        status,
+        Json(json!({ "ok": false, "error": message.into() })),
+    )
 }
