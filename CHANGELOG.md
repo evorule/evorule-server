@@ -25,24 +25,6 @@
 
 ---
 
-## [Unreleased]
-
-### 🆕 新增
-
-- 🆕 **WASM 插件分发完整性（wasm-host）**：per-module 分发清单（`{name}.plugin-module.json`：身份/版本/abi/blake3 内容哈希/纯度声明）+ ed25519 分离签名（`{name}.wasm.sig`，over 清单文件精确字节，与审计锚点签名同族）+ 信任锚（`trusted-keys.json`）+ 加载期前置验签（先验签后编译），策略 `WASM_HOST_SIGN_POLICY` = warn（缺省迁移期：材料缺失放行/存在即全量校验）| enforce（三件套强制，生产推荐）| off；纯度声明与引擎 import 实测对账（声明 zero-import × 实测非空 = 拒载，零 host function 红线增强不变）
-- 🆕 **分发完整性 CLI**：`evorule-wasm-host keygen | sign | verify`——发布者离线签发与自检、CI 门禁、边缘前置验证三用
-- 🆕 `/health` body 增 `integrity` 字段（per-module：verified / accepted_unverified / unchecked）——server 侧探活与对账告警语义不变
-
-### ✅ 向后兼容
-
-- ✅ 默认 warn 策略 + 零材料模块放行：存量 `.wasm` 目录行为不变（`off` 为逐字节等价档）；server 二进制零改动（拒载经既有对账/探活链告警）
-
-### 🧪 测试
-
-- 🧪 `verify_p5_integrity.py`：三轮 15 断言（CLI 签发/篡改四路拒载/策略矩阵七态/off 回归）；既有六套回归全绿（v6_offline/t5/t6/v79/c64/negative）；governance 签名原语交叉向量锁定（测试固定向量）
-
----
-
 ## [0.9.2] - 2026-10-10
 
 ### 🆕 新增
