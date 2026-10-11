@@ -96,7 +96,7 @@ AGPL-3.0-or-later，两者的**协议传染性不兼容**：AGPL 源码或其编
 
 1. **清单起草**：贡献物清单（逐文件/逐产物列明+BLAKE3 或 commit 锚定版本）；
 2. **版权人签发**：唯一版权人（Mr. DAMU ZHENG）签字批准——单签即生效
-  （依据 [AUTHORS.md](AUTHORS.md)：唯一作者；[GOVERNANCE.md](GOVERNANCE.md) §一：
+  （依据 [AUTHORS.md](AUTHORS.md)：唯一作者；核心仓 GOVERNANCE.md §一：
    创始人对许可证拥有最终拍板权）；
 3. **落锚**：签发记录（清单+日期+签字）存于本仓 `docs/grants/` 目录，随主仓
    git 历史锚定；目标社区提交包附授权书副本。
