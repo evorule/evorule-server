@@ -436,7 +436,9 @@ pub struct SessionApi {
     ///   仅原生内嵌不满足敏感服务要求 → import 显式失败（不静默）。
     ///
     /// 原生服务（`NATIVE_SERVICES` 声明表）由 `DemoServiceRouter` 恒在，不在此列表。
-    registry_services: Arc<Vec<ServiceMeta>>,
+    /// 运行时可热更（安装自动化三期）：install/uninstall 运行时合入/移除，
+    /// 同 core_eval/knowledge_store 的 RwLock<Arc<>> 热更骨架
+    registry_services: Arc<std::sync::RwLock<Arc<Vec<ServiceMeta>>>>,
 
     /// 审计档案：wal_dir 下历史会话 WAL 的只读重建缓存。
     /// 与活跃会话 API 物理隔离（独立 /api/audit-archive 前缀），全程无 WAL 写路径。
@@ -769,7 +771,7 @@ impl SessionApi {
                     .collect(),
             ),
             // 注册表显式绑定元数据：默认空（C5/C6；由 with_registry_services 注入）
-            registry_services: Arc::new(Vec::new()),
+            registry_services: Arc::new(std::sync::RwLock::new(Arc::new(Vec::new()))),
 
             // ：审计档案只读缓存（wal_dir 透传；None=纯内存模式无档案）
             archive_cache: Arc::new(std::sync::Mutex::new(audit_archive::ArchiveCache::new(
@@ -965,12 +967,53 @@ impl SessionApi {
     ///
     /// 来自 service_registry.json 的条目（含 version/description）。`bound_services`
     /// 的并集追加调用方自行处理；此处仅记录注册表条目（C6 敏感核对 + C5 能力对账）。
-    pub fn with_registry_services<I: IntoIterator<Item = ServiceMeta>>(mut self, metas: I) -> Self {
-        let mut v = (*self.registry_services).clone();
+    /// registry_services 锁写（poison 恢复同上）
+    fn registry_lock_write_mut(&self) -> std::sync::RwLockWriteGuard<'_, Arc<Vec<ServiceMeta>>> {
+        match self.registry_services.write() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// registry_services 快照（值语义 clone；poison 恢复：into_inner 取数据）
+    fn registry_services_vec(&self) -> Vec<ServiceMeta> {
+        let g = match self.registry_services.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        g.as_ref().clone()
+    }
+
+    pub fn with_registry_services<I: IntoIterator<Item = ServiceMeta>>(self, metas: I) -> Self {
+        let mut v = self.registry_services_vec();
         v.extend(metas);
         v.sort_by(|a, b| a.name.cmp(&b.name));
-        self.registry_services = Arc::new(v);
+        *self.registry_lock_write_mut() = Arc::new(v);
         self
+    }
+
+    /// registry_services 快照（运行时热更读路径；确定性 name 序由写入侧维护）
+    pub(crate) fn registry_services_snapshot(&self) -> Arc<Vec<ServiceMeta>> {
+        Arc::new(self.registry_services_vec())
+    }
+
+    /// 运行时合入/覆盖单个服务元数据（安装自动化三期：install 成功后调用）
+    pub fn merge_registry_service(&self, meta: ServiceMeta) {
+        let mut v = self.registry_services_vec();
+        v.retain(|m| m.name != meta.name);
+        v.push(meta);
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+        *self.registry_lock_write_mut() = Arc::new(v);
+    }
+
+    /// 运行时移除服务元数据（uninstall/disable 后调用）；返回是否确有移除
+    pub fn remove_registry_service(&self, name: &str) -> bool {
+        let mut v = self.registry_services_vec();
+        let before = v.len();
+        v.retain(|m| m.name != name);
+        let removed = v.len() != before;
+        *self.registry_lock_write_mut() = Arc::new(v);
+        removed
     }
 
     /// 注入插件进程内服务能力清单（builder 模式，插件对账泛化）
@@ -2781,11 +2824,9 @@ impl SessionApi {
         // C6（02 方案层 3）：声明 sensitive=true 的服务必须**注册表显式绑定**
         // （service_registry.json，端点/凭据配置位），仅原生内嵌不满足敏感服务要求
         // （涉及凭据的服务必须可由运维显式配置/核对）。未经注册表绑定 → 显式失败（不静默）。
-        let registry_names: HashSet<&str> = self
-            .registry_services
-            .iter()
-            .map(|m| m.name.as_str())
-            .collect();
+        let registry_services = self.registry_services_vec();
+        let registry_names: HashSet<&str> =
+            registry_services.iter().map(|m| m.name.as_str()).collect();
         let sensitive_unbound: Vec<&str> = dd
             .services
             .iter()
@@ -11202,7 +11243,7 @@ pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<Bo
     // 缺元数据的 registry 条目，会发生敏感守卫降级与参数契约丢失。
     // 去重语义与 invoke 路由优先级一致（插件路由原生优先 → registry HTTP 回落）。
     let known: std::collections::HashSet<String> = out.iter().map(|s| s.name.clone()).collect();
-    for meta in api.registry_services.iter() {
+    for meta in api.registry_services_snapshot().iter() {
         if known.contains(&meta.name) {
             continue;
         }
@@ -11254,7 +11295,11 @@ pub async fn invoke_service_handler(
         .iter()
         .find(|i| i.name == name)
         .map(|i| i.sensitive);
-    let known = sensitive_native.is_some() || api.registry_services.iter().any(|m| m.name == name);
+    let known = sensitive_native.is_some()
+        || api
+            .registry_services_snapshot()
+            .iter()
+            .any(|m| m.name == name);
     if !known {
         return Err((
             StatusCode::NOT_FOUND,

@@ -27,11 +27,14 @@
 
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::Value;
 
-use crate::api::server::{AppState, MarketplaceDir};
+use evorule_io_handlers::ServiceMeta;
+
+use crate::api::platform_auth::append_platform_event;
+use crate::api::server::{AppState, MarketplaceDir, SessionApi};
 
 /// 单模板上传内容上限（模板为规则/数据集/表单定义，10MB 已远超需要；防滥用）
 const MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024;
@@ -61,6 +64,18 @@ pub fn marketplace_router() -> Router<AppState> {
         .route(
             "/api/marketplace/plugins/{id}/download",
             get(download_plugin),
+        )
+        .route(
+            "/api/marketplace/plugins/{id}/install",
+            post(install_plugin_handler),
+        )
+        .route(
+            "/api/marketplace/plugins/{id}/uninstall",
+            post(uninstall_plugin_handler),
+        )
+        .route(
+            "/api/marketplace/plugins/{id}/disable",
+            post(disable_plugin_handler),
         )
 }
 
@@ -1298,4 +1313,197 @@ mod tests {
         let meta = read_meta(&dir.join("plugins/demo/meta.json")).unwrap();
         assert_eq!(meta["download_count"], 2);
     }
+}
+
+// ============================================================================
+// 插件安装自动化代理（三期）：server 只做鉴权转发+审计+registry 合入，
+// 不落盘不碰进程（落盘/验签/热加载归 wasm-host /admin 端点）
+// ============================================================================
+
+/// wasm-host 管理面地址（env `WASM_HOST_ADMIN_URL`，缺省本机 9140）
+fn wasm_host_admin_url() -> String {
+    std::env::var("WASM_HOST_ADMIN_URL").unwrap_or_else(|_| "http://127.0.0.1:9140".into())
+}
+
+/// wasm-host 管理凭证（env `WASM_HOST_ADMIN_TOKEN`，与 wasm-host 侧同值配置；
+/// 未配置 = 安装通道未开启，端点显式 503 而非静默失败）
+fn wasm_host_admin_token() -> Option<String> {
+    std::env::var("WASM_HOST_ADMIN_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+}
+
+/// 手拼 multipart body（零新依赖：multipart 只是 body 格式；三件套字段名
+/// 与 wasm-host /admin/install 契约对齐）
+fn build_admin_multipart(
+    wasm: &[u8],
+    manifest: &[u8],
+    signature: Option<&[u8]>,
+    allow_downgrade: bool,
+) -> (Vec<u8>, String) {
+    let boundary = format!(
+        "----evorule-install-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let mut body = Vec::new();
+    let part = |name: &str, filename: &str, bytes: &[u8], body: &mut Vec<u8>| {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    };
+    part("wasm", "module.wasm", wasm, &mut body);
+    part("manifest", "manifest.json", manifest, &mut body);
+    if let Some(sig) = signature {
+        part("signature", "module.sig", sig, &mut body);
+    }
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"allow_downgrade\"\r\n\r\n{allow_downgrade}\r\n").as_bytes(),
+    );
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (body, boundary)
+}
+
+/// 转发 wasm-host 管理端点（安装自动化三期）
+async fn forward_admin(
+    path: &str,
+    body: Option<(Vec<u8>, String)>,
+) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+    let token = wasm_host_admin_token().ok_or_else(|| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "安装通道未开启（server 未配置 WASM_HOST_ADMIN_TOKEN）",
+        )
+    })?;
+    let url = format!("{}{path}", wasm_host_admin_url().trim_end_matches('/'));
+    let mut req = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(&token)
+        .timeout(std::time::Duration::from_secs(180));
+    if let Some((bytes, boundary)) = body {
+        req = req.header(
+            reqwest::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        );
+        req = req.body(bytes);
+    }
+    let resp = req.send().await.map_err(|e| {
+        err(
+            StatusCode::BAD_GATEWAY,
+            format!("wasm-host 管理面不可达: {e}"),
+        )
+    })?;
+    let status = resp.status();
+    let value: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
+    if !status.is_success() {
+        let message = value
+            .get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("wasm-host 返回 HTTP {status}"));
+        return Err((
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            err(status, message).1,
+        ));
+    }
+    Ok(value)
+}
+
+/// `POST /api/marketplace/plugins/{id}/install`——一键安装：
+/// 市场三件套 → wasm-host 验签/落盘/热加载 → registry 合入（装完即用）+ 审计
+#[utoipa::path(
+    post,
+    path = "/api/marketplace/plugins/{id}/install",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "插件 ID（市场在架）")),
+    responses(
+        (status = 200, description = "安装成功（含阶段耗时与实载清单）", body = serde_json::Value),
+        (status = 404, description = "插件不在架 / wasm-host 不可达", body = serde_json::Value),
+        (status = 422, description = "验签/编译拒绝（fail-visible，零落盘）", body = serde_json::Value),
+        (status = 503, description = "安装通道未开启（server 未配置管理凭证）", body = serde_json::Value)
+    )
+)]
+async fn install_plugin_handler(
+    State(dir): State<MarketplaceDir>,
+    State(sessions): State<SessionApi>,
+    State(facts): State<evorule_governance::shared_facts_log::SharedFactsLog>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let (wasm, _, _) =
+        load_plugin_part(&dir.0, &id, "wasm").map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    let (manifest, _, _) =
+        load_plugin_part(&dir.0, &id, "manifest").map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+    let signature = load_plugin_part(&dir.0, &id, "signature")
+        .ok()
+        .map(|(b, _, _)| b);
+
+    let (body, boundary) = build_admin_multipart(&wasm, &manifest, signature.as_deref(), false);
+    let result = forward_admin("/admin/install", Some((body, boundary))).await?;
+
+    // registry 运行时合入（装完即用）：敏感/超时缺省同 auto_discover 口径
+    let manifest_meta: serde_json::Value =
+        serde_json::from_slice(&manifest).unwrap_or_else(|_| serde_json::json!({}));
+    sessions.merge_registry_service(ServiceMeta {
+        name: id.clone(),
+        version: manifest_meta
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        description: Some("wasm 插件（市场安装）".into()),
+    });
+    append_platform_event(
+        &facts,
+        "platform.event.plugin_installed",
+        serde_json::json!({
+            "plugin": id,
+            "version": manifest_meta.get("version"),
+            "source": "marketplace",
+        }),
+    );
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "installed": id,
+        "detail": result,
+    })))
+}
+
+/// `POST /api/marketplace/plugins/{id}/uninstall`——卸载（快照移除+文件删除）
+async fn uninstall_plugin_handler(
+    State(sessions): State<SessionApi>,
+    State(facts): State<evorule_governance::shared_facts_log::SharedFactsLog>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let result = forward_admin(&format!("/admin/uninstall/{id}"), None).await?;
+    sessions.remove_registry_service(&id);
+    append_platform_event(
+        &facts,
+        "platform.event.plugin_uninstalled",
+        serde_json::json!({ "plugin": id, "source": "marketplace" }),
+    );
+    Ok(Json(
+        serde_json::json!({ "success": true, "uninstalled": id, "detail": result }),
+    ))
+}
+
+/// `POST /api/marketplace/plugins/{id}/disable`——运行时下线（文件保留，重启恢复）
+async fn disable_plugin_handler(
+    State(sessions): State<SessionApi>,
+    State(facts): State<evorule_governance::shared_facts_log::SharedFactsLog>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let result = forward_admin(&format!("/admin/disable/{id}"), None).await?;
+    sessions.remove_registry_service(&id);
+    append_platform_event(
+        &facts,
+        "platform.event.plugin_disabled",
+        serde_json::json!({ "plugin": id, "source": "marketplace" }),
+    );
+    Ok(Json(
+        serde_json::json!({ "success": true, "disabled": id, "detail": result }),
+    ))
 }
