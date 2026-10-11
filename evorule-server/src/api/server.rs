@@ -11347,6 +11347,45 @@ pub async fn invoke_service_handler(
             // （reqwest Display/上游响应片段可携带内网 URL/端口/报文细节）。
             // 分类 → 通用文案回传;原始细节只进服务端日志。会话内 call_service
             // 路径（io_request Fact 入链）不经此处,错误串零改动。
+            // 安装自动化三期回落：运行时安装的服务（known 已过=registry_services 登记、
+            // 静态路由表未绑定 → execute 报 unknown service_name）→ 直转 wasm-host
+            // 执行端点（/services/{name} 公开面，非管理面）。静态绑定服务不受影响
+            // （其失败非 unknown 类）。
+            if e.to_string().contains("unknown service_name") {
+                let host_url = std::env::var("WASM_HOST_ADMIN_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:9140".into());
+                let url = format!("{}/services/{}", host_url.trim_end_matches('/'), name);
+                return match reqwest::Client::new()
+                    .post(url)
+                    .json(&args)
+                    .timeout(std::time::Duration::from_secs(180))
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        match resp.json::<serde_json::Value>().await {
+                            Ok(value) if status.is_success() => Ok(Json(value)),
+                            Ok(value) => Err((
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                Json(serde_json::json!({ "error": value })),
+                            )),
+                            Err(e) => Err((
+                                StatusCode::BAD_GATEWAY,
+                                Json(serde_json::json!({
+                                    "error": "服务调用失败: 上游响应解析（详情见服务端日志）"
+                                })),
+                            )),
+                        }
+                    }
+                    Err(_) => Err((
+                        StatusCode::BAD_GATEWAY,
+                        Json(serde_json::json!({
+                            "error": "服务调用失败: 上游请求失败（详情见服务端日志）"
+                        })),
+                    )),
+                };
+            }
             let class = classify_upstream_error(&e);
             tracing::warn!("REST invoke 服务直调失败: service={name} detail={e}");
             Err((
