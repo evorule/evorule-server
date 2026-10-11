@@ -658,6 +658,7 @@ async fn test_session_rule_hot_reload() {
         evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
         evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,
+        None, // anchor_config: 默认关闭
     );
 
     let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
@@ -847,6 +848,7 @@ async fn test_audit_archive_replay_after_close_and_restart() {
         evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
         evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,
+        None, // anchor_config: 默认关闭
     );
     let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
     let state = AppState::new(
@@ -886,6 +888,7 @@ async fn test_audit_archive_replay_after_close_and_restart() {
         evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
         evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,
+        None, // anchor_config: 默认关闭
     );
     let state2 = AppState::new(
         governance2,

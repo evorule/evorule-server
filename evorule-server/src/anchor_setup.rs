@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 EvoRule Project
+// This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! G-A2 审计锚点链部署面装配（server 启动注入）
 //!
 //! 职责边界（对齐设计决策三原则）：
