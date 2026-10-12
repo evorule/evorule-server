@@ -7459,10 +7459,7 @@ async fn session_heartbeat(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // 限频先行（不持有 sessions 锁判定，降低竞争面）
     {
-        let mut last = api
-            .heartbeat_last
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut last = api.heartbeat_last.lock().unwrap_or_else(|p| p.into_inner());
         let now = std::time::Instant::now();
         if let Some(t) = last.get(&session_id) {
             if now.duration_since(*t).as_secs() < HEARTBEAT_MIN_INTERVAL_SECS {
@@ -7473,7 +7470,9 @@ async fn session_heartbeat(
     }
     let sessions = api.sessions.lock().await;
     sessions.touch_session(session_id);
-    let session = sessions.get_session(session_id).ok_or(StatusCode::NOT_FOUND)?;
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
     let ts = chrono::Utc::now().to_rfc3339();
     let path = format!("system.heartbeat.{}", chrono::Utc::now().timestamp_millis());
     let id = api.next_id();
@@ -7607,7 +7606,9 @@ async fn session_pause(
         "intervention_pause",
         serde_json::json!({ "session_id": session_id, "operator": resolve_approver(actor) }),
     );
-    Ok(Json(serde_json::json!({ "session_id": session_id, "paused": true })))
+    Ok(Json(
+        serde_json::json!({ "session_id": session_id, "paused": true }),
+    ))
 }
 
 /// `POST /api/sessions/{id}/resume` → 解除 pause 准入闸（重新接受 Command）
@@ -14838,8 +14839,8 @@ mod tests {
         assert_eq!(body["paused"], false);
 
         // 不存在会话 pause → 404
-        let (status, _) = oneshot_json(router.clone(), "POST", "/api/sessions/999999/pause", None)
-            .await;
+        let (status, _) =
+            oneshot_json(router.clone(), "POST", "/api/sessions/999999/pause", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         // 置位 → 命令被闸（success:false + SESSION_PAUSED，指令不进引擎）
@@ -14913,7 +14914,11 @@ mod tests {
         assert_eq!(body["injected"], true);
 
         let (status, _) = oneshot_json(router.clone(), "POST", &uri, None).await;
-        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "窗口内第二次必须 429");
+        assert_eq!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "窗口内第二次必须 429"
+        );
 
         // 窗口过期（测试直接回拨限频账）→ 放行
         {
@@ -14959,13 +14964,8 @@ mod tests {
         let (state, _) = make_test_state();
 
         // 默认 Router：gc 路由不存在
-        let (status, _) = oneshot_json(
-            make_test_router(&state),
-            "POST",
-            "/api/sessions/1/gc",
-            None,
-        )
-        .await;
+        let (status, _) =
+            oneshot_json(make_test_router(&state), "POST", "/api/sessions/1/gc", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "默认必须 404（双保险）");
 
         // 启用干预端点的 Router（镜像 make_abort_router 构造，末位 bool=干预开关）
@@ -14999,8 +14999,8 @@ mod tests {
         assert_eq!(body["compacted"], true);
         assert!(body["ratio"].is_number());
 
-        let (status, _) = oneshot_json(router.clone(), "POST", "/api/sessions/999999/gc", None)
-            .await;
+        let (status, _) =
+            oneshot_json(router.clone(), "POST", "/api/sessions/999999/gc", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
