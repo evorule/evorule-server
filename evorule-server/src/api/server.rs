@@ -11355,7 +11355,14 @@ pub async fn invoke_service_handler(
                 let host_url = std::env::var("WASM_HOST_ADMIN_URL")
                     .unwrap_or_else(|_| "http://127.0.0.1:9140".into());
                 let url = format!("{}/services/{}", host_url.trim_end_matches('/'), name);
-                return match reqwest::Client::new()
+                let client = reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("invoke 回落客户端构建失败（降级默认客户端）: {e}");
+                        reqwest::Client::new()
+                    });
+                return match client
                     .post(url)
                     .json(&args)
                     .timeout(std::time::Duration::from_secs(180))

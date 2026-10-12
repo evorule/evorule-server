@@ -827,13 +827,19 @@ async fn list_plugins(
     let count = plugins.len();
     // 宿主信息节点（109 号补批）：console 安装前兼容性判定的事实源。
     // available 三态显式建模——宿主不可达显式 false，不省略字段不默认兼容。
+    // install_channel_enabled 与 available 正交：前者=server 侧管理凭证配置
+    // （token 未配置=安装通道未开启），后者=宿主进程可达性
     let host = match probe_host_health().await {
         Ok(h) => serde_json::json!({
             "available": true,
             "version": h.get("host_version"),
             "abi": h.get("host_abi"),
+            "install_channel_enabled": wasm_host_admin_token().is_some(),
         }),
-        Err(_) => serde_json::json!({ "available": false }),
+        Err(_) => serde_json::json!({
+            "available": false,
+            "install_channel_enabled": wasm_host_admin_token().is_some(),
+        }),
     };
     Ok(Json(serde_json::json!({
         "success": true,
@@ -1345,18 +1351,31 @@ async fn probe_host_health() -> Result<serde_json::Value, (StatusCode, Json<serd
                 format!("宿主不可达，无法预检兼容性: {e}"),
             )
         })?;
-    if !resp.status().is_success() {
+    // 200（对账一致）与 503（对账 degraded，如禁用后零声明场景）的 body 都携带
+    // 版本握手字段——预检只消费版本事实，不关心对账结论；
+    // 连接层失败（进程死/端口不通）才是"无法预检"。
+    if !matches!(
+        resp.status(),
+        StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+    ) {
         return Err(err(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("宿主健康检查返回 {}", resp.status()),
         ));
     }
-    resp.json::<serde_json::Value>().await.map_err(|e| {
+    let value: serde_json::Value = resp.json().await.map_err(|e| {
         err(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("宿主健康响应解析失败: {e}"),
         )
-    })
+    })?;
+    if value.get("host_abi").and_then(|v| v.as_u64()).is_none() {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "宿主健康响应缺版本握手字段（wasm-host 版本过旧，请升级后重试）",
+        ));
+    }
+    Ok(value)
 }
 
 /// 三段语义版比较 `current >= min`（与 wasm-host version_at_least 同口径；
