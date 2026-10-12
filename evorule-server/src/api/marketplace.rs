@@ -825,10 +825,21 @@ async fn list_plugins(
     let plugins =
         list_plugins_from(&dir.0).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let count = plugins.len();
+    // 宿主信息节点（109 号补批）：console 安装前兼容性判定的事实源。
+    // available 三态显式建模——宿主不可达显式 false，不省略字段不默认兼容。
+    let host = match probe_host_health().await {
+        Ok(h) => serde_json::json!({
+            "available": true,
+            "version": h.get("host_version"),
+            "abi": h.get("host_abi"),
+        }),
+        Err(_) => serde_json::json!({ "available": false }),
+    };
     Ok(Json(serde_json::json!({
         "success": true,
         "count": count,
         "plugins": plugins,
+        "host": host,
     })))
 }
 
@@ -1320,6 +1331,56 @@ mod tests {
 // 不落盘不碰进程（落盘/验签/热加载归 wasm-host /admin 端点）
 // ============================================================================
 
+/// 实时探宿主 /health（预检事实源；公开面零 token）。失败 = 显式不可预检。
+async fn probe_host_health() -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+    let url = format!("{}/health", wasm_host_admin_url().trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| {
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("宿主不可达，无法预检兼容性: {e}"),
+            )
+        })?;
+    if !resp.status().is_success() {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("宿主健康检查返回 {}", resp.status()),
+        ));
+    }
+    resp.json::<serde_json::Value>().await.map_err(|e| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("宿主健康响应解析失败: {e}"),
+        )
+    })
+}
+
+/// 三段语义版比较 `current >= min`（与 wasm-host version_at_least 同口径；
+/// 解析失败 = false，fail-visible 不放行）
+fn version_at_least_three(current: &str, min: &str) -> bool {
+    let parse = |v: &str| -> Option<Vec<u64>> {
+        v.split('.')
+            .map(|p| p.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    let (Some(c), Some(m)) = (parse(current), parse(min)) else {
+        return false;
+    };
+    // 逐段比较：任一段分出大小即定序；全等则满足
+    for i in 0..3 {
+        let cv = c.get(i).copied().unwrap_or(0);
+        let mv = m.get(i).copied().unwrap_or(0);
+        if cv != mv {
+            return cv > mv;
+        }
+    }
+    true
+}
+
 /// wasm-host 管理面地址（env `WASM_HOST_ADMIN_URL`，缺省本机 9140）
 fn wasm_host_admin_url() -> String {
     std::env::var("WASM_HOST_ADMIN_URL").unwrap_or_else(|_| "http://127.0.0.1:9140".into())
@@ -1442,12 +1503,46 @@ async fn install_plugin_handler(
         .ok()
         .map(|(b, _, _)| b);
 
+    // 兼容性预检（109 号补批）：转发前实时探宿主 /health——abi 等值硬校验+
+    // engine_min 提示性校验，不兼容提前 422 并指路（宿主侧校验保持双保险）。
+    // fail-visible：宿主不可达 → 503 显式"无法预检"，不降级为默认兼容。
+    let manifest_meta: serde_json::Value =
+        serde_json::from_slice(&manifest).unwrap_or_else(|_| serde_json::json!({}));
+    let host = probe_host_health().await?;
+    if let Some(host_abi) = host.get("host_abi").and_then(|v| v.as_u64()) {
+        if let Some(plugin_abi) = manifest_meta.get("abi").and_then(|v| v.as_u64()) {
+            if plugin_abi != host_abi {
+                return Err(err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!(
+                        "分发清单 ABI={plugin_abi} 与宿主 ABI={host_abi} 不兼容——插件需按新 ABI 重编译并重签"
+                    ),
+                ));
+            }
+        }
+    }
+    if let (Some(min), Some(host_version)) = (
+        manifest_meta
+            .get("engine_min")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        host.get("host_version")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    ) {
+        // 三段语义版比较（与 wasm-host version_at_least 同口径）
+        if !version_at_least_three(&host_version, &min) {
+            return Err(err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("宿主需升级至 >= {min}（当前 {host_version}）才能运行该插件"),
+            ));
+        }
+    }
+
     let (body, boundary) = build_admin_multipart(&wasm, &manifest, signature.as_deref(), false);
     let result = forward_admin("/admin/install", Some((body, boundary))).await?;
 
     // registry 运行时合入（装完即用）：敏感/超时缺省同 auto_discover 口径
-    let manifest_meta: serde_json::Value =
-        serde_json::from_slice(&manifest).unwrap_or_else(|_| serde_json::json!({}));
     sessions.merge_registry_service(ServiceMeta {
         name: id.clone(),
         version: manifest_meta

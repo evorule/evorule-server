@@ -11370,7 +11370,7 @@ pub async fn invoke_service_handler(
                                 StatusCode::UNPROCESSABLE_ENTITY,
                                 Json(serde_json::json!({ "error": value })),
                             )),
-                            Err(e) => Err((
+                            Err(_) => Err((
                                 StatusCode::BAD_GATEWAY,
                                 Json(serde_json::json!({
                                     "error": "服务调用失败: 上游响应解析（详情见服务端日志）"
