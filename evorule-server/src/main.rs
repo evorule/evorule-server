@@ -409,6 +409,14 @@ struct Cli {
     #[arg(long, env = "EVORULE_ALLOW_ABORT")]
     allow_abort: bool,
 
+    /// 启用高危干预端点族（POST /api/sessions/{id}/gc，默认关闭）
+    ///
+    /// gc 压缩改变事实链可见历史（history/rewind/causal 对已压缩区间失效）且
+    /// 生产无先例。双保险：即使认证通过，未显式开启时也不注册该路由（404）。
+    /// pause/resume/heartbeat 不在此列（可逆/只读，常规认证即挂载）。
+    #[arg(long, env = "EVORULE_ALLOW_INTERVENTIONS")]
+    allow_interventions: bool,
+
     /// 静态前端目录（可选，例 ./web）
     ///
     /// 设置后由本服务同源托管 Web UI（如 console-cloud 的 adapter-static 产物）：
@@ -493,6 +501,8 @@ struct ResolvedConfig {
     openapi_ui: bool,
     /// 是否启用强制中止端点（--allow-abort，默认 false）
     allow_abort: bool,
+    /// 是否启用高危干预端点族（--allow-interventions，默认 false）
+    allow_interventions: bool,
     /// 静态前端目录（--web-dir）；None = 不托管静态文件
     web_dir: Option<PathBuf>,
     /// :演示登录入口开关（默认 true；CLI > env > file > default）
@@ -594,6 +604,8 @@ impl ResolvedConfig {
             openapi_ui: cli.openapi_ui,
             // abort 破坏性端点开关（默认 false，双保险）
             allow_abort: cli.allow_abort,
+            // 高危干预端点族开关（默认 false，双保险）
+            allow_interventions: cli.allow_interventions,
             // 静态前端目录（默认 None，不托管静态文件）
             web_dir: cli.web_dir,
             // :演示登录入口开关（CLI > env > file > 默认 true）
@@ -2472,6 +2484,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.openapi_ui,
         // abort 强制中止端点开关（--allow-abort 控制，默认关闭，双保险）
         cfg.allow_abort,
+        // 高危干预端点族开关（--allow-interventions 控制，默认关闭，双保险）
+        cfg.allow_interventions,
         // 静态前端托管目录（--web-dir 控制，默认 None）
         cfg.web_dir.clone(),
     );
@@ -2539,6 +2553,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         } else {
             "未启用（--allow-abort 开启后注册，默认关闭双保险）".to_string()
+        }
+    );
+    info!(
+        "  高危干预(gc): {}",
+        if cfg.allow_interventions {
+            format!(
+                "POST http://{}/api/sessions/{{id}}/gc（已启用 --allow-interventions）",
+                cfg.addr
+            )
+        } else {
+            "未启用（--allow-interventions 开启后注册，默认关闭双保险）".to_string()
         }
     );
     info!(

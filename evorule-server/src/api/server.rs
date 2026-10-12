@@ -352,6 +352,12 @@ const MAX_CONCURRENCY: usize = 1000;
 #[derive(Clone)]
 
 pub struct SessionApi {
+    /// 会话级 pause 准入闸（干预端点置位，resume 解除；内存态，重启清零）
+    paused_sessions: Arc<std::sync::Mutex<HashSet<u64>>>,
+
+    /// 心跳限频账（session_id → 上次心跳时刻；内存态，重启清零）
+    heartbeat_last: Arc<std::sync::Mutex<std::collections::HashMap<u64, std::time::Instant>>>,
+
     /// 会话管理器
     sessions: Arc<Mutex<session::SessionManager>>,
 
@@ -714,6 +720,10 @@ impl SessionApi {
             };
 
         Self {
+            paused_sessions: Arc::new(std::sync::Mutex::new(HashSet::new())),
+
+            heartbeat_last: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+
             sessions: sessions.clone(),
 
             // fork-from-archive：归档链源目录（与 SessionManager/archive_cache 同源）
@@ -2697,13 +2707,14 @@ impl SessionApi {
 
     /// ①.5 测试证据引用校验。
     /// 与治理域 export 侧形状校验(evorule-rule export_with_tests)双闸同口径:
-    ///   a. verdict=pass 必须携带可追溯标记(subset 非空且每项 sandbox:<id> 或
-    ///      human:<actor>)——封死"零证据 pass"直 POST import 的伪造路径;
+    ///   a. verdict=pass 必须携带可追溯标记(subset 非空且每项均为
+    ///      sandbox:<id> 机器背书引用)——封死"零证据 pass"直 POST import
+    ///      的伪造路径;人工背书 human:<actor> 形态已下线(自由文本 actor
+    ///      可被任意伪造,构成无沙盒验证的 pass 证据面),不再接受。
     ///   b. sandbox:<id> 引用必须在本机 workspace 元数据可追溯:
     ///      不存在(伪造/跨环境) → 拒收;非 closed(测试未完成) → 拒收;
     ///      报告 summary.failed≠0(fail 报告不得作 pass 证据) → 拒收;
     ///      报告文件缺失/损坏 → 拒收(fail-closed:校验层缺位即不通过,不静默)。
-    /// human:<actor> 无需存在性校验(显式降级声明,人无表可查)。
     /// 跨环境信任(报告哈希/随包携带)登记为后续项——当前拒收符合
     /// "不让未经验证的信息通过"(设计文档 §6.1 阶段一)。
     ///
@@ -2716,18 +2727,18 @@ impl SessionApi {
                 .tests
                 .subset
                 .iter()
-                .all(|s| s.starts_with("sandbox:") || s.starts_with("human:"));
+                .all(|s| s.starts_with("sandbox:"));
         if !traceable {
             return Err(
                 "测试证据校验失败（不静默）: verdict=pass 的导入必须携带可追溯标记\
-                 (tests.subset 每项须为 sandbox:<沙盒ID> 或 human:<操作者>)。\
-                 请从治理域测试工作台导出(机器背书)或显式人工背书"
+                 (tests.subset 每项须为 sandbox:<沙盒ID> 机器背书沙盒引用)。\
+                 请从治理域测试工作台导出"
                     .to_string(),
             );
         }
         for ref_item in &bundle.tests.subset {
             let Some(sid_str) = ref_item.strip_prefix("sandbox:") else {
-                continue; // human: 标记无需存在性校验
+                continue; // 防御性分支:前缀闸已保证 sandbox: 前缀,不应到达
             };
             let sid: i64 = sid_str.parse().map_err(|_| {
                 format!("测试证据校验失败: sandbox 引用格式非法({ref_item}),须为 sandbox:<数字ID>")
@@ -6827,6 +6838,26 @@ async fn session_command(
     // 提交即校验（双层语言分派：元指令层 transform_rule / 指令层 instruction），
     // 拦截单数 __io_result__、坏路径、非法控制流结构——避免"提交照常、运行时才崩溃"。
     // 拒绝返回 success:false + 明确原因，指令不进引擎（TCB 只保证确定性执行，不保证正确性）。
+
+    // pause 准入闸（会话级干预，管理端点置位后生效）——paused 会话拒绝新
+    // Command（423 语义），在途队列与 pending io 超时路径不受影响，io_response
+    // 放行（否则超时 Error 污染链）；pause 状态经 GET/POST pause、resume 管理。
+    {
+        let paused = api
+            .paused_sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if paused.contains(&session_id) {
+            return Ok(Json(CommandSubmitResponse::Ack(ApiResponse {
+                success: false,
+                message: "会话处于暂停态（intervention pause），指令未进引擎；resume 后可重新提交"
+                    .to_string(),
+                fact_id: None,
+                code: Some("SESSION_PAUSED".to_string()),
+            })));
+        }
+    }
+
     let schema_report = evorule_rule_schema::validate_command_instruction(&instruction_value);
     if !schema_report.valid {
         let detail = schema_report.errors.join("; ");
@@ -7397,6 +7428,222 @@ async fn session_anchor_seal(
         "sealed": true,
         "anchor": anchor_json,
     })))
+}
+
+/// 心跳最小间隔（秒）。心跳以 PayloadUpdate 进会话链 bump version，有链膨胀
+/// 成本（参照 Stable 瘦身事故），限频 60s/次；超频 429。
+const HEARTBEAT_MIN_INTERVAL_SECS: u64 = 60;
+
+/// `POST /api/sessions/{id}/heartbeat` → 注入心跳（监控干预 io.inject_heartbeat）
+///
+/// 通路：`command_tx.send(Fact::PayloadUpdate)`（与 io 注入同一通路），心跳事实
+/// 进会话链自证（操作落账原则）；等效 touch 防 reap。pause 不拦截心跳——pause
+/// 准入闸语义是"拒新 Command"，监控信号与 pending io 超时同属放行面。
+/// 限频 [`HEARTBEAT_MIN_INTERVAL_SECS`]，超频 429。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/heartbeat",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "心跳已注入（返回事实 id 与路径）", body = serde_json::Value),
+        (status = 404, description = "会话不存在"),
+        (status = 429, description = "距上次心跳不足限频窗口"),
+        (status = 409, description = "反应器已退出（指令通道关闭）")
+    )
+)]
+async fn session_heartbeat(
+    State(api): State<SessionApi>,
+    State(metrics): State<SharedMetrics>,
+    Path(session_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // 限频先行（不持有 sessions 锁判定，降低竞争面）
+    {
+        let mut last = api
+            .heartbeat_last
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let now = std::time::Instant::now();
+        if let Some(t) = last.get(&session_id) {
+            if now.duration_since(*t).as_secs() < HEARTBEAT_MIN_INTERVAL_SECS {
+                return Err(StatusCode::TOO_MANY_REQUESTS);
+            }
+        }
+        last.insert(session_id, now);
+    }
+    let sessions = api.sessions.lock().await;
+    sessions.touch_session(session_id);
+    let session = sessions.get_session(session_id).ok_or(StatusCode::NOT_FOUND)?;
+    let ts = chrono::Utc::now().to_rfc3339();
+    let path = format!("system.heartbeat.{}", chrono::Utc::now().timestamp_millis());
+    let id = api.next_id();
+    session
+        .command_tx
+        .send(evorule_reactor::Fact::PayloadUpdate {
+            id,
+            path: path.clone(),
+            value: evorule_tcb::JsonValue::String(ts.into()),
+        })
+        .map_err(|_| StatusCode::CONFLICT)?;
+    metrics.inc_commands("heartbeat");
+    drop(sessions);
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "injected": true,
+        "fact_id": id.0,
+        "path": path,
+    })))
+}
+
+/// `POST /api/sessions/{id}/gc` → 手动触发事实链压缩（compact）
+///
+/// 契约：compact 丢弃 last_stable_version 前历史 → history/rewind/causal 对已
+/// 压缩区间失效；`compacted_info` 进响应。生产无先例——属高危干预，挂
+/// `--allow-interventions` 双保险（默认不注册路由，404），先 dev 验证回放兼容。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/gc",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "压缩执行（ratio + compacted_info）", body = serde_json::Value),
+        (status = 404, description = "会话不存在")
+    )
+)]
+async fn session_gc(
+    State(api): State<SessionApi>,
+    State(metrics): State<SharedMetrics>,
+    Path(session_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = api.sessions.lock().await;
+    sessions.touch_session(session_id);
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let ratio = session.facts_log.compact();
+    let info = session.facts_log.compacted_info();
+    drop(sessions);
+    // 操作落账：压缩改变链可见历史，平台事件报表须可追溯
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "intervention_gc",
+        serde_json::json!({
+            "session_id": session_id,
+            "ratio": ratio,
+            "compacted_info": info,
+        }),
+    );
+    metrics.inc_commands("gc");
+    let info_json = info.map(|(v, n)| serde_json::json!({ "version": v, "entries": n }));
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "compacted": true,
+        "ratio": ratio,
+        "compacted_info": info_json,
+    })))
+}
+
+/// `GET /api/sessions/{id}/pause` → 查询 pause 准入闸状态
+///
+/// 纯内存闸位查询：不校验会话存在性（会话被 reap 后闸位残留也能如实报告；
+/// server 重启后闸位清零——pause 是内存态，不持久化）。
+#[utoipa::path(
+    get,
+    path = "/api/sessions/{id}/pause",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "闸位状态", body = serde_json::Value)
+    )
+)]
+async fn session_pause_status(
+    State(api): State<SessionApi>,
+    Path(session_id): Path<u64>,
+) -> Json<serde_json::Value> {
+    let paused = api
+        .paused_sessions
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let paused = paused.contains(&session_id);
+    Json(serde_json::json!({ "session_id": session_id, "paused": paused }))
+}
+
+/// `POST /api/sessions/{id}/pause` → 置位 pause 准入闸（拒新 Command，423/SESSION_PAUSED）
+///
+/// 不真停反应器：在途队列与 pending io 超时路径继续，io_response 放行（否则
+/// 超时 Error 污染链）。reap 风险：pause 后会话不再被指令触碰，空闲 TTL 到期
+/// 仍会被回收——长驻暂停须调用方周期 heartbeat（等效 touch）维持。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/pause",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "已置位", body = serde_json::Value),
+        (status = 404, description = "会话不存在")
+    )
+)]
+async fn session_pause(
+    State(api): State<SessionApi>,
+    Path(session_id): Path<u64>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    {
+        let sessions = api.sessions.lock().await;
+        sessions.touch_session(session_id);
+        sessions
+            .get_session(session_id)
+            .ok_or(StatusCode::NOT_FOUND)?;
+    }
+    {
+        let mut paused = api
+            .paused_sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        paused.insert(session_id);
+    }
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "intervention_pause",
+        serde_json::json!({ "session_id": session_id, "operator": resolve_approver(actor) }),
+    );
+    Ok(Json(serde_json::json!({ "session_id": session_id, "paused": true })))
+}
+
+/// `POST /api/sessions/{id}/resume` → 解除 pause 准入闸（重新接受 Command）
+///
+/// 幂等：未置位时解除同样返回成功；会话已 reap 时仍清闸位（防同 id 复用残留）。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/resume",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "已解除（幂等）", body = serde_json::Value)
+    )
+)]
+async fn session_resume(
+    State(api): State<SessionApi>,
+    Path(session_id): Path<u64>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+) -> Json<serde_json::Value> {
+    {
+        let mut paused = api
+            .paused_sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        paused.remove(&session_id);
+    }
+    {
+        let sessions = api.sessions.lock().await;
+        sessions.touch_session(session_id);
+    }
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "intervention_resume",
+        serde_json::json!({ "session_id": session_id, "operator": resolve_approver(actor) }),
+    );
+    Json(serde_json::json!({ "session_id": session_id, "paused": false }))
 }
 
 /// 会话锚点验证 handler（G-A2）
@@ -10221,6 +10468,10 @@ pub struct GovernanceServer {
     /// 默认关闭：即使认证通过也不注册该路由（双保险，返回 404）。
     allow_abort: bool,
 
+    /// 是否启用高危干预端点族（POST /api/sessions/{id}/gc 等，--allow-interventions）。
+    /// 默认关闭：即使认证通过也不注册该路由（双保险，返回 404）。
+    allow_interventions: bool,
+
     /// 静态前端目录（--web-dir）。Some 时由本服务同源托管 Web UI：
     /// 未命中 /api 路由的 GET 请求走 ServeDir，未知路径回退 index.html（SPA）。
     web_dir: Option<std::path::PathBuf>,
@@ -10273,6 +10524,8 @@ impl GovernanceServer {
 
         allow_abort: bool,
 
+        allow_interventions: bool,
+
         web_dir: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
@@ -10293,6 +10546,8 @@ impl GovernanceServer {
             openapi_ui,
 
             allow_abort,
+
+            allow_interventions,
 
             web_dir,
         }
@@ -10316,6 +10571,8 @@ impl GovernanceServer {
             false,
             // 开发服务器默认也不启用 abort（双保险，需显式 --allow-abort）
             false,
+            // 高危干预端点族同样默认关闭（双保险，需显式 --allow-interventions）
+            false,
             None,
         )
     }
@@ -10332,6 +10589,7 @@ impl GovernanceServer {
             0,
             0,
             vec![],
+            false,
             false,
             false,
             false,
@@ -10431,6 +10689,15 @@ impl GovernanceServer {
         // 开启后才挂载该路由（默认不注册 → 404）。空 Router merge 无副作用。
         let abort_router = if self.allow_abort {
             Router::new().route("/api/sessions/{id}/abort", post(session_abort))
+        } else {
+            Router::new()
+        };
+
+        // 高危干预端点双保险（--allow-interventions）：gc 压缩改变链可见历史
+        // 且生产无先例，默认不注册路由（404）；heartbeat/pause/resume 可逆或
+        // 只读，走 protected_routes 常规认证即可。
+        let interventions_router = if self.allow_interventions {
+            Router::new().route("/api/sessions/{id}/gc", post(session_gc))
         } else {
             Router::new()
         };
@@ -10652,6 +10919,17 @@ impl GovernanceServer {
             .route("/api/workspaces/{id}/members/join", post(workspace_join))
             // abort 双保险：条件挂载（--allow-abort 关闭时为空 Router）
             .merge(abort_router)
+            // 高危干预双保险：条件挂载（--allow-interventions 关闭时为空 Router）
+            .merge(interventions_router)
+            // 会话级干预端点（可逆/只读，常规认证）：
+            // heartbeat 限频注入（监控信号，pause 放行面）、
+            // pause/resume 准入闸（拒新 Command，在途队列与 io_response 不受影响）
+            .route("/api/sessions/{id}/heartbeat", post(session_heartbeat))
+            .route(
+                "/api/sessions/{id}/pause",
+                get(session_pause_status).post(session_pause),
+            )
+            .route("/api/sessions/{id}/resume", post(session_resume))
             // rewind/diff 已移至 application/core/time_machine（本地实现）
             // W2b:统一认证中间件(双凭据:静态 user/service token 或
             // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
@@ -14477,6 +14755,7 @@ mod tests {
             false,
             false,
             true,
+            false,
             None,
         )
         .build_router()
@@ -14522,6 +14801,209 @@ mod tests {
         (status, json)
     }
 
+    // --- 会话级干预端点（pause/heartbeat/gc） ---
+
+    /// pause 准入闸：paused 会话拒新 Command（SESSION_PAUSED），resume 恢复；
+    /// pause 对不存在会话 404；pause 后心跳仍放行（监控信号不受闸）。
+    #[tokio::test]
+    async fn intervention_pause_gates_commands_resume_restores() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let sid = body["session_id"].as_u64().unwrap();
+
+        // 基线：noop 指令成功
+        let cmd_uri = format!("/api/sessions/{sid}/command");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &cmd_uri,
+            Some(r#"{"instruction":{"type":"noop"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true, "基线命令应成功: {body}");
+
+        // 初始闸位：未暂停
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/pause"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["paused"], false);
+
+        // 不存在会话 pause → 404
+        let (status, _) = oneshot_json(router.clone(), "POST", "/api/sessions/999999/pause", None)
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // 置位 → 命令被闸（success:false + SESSION_PAUSED，指令不进引擎）
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/{sid}/pause"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["paused"], true);
+
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &cmd_uri,
+            Some(r#"{"instruction":{"type":"noop"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], false, "paused 会话命令必须被拒: {body}");
+        assert_eq!(body["code"], "SESSION_PAUSED");
+
+        // 心跳不受闸（监控信号放行面）
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/{sid}/heartbeat"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "pause 不拦截心跳: {body}");
+        assert_eq!(body["injected"], true);
+
+        // 解除 → 命令恢复
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/{sid}/resume"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["paused"], false);
+
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &cmd_uri,
+            Some(r#"{"instruction":{"type":"noop"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], true, "resume 后命令应恢复: {body}");
+    }
+
+    /// 心跳限频：60s 窗口内第二次 429；窗口过期后放行；不存在会话 404 兜底。
+    #[tokio::test]
+    async fn intervention_heartbeat_rate_limited() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let sid = body["session_id"].as_u64().unwrap();
+        let uri = format!("/api/sessions/{sid}/heartbeat");
+
+        let (status, body) = oneshot_json(router.clone(), "POST", &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "首次心跳应成功: {body}");
+        assert_eq!(body["injected"], true);
+
+        let (status, _) = oneshot_json(router.clone(), "POST", &uri, None).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "窗口内第二次必须 429");
+
+        // 窗口过期（测试直接回拨限频账）→ 放行
+        {
+            let mut last = state
+                .sessions
+                .heartbeat_last
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            last.insert(
+                sid,
+                std::time::Instant::now() - std::time::Duration::from_secs(61),
+            );
+        }
+        let (status, body) = oneshot_json(router.clone(), "POST", &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "窗口过期后应放行: {body}");
+
+        // 不存在会话：回拨绕过限频后 404 兜底
+        {
+            let mut last = state
+                .sessions
+                .heartbeat_last
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            last.insert(
+                888888,
+                std::time::Instant::now() - std::time::Duration::from_secs(61),
+            );
+        }
+        let (status, _) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/sessions/888888/heartbeat",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// gc 双保险：默认不注册路由（404）；干预开关启用后可压缩，响应带
+    /// ratio/compacted_info；不存在会话 404。
+    #[tokio::test]
+    async fn intervention_gc_gated_behind_flag() {
+        let (state, _) = make_test_state();
+
+        // 默认 Router：gc 路由不存在
+        let (status, _) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            "/api/sessions/1/gc",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "默认必须 404（双保险）");
+
+        // 启用干预端点的 Router（镜像 make_abort_router 构造，末位 bool=干预开关）
+        let router = GovernanceServer::new(
+            state.clone(),
+            AuthConfig::disabled(),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            true,
+            None,
+        )
+        .build_router();
+
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let sid = body["session_id"].as_u64().unwrap();
+
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/{sid}/gc"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "gc 应成功: {body}");
+        assert_eq!(body["compacted"], true);
+        assert!(body["ratio"].is_number());
+
+        let (status, _) = oneshot_json(router.clone(), "POST", "/api/sessions/999999/gc", None)
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
     // --- 静态前端托管（--web-dir） ---
 
     #[tokio::test]
@@ -14546,6 +15028,7 @@ mod tests {
             0,
             0,
             vec![],
+            false,
             false,
             false,
             false,
@@ -15904,6 +16387,8 @@ mod tests {
             false,
             // 测试不启用 abort
             false,
+            // 测试不启用高危干预端点族
+            false,
             None,
         )
         .build_router();
@@ -15934,6 +16419,8 @@ mod tests {
             // 测试不挂载 Swagger UI
             false,
             // 测试不启用 abort
+            false,
+            // 测试不启用高危干预端点族
             false,
             None,
         )
@@ -15971,6 +16458,8 @@ mod tests {
             false,
             // 测试不启用 abort
             false,
+            // 测试不启用高危干预端点族
+            false,
             None,
         )
         .build_router();
@@ -15999,6 +16488,8 @@ mod tests {
             // 测试不挂载 Swagger UI
             false,
             // 测试不启用 abort
+            false,
+            // 测试不启用高危干预端点族
             false,
             None,
         )
@@ -16342,6 +16833,8 @@ mod tests {
             false,
             // 测试不启用 abort
             false,
+            // 测试不启用高危干预端点族
+            false,
             None,
         )
         .build_router()
@@ -16593,8 +17086,9 @@ mod tests {
             data_dependencies: None,
             recipe_snapshot: None,
             tests: BundleTests {
-                // B2: pass 必带可追溯标记(篡改用例在哈希层先拒,此处形状合规)
-                subset: vec!["human:itest".into()],
+                // B2: pass 必带 sandbox: 机器背书引用(篡改用例在哈希层先拒,
+                // 证据闸在防篡改之后,此引用不需真实沙盒)
+                subset: vec!["sandbox:itest".into()],
                 fixtures: vec![],
                 verdict: TestVerdict::Pass,
             },
@@ -16722,9 +17216,10 @@ mod tests {
             data_dependencies: None,
             recipe_snapshot: None,
             tests: BundleTests {
-                // B2: pass 必带可追溯标记(执行域 import 侧校验);
-                // 测试意图=合法可导入知识包,人工背书形态
-                subset: vec!["human:q12-itest".into()],
+                // B2: pass 必带 sandbox: 机器背书引用(执行域深度校验:存在性+
+                // closed+报告 failed==0)——正路径调用方测试需 seed 真实沙盒;
+                // 拒点在证据闸之前的负路径测试复用本夹具不受影响
+                subset: vec!["sandbox:1".into()],
                 fixtures: vec![],
                 verdict: TestVerdict::Pass,
             },
@@ -16756,6 +17251,10 @@ mod tests {
         std::fs::write(ddir.join("scenario.json"), Q12_SCENARIO_SCHEMA_JSON).unwrap();
 
         let core_eval: Vec<JsonValue> = vec![];
+        // 夹具包引用 sandbox:1 → in-memory 元数据库 seed 真实沙盒(深度校验放行面)
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        let seed_sid = crate::api::evidence_fixture::seed_pass_sandbox(&ws_db);
+        assert_eq!(seed_sid, 1, "空库首个 seed 应得 sandbox:1(夹具引用约定)");
         let sessions = SessionApi::new_with_full_config(
             core_eval.clone(),
             100,
@@ -16771,7 +17270,8 @@ mod tests {
             evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
-        );
+        )
+        .with_workspace_db(ws_db.clone());
         assert!(
             sessions.knowledge_load_error().is_none(),
             "空 knowledge 目录应得空库而非错误"
@@ -17004,10 +17504,10 @@ mod tests {
         );
     }
 
-    /// B2-正路径: human:<actor> 显式人工背书 → 放行(无需存在性校验,
-    /// 标记即显式降级声明)。
+    /// B2-负路径: human:<actor> 人工背书形态 → 拒收(人工降级通路已下线——
+    /// 自由文本 actor 可被任意伪造,构成无沙盒验证的 pass 证据面)。
     #[tokio::test]
-    async fn test_importreg_import_allows_human_endorsement() {
+    async fn test_importreg_import_rejects_human_endorsement() {
         let tmp = tempfile::tempdir().unwrap();
         let rules_dir = tmp.path().join("rules");
         let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -17033,19 +17533,27 @@ mod tests {
             None, // 锚点链：测试构造不启用
         );
 
-        // q12_knowledge_bundle 的 subset 已是 human 背书形态
-        let bundle = q12_knowledge_bundle(
+        // 夹具包 subset 改写为 human 背书形态(拒点在证据闸前缀检查,无需 seed)
+        let mut bundle = q12_knowledge_bundle(
             "bundle-importreg-human",
             "ds-importreg-human",
             "scn-importreg-human",
             "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
         );
-        let result = sessions
+        bundle.tests.subset = vec!["human:q12-itest".into()];
+        bundle.audit.content_hash = bundle.compute_content_hash();
+        let err = sessions
             .import_bundle(&bundle, false)
             .await
-            .expect("human 背书应放行(显式降级,无需存在性校验)");
-        assert_eq!(result.dataset_id, "ds-importreg-human");
-        assert_eq!(result.entry_count, 1);
+            .expect_err("human 人工背书形态已下线,必须拒收");
+        assert!(
+            err.contains("可追溯标记"),
+            "错误应指向证据闸(sandbox:-only): {err}"
+        );
+        assert!(
+            !tmp.path().join("knowledge").join("bundles").exists(),
+            "拒绝的 bundle 不得落盘"
+        );
     }
 
     /// B2-真实沙盒引用: closed 沙盒 + PASS 报告(failed=0)→ 放行;
@@ -17732,6 +18240,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             None,
         )
         .build_router();
@@ -17756,6 +18265,7 @@ mod tests {
             0,
             0,
             vec![],
+            false,
             false,
             false,
             false,
