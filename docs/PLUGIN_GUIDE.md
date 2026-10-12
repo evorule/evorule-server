@@ -308,6 +308,15 @@ evorule-wasm-host verify --dir <dir> --keys <trusted.json> \
 
 签名格式与核心仓审计锚点（`evorule-governance::signing`）同族（RFC 8032 确定性），由测试向量交叉锁定。完整性结论随 wasm-host `/health` body 的 `integrity` 字段外化（verified / accepted_unverified / unchecked），server 侧探活与对账告警语义不变。
 
+### 8.2 市场安装通路（一键安装，当前默认形态）
+
+console「插件」类目提供在架插件的**一键安装**（治理确认对话框 → 阶段进度 → 各阶段耗时回显）：
+
+- 链路：console → server 代理（`POST /api/marketplace/plugins/{id}/install`，统一鉴权+审计）→ wasm-host `/admin/install`（验签→原子落盘→热加载）→ registry 运行时合入——**装完即可 `call_service` 调用**，零手工零重启。
+- 前提（部署配置，双进程同值）：server 与 wasm-host 均配置 `WASM_HOST_ADMIN_TOKEN`（server 未配置 → 安装端点 503 显式提示；wasm-host 未配置 → 管理端点不注册）。start-all 族经 `EVORULE_WASM_ADMIN_TOKEN` 一处设置两端注入。
+- 安装前置预检：server 转发前实时探宿主版本握手（abi 等值硬校验/engine_min 提示），不兼容提前 422 指路；宿主对账 503（如禁用后零声明）不影响预检——版本握手事实与对账结论分离。
+- 配套动作：卡片另提供「下载」（三件套，字节进度）与「下线」（运行时禁用，文件保留重启恢复）；「卸载」删除三件套。
+
 ---
 
 ## 九、任意语言实现要点（最小要求清单）
@@ -568,6 +577,8 @@ POST /api/plugins/flows/{pack_id}/{flow_id}/compile           流程编译代理
 ## 相关文档
 
 - [INTEGRATION_GUIDE §八 插件清单](INTEGRATION_GUIDE.md#八插件清单部署期启用裁剪) — 挂载清单与回落语义
+- [WASM_UDF_GUIDE](WASM_UDF_GUIDE.md) — WASM UDF 编写（Guest ABI/零能力沙箱/整数定点）
+- [PLUGIN_RELEASE_GUIDE](PLUGIN_RELEASE_GUIDE.md) — 插件发布指南（分发三件套/签名/信任锚/市场上架）
 - [README「服务能力对账与直调」](../README.md) — 对账/直调端点
 - 范本源码：[`plugins/finance-config/`](../plugins/finance-config/)（Rust/axum 实现）
 - 声明式 pack 范本：[`plugins/finance-pack/`](../plugins/finance-pack/)（纯 JSON 资产）

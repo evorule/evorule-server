@@ -75,6 +75,8 @@ plugins/wasm/{plugin_id}.{三件套}          ← 运行目录（wasm-host 加�
 
 3. `plugin.json` 策略表补服务声明（或依赖 auto_discover），重启 server 与 wasm-host。
 4. 部署后巡检：`wasm-host /health` integrity 全 verified；市场列表 `GET /api/marketplace/plugins` 材料状态正确。
+5. 上架完成后，console「插件」类目即刻可见（server 扫描式发现）：用户经治理确认一键安装
+   （验签/落盘/热加载全自动，各阶段耗时回显）；安装动作进审计链（`platform.event.plugin_installed`）。
 
 ## 三、运维：信任锚管理
 

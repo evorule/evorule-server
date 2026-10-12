@@ -1,4 +1,4 @@
-# P5 组合回归（server × wasm-host 双组件矩阵，109 号补批 PR-12）
+# P5 组合回归（server × wasm-host 双组件矩阵）
 # 触发：影响两组件契约面的路径变更时（paths 过滤控时长；发版前手动全跑）
 # 步骤：双 debug 构建（cargo 缓存）→ 安装自动化全链 10 断言 → 完整性 15 断言
 name: P5 compatibility matrix

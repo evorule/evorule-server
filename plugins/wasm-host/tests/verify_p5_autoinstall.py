@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
-"""安装自动化端到端实证（107 号三期：一键安装/装完即用/禁用/卸载/审计）
+"""安装自动化端到端实证（一键安装/装完即用/禁用/卸载/审计）
 
 临时环境全链（server debug 实例 + wasm-host debug 实例 + 市场种子放置），
-按 108 号 §五 验收标准断言：
+按安装自动化验收标准断言：
 
   ① install API 一键安装（无手工步骤）→ 200 + 阶段耗时回显
   ② 装完即用：registry 合入（GET /api/services 含新服务）→ call_service 调通
@@ -115,7 +115,7 @@ def main() -> int:
         procs.append(subprocess.Popen([str(HOST_EXE)], env=host_env, cwd=str(HOST_ROOT),
                                       stdout=host_log, stderr=subprocess.STDOUT))
         # 探活用 /services（身份端点恒 200）——零模块启动场景 /health 按对账语义 503
-        # 版本握手（109 号补批验收 1）：host_abi/host_version 字段在位且一致
+        # 版本握手验收：host_abi/host_version 字段在位且一致
         hw_ok = False
         try:
             code, hbody = http("GET", f"http://127.0.0.1:{HOST_PORT}/health", timeout=3)

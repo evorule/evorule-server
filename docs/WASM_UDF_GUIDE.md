@@ -196,7 +196,7 @@ cargo build --release --target wasm32-unknown-unknown
 
 ## 六、部署与启停
 
-### 6.1 上线一个新 UDF（两种模式）
+### 6.1 上线一个新 UDF（三种模式）
 
 **静态声明制（缺省，四步）**：
 
@@ -216,6 +216,13 @@ cargo build --release --target wasm32-unknown-unknown
 > 见 [PLUGIN_GUIDE §3.3](PLUGIN_GUIDE.md#33-auto_discover自动发现策略表模式)。
 
 > 静态声明制的注意点：声明是**静态**的——plugin.json 里声明的服务必须与 `plugins/wasm/` 实际模块一一对应。声明了但无模块（或反之）不会静默：宿主 `/health` 对账判 503（§七），server 探活随即报警。auto_discover 模式下「实载有、策略表无」是合法形态（自动发现接管），仅「策略表声明了但实载没有」仍判 503。
+#### 模式三：市场一键安装（默认推荐）
+
+分发物三件套经官方审核上架市场后，用户在 console「插件」类目**一键安装**：
+治理确认（签名/纯度/兼容性预检）→ server 代理 → wasm-host 验签/落盘/热加载 → 装完即用。
+前提：双进程配置 `WASM_HOST_ADMIN_TOKEN`（见 PLUGIN_GUIDE §8.2）。发布者侧流程见
+[PLUGIN_RELEASE_GUIDE](PLUGIN_RELEASE_GUIDE.md)。
+
 
 ### 6.2 启停顺序：先 host，后 server
 

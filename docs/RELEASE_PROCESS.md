@@ -86,6 +86,20 @@ pwsh scripts/validate-all.ps1 -PreRelease
 
 以上全部通过（exit 0）才可继续。如 `check_doc_safety.py` 报告 R-agent 违规，需清理文档后重跑。
 
+## 插件生态发版兼容矩阵（wasm-host / 市场安装通道）
+
+evorule-server 发新版时，按下表核对插件生态联动（零联动为多数场景）：
+
+| 变更类型 | 联动动作 |
+|---|---|
+| 纯 bugfix / 业务规则（端点与契约面零变化） | **零联动**；已安装插件跨版本继续在役（签名锚定字节） |
+| UDF ABI 变更（三导出契约破坏性修改） | wasm-host `HOST_ABI_VERSION` +1 → 旧 .wasm 加载期拒载（fail-visible）；发布说明声明"插件需重编译+重签"；官方示例重编译+重签+市场更新 |
+| wasm-host 端点/清单契约变更（plugin.json / HTTP 面） | wasm-host 成对发版（先 host 后 server）；`contract_version` MAJOR 门禁自动拦旧包 |
+| 管理面 env 名变更（WASM_HOST_ADMIN_URL/TOKEN） | 破坏性变更：发布说明显著声明 + start-all/ops 脚本随动 |
+| 信任锚 | 永不随版本变（公钥跨版本稳定；轮换=治理动作，流程见 PLUGIN_RELEASE_GUIDE） |
+
+发版前组合回归：`python3 plugins/wasm-host/tests/verify_p5_autoinstall.py`（全链 10 断言）+ `verify_p5_integrity.py`（15 断言）；CI 由 p5-compat workflow 常态覆盖（paths 过滤）。
+
 ## 2. 归档 cargo audit 报告（可选）
 
 ```bash

@@ -311,7 +311,7 @@ async fn health(State(reg): State<Arc<UdfRegistry>>) -> (StatusCode, Json<Value>
             "reconciliation": rec.to_json(),
             // 分发完整性（一期）：verified / accepted_unverified / unchecked
             "integrity": integrity_map,
-            // 版本握手（109 号补批）：安装前兼容性预检的宿主侧事实源。
+            // 版本握手：安装前兼容性预检的宿主侧事实源。
             // host_abi 引用 integrity::HOST_ABI_VERSION 常量（单一事实源，禁字面量副本）
             "host_version": crate::integrity::host_version(),
             "host_abi": crate::integrity::HOST_ABI_VERSION,
