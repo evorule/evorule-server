@@ -22,6 +22,8 @@
 // 集成测试保留 unwrap 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -143,6 +145,7 @@ async fn spawn_echo_service() -> String {
 
 /// 治理侧 4 步发布：create（声明数据依赖）→ add_entry（条目级绑定）
 /// → 条目/数据集状态迁移 → 发布审批；导出规则快照包并做交付边界往返。
+#[allow(clippy::too_many_lines)]
 async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
     let gov_dir = tmp.join("governance");
     std::fs::create_dir_all(&gov_dir).unwrap();
@@ -280,10 +283,10 @@ async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
     assert_eq!(entries.len(), 1);
 
     let tests = BundleTests {
-        // 证据契约补口: verdict=pass 的导入必须携带可追溯标记
-        // (本测试焦点是三层绑定链而非测试证据, 显式人工背书放行;
-        // 旧形态空 subset + Pass 属 禁止的假证据, 当时验证未覆盖本集成测试)
-        subset: vec!["human:publisher".to_string()],
+        // 证据契约: verdict=pass 的导入必须携带 sandbox: 机器背书引用
+        // (人工背书 human:<actor> 形态已下线;执行侧 SessionApi 接 seed
+        // 真实沙盒 #1——common::seed_pass_sandbox 深度校验放行面)
+        subset: vec!["sandbox:1".to_string()],
         fixtures: vec![],
         verdict: TestVerdict::Pass,
     };
@@ -295,6 +298,7 @@ async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
         "2026-08-31T00:00:00Z",
         "instance-1",
         &std::collections::BTreeMap::new(),
+        None, // recipe_snapshot：本 e2e 不携带策略快照（缺省不序列化字节兼容）
     );
     assert_eq!(bundle.bundle_id, "bundle-ds-binding-e2e-v1");
     let dd = bundle
@@ -320,6 +324,11 @@ async fn governance_export_bundle(tmp: &std::path::Path) -> DatasetBundle {
 fn build_session_api(rules_dir: &std::path::Path, echo_url: Option<&str>) -> SessionApi {
     let core_eval_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/server_eval.json");
+    // 夹具包引用 sandbox:1 → in-memory 元数据库 seed 真实沙盒
+    // （证据深度校验：存在性 + closed + 报告 failed==0 的放行面）
+    let ws_db = std::sync::Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+    let seed_sid = common::seed_pass_sandbox(&ws_db);
+    assert_eq!(seed_sid, 1, "空库首个 seed 应得 sandbox:1(夹具引用约定)");
 
     let registry = match echo_url {
         Some(url) => ServiceRegistry::load_from_str(&format!(
@@ -350,7 +359,10 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: Option<&str>) -> Ses
         rules_dir.to_path_buf(),
         evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
         evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        0,    // 0=引擎缺省 TTL
+        None, // 锚点链：测试构造不启用
     )
+    .with_workspace_db(ws_db)
     .with_dispatcher(dispatcher)
     .with_bound_services([SVC.to_string()])
     .with_registry_services([ServiceMeta {

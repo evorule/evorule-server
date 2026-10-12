@@ -275,8 +275,9 @@ pub struct ListBundleImportsQuery {
 // `version="current"` 活规则集导出，历史版显式 400（不静默伪造）。
 //
 // 证据纪律（与治理侧 export_with_tests 双闸同口径）：verdict=pass 必带可追溯
-// 标记（sandbox:<id> / human:<actor> 前缀），服务端 enforcement——客户端
+// 标记（每项均为 sandbox:<id> 机器背书沙盒引用），服务端 enforcement——客户端
 // 纪律不构成校验；verdict=fail 无此要求（fail 即"未验证"，无伪造风险）。
+// 人工背书 human:<actor> 形态已下线（自由文本 actor 可被任意伪造）。
 // `sandbox:` 引用的存在性+报告一致性由 import 侧校验（双闸各管一层）。
 // =============================================================================
 
@@ -501,18 +502,13 @@ pub async fn export_bundle_handler(
     // ② 证据形状校验（服务端 enforcement，与治理侧 export_with_tests 双闸同口径）
     if req.tests.verdict == evorule_bundle::TestVerdict::Pass {
         let traceable = !req.tests.subset.is_empty()
-            && req
-                .tests
-                .subset
-                .iter()
-                .all(|s| s.starts_with("sandbox:") || s.starts_with("human:"));
+            && req.tests.subset.iter().all(|s| s.starts_with("sandbox:"));
         if !traceable {
             return Err(export_err(
                 StatusCode::BAD_REQUEST,
                 "证据校验失败:verdict=pass 的导出必须携带可追溯测试标记\
-                 (tests.subset 须非空,且每项为 sandbox:<沙盒ID> 或 human:<操作者>)。\
-                 机器背书请传入沙盒报告引用,人工背书请传 human:<操作者>\
-                 (显式降级,导入侧可追溯);verdict=fail 无此要求"
+                 (tests.subset 须非空,且每项为 sandbox:<沙盒ID> 机器背书沙盒引用)。\
+                 请从治理域测试工作台导出;verdict=fail 无此要求"
                     .to_string(),
             ));
         }
@@ -654,9 +650,9 @@ mod tests {
             }),
             recipe_snapshot: None,
             tests: BundleTests {
-                // B2: pass 必带可追溯标记(执行域 import 侧校验);
-                // 测试意图=合法可导入包,人工背书形态
-                subset: vec!["human:test-user".into()],
+                // B2: pass 必带 sandbox: 机器背书引用(执行域深度校验)——
+                // 测试意图=合法可导入包,调用方须 seed 真实沙盒(sandbox:1)
+                subset: vec!["sandbox:1".into()],
                 fixtures: vec![],
                 verdict: TestVerdict::Pass,
             },
@@ -724,10 +720,20 @@ mod tests {
         .with_bound_services(["payroll_svc".to_string()])
     }
 
+    /// 构造测试用 SessionApi + in-memory 元数据库 seed 真实沙盒：
+    /// 夹具包引用 sandbox:1，import 正路径证据深度校验（存在性+closed+
+    /// 报告 failed==0）的放行面。负路径测试统一 seed 无害（拒点在闸前）。
+    fn test_api_with_pass_sandbox(tmp: &tempfile::TempDir) -> SessionApi {
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        let seed_sid = crate::api::evidence_fixture::seed_pass_sandbox(&ws_db);
+        assert_eq!(seed_sid, 1, "空库首个 seed 应得 sandbox:1(夹具引用约定)");
+        test_api(tmp).with_workspace_db(ws_db)
+    }
+
     #[tokio::test]
     async fn dry_run_validates_without_landing() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         let bundle = valid_bundle(schema_valid_body());
 
         let r = api.import_bundle(&bundle, true).await.unwrap();
@@ -740,7 +746,7 @@ mod tests {
     #[tokio::test]
     async fn import_lands_atomically_and_reloads() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         let bundle = valid_bundle(schema_valid_body());
 
         let r = api.import_bundle(&bundle, false).await.unwrap();
@@ -800,7 +806,7 @@ mod tests {
     #[tokio::test]
     async fn bundle_entry_tamper_rejected_on_reload() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         let bundle = valid_bundle(schema_valid_body());
 
         api.import_bundle(&bundle, false).await.unwrap();
@@ -914,6 +920,7 @@ mod tests {
     async fn import_records_bundle_import_trace() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        crate::api::evidence_fixture::seed_pass_sandbox(&ws_db);
         let api = test_api(&tmp).with_workspace_db(ws_db);
         let bundle = valid_bundle(schema_valid_body());
 
@@ -944,6 +951,7 @@ mod tests {
     async fn dry_run_does_not_record_import_trace() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        crate::api::evidence_fixture::seed_pass_sandbox(&ws_db);
         let api = test_api(&tmp).with_workspace_db(ws_db);
         let bundle = valid_bundle(schema_valid_body());
 
@@ -956,14 +964,14 @@ mod tests {
     async fn list_imports_empty_without_workspace_db() {
         // workspace 元数据库未接线 → 空列表（非错误, 未启用溯源）
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         assert!(api.list_bundle_imports(10).unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn tampered_bundle_rejected_no_landing() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         let mut bundle = valid_bundle(schema_valid_body());
         // 篡改条目内容但不重签名 → 防篡改哈希校验失败
         bundle.entries[0].rule_body = serde_json::json!({ "transform": [{ "type": "io_request", "params": { "io_type": "call_service", "service_name": "hacked" } }] });
@@ -979,7 +987,7 @@ mod tests {
     #[tokio::test]
     async fn schema_gate_rejects_invalid_rule_body() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         // 符号三方一致需通过（合法 io_request 引用 payroll_svc），但第二个元指令
         // 类型不在 6 元指令枚举内 → 硬失败。Q12/审计⑤ SSOT 收口后拦截点前移：
         // BundleImporter::validate 内的 validate_rule_structure（与治理侧入库门禁同源）
@@ -1007,7 +1015,7 @@ mod tests {
     #[tokio::test]
     async fn path_traversal_bundle_id_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         let mut bundle = valid_bundle(schema_valid_body());
         bundle.bundle_id = "../evil".into();
         let hash = bundle.compute_content_hash();
@@ -1022,7 +1030,7 @@ mod tests {
     async fn unbound_service_declared_rejected_explicitly() {
         // T6 阻断项 ①：bundle 声明执行侧未绑定的服务 → import 显式失败（不静默）
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp); // 默认绑定 = 原生 7 + payroll_svc
+        let api = test_api_with_pass_sandbox(&tmp); // 默认绑定 = 原生 7 + payroll_svc
         let mut bundle = valid_bundle(schema_valid_body());
         // 三处符号保持一致（过 ① 步符号校验），但服务名不在执行侧绑定集内
         let svc = "not_bound_svc".to_string();
@@ -1050,7 +1058,7 @@ mod tests {
         // （service_registry.json，端点/凭据配置位），仅原生内嵌不满足。
         // 测试 api 未注入 registry_services → 显式失败（不静默）。
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp); // bound_services = 原生7 + payroll_svc；registry_services 空
+        let api = test_api_with_pass_sandbox(&tmp); // bound_services = 原生7 + payroll_svc；registry_services 空
         let mut bundle = valid_bundle(schema_valid_body());
         bundle.data_dependencies.as_mut().unwrap().services[0].sensitive = true;
         let hash = bundle.compute_content_hash();
@@ -1073,7 +1081,7 @@ mod tests {
             version: Some("1.2.0".into()),
             description: Some("payroll service".into()),
         }];
-        let api = test_api(&tmp).with_registry_services(metas);
+        let api = test_api_with_pass_sandbox(&tmp).with_registry_services(metas);
         let mut bundle = valid_bundle(schema_valid_body());
         bundle.data_dependencies.as_mut().unwrap().services[0].sensitive = true;
         let hash = bundle.compute_content_hash();
@@ -1098,7 +1106,7 @@ mod tests {
             version: Some("1.2.0".into()),
             description: Some("payroll service".into()),
         }];
-        let api = test_api(&tmp).with_registry_services(metas);
+        let api = test_api_with_pass_sandbox(&tmp).with_registry_services(metas);
         let out = crate::api::server::list_services_handler(axum::extract::State(api)).await;
 
         let mut natives: Vec<&str> = out
@@ -1165,7 +1173,7 @@ mod tests {
             version: None,
             description: None,
         }];
-        let api = test_api(&tmp)
+        let api = test_api_with_pass_sandbox(&tmp)
             .with_native_services(infos)
             .with_registry_services(metas);
         let out = crate::api::server::list_services_handler(axum::extract::State(api)).await;
@@ -1211,7 +1219,7 @@ mod tests {
                 parameters: None,
             },
         ];
-        let api = test_api(&tmp)
+        let api = test_api_with_pass_sandbox(&tmp)
             .with_native_services(infos)
             .with_service_chain(std::sync::Arc::new(TestEchoChain));
 
@@ -1254,7 +1262,7 @@ mod tests {
         assert!(body.0.to_string().contains("unknown service"));
 
         // ④ 未装配服务链 → 503（服务名须在 bare api 的 demo 兜底清单内）
-        let bare = test_api(&tmp);
+        let bare = test_api_with_pass_sandbox(&tmp);
         let (status, _) = crate::api::server::invoke_service_handler(
             axum::extract::State(bare),
             axum::extract::Path("config_persist".to_string()),
@@ -1269,7 +1277,7 @@ mod tests {
     #[tokio::test]
     async fn single_activation_replaces_old_bundle_by_dataset() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         // v1 导入
         api.import_bundle(&valid_bundle(schema_valid_body()), false)
             .await
@@ -1305,7 +1313,7 @@ mod tests {
     #[tokio::test]
     async fn active_bundles_reports_imported_bundle() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         api.import_bundle(&valid_bundle(schema_valid_body()), false)
             .await
             .unwrap();
@@ -1326,14 +1334,14 @@ mod tests {
 
         // 空目录 → 空列表（非错误）
         let empty_tmp = tempfile::tempdir().unwrap();
-        let empty_api = test_api(&empty_tmp);
+        let empty_api = test_api_with_pass_sandbox(&empty_tmp);
         assert!(empty_api.active_bundles().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn multiple_datasets_coexist_in_active() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         api.import_bundle(&valid_bundle(schema_valid_body()), false)
             .await
             .unwrap();
@@ -1381,7 +1389,7 @@ mod tests {
     #[tokio::test]
     async fn import_overlap_with_loaded_rules_fails_fast() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         // 部署面平台规则发射 call_service → reload 后进入装载集基线
         std::fs::write(
             tmp.path().join("rules/platform_io.json"),
@@ -1413,7 +1421,7 @@ mod tests {
     #[tokio::test]
     async fn import_own_io_type_complies() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         let body = serde_json::json!({
             "transform": [
                 { "type": "io_request", "params": { "io_type": "flow_probe", "service_name": "payroll_svc" } }
@@ -1435,7 +1443,7 @@ mod tests {
     #[tokio::test]
     async fn import_second_bundle_same_io_type_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         api.import_bundle(&valid_bundle(schema_valid_body()), false)
             .await
             .unwrap();
@@ -1459,7 +1467,7 @@ mod tests {
     #[tokio::test]
     async fn reimport_replacement_bundles_not_flagged_as_overlap() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         api.import_bundle(&valid_bundle(schema_valid_body()), false)
             .await
             .unwrap();
@@ -1482,7 +1490,7 @@ mod tests {
     #[tokio::test]
     async fn import_handler_overlaps_map_to_400_and_clean_to_201() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         std::fs::write(
             tmp.path().join("rules/platform_io.json"),
             serde_json::to_string_pretty(&platform_emit_file_body()).unwrap(),
@@ -1507,7 +1515,7 @@ mod tests {
         );
 
         let tmp2 = tempfile::tempdir().unwrap();
-        let api2 = test_api(&tmp2);
+        let api2 = test_api_with_pass_sandbox(&tmp2);
         let body = serde_json::json!({
             "transform": [
                 { "type": "io_request", "params": { "io_type": "flow_probe", "service_name": "payroll_svc" } }
@@ -1531,7 +1539,7 @@ mod tests {
     #[tokio::test]
     async fn corrupted_manifest_errors_are_explicit() {
         let tmp = tempfile::tempdir().unwrap();
-        let api = test_api(&tmp);
+        let api = test_api_with_pass_sandbox(&tmp);
         api.import_bundle(&valid_bundle(schema_valid_body()), false)
             .await
             .unwrap();

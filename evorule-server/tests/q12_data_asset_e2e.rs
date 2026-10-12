@@ -20,6 +20,8 @@
 // 集成测试保留 unwrap 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -134,6 +136,11 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         payload: scenario_payload.clone(),
         schema_ref: "https://rpsm.evorule.org/schemas/scenario/v1.0.json".into(),
         governance: None,
+        // 知识资产化 A 批：知识条目治理字段（本 e2e 不携带，None=旧格式字节兼容）
+        knowledge_kind: None,
+        trust_level: None,
+        license_ref: None,
+        execution_contract: None,
     };
     store.add_knowledge_entry(&entry).unwrap();
 
@@ -195,9 +202,9 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
     assert_eq!(entries[0].status, Some(LifecycleStatus::Active));
 
     let tests = BundleTests {
-        // B2: pass 必带可追溯标记(执行域 import 侧校验);
-        // 本链未起沙盒,显式人工背书形态
-        subset: vec!["human:q12-e2e".into()],
+        // B2: pass 必带 sandbox: 机器背书引用(执行域深度校验)——
+        // 执行侧 SessionApi 接 seed 真实沙盒 #1(common::seed_pass_sandbox)
+        subset: vec!["sandbox:1".into()],
         fixtures: vec![],
         verdict: TestVerdict::Pass,
     };
@@ -209,6 +216,7 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         "2026-08-30T00:00:00Z",
         "instance-1",
         &BTreeMap::new(),
+        None, // recipe_snapshot：本 e2e 不携带策略快照（缺省不序列化字节兼容）
     );
     assert_eq!(bundle.bundle_id, "bundle-ds-rpsm-assets-v1");
     // 交付边界：快照包经序列化（文件/网络传输）后反序列化，内容与哈希签名不变
@@ -223,6 +231,11 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
     // ================= 执行侧导入 =================
     let core_eval_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/server_eval.json");
+    // 夹具包引用 sandbox:1 → in-memory 元数据库 seed 真实沙盒
+    // （证据深度校验：存在性 + closed + 报告 failed==0 的放行面）
+    let ws_db = std::sync::Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+    let seed_sid = common::seed_pass_sandbox(&ws_db);
+    assert_eq!(seed_sid, 1, "空库首个 seed 应得 sandbox:1(夹具引用约定)");
     let sessions = SessionApi::new_with_full_config(
         vec![],
         100,
@@ -236,7 +249,10 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         rules_dir.clone(),
         evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
         evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
-    );
+        0,    // 0=引擎缺省 TTL
+        None, // 锚点链：测试构造不启用
+    )
+    .with_workspace_db(ws_db.clone());
     assert!(sessions.knowledge_load_error().is_none());
     // TCB 合并集基线（导入前）
     let baseline = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)

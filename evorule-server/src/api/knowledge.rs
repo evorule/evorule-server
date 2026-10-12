@@ -280,9 +280,9 @@ mod tests {
             data_dependencies: None,
             recipe_snapshot: None,
             tests: BundleTests {
-                // B2: pass 必带可追溯标记(执行域 import 侧校验);
-                // 测试意图=合法可导入知识包,人工背书形态
-                subset: vec!["human:q12-s2-itest".into()],
+                // B2: pass 必带 sandbox: 机器背书引用(执行域深度校验)——
+                // 调用方测试需 seed 真实沙盒(sandbox:1)
+                subset: vec!["sandbox:1".into()],
                 fixtures: vec![],
                 verdict: TestVerdict::Pass,
             },
@@ -340,7 +340,11 @@ mod tests {
     #[tokio::test]
     async fn knowledge_data_plane_endpoints_matrix() {
         let tmp = tempfile::tempdir().unwrap();
-        let sessions = test_api(&tmp);
+        // 夹具包引用 sandbox:1 → in-memory 元数据库 seed 真实沙盒(深度校验放行面)
+        let ws_db = std::sync::Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        let seed_sid = crate::api::evidence_fixture::seed_pass_sandbox(&ws_db);
+        assert_eq!(seed_sid, 1, "空库首个 seed 应得 sandbox:1(夹具引用约定)");
+        let sessions = test_api(&tmp).with_workspace_db(ws_db.clone());
 
         // 领域 schema 注册（运维注入通道）
         let ddir = tmp.path().join("knowledge").join("domain_schemas");

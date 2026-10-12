@@ -21,6 +21,8 @@
 // 集成测试保留 unwrap 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -185,6 +187,11 @@ async fn spawn_echo_service() -> String {
 fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi {
     let core_eval_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/server_eval.json");
+    // 夹具包引用 sandbox:1 → in-memory 元数据库 seed 真实沙盒
+    // （证据深度校验：存在性 + closed + 报告 failed==0 的放行面）
+    let ws_db = std::sync::Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+    let seed_sid = common::seed_pass_sandbox(&ws_db);
+    assert_eq!(seed_sid, 1, "空库首个 seed 应得 sandbox:1(夹具引用约定)");
     let registry = ServiceRegistry::load_from_str(&format!(
         r#"{{ "{SVC}": {{ "url": "{echo_url}", "method": "POST" }} }}"#
     ))
@@ -208,7 +215,10 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi 
         rules_dir.to_path_buf(),
         evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
         evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        0,    // 0=引擎缺省 TTL
+        None, // 锚点链：测试构造不启用
     )
+    .with_workspace_db(ws_db)
     .with_dispatcher(dispatcher)
     .with_bound_services([SVC.to_string()])
     .with_registry_services([ServiceMeta {
@@ -594,7 +604,8 @@ async fn acceptance_governance_to_execution_full_chain() {
     assert_eq!(found["items"].as_array().unwrap().len(), 1, "{found}");
 
     // 带闸门一证据导出（决策：执行侧导入要求 verdict=Pass，不默认 Pass；
-    // 双闸：pass 必带可追溯标记——本链未起沙盒，显式人工背书形态）
+    // 双闸：pass 必带 sandbox: 机器背书引用——执行侧 SessionApi 接 seed
+    // 真实沙盒 #1（common::seed_pass_sandbox），深度校验放行面）
     let (st, bundle) = send(
         &app,
         "POST",
@@ -603,7 +614,7 @@ async fn acceptance_governance_to_execution_full_chain() {
         Some(json!({
             "dataset_id": "ds-acc",
             "version": "v1",
-            "tests": { "subset": ["human:acc-scientist"], "fixtures": [], "verdict": "pass" }
+            "tests": { "subset": ["sandbox:1"], "fixtures": [], "verdict": "pass" }
         })),
     )
     .await;
@@ -687,7 +698,7 @@ async fn acceptance_governance_to_execution_full_chain() {
 // ================= 负向：凭据永不入库（扫描兜底） =================
 
 #[tokio::test]
-async fn acceptance_credential_scan_blocks_publish() {
+async fn acceptance_credential_scan_blocks_entry_ingest() {
     let tmp = tempfile::tempdir().unwrap();
     let (app, _store) = build_gov(tmp.path(), "http://127.0.0.1:9");
 
@@ -720,7 +731,9 @@ async fn acceptance_credential_scan_blocks_publish() {
     .await;
     assert_eq!(st, axum::http::StatusCode::CREATED, "{body}");
 
-    // 规则体夹带疑似凭据（静态扫描命中）
+    // 规则体夹带疑似凭据（静态扫描命中）—— 入库闸即拦（扫描前移后 fail-fast：
+    // 凭据永不入规则资产库，设计文档 §6/§9-3；带凭据条目无法再到达发布，
+    // 发布闸扫描转为对既有数据/旁路入库的纵深防御）
     let mut cred_body = serde_json::from_str::<Value>(RULE_BODY).unwrap();
     cred_body["description"] = json!("api_key=super-secret-123 泄漏测试");
     let (st, body) = send(
@@ -738,33 +751,8 @@ async fn acceptance_credential_scan_blocks_publish() {
     .await;
     assert_eq!(
         st,
-        axum::http::StatusCode::CREATED,
-        "入库不限（扫描在发布前）: {body}"
-    );
-
-    // 迁移到 Active（root 全能），发布时凭据扫描兜底拒绝
-    for to in ["candidate", "active"] {
-        let (st, body) = send(
-            &app,
-            "PATCH",
-            "/v1/datasets/ds-cred/lifecycle",
-            Some(&root),
-            Some(json!({ "to": to })),
-        )
-        .await;
-        assert_eq!(st, axum::http::StatusCode::OK, "{to}: {body}");
-    }
-    let (st, body) = send(
-        &app,
-        "POST",
-        "/v1/datasets/ds-cred/publish",
-        Some(&root),
-        Some(json!({ "confirm": true })),
-    )
-    .await;
-    assert!(
-        st.is_client_error(),
-        "凭据扫描必须拦截发布，got {st}: {body}"
+        axum::http::StatusCode::BAD_REQUEST,
+        "凭据条目入库即拒（fail-fast）: {body}"
     );
     let text = body.to_string();
     assert!(
