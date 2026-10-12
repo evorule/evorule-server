@@ -637,6 +637,13 @@ async fn delete_template_handler(
 // 不构成信任背书，`integrity_mismatch`（清单哈希 × 实测不符）只做 fail-visible
 // 标注，不阻断下载（审查者需要能看到坏样本）。
 
+/// 插件列表分页 query（缺省=第一页 50 条；缺省参数下既有消费方零迁移）
+#[derive(serde::Deserialize, Default)]
+pub struct PluginListQuery {
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
 /// 插件分发物清单（wasm-host integrity 一期格式的只读投影；字段缺失容忍——
 /// 市场陈列对清单取超集读取，严格校验归 wasm-host 加载期）
 #[derive(serde::Deserialize)]
@@ -821,10 +828,24 @@ fn bump_plugin_download_count(marketplace_dir: &std::path::Path, id: &str) {
 )]
 async fn list_plugins(
     State(dir): State<MarketplaceDir>,
+    Query(q): Query<PluginListQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let plugins =
-        list_plugins_from(&dir.0).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let count = plugins.len();
+    let all = list_plugins_from(&dir.0).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let total = all.len();
+    // 分页（110 号 P3-11）：page 从 1 起、per_page 缺省 50 上限 200；缺省参数=全量返回
+    // （向后兼容：既有消费方无 query 时行为不变）。per_page=0 视为缺省。
+    let per_page = q.per_page.unwrap_or(50).clamp(1, 200);
+    let page = q.page.unwrap_or(1).max(1);
+    let start = ((page - 1) as usize) * (per_page as usize);
+    let page_items: Vec<Value> = all
+        .iter()
+        .skip(start)
+        .take(per_page as usize)
+        .cloned()
+        .collect();
+    let returned = page_items.len();
+    let count = returned;
+    let plugins = page_items;
     // 宿主信息节点：console 安装前兼容性判定的事实源。
     // available 三态显式建模——宿主不可达显式 false，不省略字段不默认兼容。
     // install_channel_enabled 与 available 正交：前者=server 侧管理凭证配置
@@ -844,6 +865,9 @@ async fn list_plugins(
     Ok(Json(serde_json::json!({
         "success": true,
         "count": count,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
         "plugins": plugins,
         "host": host,
     })))
