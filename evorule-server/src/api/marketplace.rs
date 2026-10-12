@@ -89,14 +89,6 @@ pub fn marketplace_router() -> Router<AppState> {
             "/api/marketplace/plugins/{id}",
             delete(delete_plugin_handler),
         )
-        .route(
-            "/api/marketplace/plugins/{id}/uninstall",
-            post(uninstall_plugin_handler),
-        )
-        .route(
-            "/api/marketplace/plugins/{id}/disable",
-            post(disable_plugin_handler),
-        )
 }
 
 /// 统一错误响应：`{ "success": false, "message": ... }`（与 permissions.rs 同形状）
