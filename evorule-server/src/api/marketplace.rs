@@ -77,6 +77,26 @@ pub fn marketplace_router() -> Router<AppState> {
             "/api/marketplace/plugins/{id}/disable",
             post(disable_plugin_handler),
         )
+        .route(
+            "/api/marketplace/plugins/{id}/submit",
+            post(submit_plugin_handler),
+        )
+        .route(
+            "/api/marketplace/plugins/{id}/approve",
+            post(approve_plugin_handler),
+        )
+        .route(
+            "/api/marketplace/plugins/{id}",
+            delete(delete_plugin_handler),
+        )
+        .route(
+            "/api/marketplace/plugins/{id}/uninstall",
+            post(uninstall_plugin_handler),
+        )
+        .route(
+            "/api/marketplace/plugins/{id}/disable",
+            post(disable_plugin_handler),
+        )
 }
 
 /// 统一错误响应：`{ "success": false, "message": ... }`（与 permissions.rs 同形状）
@@ -911,6 +931,219 @@ async fn download_plugin(
         ],
         bytes,
     ))
+}
+
+// ============================================================================
+// 插件上架管理面（官方审核制：submit=draft 入库 → approve=运维放行 → 对外可见）
+// ============================================================================
+
+/// 管理凭证校验（上架/审核/下架共用；Bearer 匹配 WASM_HOST_ADMIN_TOKEN——
+/// 运维信任域同源：管理宿主与管理市场是同一运维角色）
+fn require_admin_token(headers: &axum::http::HeaderMap) -> Result<(), (StatusCode, Json<Value>)> {
+    let expected = wasm_host_admin_token().ok_or_else(|| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "审核通道未开启（server 未配置管理凭证）",
+        )
+    })?;
+    let given = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match given {
+        Some(g) if g == expected => Ok(()),
+        _ => Err(err(StatusCode::UNAUTHORIZED, "管理凭证缺失或不匹配")),
+    }
+}
+
+/// `POST /api/marketplace/plugins/{id}/submit`——投稿（multipart 三件套+meta）
+///
+/// 落盘 `plugins/{id}/`（status=draft 审核中）：draft 条目随列表返回但标注状态，
+/// 下载开放（内部审核需要），**安装通道由宿主侧 enforce 策略独立把关**。
+/// id 必须与清单 module 字段一致（身份对账，防目录穿越与张冠李戴）。
+#[utoipa::path(
+    post,
+    path = "/api/marketplace/plugins/{id}/submit",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "插件 ID（=清单 module=服务名）")),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "投稿成功（draft，待审核）", body = serde_json::Value),
+        (status = 400, description = "三件套不完整/meta 非法/身份不符", body = serde_json::Value),
+        (status = 401, description = "管理凭证缺失或不匹配", body = serde_json::Value)
+    )
+)]
+async fn submit_plugin_handler(
+    State(dir): State<MarketplaceDir>,
+    Path(id): Path<String>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !valid_id(&id) {
+        return Err(err(StatusCode::BAD_REQUEST, format!("非法插件 ID: {id:?}")));
+    }
+    let mut wasm: Option<Vec<u8>> = None;
+    let mut manifest: Option<Vec<u8>> = None;
+    let mut signature: Option<Vec<u8>> = None;
+    let mut meta: Option<Value> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("multipart 解析失败: {e}")))?
+    {
+        match field.name().unwrap_or("") {
+            "wasm" => {
+                wasm = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("字段读取失败: {e}")))?
+                        .to_vec(),
+                )
+            }
+            "manifest" => {
+                manifest = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("字段读取失败: {e}")))?
+                        .to_vec(),
+                )
+            }
+            "signature" => {
+                signature = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("字段读取失败: {e}")))?
+                        .to_vec(),
+                )
+            }
+            "meta" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("字段读取失败: {e}")))?;
+                meta = Some(
+                    serde_json::from_str(&text)
+                        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("meta 非 JSON: {e}")))?,
+                );
+            }
+            _ => {}
+        }
+    }
+    let (Some(wasm), Some(manifest)) = (wasm, manifest) else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "缺少 wasm 或 manifest 字段（分发三件套：wasm+manifest+signature）",
+        ));
+    };
+
+    // 身份对账：清单 module 必须与 id 一致（防张冠李戴）
+    let manifest_v: Value = serde_json::from_slice(&manifest)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("清单解析失败: {e}")))?;
+    if manifest_v.get("module").and_then(|v| v.as_str()) != Some(id.as_str()) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("清单 module 与插件 ID 不一致（{id}）"),
+        ));
+    }
+
+    let plugin_dir = dir.0.join("plugins").join(&id);
+    std::fs::create_dir_all(&plugin_dir).map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("建目录失败: {e}"),
+        )
+    })?;
+    atomic_write(&plugin_dir.join(format!("{id}.wasm")), &wasm)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    atomic_write(
+        &plugin_dir.join(format!("{id}.plugin-module.json")),
+        &manifest,
+    )
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if let Some(sig) = &signature {
+        atomic_write(&plugin_dir.join(format!("{id}.wasm.sig")), sig)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    }
+
+    let mut meta_out: Value = meta.unwrap_or_else(|| serde_json::json!({}));
+    if let Some(obj) = meta_out.as_object_mut() {
+        obj.entry("status".to_string())
+            .or_insert_with(|| Value::String("draft".into()));
+        obj.entry("download_count".to_string())
+            .or_insert_with(|| Value::from(0u64));
+        obj.insert("created_at".into(), Value::String(chrono_now_iso()));
+    }
+    atomic_write(
+        &plugin_dir.join("meta.json"),
+        &serde_json::to_vec_pretty(&meta_out)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    )
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "plugin": meta_out,
+        "note": "已入库（draft，待审核）。审核通过请调 approve 端点（管理凭证）",
+    })))
+}
+
+/// `POST /api/marketplace/plugins/{id}/approve`——审核放行（draft→approved，管理凭证）
+#[utoipa::path(
+    post,
+    path = "/api/marketplace/plugins/{id}/approve",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "插件 ID")),
+    responses(
+        (status = 200, description = "审核通过（approved）", body = serde_json::Value),
+        (status = 401, description = "管理凭证缺失或不匹配", body = serde_json::Value),
+        (status = 404, description = "插件不存在", body = serde_json::Value)
+    )
+)]
+async fn approve_plugin_handler(
+    State(dir): State<MarketplaceDir>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_admin_token(&headers)?;
+    let meta_path = dir.0.join("plugins").join(&id).join("meta.json");
+    if !meta_path.is_file() {
+        return Err(err(StatusCode::NOT_FOUND, format!("插件不存在: {id}")));
+    }
+    let mut meta = read_meta(&meta_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert("status".into(), Value::String("approved".into()));
+        obj.insert("approved_at".into(), Value::String(chrono_now_iso()));
+    }
+    atomic_write(
+        &meta_path,
+        &serde_json::to_vec_pretty(&meta)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    )
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(serde_json::json!({ "success": true, "approved": id })))
+}
+
+/// `DELETE /api/marketplace/plugins/{id}`——下架（删除市场目录三件套+meta；管理凭证）
+///
+/// 语义：仅下架（市场分发面）；已安装副本的移除走 uninstall（宿主侧）。
+async fn delete_plugin_handler(
+    State(dir): State<MarketplaceDir>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_admin_token(&headers)?;
+    if !valid_id(&id) {
+        return Err(err(StatusCode::BAD_REQUEST, format!("非法插件 ID: {id:?}")));
+    }
+    let plugin_dir = dir.0.join("plugins").join(&id);
+    if !plugin_dir.is_dir() {
+        return Err(err(StatusCode::NOT_FOUND, format!("插件不存在: {id}")));
+    }
+    std::fs::remove_dir_all(&plugin_dir)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?;
+    Ok(Json(serde_json::json!({ "success": true, "deleted": id })))
 }
 
 // ============================================================================
