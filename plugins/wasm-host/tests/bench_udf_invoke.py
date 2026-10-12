@@ -74,7 +74,8 @@ def main() -> int:
     ap.add_argument("--skip-server", action="store_true", help="跳过 A 通道（server REST invoke）")
     args = ap.parse_args()
 
-    invoke_body = json.dumps({"args": {"amount_cents": 100000, "rate_bp": 600}}).encode()
+    # REST invoke 请求体契约=裸 args（wasm-host 顶层读参；{args:...} 包装形态为调用方误用）
+    invoke_body = json.dumps({"amount_cents": 100000, "rate_bp": 600}).encode()
 
     print(f"== UDF 调用开销基准（n={args.n}, warm={args.w}，本地环回）==")
     skip_server = "--skip-server" in sys.argv

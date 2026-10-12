@@ -162,7 +162,7 @@ def main() -> int:
         check("②a registry 合入（/api/services 含新服务）", plugin_id in names, str(names)[:120])
         code, called = http(
             "POST", f"{S}/api/services/{plugin_id}/invoke",
-            json.dumps({"args": {"amount_cents": 100000, "rate_bp": 600}}).encode(),
+            json.dumps({"amount_cents": 100000, "rate_bp": 600}).encode(),
             {"Content-Type": "application/json"},
         )
         ok_call = code == 200 and json.dumps(called).find("6000") >= 0
@@ -172,13 +172,13 @@ def main() -> int:
         # ③ disable → 404
         http("POST", f"{S}/api/marketplace/plugins/{plugin_id}/disable")
         code, _ = http("POST", f"{S}/api/services/{plugin_id}/invoke",
-                       json.dumps({"args": {}}).encode(), {"Content-Type": "application/json"})
+                       json.dumps({}).encode(), {"Content-Type": "application/json"})
         check("③ disable 后调用 404（运行时下线）", code == 404, f"code={code}")
 
         # ④ 重装恢复
         code, _ = http("POST", f"{S}/api/marketplace/plugins/{plugin_id}/install")
         code2, called2 = http("POST", f"{S}/api/services/{plugin_id}/invoke",
-                              json.dumps({"args": {"amount_cents": 100000, "rate_bp": 600}}).encode(),
+                              json.dumps({"amount_cents": 100000, "rate_bp": 600}).encode(),
                               {"Content-Type": "application/json"})
         check("④ 重装恢复调用", code == 200 and code2 == 200)
 
