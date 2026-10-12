@@ -1037,9 +1037,13 @@ fn build_publish_bundle(
         // 快照固化走导出端点（调用方策略资产随包），发布产物无 LLM 策略槽来源
         recipe_snapshot: None,
         tests: BundleTests {
-            // : 证据如实携带——闸门一已验证沙盒 closed + 报告 failed==0,
-            // subset 携带 sandbox:<id> 可追溯标记(旧实现硬编码空 subset + Pass,
-            // 属假证据形态;verdict 现为闸门一验证后的派生值,非无条件 Pass)
+            // 证据如实携带:本段仅在闸门一验证通过后到达(沙盒 closed + 报告
+            // failed==0),subset 携带 sandbox:<id> 可追溯标记(旧实现硬编码空
+            // subset + Pass,属假证据形态,已修)。
+            // verdict 如实描述:固定 Pass,但**仅在闸门一验证后**到达——无
+            // sandbox id 时为 Pass+空 subset 形态,会被导入侧证据闸拒(fail-
+            // visible 可用面,非假证据)。verdict 由背书派生为后续项
+            // (TestVerdict 缺省收紧批登记,与 human: 信任模型同列)。
             subset: item
                 .test_report_sandbox_id
                 .map(|sid| vec![format!("sandbox:{sid}")])
