@@ -825,7 +825,7 @@ async fn list_plugins(
     let plugins =
         list_plugins_from(&dir.0).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let count = plugins.len();
-    // 宿主信息节点（109 号补批）：console 安装前兼容性判定的事实源。
+    // 宿主信息节点：console 安装前兼容性判定的事实源。
     // available 三态显式建模——宿主不可达显式 false，不省略字段不默认兼容。
     // install_channel_enabled 与 available 正交：前者=server 侧管理凭证配置
     // （token 未配置=安装通道未开启），后者=宿主进程可达性
@@ -1522,7 +1522,7 @@ async fn install_plugin_handler(
         .ok()
         .map(|(b, _, _)| b);
 
-    // 兼容性预检（109 号补批）：转发前实时探宿主 /health——abi 等值硬校验+
+    // 兼容性预检：转发前实时探宿主 /health——abi 等值硬校验+
     // engine_min 提示性校验，不兼容提前 422 并指路（宿主侧校验保持双保险）。
     // fail-visible：宿主不可达 → 503 显式"无法预检"，不降级为默认兼容。
     let manifest_meta: serde_json::Value =
