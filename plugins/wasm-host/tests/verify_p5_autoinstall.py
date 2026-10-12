@@ -115,6 +115,16 @@ def main() -> int:
         procs.append(subprocess.Popen([str(HOST_EXE)], env=host_env, cwd=str(HOST_ROOT),
                                       stdout=host_log, stderr=subprocess.STDOUT))
         # 探活用 /services（身份端点恒 200）——零模块启动场景 /health 按对账语义 503
+        # 版本握手（109 号补批验收 1）：host_abi/host_version 字段在位且一致
+        hw_ok = False
+        try:
+            code, hbody = http("GET", f"http://127.0.0.1:{HOST_PORT}/health", timeout=3)
+            hw_ok = (code in (200, 503) and isinstance(hbody, dict)
+                     and hbody.get("host_abi") == 1
+                     and str(hbody.get("host_version", "")).count(".") == 2)
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"  [ACCEPT] 版本握手字段在位: {hw_ok}")
         if not wait_health(f"http://127.0.0.1:{HOST_PORT}/services"):
             print(f"wasm-host 未就绪（poll={procs[0].poll()}，日志={tmp}/host.log）")
             return 1
