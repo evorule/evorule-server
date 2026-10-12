@@ -286,6 +286,7 @@ impl ServiceRegistryHandler {
     ///
     /// 返回：合并后的 JsonValue（作为传给 HttpHandler 的 params）
     fn resolve(&self, params: &JsonValue) -> Result<JsonValue, String> {
+        eprintln!("[DIAG resolve] incoming params={params}");
         let service_name = params
             .get("service_name")
             .and_then(|v| v.as_str())

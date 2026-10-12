@@ -105,7 +105,7 @@ def main() -> int:
     print("== R8 部分结论（B/C 口径）==")
     print(f"  进程外通道（wasm-host HTTP 直调）p50 = {b['p50']} ms")
     print(f"  纯 server HTTP 基线           p50 = {c['p50']} ms")
-    print("  （A 通道 server REST invoke 因 O-427 body 契约断裂暂缺——修复后补测）")
+    print("  （A 通道 server REST invoke 因 body 契约断裂暂缺——登记册 O 项修复后补测）")
     return 0
 
 

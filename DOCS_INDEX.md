@@ -55,6 +55,7 @@
 | [docs/PITFALLS.json](docs/PITFALLS.json) | 已知坑(机器可读格式) — 供工具消费的结构化版本 |
 | [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md) | 发布流程 — 发布前就绪检查、打 tag、Docker 镜像构建、回滚流程 |
 | [docs/WASM_UDF_GUIDE.md](docs/WASM_UDF_GUIDE.md) | WASM UDF 编写指南 — Guest ABI/沙箱约束/整数定点契约/部署启停/探活对账 |
+| [docs/PLUGIN_RELEASE_GUIDE.md](docs/PLUGIN_RELEASE_GUIDE.md) | 插件发布指南 — WASM 插件分发三件套（清单/签名/信任锚）/发布者五步流程/市场上架 |
 
 ---
 

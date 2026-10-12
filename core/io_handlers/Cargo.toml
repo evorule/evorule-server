@@ -40,3 +40,6 @@ evorule-rule-schema = { path = "../rule_schema" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # HttpHandler 测试用 mock HTTP server
 mockito = "1"
+
+[features]
+diag-invoke = []
