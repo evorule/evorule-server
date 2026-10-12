@@ -31,7 +31,7 @@
 //! - `method`：可选，默认 `POST`（白名单同 `HttpHandler`）
 //! - `headers`：可选，对象；值会覆盖同名 params 里的 headers（以服务注册表为准，避免规则私自加鉴权头）
 //! - `timeout_ms`：可选，整数；未设置时由 `HttpHandler` 回退默认 10s
-//! - ~~`body_template`~~：**历史字段，解析器不读取**（登记册 O-366 处置：文档修正）。
+//! - ~~`body_template`~~：**历史字段，解析器不读取**（登记册存量项处置：文档修正）。
 //!   实际行为：service params 里的 `args` 对象会被序列化作为 HTTP body 发出；
 //!   调用方也可在 params 中显式传 `body` 覆盖。
 

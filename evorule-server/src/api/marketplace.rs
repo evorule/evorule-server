@@ -852,7 +852,7 @@ async fn list_plugins(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let all = list_plugins_from(&dir.0).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let total = all.len();
-    // 分页（110 号 P3-11）：page 从 1 起、per_page 缺省 50 上限 200；缺省参数=全量返回
+    // 分页：page 从 1 起、per_page 缺省 50 上限 200；缺省参数=全量返回
     // （向后兼容：既有消费方无 query 时行为不变）。per_page=0 视为缺省。
     let per_page = q.per_page.unwrap_or(50).clamp(1, 200);
     let page = q.page.unwrap_or(1).max(1);
