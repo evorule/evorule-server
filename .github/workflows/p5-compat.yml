@@ -1,0 +1,54 @@
+# P5 组合回归（server × wasm-host 双组件矩阵，109 号补批 PR-12）
+# 触发：影响两组件契约面的路径变更时（paths 过滤控时长；发版前手动全跑）
+# 步骤：双 debug 构建（cargo 缓存）→ 安装自动化全链 10 断言 → 完整性 15 断言
+name: P5 compatibility matrix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "evorule-server/src/**"
+      - "plugins/wasm-host/**"
+      - "plugins/marketplace-seed/**"
+      - ".github/workflows/p5-compat.yml"
+  pull_request:
+    paths:
+      - "evorule-server/src/**"
+      - "plugins/wasm-host/**"
+      - "plugins/marketplace-seed/**"
+  workflow_dispatch:
+
+jobs:
+  combo-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo 缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            evorule-server
+            plugins/wasm-host
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 构建 server (debug)
+        run: cargo build -p evorule-server
+
+      - name: 构建 wasm-host (debug)
+        run: cargo build
+        working-directory: plugins/wasm-host
+
+      - name: 安装自动化全链断言（装完即用/禁用/卸载/审计/通道显式失败）
+        run: python3 plugins/wasm-host/tests/verify_p5_autoinstall.py
+
+      - name: 分发完整性断言（CLI 签发/篡改四路/策略矩阵）
+        run: python3 plugins/wasm-host/tests/verify_p5_integrity.py
