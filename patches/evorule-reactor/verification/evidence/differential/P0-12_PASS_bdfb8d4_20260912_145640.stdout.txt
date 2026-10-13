@@ -1,0 +1,60 @@
+   Compiling zerocopy v0.8.57
+   Compiling crossbeam-utils v0.8.23
+   Compiling crossbeam-epoch v0.9.21
+   Compiling find-msvc-tools v0.1.12
+   Compiling crossbeam-deque v0.8.8
+   Compiling cc v1.4.5
+   Compiling either v1.18.0
+   Compiling bitflags v2.13.2
+   Compiling smallvec v1.16.1
+   Compiling syn v3.0.5
+   Compiling evorule-tcb v0.5.0 (/mnt/d/evorule/evorule-tcb)
+   Compiling zerocopy-derive v0.8.57
+   Compiling mio v1.2.3
+   Compiling cpufeatures v0.3.1
+   Compiling evorule-reactor v0.5.0 (/mnt/d/evorule/evorule-reactor)
+   Compiling rustix v1.1.4
+   Compiling itertools v0.10.5
+   Compiling parking_lot_core v0.9.12
+   Compiling parking_lot v0.12.5
+   Compiling criterion-plot v0.5.0
+   Compiling rayon-core v1.13.0
+   Compiling blake3 v1.8.7
+   Compiling tempfile v3.27.0
+   Compiling rayon v1.12.0
+   Compiling rusty-fork v0.3.1
+warning: evorule-tcb@0.5.0: evorule-tcb 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-tcb@0.5.0: evorule-tcb 策略层检测 PASSED - 未发现策略层反模式
+   Compiling serde_derive v1.0.229
+   Compiling tokio-macros v2.7.2
+   Compiling async-trait v0.1.92
+warning: evorule-reactor@0.5.0: evorule-reactor 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-reactor@0.5.0: evorule-reactor 策略层检测 PASSED - 未发现策略层反模式
+   Compiling tokio v1.53.1
+   Compiling serde v1.0.229
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling ciborium-ll v0.2.2
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.11.0
+   Compiling criterion v0.5.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 23s
+     Running verification/differential_test.rs (target/debug/deps/differential_test-724bed3718a65c9e)
+
+running 11 tests
+test diff_reactor_vs_pure_call_external_consume ... ok
+test diff_reactor_vs_pure_call_external_io_request ... ok
+test diff_reactor_vs_pure_noop ... ok
+test diff_reactor_vs_pure_conditional_has_fields ... ok
+test diff_reactor_vs_pure_set ... ok
+test diff_reactor_vs_pure_decrement ... ok
+test diff_reactor_vs_pure_increment ... ok
+test diff_reactor_vs_pure_set_then_increment ... ok
+test diff_reactor_vs_pure_sequence ... ok
+test diff_reactor_vs_pure_conditional ... ok
+test diff_reactor_vs_pure_while_loop ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.53s
+

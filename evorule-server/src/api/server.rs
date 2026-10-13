@@ -7647,6 +7647,158 @@ async fn session_resume(
     Json(serde_json::json!({ "session_id": session_id, "paused": false }))
 }
 
+/// `POST /api/sessions/{id}/invariants/scan` → 读取引擎最近一轮不变式自检报告
+///
+/// 反应器每迭代头运行内置自检并把违规明细发布到共享报告（新鲜度 ≤ 一个
+/// 迭代间隔）。检出违规时逐条落 `Fact::Violation`（记录性事实，不 bump
+/// version；`rule_index=u64::MAX` 保留值标记机制层记录，`cause=0` 表示无
+/// 来源事实——引擎自检发现，非指令触发）。幂等注意：重复扫描会重复落账。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/invariants/scan",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "扫描报告（steps + violations + 落账数）", body = serde_json::Value),
+        (status = 404, description = "会话不存在"),
+        (status = 409, description = "反应器已退出（无扫描报告）")
+    )
+)]
+async fn session_invariants_scan(
+    State(api): State<SessionApi>,
+    State(metrics): State<SharedMetrics>,
+    Path(session_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = api.sessions.lock().await;
+    sessions.touch_session(session_id);
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let report = session
+        .handle
+        .latest_invariant_scan()
+        .ok_or(StatusCode::CONFLICT)?;
+    let mut recorded = 0usize;
+    for v in &report.violations {
+        let id = api.next_id();
+        let appended = session.facts_log.append(evorule_reactor::Fact::Violation {
+            id,
+            cause: evorule_reactor::FactId(0),
+            rule_index: u64::MAX,
+            reason: v.as_str().to_string(),
+            instruction: evorule_tcb::JsonValue::object_from_pairs_owned(vec![(
+                "scan_steps".to_string(),
+                evorule_tcb::JsonValue::Integer(report.steps as i64),
+            )]),
+        });
+        if appended.is_ok() {
+            recorded += 1;
+        }
+    }
+    drop(sessions);
+    metrics.inc_commands("invariants_scan");
+    let violations: Vec<&str> = report.violations.iter().map(|v| v.as_str()).collect();
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "steps": report.steps,
+        "violations": violations,
+        "violation_count": violations.len(),
+        "recorded": recorded,
+    })))
+}
+
+/// `POST /api/sessions/{id}/io/cancel_all` → 取消全部 pending I/O（干预原语）
+///
+/// 取消对象取自快照 pending 清单（对账面）；实际取消由反应器逐请求镜像
+/// 超时错误路径（emit `Fact::Error` + 强移除），Error 事实进审计链可查。
+/// 丢弃在途 I/O 属丢弃性动作——挂 `--allow-interventions` 双保险（默认
+/// 路由不注册，404）。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/io/cancel_all",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "已请求取消（requested=取消对象清单）", body = serde_json::Value),
+        (status = 404, description = "会话不存在")
+    )
+)]
+async fn session_io_cancel_all(
+    State(api): State<SessionApi>,
+    State(metrics): State<SharedMetrics>,
+    Path(session_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = api.sessions.lock().await;
+    sessions.touch_session(session_id);
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let requested: Vec<u64> = session
+        .handle
+        .snapshot()
+        .map(|s| s.pending_io.iter().map(|e| e.id.0).collect())
+        .unwrap_or_default();
+    session.handle.cancel_all_pending();
+    drop(sessions);
+    // 动作落账：取消动作本身进平台事件；被取消请求的 Error 事实由反应器入链
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "intervention_cancel_all",
+        serde_json::json!({
+            "session_id": session_id,
+            "requested_count": requested.len(),
+        }),
+    );
+    metrics.inc_commands("io_cancel_all");
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "requested": requested,
+        "count": requested.len(),
+    })))
+}
+
+/// `POST /api/sessions/{id}/wal/rotate` → 手动轮换会话 WAL（干预原语）
+///
+/// 纯追加式分片切换（序号 +1 开新文件，旧分片保持完整）：崩溃安全，不影响
+/// 链内容与可回放性。纯内存模式（无 WAL）返回 `rotated:false`。
+#[utoipa::path(
+    post,
+    path = "/api/sessions/{id}/wal/rotate",
+    tag = "sessions",
+    params(("id" = u64, Path, description = "会话 ID")),
+    responses(
+        (status = 200, description = "轮换结果（rotated=false = 无 WAL 可轮换）", body = serde_json::Value),
+        (status = 404, description = "会话不存在"),
+        (status = 500, description = "WAL 轮换失败（IO 错误）")
+    )
+)]
+async fn session_wal_rotate(
+    State(api): State<SessionApi>,
+    State(metrics): State<SharedMetrics>,
+    Path(session_id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sessions = api.sessions.lock().await;
+    sessions.touch_session(session_id);
+    let session = sessions
+        .get_session(session_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let rotated = session
+        .facts_log
+        .rotate_wal()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    drop(sessions);
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "intervention_wal_rotate",
+        serde_json::json!({ "session_id": session_id, "rotated": rotated }),
+    );
+    metrics.inc_commands("wal_rotate");
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "rotated": rotated,
+    })))
+}
+
 /// 会话锚点验证 handler（G-A2）
 ///
 /// `POST /api/sessions/:id/anchors/verify` → 验证锚点链结构+签名+与事实链绑定
@@ -10695,10 +10847,13 @@ impl GovernanceServer {
         };
 
         // 高危干预端点双保险（--allow-interventions）：gc 压缩改变链可见历史
-        // 且生产无先例，默认不注册路由（404）；heartbeat/pause/resume 可逆或
-        // 只读，走 protected_routes 常规认证即可。
+        // 且生产无先例；cancel_all 丢弃在途 I/O——两者默认不注册路由（404）；
+        // heartbeat/pause/resume/scan/wal_rotate 可逆或只读，走
+        // protected_routes 常规认证即可。
         let interventions_router = if self.allow_interventions {
-            Router::new().route("/api/sessions/{id}/gc", post(session_gc))
+            Router::new()
+                .route("/api/sessions/{id}/gc", post(session_gc))
+                .route("/api/sessions/{id}/io/cancel_all", post(session_io_cancel_all))
         } else {
             Router::new()
         };
@@ -10931,6 +11086,13 @@ impl GovernanceServer {
                 get(session_pause_status).post(session_pause),
             )
             .route("/api/sessions/{id}/resume", post(session_resume))
+            // 不变式扫描（读引擎自检报告；检出违规落 Fact::Violation）与
+            // WAL 手动轮换（纯存储操作，崩溃安全）——可逆/只读，常规认证
+            .route(
+                "/api/sessions/{id}/invariants/scan",
+                post(session_invariants_scan),
+            )
+            .route("/api/sessions/{id}/wal/rotate", post(session_wal_rotate))
             // rewind/diff 已移至 application/core/time_machine（本地实现）
             // W2b:统一认证中间件(双凭据:静态 user/service token 或
             // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
@@ -15002,6 +15164,90 @@ mod tests {
         let (status, _) =
             oneshot_json(router.clone(), "POST", "/api/sessions/999999/gc", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// cancel_all 双保险 + 扫描/轮换 smoke：cancel_all 默认 404（高危门控），
+    /// 启用后空取消返回空清单；scan 返回干净报告；wal_rotate 内存模式返回
+    /// rotated:false；不存在会话一律 404。
+    #[tokio::test]
+    async fn intervention_cancel_all_scan_wal_rotate_smoke() {
+        let (state, _) = make_test_state();
+
+        // 默认 Router：cancel_all 路由不存在（高危双保险）
+        let (status, _) = oneshot_json(
+            make_test_router(&state),
+            "POST",
+            "/api/sessions/1/io/cancel_all",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "默认必须 404（双保险）");
+
+        // 启用干预端点的 Router
+        let router = GovernanceServer::new(
+            state.clone(),
+            AuthConfig::disabled(),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            true,
+            None,
+        )
+        .build_router();
+
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let sid = body["session_id"].as_u64().unwrap();
+
+        // cancel_all：无 pending → 空清单
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/{sid}/io/cancel_all"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "cancel_all 应成功: {body}");
+        assert_eq!(body["count"], 0);
+        assert!(body["requested"].as_array().unwrap().is_empty());
+
+        // invariants/scan：干净会话 → 空违规
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/{sid}/invariants/scan"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "scan 应成功: {body}");
+        assert_eq!(body["violation_count"], 0);
+        assert!(body["violations"].as_array().unwrap().is_empty());
+        assert_eq!(body["recorded"], 0);
+
+        // wal/rotate：测试态纯内存（无 WAL）→ rotated:false
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/{sid}/wal/rotate"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "wal_rotate 应成功: {body}");
+        assert_eq!(body["rotated"], false);
+
+        // 不存在会话：三个端点一律 404
+        for uri in [
+            "/api/sessions/999999/io/cancel_all",
+            "/api/sessions/999999/invariants/scan",
+            "/api/sessions/999999/wal/rotate",
+        ] {
+            let (status, _) = oneshot_json(router.clone(), "POST", uri, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 应 404");
+        }
     }
 
     // --- 静态前端托管（--web-dir） ---

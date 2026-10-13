@@ -1,0 +1,16 @@
+[1m[93mwarning[0m[1m[97m: linker stdout: 正在创建库 D:\evorule\.build/rust\debug\deps\evorule_reactor.dll.lib 和对象 D:\evorule\.build/rust\debug\deps\evorule_reactor.dll.exp[0m
+  [1m[96m|[0m
+  [1m[96m= [0m[1m[97mnote[0m: `#[warn(linker_messages)]` on by default
+
+[1m[93mwarning[0m: `evorule-reactor` (lib) generated 1 warning
+[1m[92m    Finished[0m ]8;;https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles\`test` profile [unoptimized + debuginfo]]8;;\ target(s) in 0.27s
+[1m[92m     Running[0m verification\differential_test.rs (.build/rust\debug\deps\differential_test-8b2d9ea305c6c49e.exe)
+
+running 4 tests
+test diff_reactor_vs_pure_noop ... ok
+test diff_reactor_vs_pure_set ... ok
+test diff_reactor_vs_pure_increment ... ok
+test diff_reactor_vs_pure_set_then_increment ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.72s
+

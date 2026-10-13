@@ -1,0 +1,16 @@
+===== P1-6.max_rounds_termination =====
+info: syncing channel updates for 1.98.1-x86_64-unknown-linux-gnu
+info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
+info: recovering from a partially installed toolchain
+info: removing previous version of component rustc
+info: removing previous version of component cargo
+info: removing previous version of component rust-std
+info: removing previous version of component rust-docs
+info: removing previous version of component rustfmt
+info: removing previous version of component clippy
+info: downloading 6 components
+info: rolling back changes
+error: could not rename 'component' file from '/home/a/.rustup/tmp/8l274jejdnnu9ku__dir/bk' to '/home/a/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/share/man': Directory not empty (os error 39)
+error: could not rename 'component' file from '/home/a/.rustup/tmp/a9kl0njwl1t3t1o4_dir/bk' to '/home/a/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/share/zsh': Directory not empty (os error 39)
+error: could not rename 'component' file from '/home/a/.rustup/tmp/k78dr9usgd6sk28l_dir/bk' to '/home/a/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/etc': Directory not empty (os error 39)
+error: failed to install component: 'rust-docs-x86_64-unknown-linux-gnu', detected conflict: 'share/doc/rust/html'

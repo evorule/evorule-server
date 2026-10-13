@@ -60,3 +60,13 @@ codegen-units = 1
 # governance/discipline/cli）已发布 crates.io，核心依赖为纯 version。
 # （历史：0.6.1 registry 与过渡 git 源曾因双实例类型冲突需 patch 共实例；
 #  0.7 线治理侧 API 未上 registry 期间 evorule-governance 一并入 patch。）
+
+# [patch.crates-io] 重引（干预端点批）：evorule-reactor vendored 补丁——
+# 三个干预原语（check_invariants 提 pub / WalWriter::rotate 提 pub +
+# FactsLog 透传 / cancel_all_pending 新原语+快照 pending 清单+不变式扫描槽）
+# 未经主仓发版前，以仓内 patches/evorule-reactor 路径补丁先行（[patch] 全局
+# 替换注册表实例，无双实例类型冲突；0.6.1/0.7 线同机制先例）。
+# 删除条件：主仓发布 ≥0.8.5 且含同形 API → 删本段+patches/ 目录，依赖回
+# 纯 version，cargo update 验证一致（补丁差异面见 patches/evorule-reactor/README-PATCH.md）。
+[patch.crates-io]
+evorule-reactor = { path = "patches/evorule-reactor" }

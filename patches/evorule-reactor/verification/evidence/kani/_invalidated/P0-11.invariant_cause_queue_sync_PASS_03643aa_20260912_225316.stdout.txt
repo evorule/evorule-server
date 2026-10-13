@@ -1,0 +1,250 @@
+Kani Rust Verifier 0.67.0 (cargo plugin)
+   Compiling evorule-reactor v0.5.0 (/mnt/d/evorule/evorule-reactor)
+warning: evorule-tcb@0.5.0: evorule-tcb 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-tcb@0.5.0: evorule-tcb 策略层检测 PASSED - 未发现策略层反模式
+warning: evorule-reactor@0.5.0: evorule-reactor 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-reactor@0.5.0: evorule-reactor 策略层检测 PASSED - 未发现策略层反模式
+warning: unused imports: `BTreeMap` and `BTreeSet`
+ --> evorule-reactor/src/state.rs:9:24
+  |
+9 | use std::collections::{BTreeMap, BTreeSet, VecDeque};
+  |                        ^^^^^^^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable statement
+   --> evorule-reactor/src/facts_log.rs:695:9
+    |
+687 |               return Ok(inner.version);
+    |               ------------------------ any code following this expression is unreachable
+...
+695 | /         let content_hash = crate::hash::fact_hash(&fact)
+696 | |             .map_err(|e| FactsLogError::HashError(format!("hash error: {e}")))?;
+    | |________________________________________________________________________________^ unreachable statement
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `content_hash`
+   --> evorule-reactor/src/facts_log.rs:695:13
+    |
+695 |         let content_hash = crate::hash::fact_hash(&fact)
+    |             ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_content_hash`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `val`
+   --> evorule-reactor/src/facts_log.rs:695:28
+    |
+695 |           let content_hash = crate::hash::fact_hash(&fact)
+    |  ____________________________^
+696 | |             .map_err(|e| FactsLogError::HashError(format!("hash error: {e}")))?;
+    | |_______________________________________________________________________________^ help: if this is intentional, prefix it with an underscore: `_val`
+
+warning: unused variable: `prev_hash`
+   --> evorule-reactor/src/facts_log.rs:697:13
+    |
+697 |         let prev_hash = inner.last_hash.clone();
+    |             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_prev_hash`
+
+warning: unused variable: `chain_hash`
+   --> evorule-reactor/src/facts_log.rs:698:13
+    |
+698 |         let chain_hash = crate::hash::chain_step(&prev_hash, &content_hash);
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_chain_hash`
+
+warning: unused variable: `new_payload`
+   --> evorule-reactor/src/facts_log.rs:750:17
+    |
+750 |                 new_payload,
+    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_new_payload`
+
+warning: unused variable: `new_queue`
+   --> evorule-reactor/src/facts_log.rs:751:17
+    |
+751 |                 new_queue,
+    |                 ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_new_queue`
+
+warning: unused variable: `val`
+   --> evorule-reactor/src/facts_log.rs:756:33
+    |
+756 |                   inner.version = inner
+    |  _________________________________^
+757 | |                     .version
+758 | |                     .checked_add(1)
+759 | |                     .ok_or(FactsLogError::VersionOverflow)?;
+    | |___________________________________________________________^ help: if this is intentional, prefix it with an underscore: `_val`
+
+warning: unused variable: `val`
+   --> evorule-reactor/src/facts_log.rs:762:33
+    |
+762 |                   inner.version = inner
+    |  _________________________________^
+763 | |                     .version
+764 | |                     .checked_add(1)
+765 | |                     .ok_or(FactsLogError::VersionOverflow)?;
+    | |___________________________________________________________^ help: if this is intentional, prefix it with an underscore: `_val`
+
+warning: unused variable: `path`
+   --> evorule-reactor/src/facts_log.rs:770:35
+    |
+770 |             Fact::PayloadUpdate { path, value, .. } => {
+    |                                   ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `value`
+   --> evorule-reactor/src/facts_log.rs:770:41
+    |
+770 |             Fact::PayloadUpdate { path, value, .. } => {
+    |                                         ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`
+
+warning: unused variable: `target`
+   --> evorule-reactor/src/facts_log.rs:771:29
+    |
+771 |                 if let Some(target) = resolve_path_mut(&mut inner.current_snapshot, path) {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_target`
+
+warning: unused variable: `parts`
+   --> evorule-reactor/src/facts_log.rs:774:25
+    |
+774 |                     let parts: Vec<&str> = path.split('.').collect();
+    |                         ^^^^^ help: if this is intentional, prefix it with an underscore: `_parts`
+
+warning: unused variable: `map`
+   --> evorule-reactor/src/facts_log.rs:777:54
+    |
+777 | ...                   if let JsonValue::Object(map) = &mut inner.current_snapshot {
+    |                                                ^^^ help: if this is intentional, prefix it with an underscore: `_map`
+
+warning: unused variable: `current`
+   --> evorule-reactor/src/facts_log.rs:781:33
+    |
+781 | ...                   let mut current = &mut inner.current_snapshot;
+    |                           ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_current`
+
+warning: unused variable: `i`
+   --> evorule-reactor/src/facts_log.rs:782:34
+    |
+782 | ...                   for (i, &part) in parts.iter().enumerate() {
+    |                            ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: unused variable: `part`
+   --> evorule-reactor/src/facts_log.rs:782:38
+    |
+782 | ...                   for (i, &part) in parts.iter().enumerate() {
+    |                                ^^^^ help: if this is intentional, prefix it with an underscore: `_part`
+
+warning: unused variable: `map`
+   --> evorule-reactor/src/facts_log.rs:784:62
+    |
+784 | ...                   if let JsonValue::Object(map) = current {
+    |                                                ^^^ help: if this is intentional, prefix it with an underscore: `_map`
+
+warning: unused variable: `map`
+   --> evorule-reactor/src/facts_log.rs:787:65
+    |
+787 | ...                   } else if let JsonValue::Object(map) = current {
+    |                                                       ^^^ help: if this is intentional, prefix it with an underscore: `_map`
+
+warning: unused variable: `next`
+   --> evorule-reactor/src/facts_log.rs:791:49
+    |
+791 | ...                   if let Some(next) = map.get_mut(part) {
+    |                                   ^^^^ help: if this is intentional, prefix it with an underscore: `_next`
+
+warning: unused variable: `val`
+   --> evorule-reactor/src/facts_log.rs:803:33
+    |
+803 |                   inner.version = inner
+    |  _________________________________^
+804 | |                     .version
+805 | |                     .checked_add(1)
+806 | |                     .ok_or(FactsLogError::VersionOverflow)?;
+    | |___________________________________________________________^ help: if this is intentional, prefix it with an underscore: `_val`
+
+warning: unused variable: `fact_id`
+   --> evorule-reactor/src/facts_log.rs:821:13
+    |
+821 |         let fact_id = fact.id();
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fact_id`
+
+warning: unused variable: `path_opt`
+   --> evorule-reactor/src/facts_log.rs:822:13
+    |
+822 |         let path_opt = match &fact {
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_path_opt`
+
+warning: unused variable: `path`
+   --> evorule-reactor/src/facts_log.rs:823:35
+    |
+823 |             Fact::PayloadUpdate { path, .. } => Some(path.clone()),
+    |                                   ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `idx`
+   --> evorule-reactor/src/facts_log.rs:831:13
+    |
+831 |         let idx = inner.history.len() - 1;
+    |             ^^^ help: if this is intentional, prefix it with an underscore: `_idx`
+
+warning: unused variable: `path`
+   --> evorule-reactor/src/facts_log.rs:834:21
+    |
+834 |         if let Some(path) = path_opt {
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `value`
+   --> evorule-reactor/src/hash.rs:291:21
+    |
+291 | pub fn content_hash(value: &JsonValue) -> Result<String, HashError> {
+    |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`
+
+warning: associated function `new` is never used
+  --> evorule-reactor/src/hash.rs:41:8
+   |
+40 | impl HashError {
+   | -------------- associated function in this implementation
+41 |     fn new(message: impl Into<String>) -> Self {
+   |        ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `is_empty` and `contains` are never used
+  --> evorule-reactor/src/state.rs:61:16
+   |
+39 |     impl KIdSet {
+   |     ----------- methods in this implementation
+...
+61 |         pub fn is_empty(&self) -> bool {
+   |                ^^^^^^^^
+...
+64 |         pub fn contains(&self, id: &FactId) -> bool {
+   |                ^^^^^^^^
+
+warning: methods `is_empty` and `contains_key` are never used
+   --> evorule-reactor/src/state.rs:98:16
+    |
+ 76 |     impl<V> KIdMap<V> {
+    |     ----------------- methods in this implementation
+...
+ 98 |         pub fn is_empty(&self) -> bool {
+    |                ^^^^^^^^
+...
+101 |         pub fn contains_key(&self, id: &FactId) -> bool {
+    |                ^^^^^^^^^^^^
+
+warning: Found the following unsupported constructs:
+             - caller_location (1)
+             - foreign function (2)
+         
+         Verification will fail if one or more of these constructs is reachable.
+         See https://model-checking.github.io/kani/rust-feature-support.html for more details.
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.39s
+Checking harness pure::kani_proofs::invariant_cause_queue_sync...
+
+VERIFICATION RESULT:
+ ** 0 of 647 failed (13 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 1.5989475s
+
+Manual Harness Summary:
+Complete - 1 successfully verified harnesses, 0 failures, 1 total.
