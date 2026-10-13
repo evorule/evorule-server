@@ -2477,9 +2477,11 @@ mod tests {
         assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
     }
 
-    /// 低版本库增量升级回归: v5 库 (schema_migrations 记 5) 升 SCHEMA_VERSION=6
-    /// 只跑 v6 增量——全量重放会因 v3 的无幂等 ALTER (rules.metadata 列已存在)
-    /// 炸 duplicate column (生产启动阻塞实录 2026-10-06, PR-10 批修)。
+    /// 低版本库增量升级回归: v5 库 (schema_migrations 记 5) 升至当前
+    /// SCHEMA_VERSION, 只跑缺失的增量迁移——全量重放会因 v3 的无幂等 ALTER
+    /// (rules.metadata 列已存在) 炸 duplicate column (生产启动阻塞实录
+    /// 2026-10-06, PR-10 批修)。终态断言用 SCHEMA_VERSION 常量而非硬编码
+    /// 版本号, 防版本递进时测试假红。
     #[test]
     fn test_partial_version_db_upgrades_incrementally() {
         let conn = Connection::open_in_memory().unwrap();
@@ -2506,8 +2508,8 @@ mod tests {
             conn: Mutex::new(conn),
         };
         db.migrate()
-            .expect("incremental upgrade v5→v6 must succeed");
-        assert_eq!(db.schema_version().unwrap(), 6);
+            .expect("incremental upgrade to current schema must succeed");
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
         // v6 增量生效: publish_queue.rule_version_ids 列存在
         let conn = db.lock().unwrap();
         let has_col: bool = conn
