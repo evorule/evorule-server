@@ -3422,10 +3422,10 @@ impl evorule_workspace::SessionOps for SessionApi {
             }
 
             Err(e) => Err(evorule_workspace::WorkspaceError::internal(format!(
-            "fork_session failed: {e:?}"
-        ))),
+                "fork_session failed: {e:?}"
+            ))),
+        }
     }
-}
 
     /// 从父会话 fork 沙盒会话并注入草稿规则集（SessionOps 桥接）
     ///
@@ -3445,8 +3445,10 @@ impl evorule_workspace::SessionOps for SessionApi {
         use std::collections::{BTreeMap, BTreeSet};
 
         // 草稿规则转 TCB 形态（io_capability 与 Reactor 规则集均为 TCB JsonValue）
-        let converted: Vec<JsonValue> =
-            extra_rules.iter().map(|r| serde_to_tcb(r.clone())).collect();
+        let converted: Vec<JsonValue> = extra_rules
+            .iter()
+            .map(|r| serde_to_tcb(r.clone()))
+            .collect();
 
         let sessions = self.sessions.lock().await;
 
@@ -3456,10 +3458,14 @@ impl evorule_workspace::SessionOps for SessionApi {
         for (idx, rule) in sessions.core_eval().iter().enumerate() {
             let (emit, consume): (BTreeSet<String>, BTreeSet<String>) = Self::io_capability(rule);
             for t in emit {
-                emit_claims.entry(t).or_insert_with(|| format!("core_eval#{idx}"));
+                emit_claims
+                    .entry(t)
+                    .or_insert_with(|| format!("core_eval#{idx}"));
             }
             for t in consume {
-                consume_claims.entry(t).or_insert_with(|| format!("core_eval#{idx}"));
+                consume_claims
+                    .entry(t)
+                    .or_insert_with(|| format!("core_eval#{idx}"));
             }
         }
         // 草稿逐条：先查冲突（对生产+草稿内部），再入账本
@@ -3473,14 +3479,20 @@ impl evorule_workspace::SessionOps for SessionApi {
             }
             for t in &consume {
                 if let Some(owner) = consume_claims.get(t) {
-                    conflicts.push(format!("draft#{idx} consume io_type \"{t}\" 与 {owner} 冲突"));
+                    conflicts.push(format!(
+                        "draft#{idx} consume io_type \"{t}\" 与 {owner} 冲突"
+                    ));
                 }
             }
             for t in emit {
-                emit_claims.entry(t).or_insert_with(|| format!("draft#{idx}"));
+                emit_claims
+                    .entry(t)
+                    .or_insert_with(|| format!("draft#{idx}"));
             }
             for t in consume {
-                consume_claims.entry(t).or_insert_with(|| format!("draft#{idx}"));
+                consume_claims
+                    .entry(t)
+                    .or_insert_with(|| format!("draft#{idx}"));
             }
         }
         if !conflicts.is_empty() {
@@ -3507,11 +3519,11 @@ impl evorule_workspace::SessionOps for SessionApi {
             Err(evorule_governance::session::SessionError::NotFound { id }) => Err(
                 evorule_workspace::WorkspaceError::not_found("session", id.to_string()),
             ),
-            Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => Err(
-                evorule_workspace::WorkspaceError::internal(format!(
+            Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => {
+                Err(evorule_workspace::WorkspaceError::internal(format!(
                     "session limit exceeded: {current}/{max}"
-                )),
-            ),
+                )))
+            }
             Err(e) => Err(evorule_workspace::WorkspaceError::internal(format!(
                 "fork_session_with_rules failed: {e:?}"
             ))),
@@ -8077,14 +8089,12 @@ async fn publish_start_session(
     let prod = db
         .get_production_state()
         .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let parent_id = prod
-        .current_session_id
-        .ok_or_else(|| {
-            proxy_err(
-                StatusCode::CONFLICT,
-                "当前无生产会话（尚未部署规则集），无可 fork 的生产会话".to_string(),
-            )
-        })? as u64;
+    let parent_id = prod.current_session_id.ok_or_else(|| {
+        proxy_err(
+            StatusCode::CONFLICT,
+            "当前无生产会话（尚未部署规则集），无可 fork 的生产会话".to_string(),
+        )
+    })? as u64;
 
     // 全局发布锁互斥: 与 submit/review/rollback 发布动作串行化
     let _guard = workspace.publish_service.publish_lock_guard().await;
@@ -11321,7 +11331,10 @@ impl GovernanceServer {
         let interventions_router = if self.allow_interventions {
             Router::new()
                 .route("/api/sessions/{id}/gc", post(session_gc))
-                .route("/api/sessions/{id}/io/cancel_all", post(session_io_cancel_all))
+                .route(
+                    "/api/sessions/{id}/io/cancel_all",
+                    post(session_io_cancel_all),
+                )
         } else {
             Router::new()
         };
@@ -11537,14 +11550,12 @@ impl GovernanceServer {
             // 共用引擎 SSOT;纯函数无落库;受认证保护）
             .merge(crate::api::template_render::template_render_router())
             // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)
-            .merge(
-                evorule_workspace::build_workspace_router().layer(
-                    axum::middleware::from_fn_with_state(
-                        self.state.shared_facts.clone(),
-                        publish_binding_middleware,
-                    ),
+            .merge(evorule_workspace::build_workspace_router().layer(
+                axum::middleware::from_fn_with_state(
+                    self.state.shared_facts.clone(),
+                    publish_binding_middleware,
                 ),
-            )
+            ))
             // 工作空间自助加入(身份服务端注入,viewer 最小权限,幂等;
             // WorkspaceState 经 FromRef 从 AppState 派生)
             .route("/api/workspaces/{id}/members/join", post(workspace_join))
@@ -15912,13 +15923,8 @@ mod tests {
         let (state, _) = make_test_state();
         let router = make_test_router(&state);
 
-        let (status, body) =
-            oneshot_json(router, "POST", "/api/publish/sessions", None).await;
-        assert_eq!(
-            status,
-            StatusCode::CONFLICT,
-            "无生产会话必须 409: {body}"
-        );
+        let (status, body) = oneshot_json(router, "POST", "/api/publish/sessions", None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "无生产会话必须 409: {body}");
     }
 
     /// 试验会话晋级生产（窄场景）：fork 自生产 → 晋级 → 生产引用换防且

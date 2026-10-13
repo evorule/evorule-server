@@ -1818,10 +1818,13 @@ mod publish_actor_tests {
     #[test]
     fn admin_claim_with_authed_non_admin_binding_is_rejected() {
         // 平台登录但非管理员（绑定上限 DepartmentHead）: 自封 Admin 拒绝
-        assert!(
-            resolve_publish_actor("x", PublishRole::Admin, binding(PublishRole::DepartmentHead).as_ref(), false)
-                .is_err()
-        );
+        assert!(resolve_publish_actor(
+            "x",
+            PublishRole::Admin,
+            binding(PublishRole::DepartmentHead).as_ref(),
+            false
+        )
+        .is_err());
     }
 
     #[test]
@@ -1836,16 +1839,25 @@ mod publish_actor_tests {
     #[test]
     fn admin_claim_with_automated_cred_is_rejected() {
         // 自动化凭据（service/app）: Admin 声明拒绝（人工在场语义）
-        assert!(resolve_publish_actor("svc", PublishRole::Admin, binding(PublishRole::Admin).as_ref(), true)
-            .is_err());
+        assert!(resolve_publish_actor(
+            "svc",
+            PublishRole::Admin,
+            binding(PublishRole::Admin).as_ref(),
+            true
+        )
+        .is_err());
         assert!(resolve_publish_actor("svc", PublishRole::Admin, None, true).is_err());
     }
 
     #[test]
     fn admin_claim_with_admin_binding_passes_and_uses_binding_user() {
-        let (user, role) =
-            resolve_publish_actor("body-user", PublishRole::Admin, binding(PublishRole::Admin).as_ref(), false)
-                .unwrap();
+        let (user, role) = resolve_publish_actor(
+            "body-user",
+            PublishRole::Admin,
+            binding(PublishRole::Admin).as_ref(),
+            false,
+        )
+        .unwrap();
         assert_eq!(user, "authed-user", "操作者身份以服务端绑定为准");
         assert_eq!(role, PublishRole::Admin);
     }
