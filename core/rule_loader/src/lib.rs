@@ -90,9 +90,20 @@ pub struct LoadContext {
     pub composition: Composition,
     /// L2 身份（调用方依治理事实声明，provenance 留痕可审计）
     pub l2_class: L2Class,
+    /// discipline 门 enforce 位（W1 观测期渐进收口：true=拒载违规，false=放行）。
+    /// 安全缺省 true；生产调用方从全局治理开关传入（单一事实源），沙盒与生产同 flag。
+    pub discipline_enforce: bool,
 }
 
 impl LoadContext {
+    /// discipline 门 enforce 位（从调用方环境取——单一事实源 env EVORULE_DISCIPLINE_GATE）
+    fn env_discipline_enforce() -> bool {
+        match std::env::var("EVORULE_DISCIPLINE_GATE") {
+            Ok(v) => v.eq_ignore_ascii_case("enforce"),
+            Err(_) => false,
+        }
+    }
+
     /// 宪法本体装载（core_eval.json / server_eval.json）
     pub fn constitution(path: &str) -> Self {
         LoadContext {
@@ -100,6 +111,7 @@ impl LoadContext {
             venue: Venue::Production,
             composition: Composition::Standalone,
             l2_class: L2Class::Constitution,
+            discipline_enforce: Self::env_discipline_enforce(),
         }
     }
 
@@ -110,6 +122,7 @@ impl LoadContext {
             venue: Venue::Production,
             composition: Composition::Standalone,
             l2_class: L2Class::Constraint,
+            discipline_enforce: Self::env_discipline_enforce(),
         }
     }
 
@@ -120,6 +133,7 @@ impl LoadContext {
             venue: Venue::Production,
             composition: Composition::Standalone,
             l2_class: L2Class::None,
+            discipline_enforce: Self::env_discipline_enforce(),
         }
     }
 
@@ -130,6 +144,7 @@ impl LoadContext {
             venue: Venue::Sandbox,
             composition: Composition::Merged,
             l2_class: L2Class::None,
+            discipline_enforce: Self::env_discipline_enforce(),
         }
     }
 
@@ -140,6 +155,7 @@ impl LoadContext {
             venue: Venue::Production,
             composition: Composition::Standalone,
             l2_class: L2Class::None,
+            discipline_enforce: Self::env_discipline_enforce(),
         }
     }
 }
@@ -244,10 +260,19 @@ impl std::error::Error for ConstitutionError {}
 /// 沙盒草稿与生产规则同守三门。
 pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, ConstitutionError> {
     // ── 步骤 1：宪法 schema 校验 ──
-    let report = if doc.get("transform").is_some() {
-        validate_rule_set(doc)
-    } else if doc.is_array() {
+    // 分层校验策略（对齐设计分期——阶段一收口装载路径，不强制存量业务文件全壳迁移）：
+    // - 裸 transform 数组 → transform_list 校验（数组语义）
+    // - 带壳 rule_set（声明 $schema/kind/id/version/metadata）→ rule_set 全文严格校验
+    // - 传统部分壳（rules_dir 业务/约束/bundle 条目现役形态：{metadata?,transform:[]}）
+    //   → 仅校验 transform 数组（壳外字段仍受 tier 门管辖，不因无壳豁免）
+    let report = if doc.is_array() {
         validate_transform_list(doc)
+    } else if doc.get("transform").is_some() {
+        if has_full_shell(doc) {
+            validate_rule_set(doc)
+        } else {
+            validate_transform_list(doc.get("transform").expect("checked above"))
+        }
     } else {
         return Err(ConstitutionError::ShellUnrecognized(four_part(
             "无法识别的规则集形态（既非 {transform:[]} 文档也非裸 transform 数组）",
@@ -290,7 +315,7 @@ pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, Co
 
     // ── 步骤 3：三门检查（venue 不减免）──
     tier_gate(&transform_arr, doc, ctx)?;
-    discipline_gate(&transform_arr)?;
+    discipline_gate(&transform_arr, ctx)?;
     domain_on_missing_gate(&transform_arr, ctx.l2_class)?;
 
     // ── 步骤 4：provenance ──
@@ -333,6 +358,15 @@ fn four_part(violation: &str, location: &str, reference: &str, minimal_example: 
         reference: reference.to_string(),
         minimal_example: minimal_example.to_string(),
     }
+}
+
+/// 全壳判定：文档声明 rule_set v1.0 壳字段（$schema/kind/id/version/metadata 均在）
+/// → 按 rule_set 全文严格校验；否则（传统部分壳 {metadata?,transform:[]}）只校验
+/// transform 数组（阶段一分期：不强制存量业务文件全壳迁移，壳外字段仍受 tier 门管辖）。
+fn has_full_shell(doc: &Value) -> bool {
+    ["$schema", "kind", "id", "version", "metadata"]
+        .iter()
+        .all(|k| doc.get(*k).is_some())
 }
 
 fn now_unix() -> u64 {
@@ -390,7 +424,10 @@ fn tier_gate(transform_arr: &[Value], doc: &Value, ctx: &LoadContext) -> Result<
 }
 
 /// discipline 门：DC-01..09 形态纪律（evorule-discipline crate）
-fn discipline_gate(transform_arr: &[Value]) -> Result<(), ConstitutionError> {
+///
+/// enforce 位随 LoadContext（生产=env EVORULE_DISCIPLINE_GATE 单一事实源；
+/// warn 期=W1 纯观测放行+违规面日志留痕，enforce 期=拒载）
+fn discipline_gate(transform_arr: &[Value], ctx: &LoadContext) -> Result<(), ConstitutionError> {
     let tcb_rules: Vec<JsonValue> =
         transform_arr.iter().map(|r| serde_to_tcb(r.clone())).collect();
     match evorule_discipline::check(&tcb_rules) {
@@ -398,6 +435,15 @@ fn discipline_gate(transform_arr: &[Value]) -> Result<(), ConstitutionError> {
         Ok(report) => {
             let codes: Vec<String> =
                 report.violations.iter().map(|v| v.code.clone()).collect();
+            if !ctx.discipline_enforce {
+                // W1 观测期：放行+结构化留痕（与生产 discipline_gate_enforce 同语义）
+                tracing::warn!(
+                    target: "discipline_gate",
+                    codes = %codes.join(","),
+                    "discipline violations observed (warn mode, loaded as-is)"
+                );
+                return Ok(());
+            }
             Err(ConstitutionError::DisciplineGate(four_part(
                 &format!("L2 纪律门禁未过（DC 条款：{}）", codes.join(", ")),
                 "$.transform（见各违规 path）",
@@ -423,9 +469,14 @@ fn discipline_gate(transform_arr: &[Value]) -> Result<(), ConstitutionError> {
 ///
 /// 动态域（`__` 字符串引用）静态不可判定，天然不命中；all/has_fields 等非 eq/lt
 /// 域无 on_missing 语义，不检查——**不是**「全部 domain 都要 on_missing」。
+///
+/// **管辖面=L2 面**：宪法/约束文件条目行走此门（文件级）。业务文件
+/// （L2Class::None）不在此拒——业务条目 domain 纪律由合并层条目级门
+/// （`reject_undeclared_domain_rules`，宪法前缀豁免+fail-visible 明细）与
+/// bundle 导入预判执行；文件级再拒会双门不同步+吞明细面。
 fn domain_on_missing_gate(transform_arr: &[Value], l2_class: L2Class) -> Result<(), ConstitutionError> {
-    if l2_class == L2Class::Constitution {
-        return Ok(()); // 宪法前缀豁免（对齐生产 reject_undeclared_domain_rules：仅宪法段豁免）
+    if l2_class == L2Class::None {
+        return Ok(()); // 业务面归合并层条目级门（明细可查），文件级不重复拒
     }
     for (i, rule) in transform_arr.iter().enumerate() {
         let mut violations: Vec<String> = Vec::new();
@@ -651,7 +702,7 @@ mod tests {
         let doc = json!({
             "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
             "kind": "rule_set", "id": "x.y.w", "version": "0.1.0",
-            "metadata": { "title": "on_missing 门测试" },
+            "metadata": { "title": "on_missing 门测试", "tier": "constraint" },
             "transform": [
                 { "type": "branch", "params": {
                     "domain": { "type": "eq", "path": "__exec__.instruction.params.x", "value": 1 },
@@ -659,9 +710,30 @@ mod tests {
                 }}
             ]
         });
-        let ctx = LoadContext::business_file("x.json");
+        // L2 面测试：constraint 文件 ctx（管辖面=L2 面；业务面归合并层条目级门）
+        let ctx = LoadContext::constraint_file("00_constraint_x.json");
         let err = load_rule_set(&doc, &ctx).expect_err("domain 缺 on_missing 应被拒");
         assert!(matches!(err, ConstitutionError::DomainOnMissingGate(_)));
+    }
+
+    #[test]
+    fn domain_gate_business_file_deferred_to_merge_layer() {
+        // 业务面管辖裁定：业务文件缺 on_missing 不在文件级拒（合并层条目级门
+        // + fail-visible 明细管辖），文件级放行——防双门不同步+吞明细面
+        let doc = json!({
+            "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+            "kind": "rule_set", "id": "x.y.w2", "version": "0.1.0",
+            "metadata": { "title": "业务面归并测试" },
+            "transform": [
+                { "type": "branch", "params": {
+                    "domain": { "type": "eq", "path": "payload.x", "value": 1 },
+                    "on_true": [], "on_false": []
+                }}
+            ]
+        });
+        let ctx = LoadContext::business_file("x.json");
+        let loaded = load_rule_set(&doc, &ctx).expect("业务面文件级应放行（归合并层）");
+        assert_eq!(loaded.engine_rules.len(), 1);
     }
 
     #[test]

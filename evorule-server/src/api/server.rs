@@ -51,6 +51,9 @@ use evorule_reactor::{Fact, FactId, FactSender, FactsLog, IoType, TraceHit};
 
 use evorule_tcb::JsonValue;
 
+// 唯一装载通道（宪法收口）：生产/沙盒规则集装载一律经 core/rule_loader
+use evorule_rule_loader::{serde_to_tcb, LoadContext};
+
 use evorule_workspace::api::WorkspaceState;
 
 use serde::{Deserialize, Serialize};
@@ -1982,16 +1985,17 @@ impl SessionApi {
         let tcb_json: serde_json::Value =
             serde_json::from_str(&tcb_raw).map_err(|e| format!("解析宪法文件失败: {}", e))?;
 
-        let tcb: Vec<JsonValue> = tcb_json
-            .get("transform")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().cloned().map(serde_to_tcb).collect())
-            .ok_or_else(|| {
-                format!(
-                    "宪法文件 {} 没有 transform 数组字段",
-                    core_eval_path.display()
-                )
-            })?;
+        // 宪法装载收口（single constitution load path）：schema 校验→剥壳→三门→
+        // provenance 四步经 evorule_rule_loader 唯一通道，与其他所有装载面同源。
+        let ctx = LoadContext::constitution(&core_eval_path.display().to_string());
+        let loaded = evorule_rule_loader::load_rule_set(&tcb_json, &ctx).map_err(|e| {
+            format!(
+                "宪法文件 {} 装载门禁未过: {}",
+                core_eval_path.display(),
+                e
+            )
+        })?;
+        let tcb = loaded.engine_rules;
 
         if tcb.is_empty() {
             return Err(format!(
@@ -1999,12 +2003,6 @@ impl SessionApi {
                 core_eval_path.display()
             ));
         }
-
-        // 接线点②（宪法 loader）：宪法文件此前**零门禁**
-        // （连 schema/tier 都没有，走独立 loader），补 L2 纪律门禁。
-        // enforce 期违规 → Err 拒启（fail-fast，与下方 call_external 校验同款）；
-        // warn 期仅告警（W1 纯观测，吸收门禁残余误报）。
-        Self::check_discipline_for_core_eval(core_eval_path, &tcb)?;
 
         // 修复(2026-09-01): call_external 指令规则是 LLM 审计桥的平台契约。
         // 会话反应器的 IoRequest 完全由宪法规则驱动;若宪法缺该规则,LLM 审计桥命令会被
@@ -2358,21 +2356,35 @@ impl SessionApi {
     fn parse_rule_file(p: &std::path::Path, rules_dir: &std::path::Path) -> Option<Vec<JsonValue>> {
         let json = Self::load_rule_doc(p)?;
 
-        // tier 层级门禁（正向+反向，见 passes_tier_gate 注释）
-        if !Self::passes_tier_gate(p, rules_dir, &json) {
-            return None;
+        // 业务/约束文件装载收口（single constitution load path）：
+        // L2 身份由调用方按治理事实判定（rules_dir 根目录 00_constraint_*/00_meta_*
+        // 前缀 = 纄束文件；其余 = 业务文件），tier 门（正向声明+反向伪造+enforce
+        // 限定）/schema 门/discipline 门/eq-lt domain 门四步同源走 rule_loader。
+        let is_root_meta = p.parent().map(|d| d == rules_dir).unwrap_or(false)
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .map(is_l2_meta_file_name)
+                .unwrap_or(false);
+        let path_str = p.display().to_string();
+        let ctx = if is_root_meta {
+            LoadContext::constraint_file(&path_str)
+        } else {
+            LoadContext::business_file(&path_str)
+        };
+        match evorule_rule_loader::load_rule_set(&json, &ctx) {
+            Ok(loaded) => Some(loaded.engine_rules),
+            Err(e) => {
+                // 门禁拒绝=治理纪律执行（B2 类旁路在此消解）；保留生产 loader 的
+                // fail-soft 语义（warn+跳过该文件，其余文件照常装载）+ fail-visible
+                //（拒载明细上浮至合并层，与旧 schema gate 同可查面）
+                tracing::warn!(
+                    "规则文件 {} 装载门禁未过，已拒载: {}",
+                    p.display(),
+                    e
+                );
+                None
+            }
         }
-
-        let arr = Self::extract_transform_array(p, &json)?;
-        if !Self::passes_schema_gate(p, &arr) {
-            return None;
-        }
-        // 接线点④（业务 loader）：L2 规则集形态纪律（DC-01..DC-09）。
-        // warn 模式（W1 纯观测）照常装载；enforce 模式拒载。
-        if !Self::passes_discipline_gate(p, &arr) {
-            return None;
-        }
-        Some(arr.into_iter().map(serde_to_tcb).collect())
     }
 
     /// 层级门禁判定核心（静默版，加载路径与 tier_inventory 清单共用单一权威实现）。
@@ -2483,42 +2495,10 @@ impl SessionApi {
         }
     }
 
-    /// 从规则文档中提取 transform 数组（兼容 {transform:[]} 与裸 transform 数组两种形态）
-    fn extract_transform_array(
-        p: &std::path::Path,
-        json: &serde_json::Value,
-    ) -> Option<Vec<serde_json::Value>> {
-        if let Some(arr) = json.get("transform").and_then(|x| x.as_array()) {
-            return Some(arr.to_vec());
-        }
-        if let Some(arr) = json.as_array() {
-            return Some(arr.to_vec());
-        }
-        tracing::warn!(
-            "业务规则文件 {} 既不是 {{transform:[]}} 也不是 transform 数组，已跳过",
-            p.display()
-        );
-        None
-    }
-
-    /// Schema 门禁（线1 防御层, records/77）：校验引擎原生结构，非法时 warn 并拒绝加载
-    fn passes_schema_gate(p: &std::path::Path, arr: &[serde_json::Value]) -> bool {
-        // P2-04/P2-05：启动/热重载加载业务规则时即校验引擎原生结构（元指令白名单、必填参数、
-        // 域结构等），拦截含不支持元指令或结构非法的规则并 warn 跳过——避免"启动照常、运行时才
-        // 崩溃"（TCB 只保证确定性执行，不保证用户规则正确性；防御在 server 层）。
-        let schema_report =
-            evorule_rule_schema::validate_transform_list(&serde_json::Value::Array(arr.to_vec()));
-        if !schema_report.valid {
-            let detail = schema_report.errors.join("; ");
-            tracing::warn!(
-                "业务规则文件 {} 未通过 Schema 门禁（引擎原生结构非法，参见固化 rule_set v1.0 Schema），已跳过: {}",
-                p.display(),
-                detail
-            );
-            return false;
-        }
-        true
-    }
+    // extract_transform_array / passes_schema_gate / passes_discipline_gate（无 _with 桥）/
+    // check_discipline_for_core_eval（无 _with 桥）已随装载收口删除：
+    // 四步装载（schema 校验→剥壳→三门→provenance）统一走 evorule_rule_loader::
+    // load_rule_set；_with 变体（discipline 模式注入）保留供测试。
 
     /// L2 纪律门禁模式开关：env `EVORULE_DISCIPLINE_GATE`。
     /// - `enforce`（大小写不敏感）= 违规拒载（业务文件 fail-soft / 宪法 fail-fast）；
@@ -2640,7 +2620,9 @@ impl SessionApi {
         }
     }
 
-    /// 纪律门禁（按 env 模式；测试用 `passes_discipline_gate_with` 注入模式）
+    /// 纪律门禁（按 env 模式；测试用 `passes_discipline_gate_with` 注入模式）。
+    /// 生产调用面已随装载收口迁至 rule_loader（discipline_enforce 位随 LoadContext）；
+    /// 此桥保留仅供 tier_inventory 等零星面复用。
     fn passes_discipline_gate(p: &std::path::Path, arr: &[serde_json::Value]) -> bool {
         Self::passes_discipline_gate_with(p, arr, Self::discipline_gate_enforce())
     }
@@ -2648,6 +2630,7 @@ impl SessionApi {
     /// 宪法文件的纪律门禁（接线点②，宪法 loader）：
     /// 宪法走独立 loader、此前零门禁，补 L2 纪律门禁。enforce 期违规 = Err 拒启
     /// （fail-fast，与本 loader 既有的 call_external 校验同款）；warn 期仅告警。
+    /// 生产调用面已随装载收口迁至 rule_loader；此桥保留供宪法 reload 面复用。
     fn check_discipline_for_core_eval(
         p: &std::path::Path,
         tcb: &[JsonValue],
@@ -4966,38 +4949,8 @@ pub struct FactIdsRequest {
     pub fact_ids: Vec<u64>,
 }
 
-/// 将 serde_json::Value 转换为 evorule_tcb::JsonValue
-fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
-    match v {
-        serde_json::Value::Null => JsonValue::Null,
-
-        serde_json::Value::Bool(b) => JsonValue::Bool(b),
-
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                JsonValue::Integer(i)
-            } else {
-                JsonValue::String(n.to_string().into())
-            }
-        }
-
-        serde_json::Value::String(s) => JsonValue::String(s.into()),
-
-        serde_json::Value::Array(arr) => {
-            JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
-        }
-
-        serde_json::Value::Object(obj) => {
-            let mut map = std::collections::BTreeMap::new();
-
-            for (k, val) in obj {
-                map.insert(k, serde_to_tcb(val));
-            }
-
-            JsonValue::Object(map)
-        }
-    }
-}
+// serde_to_tcb 已收编至 evorule_rule_loader::serde_to_tcb（唯一实现，
+// 顶部 use 引入；本文件旧手写版本已删除——禁止再手写第二条转换实现）
 
 /// 将 evorule_tcb::JsonValue 转换为 serde_json::Value
 pub(crate) fn tcb_to_serde(v: &JsonValue) -> serde_json::Value {

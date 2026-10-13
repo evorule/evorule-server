@@ -22,6 +22,7 @@ path = "src/main.rs"
 # （domain 三态 on_missing 显式声明 / A-3 压实点读取显式化 / pending I/O
 # 超时预算贯通均随 0.8 线在 registry）
 evorule-tcb = { version = "0.8" }
+evorule-rule-loader = { path = "../core/rule_loader" }
 evorule-reactor = { version = "0.8", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
 # R10: origin_fact_id 经 JSON 字段透传（0.6.1 已发布 crates.io）。

@@ -695,7 +695,9 @@ mod tests {
             &core_eval_path,
             // 修复(2026-09-01): SessionApi 启动 fail-fast 校验要求宪法
             // 必含 call_external 指令规则（LLM 审计桥平台契约），fixture 同步补入
-            r#"{"transform":[
+            // 宪法收口(2026-10-14): 宪法装载走唯一通道，按宪法 schema 带壳
+            // （v0.9→v1.0 迁移定的合法存储形态），fixture 同步补壳
+            r#"{"$schema":"https://evorule.org/schemas/rule_set/v1.0.json","kind":"rule_set","id":"org.evorule.test.constitution","version":"0.1.0","metadata":{"title":"test fixture constitution"},"transform":[
                 {"type":"set","params":{"attr":"result","operation":"set","value":"ok"}},
                 {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[],"on_false":[]}}
             ]}"#,
