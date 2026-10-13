@@ -103,7 +103,67 @@ pub struct ListWorkspacesQuery {
 //
 // P0 简化: 操作者身份 (user_id) 和发布角色 (PublishRole) 从请求体传入,
 // 与现有 handler 一致 (如 CreateRuleRequest.created_by)。
-// P1 接入 evorule-server 的 auth middleware 后, 改为从 Extension<AuthUser> 提取。
+// P1 落地（服务端身份绑定）: 认证在场时由 server 绑定中间件注入
+// [`PublishActorBinding`]，handler 以注入身份为准——Admin 角色声明必须有
+// 平台管理员绑定背书（请求体自封 Admin 被拒）；自动化凭据注入
+// [`PublishAutomatedCred`]（Admin 声明与审批模式直发均拒绝，人工在场语义）。
+// 无注入（开发模式/零配置）回落请求体自声明，既有语义零变化。
+
+/// 服务端注入的发布域身份绑定（请求扩展）
+///
+/// server 侧绑定中间件在平台会话认证后写入: 平台 administrator →
+/// `max_role = Admin`；其余登录用户（含静态 user token）→
+/// `max_role = DepartmentHead`（可提交不可审批的工作流上限）。
+#[derive(Debug, Clone)]
+pub struct PublishActorBinding {
+    /// 认证身份（服务端权威，覆盖请求体自报 user）
+    pub user: String,
+    /// 该身份可主张的最高发布角色
+    pub max_role: PublishRole,
+}
+
+/// 自动化凭据标记（请求扩展）: service token / app key 调用
+///
+/// 人工治理动作语义: 携带本标记的调用不得主张 Admin 角色（403）、
+/// 不得触发审批模式直发（403）。
+#[derive(Debug, Clone, Copy)]
+pub struct PublishAutomatedCred;
+
+/// 解析操作者身份与角色（绑定优先，回落自声明；Admin 声明须绑定背书）
+///
+/// 返回 `(operator, role)`。Admin 声明三态判定：
+/// 认证在场（绑定存在）须 `max_role = Admin` 背书；自动化凭据一律 403
+/// （人工在场语义）；纯零配置（无绑定且非自动化凭据，开发模式）回落
+/// 请求体自声明——既有语义零变化（console 演示流依赖此通路）。
+/// 非 Admin 工作流角色（doctor/department_head）始终可自声明；
+/// 绑定在场时操作者身份以服务端为准。
+fn resolve_publish_actor(
+    declared_user: &str,
+    declared_role: PublishRole,
+    binding: Option<&PublishActorBinding>,
+    automated: bool,
+) -> Result<(String, PublishRole), WorkspaceError> {
+    if declared_role == PublishRole::Admin {
+        if automated {
+            return Err(WorkspaceError::forbidden(
+                "自动化凭据不构成 Admin 在场（人工治理动作）",
+            ));
+        }
+        let backed = binding
+            .map(|b| b.max_role == PublishRole::Admin)
+            .unwrap_or(false);
+        let dev_fallback = binding.is_none();
+        if !backed && !dev_fallback {
+            return Err(WorkspaceError::forbidden(
+                "Admin 角色声明须平台管理员登录背书（服务端身份绑定）;认证非管理员不构成 Admin 在场",
+            ));
+        }
+    }
+    match binding {
+        Some(b) => Ok((b.user.clone(), declared_role)),
+        None => Ok((declared_user.to_string(), declared_role)),
+    }
+}
 
 /// 启动沙盒测试的 HTTP 请求 (包装 StartSandboxRequest + 操作者)
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -1276,11 +1336,26 @@ async fn list_test_datasets(
 /// POST /api/publish/queue — 提交到发布队列 (DepartmentHead 权限)
 async fn submit_publish(
     State(state): State<WorkspaceState>,
+    binding: Option<axum::Extension<PublishActorBinding>>,
+    automated: Option<axum::Extension<PublishAutomatedCred>>,
     Json(req): Json<SubmitPublishHttpRequest>,
 ) -> Result<(StatusCode, Json<PublishQueueItem>), WorkspaceError> {
+    let (submitted_by, role) = resolve_publish_actor(
+        &req.submitted_by,
+        req.role,
+        binding.as_deref(),
+        automated.is_some(),
+    )?;
+    // 审批模式直发 = 生产 rollout 免人工审批: 自动化凭据拒绝（人工在场语义,
+    // 与插件审批代理同款前置）
+    if automated.is_some() && state.publish_service.approve_mode_enabled()? {
+        return Err(WorkspaceError::forbidden(
+            "审批模式直发（approve_mode）须人类在场提交;自动化凭据被拒绝",
+        ));
+    }
     let item = state
         .publish_service
-        .submit_publish(req.payload, &req.submitted_by, &req.role)
+        .submit_publish(req.payload, &submitted_by, &role)
         .await?;
     Ok((StatusCode::CREATED, Json(item)))
 }
@@ -1359,11 +1434,19 @@ async fn get_publish_queue_item(
 async fn review_publish(
     State(state): State<WorkspaceState>,
     Path(queue_id): Path<i64>,
+    binding: Option<axum::Extension<PublishActorBinding>>,
+    automated: Option<axum::Extension<PublishAutomatedCred>>,
     Json(req): Json<ReviewPublishHttpRequest>,
 ) -> Result<Json<PublishQueueItem>, WorkspaceError> {
+    let (reviewed_by, role) = resolve_publish_actor(
+        &req.reviewed_by,
+        req.role,
+        binding.as_deref(),
+        automated.is_some(),
+    )?;
     let item = state
         .publish_service
-        .review_publish(queue_id, req.payload, &req.reviewed_by, &req.role)
+        .review_publish(queue_id, req.payload, &reviewed_by, &role)
         .await?;
     Ok(Json(item))
 }
@@ -1384,12 +1467,20 @@ async fn review_publish(
 /// 版本号单调递增: 回滚到 target_version 的规则集, 但新版本号 = 当前版本 + 1 (不回退)。
 async fn emergency_rollback(
     State(state): State<WorkspaceState>,
+    binding: Option<axum::Extension<PublishActorBinding>>,
+    automated: Option<axum::Extension<PublishAutomatedCred>>,
     Json(req): Json<RollbackHttpRequest>,
 ) -> Result<Json<Value>, WorkspaceError> {
+    let (operated_by, role) = resolve_publish_actor(
+        &req.operated_by,
+        req.role,
+        binding.as_deref(),
+        automated.is_some(),
+    )?;
     let target_version = req.payload.target_version;
     let new_version = state
         .publish_service
-        .emergency_rollback(req.payload, &req.operated_by, &req.role)
+        .emergency_rollback(req.payload, &operated_by, &role)
         .await?;
     Ok(Json(serde_json::json!({
         "new_ruleset_version": new_version,
@@ -1700,4 +1791,76 @@ async fn lookup_clock(
         .lookup_clock(session_id, q.from_version, q.to_version)
         .await?;
     Ok(Json(list))
+}
+
+#[cfg(test)]
+mod publish_actor_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::{resolve_publish_actor, PublishActorBinding};
+    use crate::models::PublishRole;
+
+    fn binding(max_role: PublishRole) -> Option<PublishActorBinding> {
+        Some(PublishActorBinding {
+            user: "authed-user".to_string(),
+            max_role,
+        })
+    }
+
+    #[test]
+    fn no_binding_falls_back_to_self_declaration() {
+        // 开发模式/零配置: 无注入回落自声明（既有语义零变化）
+        let (user, role) =
+            resolve_publish_actor("body-user", PublishRole::Doctor, None, false).unwrap();
+        assert_eq!(user, "body-user");
+        assert_eq!(role, PublishRole::Doctor);
+    }
+
+    #[test]
+    fn admin_claim_with_authed_non_admin_binding_is_rejected() {
+        // 平台登录但非管理员（绑定上限 DepartmentHead）: 自封 Admin 拒绝
+        assert!(
+            resolve_publish_actor("x", PublishRole::Admin, binding(PublishRole::DepartmentHead).as_ref(), false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn admin_claim_in_pure_dev_mode_falls_back_to_self_declaration() {
+        // 纯零配置（开发模式, 无绑定无自动化凭据）: 回落自声明（既有语义）
+        let (user, role) =
+            resolve_publish_actor("dev-user", PublishRole::Admin, None, false).unwrap();
+        assert_eq!(user, "dev-user");
+        assert_eq!(role, PublishRole::Admin);
+    }
+
+    #[test]
+    fn admin_claim_with_automated_cred_is_rejected() {
+        // 自动化凭据（service/app）: Admin 声明拒绝（人工在场语义）
+        assert!(resolve_publish_actor("svc", PublishRole::Admin, binding(PublishRole::Admin).as_ref(), true)
+            .is_err());
+        assert!(resolve_publish_actor("svc", PublishRole::Admin, None, true).is_err());
+    }
+
+    #[test]
+    fn admin_claim_with_admin_binding_passes_and_uses_binding_user() {
+        let (user, role) =
+            resolve_publish_actor("body-user", PublishRole::Admin, binding(PublishRole::Admin).as_ref(), false)
+                .unwrap();
+        assert_eq!(user, "authed-user", "操作者身份以服务端绑定为准");
+        assert_eq!(role, PublishRole::Admin);
+    }
+
+    #[test]
+    fn workflow_roles_self_declare_under_binding_with_binding_user() {
+        // 工作流角色（doctor/department_head）可自声明, 身份取绑定
+        let (user, role) = resolve_publish_actor(
+            "body-user",
+            PublishRole::DepartmentHead,
+            binding(PublishRole::DepartmentHead).as_ref(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(user, "authed-user");
+        assert_eq!(role, PublishRole::DepartmentHead);
+    }
 }

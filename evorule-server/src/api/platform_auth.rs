@@ -1333,6 +1333,29 @@ fn require_any_permission(
     Ok(snap)
 }
 
+/// 认证 + 平台管理员身份断言（发布域治理端点用）
+///
+/// 语义区别于权限点: 断言的是"administrator 角色在场"本身（如审批模式开关
+/// 切换——开关决定生产 rollout 是否跳过人工审批, 开关操作者必须是管理员本人,
+/// 而非任何持管理类权限点的角色）。返回操作者用户名。
+pub fn require_administrator(
+    shared: &SharedFactsLog,
+    headers: &HeaderMap,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let (snap, username, _) = require_session(shared, headers)?;
+    let is_admin = snap
+        .users
+        .get(&username)
+        .map(|u| u.role == "administrator" && u.status == "ACTIVE")
+        .unwrap_or(false);
+    if !is_admin {
+        return Err(err_json(AuthError::Forbidden(
+            "须平台管理员身份 (administrator) 在场".to_string(),
+        )));
+    }
+    Ok(username)
+}
+
 fn user_json(u: &PlatformUser) -> serde_json::Value {
     serde_json::json!({
         "username": u.username,

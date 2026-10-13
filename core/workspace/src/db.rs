@@ -29,7 +29,7 @@ use crate::models::{
 };
 
 /// 当前 schema 版本
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 /// SQLite 数据库封装
 ///
@@ -111,6 +111,9 @@ impl WorkspaceDb {
         }
         if current < 6 {
             migrate_v6(&conn)?;
+        }
+        if current < 7 {
+            migrate_v7(&conn)?;
         }
         Ok(())
     }
@@ -454,6 +457,26 @@ fn migrate_v6(conn: &Connection) -> WorkspaceResult<()> {
     )
     .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v6: {e}")))?;
     record_migration(conn, 6)
+}
+
+/// v7 迁移: 发布域设置表 (publish_settings)
+///
+/// 审批模式开关 (approve_mode) 等发布域治理设置。键值形态: 开关默认缺行 =
+/// 关 (人工审批驻留, 既有语义零变化); 置位后 submit 直发。切换本身经
+/// insert_production_audit 落账 (治理动作), 本表只存当前值。
+fn migrate_v7(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS publish_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v7: {e}")))?;
+    record_migration(conn, 7)
 }
 
 // =============================================================================
@@ -1626,6 +1649,40 @@ impl WorkspaceDb {
                 test_report_paths,
                 ruleset_snapshot,
             ],
+        )
+        .map_err(WorkspaceError::from)?;
+        Ok(())
+    }
+
+    /// 读审批模式开关 (publish_settings 键值)
+    ///
+    /// 缺行 = 关 (人工审批驻留, 既有语义); 值 "1"/"true" = 开 (submit 直发)。
+    /// 非法值按关处理 (fail-safe: 存量脏数据不得悄悄启用直发)。
+    pub fn get_approve_mode(&self) -> WorkspaceResult<bool> {
+        let conn = self.lock()?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM publish_settings WHERE key = 'approve_mode'",
+                [],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(WorkspaceError::from(other)),
+            })?;
+        Ok(matches!(value.as_deref(), Some("1") | Some("true")))
+    }
+
+    /// 写审批模式开关 (幂等 upsert; 切换审计由调用方落 production_audit)
+    pub fn set_approve_mode(&self, enabled: bool, updated_by: &str) -> WorkspaceResult<()> {
+        let conn = self.lock()?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO publish_settings (key, value, updated_by, updated_at)
+             VALUES ('approve_mode', ?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = ?1, updated_by = ?2, updated_at = ?3",
+            params![if enabled { "1" } else { "0" }, updated_by, now],
         )
         .map_err(WorkspaceError::from)?;
         Ok(())

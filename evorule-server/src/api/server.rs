@@ -7799,6 +7799,241 @@ async fn session_wal_rotate(
     })))
 }
 
+/// 发布域身份绑定中间件（挂 workspace 路由；认证中间件之后运行）
+///
+/// 平台会话（含静态 user token 的占位身份）→ 注入
+/// `evorule_workspace::api::PublishActorBinding`：平台 administrator →
+/// `max_role = Admin`；其余（快照无此用户的静态 token 在内）→
+/// `max_role = DepartmentHead`——Admin 角色声明自此必须平台管理员登录背书。
+/// 自动化凭据（service/app key）→ 注入 `PublishAutomatedCred`。
+/// 二者皆无（开发模式零配置）→ 不注入，workspace handler 回落请求体自声明。
+async fn publish_binding_middleware(
+    State(shared): State<SharedFactsLog>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use evorule_workspace::api::{PublishActorBinding, PublishAutomatedCred};
+    use evorule_workspace::models::PublishRole;
+
+    let automated = matches!(
+        req.extensions().get::<crate::auth::CallerIdentity>(),
+        Some(crate::auth::CallerIdentity::Service) | Some(crate::auth::CallerIdentity::App)
+    );
+    if automated {
+        req.extensions_mut().insert(PublishAutomatedCred);
+    } else if let Some(actor) = req
+        .extensions()
+        .get::<crate::api::platform_auth::AuthedActor>()
+        .cloned()
+    {
+        // 管理员判定以平台事实快照为准; 快照无此用户（静态 token 占位身份）
+        // 按 DepartmentHead 上限处理——静态凭据不得自封 Admin
+        let is_admin = crate::api::platform_auth::PlatformSnapshot::replay(&shared)
+            .ok()
+            .and_then(|snap| snap.users.get(&actor.0).cloned())
+            .map(|u| u.role == "administrator" && u.status == "ACTIVE")
+            .unwrap_or(false);
+        req.extensions_mut().insert(PublishActorBinding {
+            user: actor.0,
+            max_role: if is_admin {
+                PublishRole::Admin
+            } else {
+                PublishRole::DepartmentHead
+            },
+        });
+    }
+    next.run(req).await
+}
+
+/// `GET /api/publish/approve_mode` → 查询审批模式开关
+///
+/// 开 = submit 直发（跳过人工审批驻留）；关（缺省）= submit 驻留 pending。
+#[utoipa::path(
+    get,
+    path = "/api/publish/approve_mode",
+    tag = "workspace",
+    responses(
+        (status = 200, description = "开关状态", body = serde_json::Value),
+        (status = 503, description = "workspace 元数据库未接线")
+    )
+)]
+async fn get_approve_mode(
+    State(api): State<SessionApi>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let db = api.workspace_db.as_ref().ok_or_else(|| {
+        proxy_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "workspace 元数据库未接线".to_string(),
+        )
+    })?;
+    let enabled = db
+        .get_approve_mode()
+        .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "approve_mode": enabled })))
+}
+
+/// `POST /api/publish/approve_mode` → 切换审批模式开关（管理员在场+双重落账）
+///
+/// 前置硬校验：平台管理员本人（require_administrator——开关决定生产 rollout
+/// 是否跳过人工审批，操作者必须是管理员而非持代理权限的角色）+ 人类凭据
+/// （service/app key 拒绝）。落账双通道：production_audit（发布域生命周期）
+/// + platform.event（平台事件报表）。
+#[utoipa::path(
+    post,
+    path = "/api/publish/approve_mode",
+    tag = "workspace",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "已切换", body = serde_json::Value),
+        (status = 400, description = "缺少 enabled(bool)"),
+        (status = 401, description = "未认证"),
+        (status = 403, description = "非管理员或自动化凭据"),
+        (status = 503, description = "workspace 元数据库未接线")
+    )
+)]
+async fn set_approve_mode(
+    State(api): State<SessionApi>,
+    headers: axum::http::HeaderMap,
+    identity: Option<Extension<CallerIdentity>>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // 开关切换 = 人工治理动作，自动化凭据拒绝（与插件审批代理同款前置）
+    if matches!(
+        identity,
+        Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
+    ) {
+        return Err(proxy_err(
+            StatusCode::FORBIDDEN,
+            "自动化凭据禁止切换审批模式（人工治理动作）".to_string(),
+        ));
+    }
+    let username = crate::api::platform_auth::require_administrator(&api.shared_facts, &headers)?;
+    let enabled = req
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| proxy_err(StatusCode::BAD_REQUEST, "缺少 enabled(bool)".to_string()))?;
+    let db = api.workspace_db.as_ref().ok_or_else(|| {
+        proxy_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "workspace 元数据库未接线".to_string(),
+        )
+    })?;
+    db.set_approve_mode(enabled, &username)
+        .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // 治理落账：production_audit（生命周期事件, 版本上下文为当前生产版本）
+    let prod = db
+        .get_production_state()
+        .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = db.insert_production_audit(
+        "approve_mode_changed",
+        prod.ruleset_version,
+        None,
+        prod.ruleset_hash.as_deref().unwrap_or(""),
+        prod.current_session_id.unwrap_or(0),
+        "[]",
+        &username,
+        Some(if enabled {
+            "approve_mode enabled: submit 直发（跳过人工审批驻留）"
+        } else {
+            "approve_mode disabled: submit 驻留 pending（人工审批恢复）"
+        }),
+        None,
+        None,
+    );
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "approve_mode_changed",
+        serde_json::json!({ "enabled": enabled, "operator": username }),
+    );
+    Ok(Json(
+        serde_json::json!({ "success": true, "approve_mode": enabled }),
+    ))
+}
+
+/// `POST /api/publish/sessions` → 发布试验会话（fork 自生产会话，不接管生产）
+///
+/// 纯编排：fork 自当前生产会话当前版本 + 全局发布锁互斥。与 rolling_swap
+/// 全量编排区分：不接管 production_state（无原子切换/SSE/drain）——产出
+/// 隔离试验会话，风险边界为会话资源本身。
+#[utoipa::path(
+    post,
+    path = "/api/publish/sessions",
+    tag = "workspace",
+    responses(
+        (status = 201, description = "试验会话已创建（fork 自生产会话）", body = serde_json::Value),
+        (status = 404, description = "生产会话不存在（内存中）"),
+        (status = 409, description = "当前无生产会话（尚未部署规则集）"),
+        (status = 503, description = "workspace 元数据库未接线")
+    )
+)]
+async fn publish_start_session(
+    State(api): State<SessionApi>,
+    State(workspace): State<WorkspaceState>,
+    State(metrics): State<SharedMetrics>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    let db = api.workspace_db.as_ref().ok_or_else(|| {
+        proxy_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "workspace 元数据库未接线".to_string(),
+        )
+    })?;
+    let prod = db
+        .get_production_state()
+        .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let parent_id = prod
+        .current_session_id
+        .ok_or_else(|| {
+            proxy_err(
+                StatusCode::CONFLICT,
+                "当前无生产会话（尚未部署规则集），无可 fork 的生产会话".to_string(),
+            )
+        })? as u64;
+
+    // 全局发布锁互斥: 与 submit/review/rollback 发布动作串行化
+    let _guard = workspace.publish_service.publish_lock_guard().await;
+
+    let forked = {
+        let sessions = api.sessions.lock().await;
+        sessions.create_session_from_parent_at_version(parent_id, None)
+    };
+    let new_id = match forked {
+        Ok(id) => id,
+        Err(e) => {
+            return Err(proxy_err(
+                StatusCode::NOT_FOUND,
+                format!("生产会话 fork 失败: {e}"),
+            ))
+        }
+    };
+    metrics.inc_sessions();
+    // 与 fork 端点同款接线（补 IoSubscriber/归因/回写）
+    api.spawn_hit_stats_recorder(new_id);
+    api.spawn_writeback_forwarder(new_id);
+    let inherited_role = api.declared_caller_role(parent_id);
+    api.spawn_io_subscriber_for_session(new_id, metrics.clone(), inherited_role)
+        .await;
+    // 动作落账: 平台事件（试验会话不接管 production_state, 无 production_audit 版本事件）
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "publish_session_started",
+        serde_json::json!({
+            "session_id": new_id,
+            "forked_from": parent_id,
+            "ruleset_version": prod.ruleset_version,
+        }),
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "session_id": new_id,
+            "forked_from": parent_id,
+            "kind": "publish_trial",
+            "ruleset_version": prod.ruleset_version,
+            "note": "试验会话不接管生产状态;滚动切换走 rolling_swap 全量编排",
+        })),
+    ))
+}
+
 /// 会话锚点验证 handler（G-A2）
 ///
 /// `POST /api/sessions/:id/anchors/verify` → 验证锚点链结构+签名+与事实链绑定
@@ -11069,7 +11304,14 @@ impl GovernanceServer {
             // 共用引擎 SSOT;纯函数无落库;受认证保护）
             .merge(crate::api::template_render::template_render_router())
             // P10: 工作空间 + 规则元数据路由 (18 个端点, 受认证保护)
-            .merge(evorule_workspace::build_workspace_router())
+            .merge(
+                evorule_workspace::build_workspace_router().layer(
+                    axum::middleware::from_fn_with_state(
+                        self.state.shared_facts.clone(),
+                        publish_binding_middleware,
+                    ),
+                ),
+            )
             // 工作空间自助加入(身份服务端注入,viewer 最小权限,幂等;
             // WorkspaceState 经 FromRef 从 AppState 派生)
             .route("/api/workspaces/{id}/members/join", post(workspace_join))
@@ -11093,6 +11335,13 @@ impl GovernanceServer {
                 post(session_invariants_scan),
             )
             .route("/api/sessions/{id}/wal/rotate", post(session_wal_rotate))
+            // 发布域治理端点（approve_mode 切换须管理员在场+双落账;
+            // start_session 纯编排 fork 试验会话, 不接管生产状态）
+            .route(
+                "/api/publish/approve_mode",
+                get(get_approve_mode).post(set_approve_mode),
+            )
+            .route("/api/publish/sessions", post(publish_start_session))
             // rewind/diff 已移至 application/core/time_machine（本地实现）
             // W2b:统一认证中间件(双凭据:静态 user/service token 或
             // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
@@ -14841,6 +15090,9 @@ mod tests {
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
 
         let shared_facts = SharedFactsLog::new();
+        // 生产同构接线（main.rs with_shared_facts）: SessionApi 与 AppState
+        // 共享同一实例——平台会话/平台事件与 SessionApi 侧读写同源
+        let sessions = sessions.with_shared_facts(shared_facts.clone());
 
         let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(sessions.clone());
 
@@ -15248,6 +15500,130 @@ mod tests {
             let (status, _) = oneshot_json(router.clone(), "POST", uri, None).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 应 404");
         }
+    }
+
+    /// 审批模式开关：缺省关；未认证 401；管理员 bootstrap 登录后可切换
+    /// （即切即查）；非管理员 403。
+    #[tokio::test]
+    async fn publish_approve_mode_admin_gated() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        // 缺省关（publish_settings 缺行）
+        let (status, body) =
+            oneshot_json(router.clone(), "GET", "/api/publish/approve_mode", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["approve_mode"], false);
+
+        // 未认证切换 → 401
+        let (status, _) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/publish/approve_mode",
+            Some(r#"{"enabled":true}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // bootstrap 管理员 + 登录
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/bootstrap",
+            Some(r#"{"username":"root","password":"admin-pass-123","display_name":""}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            Some(r#"{"username":"root","password":"admin-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let admin_token = body["token"].as_str().unwrap().to_string();
+
+        // 管理员开启 → 即查即得
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/publish/approve_mode",
+            &admin_token,
+            Some(r#"{"enabled":true}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["approve_mode"], true);
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "GET",
+            "/api/publish/approve_mode",
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["approve_mode"], true);
+
+        // 非管理员（viewer）→ 403
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/platform/users",
+            &admin_token,
+            Some(
+                r#"{"username":"carol","password":"carol-pass-123","display_name":"","email":"","department":"","role":"viewer"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            Some(r#"{"username":"carol","password":"carol-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let carol_token = body["token"].as_str().unwrap().to_string();
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/publish/approve_mode",
+            &carol_token,
+            Some(r#"{"enabled":false}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "非管理员必须 403");
+
+        // 关闭回落（管理员）
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/publish/approve_mode",
+            &admin_token,
+            Some(r#"{"enabled":false}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["approve_mode"], false);
+    }
+
+    /// 发布试验会话：未初始化生产会话（current_session_id 缺省 NULL）→ 409。
+    /// fork 成功通路由 create_session_from_parent 端点集成测试覆盖（同一原语）。
+    #[tokio::test]
+    async fn publish_start_session_conflicts_without_production_session() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        let (status, body) =
+            oneshot_json(router, "POST", "/api/publish/sessions", None).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "无生产会话必须 409: {body}"
+        );
     }
 
     // --- 静态前端托管（--web-dir） ---

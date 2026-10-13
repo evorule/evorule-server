@@ -246,9 +246,73 @@ impl PublishService {
             None, // ruleset_snapshot (生命周期事件, 无快照)
         )?;
 
+        // 审批模式直发分流（approve_mode=on）：跳过 pending 驻留，提交即与人工
+        // 审批同一 execute_publish 通路（同一把发布锁串行化）
+        if self.db.get_approve_mode()? {
+            self.auto_direct_publish(id, &req.workspace_id, &ruleset_hash, submitted_by)
+                .await?;
+        }
+
         self.db.get_publish_queue_item(id)?.ok_or_else(|| {
             WorkspaceError::internal("publish_queue item just inserted but not found")
         })
+    }
+
+    /// 审批模式直发执行体（approve_mode=on 时由 submit 调用）
+    ///
+    /// 审计按 auto 决策落账（decision=auto_approved），操作者为提交者——绑定
+    /// 中间件保证其身份已认证；自动化凭据的直发在 handler 层前置拒绝（人工
+    /// 在场语义）。与人工审批同一 execute_publish 通路 + complete_publish 收口。
+    async fn auto_direct_publish(
+        &self,
+        queue_id: i64,
+        workspace_id: &str,
+        ruleset_hash: &str,
+        submitted_by: &str,
+    ) -> WorkspaceResult<()> {
+        let prod_state = self.db.get_production_state()?;
+        let source_ws_ids = serde_json::json!([workspace_id]).to_string();
+        self.db.insert_production_audit(
+            "publish_reviewed",
+            prod_state.ruleset_version,
+            None,
+            ruleset_hash,
+            prod_state.current_session_id.unwrap_or(0),
+            &source_ws_ids,
+            submitted_by,
+            Some("decision=auto_approved (approve_mode 直发)"),
+            None,
+            None,
+        )?;
+        let published_version = self.execute_publish(queue_id, submitted_by).await?;
+        self.db.complete_publish(
+            queue_id,
+            published_version,
+            submitted_by,
+            Some("auto: approve_mode"),
+        )?;
+        info!(
+            queue_id = queue_id,
+            published_version = published_version,
+            "Publish auto-executed (approve_mode): pending dwell skipped"
+        );
+        Ok(())
+    }
+
+    /// 读审批模式开关（approve_mode）
+    ///
+    /// 开 = submit 直发（跳过 pending 驻留，见 [`Self::submit_publish`] 分流）；
+    /// 关（缺省）= 人工审批驻留。开关切换的治理审计由切换端点落 production_audit。
+    pub fn approve_mode_enabled(&self) -> WorkspaceResult<bool> {
+        self.db.get_approve_mode()
+    }
+
+    /// 获取全局发布锁守卫（跨服务编排用）
+    ///
+    /// 供 server 侧发布域编排（如发布试验会话 fork）与 service 内部发布动作
+    /// 共享同一把串行化锁；持锁期间 submit/review/rollback 全部排队等待。
+    pub async fn publish_lock_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.publish_lock.lock().await
     }
 
     /// 提名预算门禁: 同 (workspace_id, kind=meta_promotion, 目标规则版本集) 的
@@ -1303,6 +1367,56 @@ mod tests {
         assert_eq!(item.submitted_by, "head-1");
         assert!(!item.ruleset_hash.is_empty());
         assert!(item.final_candidate_rules.contains("\"attr\":\"result\""));
+    }
+
+    /// 审批模式直发（approve_mode=on）：submit 跳过 pending 驻留，直接走与
+    /// 人工审批同一 execute_publish 通路 → published + 生产版本推进 + 审计链
+    /// 记 auto 决策。缺省（未置位）为关——approve_mode_enabled 缺行返回 false。
+    #[tokio::test]
+    async fn test_approve_mode_auto_direct_publish() {
+        let (publish_svc, db, rule_svc_handle, ws_id, _ops, tmp) = make_services().await;
+
+        // 缺省关（publish_settings 缺行）
+        assert!(!db.get_approve_mode().unwrap());
+        assert!(!publish_svc.approve_mode_enabled().unwrap());
+
+        let rv_id = make_candidate_rule(&rule_svc_handle.inner, &db, &ws_id, "rule-1").await;
+        let sandbox_id = make_sandbox_evidence(&db, &ws_id);
+
+        // 置位 → submit 即直发
+        db.set_approve_mode(true, "admin-1").unwrap();
+        assert!(db.get_approve_mode().unwrap());
+
+        let item = publish_svc
+            .submit_publish(
+                SubmitPublishRequest {
+                    workspace_id: ws_id.clone(),
+                    rule_version_ids: vec![rv_id],
+                    test_report_sandbox_id: Some(sandbox_id),
+                    description: Some("审批模式直发".to_string()),
+                    kind: PublishKind::Normal,
+                    meta_rule_content: None,
+                },
+                "head-1",
+                &PublishRole::DepartmentHead,
+            )
+            .await
+            .unwrap();
+
+        // 队列项直达 published（无 pending 驻留）,生产版本推进
+        assert_eq!(item.status, PublishStatus::Published);
+        assert_eq!(item.published_version, Some(1));
+        let state = db.get_production_state().unwrap();
+        assert_eq!(state.ruleset_version, 1);
+
+        // 审计链: publish_submitted → publish_reviewed(auto) → ruleset_published
+        let audit = db.get_production_audit_by_version(1).unwrap().unwrap();
+        assert_eq!(audit.event_type, "ruleset_published");
+
+        // 关闭后恢复驻留（幂等切换回落）
+        db.set_approve_mode(false, "admin-1").unwrap();
+        assert!(!db.get_approve_mode().unwrap());
+        let _ = tmp; // rules_dir 生命周期
     }
 
     #[tokio::test]
