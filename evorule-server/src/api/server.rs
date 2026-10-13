@@ -3427,15 +3427,16 @@ impl evorule_workspace::SessionOps for SessionApi {
     }
 }
 
-    /// 从父会话 fork 沙盒会话并注入草稿规则集（SessionOps 桥接，原子注入）
+    /// 从父会话 fork 沙盒会话并注入草稿规则集（SessionOps 桥接）
     ///
     /// 序列（同一把 sessions 锁内，无并发窗口）：
     /// 1. 权利面预检（fail-fast）：草稿规则 io_type 发射/消费与生产规则集及
     ///    草稿集内部独占冲突 → 拒启沙盒并明示冲突明细——避免冲突规则被静默
     ///    剥除后测试建立在不完整规则集上（静默通过禁令）；
-    /// 2. `replace_core_eval(生产+草稿)` → fork → `replace_core_eval(回滚)`：
-    ///    新会话 Reactor 构造时 clone 含草稿的规则集（replace_core_eval 仅影响
-    ///    新会话），序列结束后全局规则集复原，生产与其他会话不受影响。
+    /// 2. 正统 API 挂载（governance 0.8.5+）：
+    ///    `create_session_from_parent_at_version_with_core_eval` 直接为新会话
+    ///    挂载专属规则集（core_eval_override）——全局规则集全程不变，生产
+    ///    与其他会话不受影响。
     async fn fork_session_with_rules(
         &self,
         parent_session_id: u64,
@@ -3447,7 +3448,7 @@ impl evorule_workspace::SessionOps for SessionApi {
         let converted: Vec<JsonValue> =
             extra_rules.iter().map(|r| serde_to_tcb(r.clone())).collect();
 
-        let mut sessions = self.sessions.lock().await;
+        let sessions = self.sessions.lock().await;
 
         // 1. 权利面预检：生产规则集权利声明账本（io_type → 首声明方标签）
         let mut emit_claims: BTreeMap<String, String> = BTreeMap::new();
@@ -3489,12 +3490,13 @@ impl evorule_workspace::SessionOps for SessionApi {
             )));
         }
 
-        // 2. 锁内原子注入序列：replace → fork → restore
-        let mut combined = sessions.core_eval().to_vec();
-        combined.extend(converted);
-        let restored = sessions.replace_core_eval(combined);
-        let result = sessions.create_session_from_parent_at_version(parent_session_id, None);
-        sessions.replace_core_eval(restored);
+        // 2. 正统 API：fork 时挂载会话专属规则集（governance 0.8.5+），
+        //    全局规则集不再经历 replace/restore，全程不变
+        let result = sessions.create_session_from_parent_at_version_with_core_eval(
+            parent_session_id,
+            None,
+            Some(converted),
+        );
 
         match result {
             Ok(id) => {
@@ -15292,8 +15294,9 @@ mod tests {
 
     /// fork_session_with_rules 三件机制契约（沙盒编排断链修复回归锚）：
     /// ①权利面冲突 fail-fast 拒启（草稿 io_type 与宪法冲突）；②无冲突草稿
-    /// fork 成功且全局 core_eval 回滚（草稿仅进沙盒 Reactor）；③fork 后
-    /// 沙盒事实链为空（状态快照非事实历史，报告判定面前提）。
+    /// fork 成功且全局 core_eval 全程不变（草稿经 override 仅进沙盒
+    /// Reactor）；③fork 后沙盒事实链为空（状态快照非事实历史，报告判定
+    /// 面前提）。
     #[tokio::test]
     async fn fork_with_rules_conflict_reject_and_restore() {
         use evorule_workspace::SessionOps as _;
@@ -15318,17 +15321,20 @@ mod tests {
             "io 冲突应拒启沙盒, got: {err}"
         );
 
-        // ② 无冲突草稿（独立 io_type + 纯状态变换）→ fork 成功, 全局规则集回滚
+        // ② 无冲突草稿（独立 io_type + 纯状态变换）→ fork 成功, 全局规则集不变
         let draft_ok = serde_json::json!({
             "transform": [
                 {"type": "io_request", "params": {"io_type": "draft_only_io"}},
                 {"type": "set", "params": {"attr": "__exec__.payload.x", "operation": "set", "value": 1}},
             ]
         });
-        let before_len = api.sessions.lock().await.core_eval().len();
-        let sandbox = api.fork_session_with_rules(parent, &[draft_ok]).await.unwrap();
-        let after_len = api.sessions.lock().await.core_eval().len();
-        assert_eq!(before_len, after_len, "fork 序列结束后全局 core_eval 应回滚");
+        let before = api.sessions.lock().await.core_eval().to_vec();
+        let sandbox = api
+            .fork_session_with_rules(parent, &[draft_ok])
+            .await
+            .unwrap();
+        let after = api.sessions.lock().await.core_eval().to_vec();
+        assert_eq!(before, after, "正统 API 挂载，全局 core_eval 全程不变");
 
         // ③ fork 后事实链为空（探针契约）
         assert!(api.get_facts(sandbox).await.unwrap().is_empty());
