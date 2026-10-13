@@ -69,28 +69,83 @@ pub enum Venue { Production, Sandbox }
 #[serde(rename_all = "snake_case")]
 pub enum Composition { Merged, Standalone }
 
+/// L2 身份类别（tier 门与 domain 门豁免的判定依据，对齐生产 server.rs tier_gate_reason
+/// + reject_undeclared_domain_rules 双向纪律）
+///
+/// - `None`：业务文件/沙盒草稿/API 提交——禁 enforce、禁声明 L2 tier、domain 门全守
+/// - `Constraint`：治理链晋升的约束文件（rules_dir 根 `00_constraint_*`/`00_meta_*` 前缀，
+///   前缀判定在调用方）——enforce 许可，**必须**声明 `metadata.tier ∈ {constraint, meta}`，
+///   domain 门照守（生产豁免仅给宪法前缀，约束文件在合并列表 idx≥constitution_len）
+/// - `Constitution`：宪法本体（core_eval.json / server_eval.json）——enforce 许可
+///   （现宪法实无 enforce 条目）、eq/lt domain 声明门豁免（宪法内部组合由维护者负责）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum L2Class { None, Constraint, Constitution }
+
 /// 装载上下文
 #[derive(Debug, Clone, Serialize)]
 pub struct LoadContext {
     pub source: LoadSource,
     pub venue: Venue,
     pub composition: Composition,
+    /// L2 身份（调用方依治理事实声明，provenance 留痕可审计）
+    pub l2_class: L2Class,
 }
 
 impl LoadContext {
-    /// 沙盒装载上下文（Q-1=合并语义默认）
-    pub fn sandbox(source: LoadSource) -> Self {
-        LoadContext { source, venue: Venue::Sandbox, composition: Composition::Merged }
+    /// 宪法本体装载（core_eval.json / server_eval.json）
+    pub fn constitution(path: &str) -> Self {
+        LoadContext {
+            source: LoadSource::File { path: path.to_string() },
+            venue: Venue::Production,
+            composition: Composition::Standalone,
+            l2_class: L2Class::Constitution,
+        }
     }
 
-    /// 生产装载上下文（宪法/业务规则文件）
-    pub fn production(source: LoadSource) -> Self {
-        LoadContext { source, venue: Venue::Production, composition: Composition::Standalone }
+    /// rules_dir 约束文件装载（`00_constraint_*`/`00_meta_*` 前缀，调用方判定）
+    pub fn constraint_file(path: &str) -> Self {
+        LoadContext {
+            source: LoadSource::File { path: path.to_string() },
+            venue: Venue::Production,
+            composition: Composition::Standalone,
+            l2_class: L2Class::Constraint,
+        }
+    }
+
+    /// 普通业务规则文件装载
+    pub fn business_file(path: &str) -> Self {
+        LoadContext {
+            source: LoadSource::File { path: path.to_string() },
+            venue: Venue::Production,
+            composition: Composition::Standalone,
+            l2_class: L2Class::None,
+        }
+    }
+
+    /// 沙盒装载上下文（Q-1=合并语义默认）
+    pub fn sandbox(source: LoadSource) -> Self {
+        LoadContext {
+            source,
+            venue: Venue::Sandbox,
+            composition: Composition::Merged,
+            l2_class: L2Class::None,
+        }
+    }
+
+    /// API 提交装载（在线提交规则）
+    pub fn api(caller: &str) -> Self {
+        LoadContext {
+            source: LoadSource::Api { caller: caller.to_string() },
+            venue: Venue::Production,
+            composition: Composition::Standalone,
+            l2_class: L2Class::None,
+        }
     }
 }
 
 /// 三门通过记录（provenance 组成部分）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Copy, Clone, Serialize)]
 pub struct GatesPassed {
     pub tier_gate: bool,
     pub discipline_gate: bool,
@@ -110,16 +165,17 @@ pub struct LoadedRuleset {
 }
 
 /// 溯源指纹（[CON-S-003]）
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Copy, Clone, Serialize)]
 pub struct Provenance {
-    pub source: LoadSource,
+    pub source_kind: &'static str,
     pub venue: Venue,
     pub composition: Composition,
+    pub l2_class: L2Class,
     pub gates: GatesPassed,
-    pub constitution_version: String,
+    pub constitution_version: &'static str,
+    /// 装载时间戳（unix 秒；确定性装载=时间戳仅入 provenance，不入规则语义）
     pub loaded_at_unix: u64,
 }
-
 // ============================================================================
 // 四段式报错（[CON-K2-001]）
 // ============================================================================
@@ -233,23 +289,33 @@ pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, Co
     }
 
     // ── 步骤 3：三门检查（venue 不减免）──
-    tier_gate(&transform_arr, ctx)?;
+    tier_gate(&transform_arr, doc, ctx)?;
     discipline_gate(&transform_arr)?;
-    domain_on_missing_gate(&transform_arr)?;
+    domain_on_missing_gate(&transform_arr, ctx.l2_class)?;
 
     // ── 步骤 4：provenance ──
     let engine_rules: Vec<JsonValue> = transform_arr.into_iter().map(serde_to_tcb).collect();
     Ok(LoadedRuleset {
         engine_rules,
         provenance: Provenance {
-            source: ctx.source.clone(),
+            source_kind: source_kind(&ctx.source),
             venue: ctx.venue,
             composition: ctx.composition,
+            l2_class: ctx.l2_class,
             gates: GatesPassed { tier_gate: true, discipline_gate: true, domain_on_missing_gate: true },
-            constitution_version: CONSTITUTION_SCHEMA_VERSION.to_string(),
+            constitution_version: CONSTITUTION_SCHEMA_VERSION,
             loaded_at_unix: now_unix(),
         },
     })
+}
+
+/// 来源类别标签（provenance 留痕；完整 LoadSource 详情由调用方入审计日志）
+fn source_kind(src: &LoadSource) -> &'static str {
+    match src {
+        LoadSource::File { .. } => "file",
+        LoadSource::DbDraft { .. } => "db_draft",
+        LoadSource::Api { .. } => "api",
+    }
 }
 
 // ============================================================================
@@ -276,29 +342,51 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// tier 门：非 L2 携 enforce 拒（B2 消解）。
+/// tier 门（对齐生产 tier_gate_reason 全语义：正向声明纪律+反向伪造拦截+enforce 限定）
 ///
-/// L2 身份判定抽象为数据：File 来源+Standalone 组成=宪法/元规则文件面（治理链正本，
-/// 生产装载的 core_eval.json / 00_constraint_*.json 走此分支）；DB 草稿/API 提交
-/// 一律非 L2——沙盒草稿携 enforce=治理旁路，直接拒。
-fn tier_gate(transform_arr: &[Value], ctx: &LoadContext) -> Result<(), ConstitutionError> {
-    let is_constitution = matches!(&ctx.source, LoadSource::File { .. })
-        && ctx.composition == Composition::Standalone;
-    if is_constitution {
-        return Ok(());
+/// - `L2Class::None`（业务/草稿/API）：禁止 enforce；禁止声明 `metadata.tier ∈ {constraint, meta}`
+/// - `L2Class::Constraint`：**必须**声明 `metadata.tier ∈ {constraint, meta}`（防裸文件冒充）
+/// - `L2Class::Constitution`：通过（宪法维护者自查）
+fn tier_gate(transform_arr: &[Value], doc: &Value, ctx: &LoadContext) -> Result<(), ConstitutionError> {
+    let tier = doc
+        .pointer("/metadata/tier")
+        .and_then(|t| t.as_str());
+    match ctx.l2_class {
+        L2Class::Constitution => Ok(()),
+        L2Class::Constraint => match tier {
+            Some("constraint") | Some("meta") => Ok(()),
+            other => Err(ConstitutionError::TierGate(four_part(
+                &format!(
+                    "约束文件缺少 metadata.tier=\"constraint\"（兼容旧值 \"meta\"）（实际 {other:?}）"
+                ),
+                "$.metadata.tier",
+                "https://evorule.org/schemas/rule_set/v1.0.json",
+                r#"{"metadata":{"tier":"constraint", …}}"#,
+            ))),
+        },
+        L2Class::None => {
+            if matches!(tier, Some("constraint") | Some("meta")) {
+                return Err(ConstitutionError::TierGate(four_part(
+                    "非元规则文件携带 L2 层级 tier（层级伪造）",
+                    "$.metadata.tier",
+                    "https://evorule.org/schemas/rule_set/v1.0.json",
+                    r#"{"metadata":{"title":"…", …}}（业务文件不声明 tier；L2 约束经治理链晋升）"#,
+                )));
+            }
+            let has_enforce = transform_arr.iter().any(|r| {
+                r.get("type").and_then(|t| t.as_str()) == Some("enforce")
+            });
+            if has_enforce {
+                return Err(ConstitutionError::TierGate(four_part(
+                    "非 L2 规则集携带 enforce 强制原语（enforce 仅允许 L2 元规则；业务规则/沙盒草稿禁止私自获得引擎级阻止权）",
+                    "$.transform[*]（type=enforce 条目）",
+                    "https://evorule.org/schemas/_shared/v1.0.json#/$defs/transform_rule",
+                    r#"{"type":"set","params":{"attr":"x","operation":"set","value":1}}（业务规则请用 set/push/branch/io_request；enforce 需经治理链晋升）"#,
+                )));
+            }
+            Ok(())
+        }
     }
-    let has_enforce = transform_arr.iter().any(|r| {
-        r.get("type").and_then(|t| t.as_str()) == Some("enforce")
-    });
-    if has_enforce {
-        return Err(ConstitutionError::TierGate(four_part(
-            "非 L2 规则集携带 enforce 强制原语（enforce 仅允许 L2 元规则；业务规则/沙盒草稿禁止私自获得引擎级阻止权）",
-            "$.transform[*]（type=enforce 条目）",
-            "https://evorule.org/schemas/_shared/v1.0.json#/$defs/transform_rule",
-            r#"{"type":"set","params":{"attr":"x","operation":"set","value":1}}（业务规则请用 set/push/branch/io_request；enforce 需经治理链晋升）"#,
-        )));
-    }
-    Ok(())
 }
 
 /// discipline 门：DC-01..09 形态纪律（evorule-discipline crate）
@@ -335,7 +423,10 @@ fn discipline_gate(transform_arr: &[Value]) -> Result<(), ConstitutionError> {
 ///
 /// 动态域（`__` 字符串引用）静态不可判定，天然不命中；all/has_fields 等非 eq/lt
 /// 域无 on_missing 语义，不检查——**不是**「全部 domain 都要 on_missing」。
-fn domain_on_missing_gate(transform_arr: &[Value]) -> Result<(), ConstitutionError> {
+fn domain_on_missing_gate(transform_arr: &[Value], l2_class: L2Class) -> Result<(), ConstitutionError> {
+    if l2_class == L2Class::Constitution {
+        return Ok(()); // 宪法前缀豁免（对齐生产 reject_undeclared_domain_rules：仅宪法段豁免）
+    }
     for (i, rule) in transform_arr.iter().enumerate() {
         let mut violations: Vec<String> = Vec::new();
         walk_eq_lt_domain(rule, &mut violations);
@@ -467,11 +558,35 @@ mod tests {
 
     #[test]
     fn production_file_constitution_passes() {
-        let ctx = LoadContext::production(LoadSource::File { path: "core_eval.json".into() });
+        let ctx = LoadContext::constitution("core_eval.json");
         let loaded = load_rule_set(&valid_rule_set(), &ctx).expect("宪法装载应通过");
         assert!(!loaded.engine_rules.is_empty());
         assert_eq!(loaded.provenance.constitution_version, "rule_set/v1.0");
         assert!(loaded.provenance.gates.tier_gate);
+        assert_eq!(loaded.provenance.l2_class, L2Class::Constitution);
+    }
+
+    #[test]
+    fn constraint_file_requires_tier_declaration() {
+        // 正向：声明 tier=constraint 的约束文件过
+        let mut doc = valid_rule_set();
+        doc["metadata"]["tier"] = json!("constraint");
+        let ctx = LoadContext::constraint_file("rules/00_constraint_x.json");
+        load_rule_set(&doc, &ctx).expect("约束文件声明 tier 应过");
+
+        // 反向 1：裸文件冒充约束文件（缺 tier 声明）拒
+        let ctx = LoadContext::constraint_file("rules/00_constraint_bare.json");
+        let err = load_rule_set(&valid_rule_set(), &ctx).expect_err("裸文件冒充约束应拒");
+        assert!(matches!(err, ConstitutionError::TierGate(_)));
+
+        // 反向 2：业务文件声明 L2 tier=层级伪造拒
+        let mut forged = valid_rule_set();
+        forged["metadata"]["tier"] = json!("constraint");
+        let ctx = LoadContext::business_file("rules/business.json");
+        let err = load_rule_set(&forged, &ctx).expect_err("业务文件伪造 tier 应拒");
+        assert!(matches!(err, ConstitutionError::TierGate(_)));
+        let msg = format!("{err}");
+        assert!(msg.contains("层级伪造"));
     }
 
     #[test]
@@ -512,7 +627,7 @@ mod tests {
     #[test]
     fn wrapped_without_transform_rejected() {
         let doc = json!({ "foo": 1 });
-        let ctx = LoadContext::production(LoadSource::File { path: "x.json".into() });
+        let ctx = LoadContext::business_file("x.json");
         let err = load_rule_set(&doc, &ctx).expect_err("无法识别形态应被拒");
         assert!(matches!(err, ConstitutionError::ShellUnrecognized(_)));
     }
@@ -521,12 +636,12 @@ mod tests {
     fn bare_array_passes() {
         let doc = json!([
             { "type": "branch", "params": {
-                "domain": { "type": "all", "inner": [], "on_missing": "error" },
+                "domain": { "type": "all", "inner": [] },
                 "on_true": [ { "type": "set", "params": { "attr": "x", "operation": "set", "value": 1 } } ],
                 "on_false": []
             }}
         ]);
-        let ctx = LoadContext::sandbox(LoadSource::Api { caller: "test".into() });
+        let ctx = LoadContext::api("test");
         let loaded = load_rule_set(&doc, &ctx).expect("裸数组应过");
         assert_eq!(loaded.engine_rules.len(), 1);
     }
@@ -544,7 +659,7 @@ mod tests {
                 }}
             ]
         });
-        let ctx = LoadContext::production(LoadSource::File { path: "x.json".into() });
+        let ctx = LoadContext::business_file("x.json");
         let err = load_rule_set(&doc, &ctx).expect_err("domain 缺 on_missing 应被拒");
         assert!(matches!(err, ConstitutionError::DomainOnMissingGate(_)));
     }
