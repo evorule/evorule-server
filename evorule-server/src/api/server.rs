@@ -3425,13 +3425,34 @@ impl evorule_workspace::SessionOps for SessionApi {
     ) -> evorule_workspace::WorkspaceResult<u64> {
         use std::collections::{BTreeMap, BTreeSet};
 
-        // 草稿规则转 TCB 形态（io_capability 与 Reactor 规则集均为 TCB JsonValue）
-        let converted: Vec<JsonValue> = extra_rules
-            .iter()
-            .map(|r| serde_to_tcb(r.clone()))
-            .collect();
-
         let sessions = self.sessions.lock().await;
+
+        // 草稿规则转 TCB 形态（io_capability 与 Reactor 规则集均为 TCB JsonValue）
+        //
+        // ── 宪法不容替换（SR-03，P-1 合并语义）──
+        // governance 的 core_eval_override 是**替换语义**（Some=挂载给定规则集
+        // 而非全局规则集）。沙盒草稿不得顶掉宪法：override 必须=全局规则集
+        // （含宪法前缀段）+ 过门草稿 的全集。草稿先经 rule_loader 三门
+        // （tier 门拒沙盒草稿携 enforce=治理旁路；schema 门剥壳=A 缺陷消解），
+        // 门禁不过 fail-fast 拒启（此时尚未落 db，无孤儿记录）。
+        let global_ruleset = sessions.core_eval().to_vec();
+        let global_len = global_ruleset.len();
+        let mut converted: Vec<JsonValue> = Vec::with_capacity(global_len + extra_rules.len());
+        converted.extend(global_ruleset);
+        for (i, r) in extra_rules.iter().enumerate() {
+            let ctx = LoadContext::sandbox(LoadSource::DbDraft {
+                rule_version_ids: (0..extra_rules.len()).map(|j| format!("draft#{j}")).collect(),
+                ruleset_hash: String::new(),
+            });
+            match evorule_rule_loader::load_rule_set(r, &ctx) {
+                Ok(loaded) => converted.extend(loaded.engine_rules),
+                Err(e) => {
+                    return Err(evorule_workspace::WorkspaceError::invalid_input(format!(
+                        "沙盒草稿规则 #{i} 装载门禁未过，拒绝启动沙盒: {e}"
+                    )));
+                }
+            }
+        }
 
         // 1. 权利面预检：生产规则集权利声明账本（io_type → 首声明方标签）
         let mut emit_claims: BTreeMap<String, String> = BTreeMap::new();
@@ -3449,9 +3470,11 @@ impl evorule_workspace::SessionOps for SessionApi {
                     .or_insert_with(|| format!("core_eval#{idx}"));
             }
         }
-        // 草稿逐条：先查冲突（对生产+草稿内部），再入账本
+        // 草稿逐条：先查冲突（对生产+草稿内部），再入账本。
+        // converted 前缀=全局规则集（与上面账本同源），跳过只扫草稿段——
+        // 否则宪法条目被当草稿重复记账=假阳性冲突。
         let mut conflicts: Vec<String> = Vec::new();
-        for (idx, rule) in converted.iter().enumerate() {
+        for (idx, rule) in converted[global_len..].iter().enumerate() {
             let (emit, consume): (BTreeSet<String>, BTreeSet<String>) = Self::io_capability(rule);
             for t in &emit {
                 if let Some(owner) = emit_claims.get(t) {
@@ -15300,6 +15323,73 @@ mod tests {
 
         // ③ fork 后事实链为空（探针契约）
         assert!(api.get_facts(sandbox).await.unwrap().is_empty());
+    }
+
+    /// 宪法不容替换（SR-03 契约锚）：fork 注入 override 必须=全局规则集（含宪法）
+    /// + 过门草稿的全集，而非草稿顶掉宪法。验证面：沙盒会话实际挂载的规则集
+    /// 含宪法前缀段；草稿携 enforce（治理旁路）被 tier 门 fail-fast 拒启。
+    #[tokio::test]
+    async fn fork_with_rules_constitution_not_replaced() {
+        use evorule_workspace::SessionOps as _;
+
+        // 宪法：一条 set 规则（可识别标记）
+        let constitution = serde_json::json!({
+            "transform": [{"type": "set", "params": {"attr": "constitution_mark", "operation": "set", "value": "present"}}]
+        });
+        // 剥壳（夹具对齐 production 装载面形态；壳对象会被 TCB 拒）
+        let rules: Vec<serde_json::Value> = constitution["transform"].as_array().unwrap().clone();
+        let api = SessionApi::new(rules.iter().map(|r| serde_to_tcb(r.clone())).collect(), 100);
+        let parent = api.create_session().await.unwrap();
+
+        // ① 沙盒草稿携 enforce → tier 门拒启（B2 消解：沙盒非 L2，禁止治理旁路原语）
+        let draft_enforce = serde_json::json!({
+            "transform": [{
+                "type": "enforce",
+                "params": {"domain": {"type": "all", "inner": []}, "reason": "sandbox hijack attempt"}
+            }]
+        });
+        let err = api
+            .fork_session_with_rules(parent, &[draft_enforce])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("装载门禁未过"),
+            "沙盒草稿携 enforce 应被 tier 门拒启, got: {err}"
+        );
+
+        // ② 合法草稿 fork 成功 → 沙盒 Reactor 挂载全集（宪法前缀+草稿后缀）。
+        // 验证法=执行面：Session 无会话级规则集 getter（Reactor 内部持有），
+        // 提交一条指令，宪法 set 规则若在位必写 constitution_mark（探针）。
+        let draft_ok = serde_json::json!({
+            "transform": [
+                {"type": "set", "params": {"attr": "draft_mark", "operation": "set", "value": 1}}
+            ]
+        });
+        let sandbox = api
+            .fork_session_with_rules(parent, &[draft_ok])
+            .await
+            .unwrap();
+        api.send_command(
+            sandbox,
+            serde_json::json!({"type": "noop", "params": {}}),
+        )
+        .await
+        .unwrap();
+        // 反应器异步处理，轮询 state 至多 ~2s（state 结构={payload,queue,version}）
+        let mut payload = serde_json::Value::Null;
+        for _ in 0..40 {
+            let state = api.get_session_state(sandbox).await.unwrap();
+            payload = state.get("payload").cloned().unwrap_or_default();
+            if payload.get("constitution_mark").is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            payload.get("constitution_mark").and_then(|v| v.as_str()),
+            Some("present"),
+            "宪法 set 规则必须在沙盒生效（不容替换）: {payload}"
+        );
     }
 
     fn make_test_state() -> (AppState, ReadinessFlag) {
