@@ -7,6 +7,7 @@ members = [
     "core/io_handlers",
     "core/metrics",
     "core/plugin-kit",
+    "core/rule_loader",
     "core/rule_schema",
     "core/rule_tools",
     "core/semantic_invariants",

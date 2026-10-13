@@ -1,0 +1,20 @@
+[package]
+name = "evorule-rule-loader"
+version = "0.1.0"
+edition = "2021"
+description = "evorule 宪法装载唯一通道（25 号档 [CON-L2-001]）：schema 校验→剥壳→三门→provenance，生产/沙盒同源调用（records/77 线1 防御层收口）"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+evorule-rule-schema = { path = "../rule_schema" }
+evorule-discipline = { version = "0.8" }
+evorule-tcb = { version = "0.8" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "evorule_rule_loader"
+path = "src/lib.rs"
