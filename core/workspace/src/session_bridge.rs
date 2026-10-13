@@ -109,7 +109,11 @@ pub trait SessionOps: Send + Sync {
 
     /// 获取 Fact 列表 (用于测试报告统计)
     ///
-    /// 返回 session 的全部 Fact (JSON 数组)。
+    /// 返回 session 的全部 Fact，**完整事实 JSON 形态**（`{"type","id",...}`
+    /// 变体字段，与 Fact::to_json 对齐：Command 含 instruction、IoResponse 含
+    /// result/error、Error 含 message、Violation 含 reason）。
+    /// 注意区别于 get_audit_export（BLAKE3 审计链导出，fact_type/fact_id
+    /// 元数据键名形态）——两者键名不同，消费方按本契约的 "type"/"id" 读取。
     async fn get_facts(&self, session_id: u64) -> WorkspaceResult<Vec<Value>>;
 
     /// 获取因果链 (某条 Fact 的因果追溯)

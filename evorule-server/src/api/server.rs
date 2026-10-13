@@ -3605,29 +3605,35 @@ impl evorule_workspace::SessionOps for SessionApi {
 
     /// 获取 Fact 列表 (用于测试报告统计)
     ///
-    /// 从审计链导出中解析出 Fact 列表。
+    /// 返回会话事实日志的**完整 Fact JSON**（`{"type","id",...}` 变体字段，
+    /// 与 `Fact::to_json` 序列化形态一致：Command 含 instruction、IoResponse 含
+    /// result/error、Error 含 message、Violation 含 reason 等）。
+    ///
+    /// 判定语义归真（沙盒报告 P0 修复）：此前本方法返回审计链 entries
+    /// （fact_type/fact_id 元数据键名），而消费方 TestReportBuilder 按
+    /// "type"/"id" 读取 → fact_type 恒 unknown → 报告判定恒 Passed（假阳性
+    /// 总根因）。改为直读 FactsLog 完整事实：键名与消费方契约对齐，且携带
+    /// 判定所需的语义字段（指令类型/错误消息/IoResponse error）；审计链导出
+    /// 面（get_audit_export，BLAKE3 元数据形态）不受影响。
     async fn get_facts(
         &self,
 
         session_id: u64,
     ) -> evorule_workspace::WorkspaceResult<Vec<serde_json::Value>> {
-        let export_str = self.get_audit_export(session_id).await?;
+        let sessions = self.sessions.lock().await;
 
-        let export: serde_json::Value = serde_json::from_str(&export_str).map_err(|e| {
-            evorule_workspace::WorkspaceError::internal(format!("audit export parse: {e}"))
+        sessions.touch_session(session_id);
+
+        let session = sessions.get_session(session_id).ok_or_else(|| {
+            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
         })?;
 
-        // 审计导出包含 entries 数组,每条 entry 有 fact_id/fact_type/content_hash 等
-
-        // 提取 entries 作为 Fact 列表
-
-        let entries = export
-            .get("entries")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        Ok(entries)
+        Ok(session
+            .facts_log
+            .history()
+            .iter()
+            .map(|f| tcb_to_serde(&f.to_json()))
+            .collect())
     }
 
     /// 获取因果链 (某条 Fact 的因果追溯)
