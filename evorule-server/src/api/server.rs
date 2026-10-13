@@ -8034,6 +8034,142 @@ async fn publish_start_session(
     ))
 }
 
+/// `POST /api/publish/sessions/{id}/promote` → 试验会话晋级生产（窄场景）
+///
+/// 把 fork 自当前生产会话的试验会话扶正为生产引用。语义对齐自愈重建先例：
+/// **替换会话引用而非发布**——ruleset_version/ruleset_hash 原样保留（规则集
+/// 内容未变，版本单调性不受扰）；U7 `session_switched` SSE 通知旧生产会话
+/// 订阅者；production_audit + platform.event 双落账。
+///
+/// 窄场景硬约束：目标会话必须是当前生产会话的 fork（`parent_session_id`
+/// 对账）——杜绝把内容无关的任意会话扶正造成版本/内容脱钩。
+/// 门控：平台管理员本人 + 人类凭据（同 approve_mode）。
+#[utoipa::path(
+    post,
+    path = "/api/publish/sessions/{id}/promote",
+    tag = "workspace",
+    params(("id" = u64, Path, description = "试验会话 ID")),
+    responses(
+        (status = 200, description = "已晋级（生产引用换防，版本/哈希不变）", body = serde_json::Value),
+        (status = 400, description = "目标不是当前生产会话的 fork（窄场景约束）"),
+        (status = 401, description = "未认证"),
+        (status = 403, description = "非管理员或自动化凭据"),
+        (status = 404, description = "目标会话不存在（内存中）"),
+        (status = 409, description = "当前无生产会话，或目标已是生产会话"),
+        (status = 503, description = "workspace 元数据库未接线")
+    )
+)]
+async fn publish_promote_session(
+    State(api): State<SessionApi>,
+    State(workspace): State<WorkspaceState>,
+    Path(session_id): Path<u64>,
+    headers: axum::http::HeaderMap,
+    identity: Option<Extension<CallerIdentity>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // 晋级 = 人工治理动作，自动化凭据拒绝（与 approve_mode 同款前置）
+    if matches!(
+        identity,
+        Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
+    ) {
+        return Err(proxy_err(
+            StatusCode::FORBIDDEN,
+            "自动化凭据禁止晋级生产会话（人工治理动作）".to_string(),
+        ));
+    }
+    let username = crate::api::platform_auth::require_administrator(&api.shared_facts, &headers)?;
+    let db = api.workspace_db.as_ref().ok_or_else(|| {
+        proxy_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "workspace 元数据库未接线".to_string(),
+        )
+    })?;
+    let prod = db
+        .get_production_state()
+        .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let old_pid = prod.current_session_id.ok_or_else(|| {
+        proxy_err(
+            StatusCode::CONFLICT,
+            "当前无生产会话（尚未部署规则集），无可晋级基准".to_string(),
+        )
+    })? as u64;
+    if old_pid == session_id {
+        return Err(proxy_err(
+            StatusCode::CONFLICT,
+            format!("会话 {session_id} 已是生产会话"),
+        ));
+    }
+    {
+        let sessions = api.sessions.lock().await;
+        let target = sessions.get_session(session_id).ok_or_else(|| {
+            proxy_err(
+                StatusCode::NOT_FOUND,
+                format!("目标会话 {session_id} 不存在（内存中）"),
+            )
+        })?;
+        // 窄场景硬约束: 目标必须是当前生产会话的 fork（防内容无关会话脱钩版本/哈希）
+        let parent_ok = target.parent_session_id() == Some(old_pid);
+        if !parent_ok {
+            return Err(proxy_err(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "仅支持晋级 fork 自当前生产会话（{old_pid}）的试验会话;目标 {session_id} 的父会话为 {:?}",
+                    target.parent_session_id()
+                ),
+            ));
+        }
+    }
+    // 引用换防: 保留 ruleset_version/ruleset_hash（替换会话引用而非发布）
+    db.update_production_state(
+        session_id as i64,
+        prod.ruleset_version,
+        prod.ruleset_hash.as_deref().unwrap_or(""),
+        &username,
+    )
+    .map_err(|e| proxy_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // U7 SSE: 通知旧生产会话订阅者跟随切换
+    let _ = workspace
+        .switcher
+        .broadcast_switched(
+            old_pid,
+            session_id,
+            prod.ruleset_version,
+            prod.ruleset_hash.as_deref().unwrap_or(""),
+        )
+        .await;
+    // 双落账: production_audit（生命周期事件）+ platform.event
+    let _ = db.insert_production_audit(
+        "production_session_promoted",
+        prod.ruleset_version,
+        None,
+        prod.ruleset_hash.as_deref().unwrap_or(""),
+        session_id as i64,
+        "[]",
+        &username,
+        Some(&format!(
+            "promoted trial session {session_id} (fork of {old_pid}); ruleset unchanged"
+        )),
+        None,
+        None,
+    );
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "production_session_promoted",
+        serde_json::json!({
+            "session_id": session_id,
+            "previous_production_session": old_pid,
+            "ruleset_version": prod.ruleset_version,
+            "operator": username,
+        }),
+    );
+    Ok(Json(serde_json::json!({
+        "promoted": true,
+        "session_id": session_id,
+        "previous_production_session": old_pid,
+        "ruleset_version": prod.ruleset_version,
+        "note": "生产引用换防完成;旧会话保留(不再受生产保护,空闲回收照常)",
+    })))
+}
+
 /// 会话锚点验证 handler（G-A2）
 ///
 /// `POST /api/sessions/:id/anchors/verify` → 验证锚点链结构+签名+与事实链绑定
@@ -11342,6 +11478,10 @@ impl GovernanceServer {
                 get(get_approve_mode).post(set_approve_mode),
             )
             .route("/api/publish/sessions", post(publish_start_session))
+            .route(
+                "/api/publish/sessions/{id}/promote",
+                post(publish_promote_session),
+            )
             // rewind/diff 已移至 application/core/time_machine（本地实现）
             // W2b:统一认证中间件(双凭据:静态 user/service token 或
             // 平台会话 token;401 统一 JSON 错误体)。evo-agent 侧车审计桥等
@@ -15069,6 +15209,15 @@ mod tests {
     /// 缺省 noop 宪法非合法 transform，指令一律落无 cause 的 Error，
     /// StateTransition 永不落链，wait 等待无从谈起）
     fn make_test_state_with_core_eval(core_eval: Vec<JsonValue>) -> (AppState, ReadinessFlag) {
+        let (state, readiness, _ws_db) = make_test_state_full(core_eval);
+        (state, readiness)
+    }
+
+    /// 同 [`Self::make_test_state_with_core_eval`]，另带 workspace 元数据库
+    /// 句柄（发布域治理端点测试用：直接初始化 production_state 等）。
+    fn make_test_state_full(
+        core_eval: Vec<JsonValue>,
+    ) -> (AppState, ReadinessFlag, Arc<evorule_workspace::WorkspaceDb>) {
         let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
 
         let (tx, _rx, _event_tx, _handle, facts_log) = reactor.spawn();
@@ -15147,6 +15296,7 @@ mod tests {
                 Arc::new(InputSanitizer::with_default_rules()),
             ),
             readiness,
+            ws_db,
         )
     }
 
@@ -15624,6 +15774,153 @@ mod tests {
             StatusCode::CONFLICT,
             "无生产会话必须 409: {body}"
         );
+    }
+
+    /// 试验会话晋级生产（窄场景）：fork 自生产 → 晋级 → 生产引用换防且
+    /// 版本/哈希原样保留；非 fork 目标 400、自晋级 409、缺失 404、非管理员 403。
+    #[tokio::test]
+    async fn publish_promote_session_narrow_scenario() {
+        let noop_core_eval = {
+            let mut instr = std::collections::BTreeMap::new();
+            instr.insert("type".to_string(), JsonValue::string("noop"));
+            vec![JsonValue::Object(instr)]
+        };
+        let (state, _flag, ws_db) = make_test_state_full(noop_core_eval);
+        let router = make_test_router(&state);
+
+        // bootstrap 管理员 + 登录
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/bootstrap",
+            Some(r#"{"username":"root","password":"admin-pass-123","display_name":""}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            Some(r#"{"username":"root","password":"admin-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let admin_token = body["token"].as_str().unwrap().to_string();
+
+        // 生产会话（初始引用换防前先建一个会话占位）
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let prod_sid = body["session_id"].as_u64().unwrap();
+        ws_db
+            .update_production_state(prod_sid as i64, 7, "hash-v7", "test")
+            .unwrap();
+
+        // 试验会话: fork 自生产
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            &format!("/api/sessions/from/{prod_sid}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let trial_sid = body["session_id"].as_u64().unwrap();
+
+        // 非 fork 会话（无父）→ 400 窄场景约束
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let stray_sid = body["session_id"].as_u64().unwrap();
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            &format!("/api/publish/sessions/{stray_sid}/promote"),
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "非 fork 目标必须 400");
+
+        // 自晋级 → 409
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            &format!("/api/publish/sessions/{prod_sid}/promote"),
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // 缺失会话 → 404
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/publish/sessions/999999/promote",
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // 非管理员 → 403
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/platform/users",
+            &admin_token,
+            Some(
+                r#"{"username":"carol","password":"carol-pass-123","display_name":"","email":"","department":"","role":"viewer"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            Some(r#"{"username":"carol","password":"carol-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let carol_token = body["token"].as_str().unwrap().to_string();
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            &format!("/api/publish/sessions/{trial_sid}/promote"),
+            &carol_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // 管理员晋级 → 200, 生产引用换防且版本/哈希保留
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            &format!("/api/publish/sessions/{trial_sid}/promote"),
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["promoted"], true);
+        assert_eq!(body["previous_production_session"], prod_sid);
+
+        let prod = ws_db.get_production_state().unwrap();
+        assert_eq!(prod.current_session_id, Some(trial_sid as i64));
+        assert_eq!(prod.ruleset_version, 7, "版本必须原样保留");
+        assert_eq!(prod.ruleset_hash.as_deref(), Some("hash-v7"));
+
+        // 晋级后原生产会话再晋级已换防目标 → 409（已是生产会话）
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            &format!("/api/publish/sessions/{trial_sid}/promote"),
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
     }
 
     // --- 静态前端托管（--web-dir） ---
