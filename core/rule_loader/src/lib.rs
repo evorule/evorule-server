@@ -183,9 +183,12 @@ pub struct LoadedRuleset {
 }
 
 /// 溯源指纹（[CON-S-003]）
-#[derive(Debug, Copy, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Provenance {
+    /// 来源类别标签（快速分流）
     pub source_kind: &'static str,
+    /// 完整来源指纹（[CON-S-003] 来源指纹收编：文件路径 / DB 版本 ID 集+ruleset hash / API caller）
+    pub source: LoadSource,
     pub venue: Venue,
     pub composition: Composition,
     pub l2_class: L2Class,
@@ -261,6 +264,25 @@ impl std::error::Error for ConstitutionError {}
 /// O-431 后沙盒裁决铸 `sandbox:` 背书=治理行为；铸造信任者必须自守治理纪律，
 /// 沙盒草稿与生产规则同守三门。
 pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, ConstitutionError> {
+    // ── 步骤 0：$schema 版本协商（[CON-S-004]）──
+    // 带壳文档声明 $schema 时，必须命中本 crate 内嵌校验器认识的版本。
+    // _meta pattern 只查 URL 形态（任意 v主.次 均过）——若无此门，v2.0 文档会
+    // 按内嵌 v1.0 校验器静默通过（D4：版本协商缺位）。允许显式声明 v1.0；
+    // 未来版本按此处白名单逐版登记，未登记版本 fail-fast。
+    if let Some(schema_uri) = doc.get("$schema").and_then(|s| s.as_str()) {
+        const KNOWN_VERSIONS: [&str; 1] = ["https://evorule.org/schemas/rule_set/v1.0.json"];
+        if !KNOWN_VERSIONS.contains(&schema_uri) {
+            return Err(ConstitutionError::SchemaViolation(four_part(
+                &format!(
+                    "$schema 版本未协商成功：声明 {schema_uri}，本装载器仅认识 {KNOWN_VERSIONS:?}（v2.0+ 文档须升级装载器后登记）"
+                ),
+                "$.$schema",
+                RULE_SET_URL,
+                MINIMAL_RULE_SET,
+            )));
+        }
+    }
+
     // ── 步骤 1：宪法 schema 校验 ──
     // 分层校验策略（对齐设计分期——阶段一收口装载路径，不强制存量业务文件全壳迁移）：
     // - 裸 transform 数组 → transform_list 校验（数组语义）
@@ -326,6 +348,7 @@ pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, Co
         engine_rules,
         provenance: Provenance {
             source_kind: source_kind(&ctx.source),
+            source: ctx.source.clone(),
             venue: ctx.venue,
             composition: ctx.composition,
             l2_class: ctx.l2_class,
@@ -751,5 +774,69 @@ mod tests {
             }
             other => panic!("应是 Object，实际 {other:?}"),
         }
+    }
+
+    // ===== [CON-S-004] $schema 版本协商（D4 补实现）=====
+
+    #[test]
+    fn schema_version_negotiation_rejects_unknown_major() {
+        // v2.0 文档（pattern 形态合法）必须被版本协商拒——不得按 v1.0 校验器静默通过
+        let mut doc = valid_rule_set();
+        doc["$schema"] = json!("https://evorule.org/schemas/rule_set/v2.0.json");
+        let ctx = LoadContext::business_file("x.json");
+        let err = load_rule_set(&doc, &ctx).expect_err("v2.0 未协商应拒");
+        assert!(matches!(err, ConstitutionError::SchemaViolation(_)));
+        let msg = format!("{err}");
+        assert!(msg.contains("版本未协商"), "报错应说明版本协商失败: {msg}");
+    }
+
+    #[test]
+    fn schema_version_negotiation_accepts_known_v1() {
+        // 显式声明 v1.0（现役）过；不声明 $schema 的传统部分壳也过（分期兼容）
+        let mut doc = valid_rule_set();
+        doc["$schema"] = json!("https://evorule.org/schemas/rule_set/v1.0.json");
+        let ctx = LoadContext::business_file("x.json");
+        load_rule_set(&doc, &ctx).expect("v1.0 应协商通过");
+
+        let mut partial = json!({ "transform": valid_rule_set()["transform"].clone() });
+        partial["metadata"] = json!({ "title": "传统部分壳" });
+        load_rule_set(&partial, &ctx).expect("无 $schema 部分壳应过（分期兼容）");
+    }
+
+    // ===== [CON-S-003] 来源指纹收编（D3）=====
+
+    #[test]
+    fn provenance_carries_full_source_fingerprint() {
+        use serde_json as sj;
+        // 文件源：路径指纹
+        let ctx = LoadContext::constitution("tcb/core_eval.json");
+        let loaded = load_rule_set(&valid_rule_set(), &ctx).unwrap();
+        match &loaded.provenance.source {
+            LoadSource::File { path } => assert_eq!(path, "tcb/core_eval.json"),
+            other => panic!("应是 File 源，实际 {other:?}"),
+        }
+        // 序列化往返（[CON-S-003] 判据：provenance 可序列化入审计）
+        let round = sj::to_value(&loaded.provenance).expect("provenance 应可序列化");
+        assert_eq!(round["source"]["kind"], "file");
+        assert_eq!(round["source"]["path"], "tcb/core_eval.json");
+        assert_eq!(round["source_kind"], "file");
+
+        // DB 草稿源：版本 ID 集+ruleset hash 指纹
+        let ctx = LoadContext::sandbox(LoadSource::DbDraft {
+            rule_version_ids: vec!["rv-9".into(), "rv-10".into()],
+            ruleset_hash: "blake3:abcd".into(),
+        });
+        let loaded = load_rule_set(&valid_rule_set(), &ctx).unwrap();
+        let round = sj::to_value(&loaded.provenance).unwrap();
+        assert_eq!(round["source"]["kind"], "db_draft");
+        assert_eq!(round["source"]["rule_version_ids"][0], "rv-9");
+        assert_eq!(round["source"]["ruleset_hash"], "blake3:abcd");
+
+        // API 源：caller 指纹
+        let ctx = LoadContext::api("probe-client");
+        let loaded = load_rule_set(&valid_rule_set(), &ctx).unwrap();
+        let round = sj::to_value(&loaded.provenance).unwrap();
+        assert_eq!(round["source"]["kind"], "api");
+        assert_eq!(round["source"]["caller"], "probe-client");
     }
 }
