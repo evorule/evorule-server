@@ -90,8 +90,10 @@ pub struct LoadContext {
     pub composition: Composition,
     /// L2 身份（调用方依治理事实声明，provenance 留痕可审计）
     pub l2_class: L2Class,
-    /// discipline 门 enforce 位（W1 观测期渐进收口：true=拒载违规，false=放行）。
-    /// 安全缺省 true；生产调用方从全局治理开关传入（单一事实源），沙盒与生产同 flag。
+    /// discipline 门 enforce 位（W1 观测期渐进收口：true=拒载违规，false=放行+留痕）。
+    /// 缺省 false（warn 影子期）：env EVORULE_DISCIPLINE_GATE 未设/enforce 以外值时
+    /// 放行但结构化日志曝光——渐进整改三步走（普查→影子→灰度）的治理决定
+    /// （SR-02 决策 2；W1 豁免与 [CON-L2-004] 关系待 25 号档登记，见把关报告 R3）。
     pub discipline_enforce: bool,
 }
 

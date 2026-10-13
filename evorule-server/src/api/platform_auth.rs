@@ -34,6 +34,7 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use blake3::Hasher;
 use evorule_governance::shared_facts_log::SharedFactsLog;
+use evorule_rule_loader::serde_to_tcb;
 use evorule_tcb::JsonValue;
 use utoipa::ToSchema;
 
@@ -574,31 +575,9 @@ pub fn append_platform_event(shared: &SharedFactsLog, kind: &str, detail: serde_
     append_auth_event(shared, kind, detail)
 }
 
-/// serde_json::Value → evorule_tcb::JsonValue(与 server.rs/main.rs 一致)
-fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
-    match v {
-        serde_json::Value::Null => JsonValue::Null,
-        serde_json::Value::Bool(b) => JsonValue::Bool(b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                JsonValue::Integer(i)
-            } else {
-                JsonValue::String(n.to_string().into())
-            }
-        }
-        serde_json::Value::String(s) => JsonValue::String(s.into()),
-        serde_json::Value::Array(arr) => {
-            JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
-        }
-        serde_json::Value::Object(obj) => {
-            let pairs: Vec<(String, JsonValue)> = obj
-                .into_iter()
-                .map(|(k, val)| (k, serde_to_tcb(val)))
-                .collect();
-            JsonValue::object_from_pairs_owned(pairs)
-        }
-    }
-}
+/// serde_json::Value → evorule_tcb::JsonValue
+/// 唯一实现在 evorule_rule_loader::serde_to_tcb（[CON-S-006] 禁止再手写第二份；
+/// R2 收编 2026-10-14，本地手写份已删——B 族哈希口径一致由 loader 键序测试保证）。
 
 /// 首启 seed:内置 4 角色无任何 role 事实时写入(幂等:按事实回放判定)。
 /// 在每个平台端点入口调用;并发首次调用可能重复追加同值事实,
