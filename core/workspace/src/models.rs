@@ -447,8 +447,11 @@ pub struct SandboxSession {
 ///
 /// 存储沙盒测试用的合成数据 (P0 全合成,Q2 决策)。
 /// cases_json 为 JSON 数组,每个元素是一条测试 case。
+/// **用例即指令本体**：元素必须是指令对象（含非空 `type` 指令类型字段），
+/// 与生产 /api/command 同形态直发沙盒（沙盒启动期对缺 type 的用例 fail-fast）；
 /// case 可选携带 `name`(字符串): 沙盒报告按**用例组序**逐条命名,
-/// 缺失/空/越界时回退默认命名 "Case #N"。期望断言(expected)按测试工作台配置面推进,本层不扩展。
+/// 缺失/空/越界时回退默认命名 "Case #N"；`expected` 期望断言按测试工作台
+/// 配置面推进,本层不扩展。
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestDatasetRecord {
     /// 数据集 ID (自增)

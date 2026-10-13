@@ -3422,7 +3422,96 @@ impl evorule_workspace::SessionOps for SessionApi {
             }
 
             Err(e) => Err(evorule_workspace::WorkspaceError::internal(format!(
-                "fork_session failed: {e:?}"
+            "fork_session failed: {e:?}"
+        ))),
+    }
+}
+
+    /// 从父会话 fork 沙盒会话并注入草稿规则集（SessionOps 桥接，原子注入）
+    ///
+    /// 序列（同一把 sessions 锁内，无并发窗口）：
+    /// 1. 权利面预检（fail-fast）：草稿规则 io_type 发射/消费与生产规则集及
+    ///    草稿集内部独占冲突 → 拒启沙盒并明示冲突明细——避免冲突规则被静默
+    ///    剥除后测试建立在不完整规则集上（静默通过禁令）；
+    /// 2. `replace_core_eval(生产+草稿)` → fork → `replace_core_eval(回滚)`：
+    ///    新会话 Reactor 构造时 clone 含草稿的规则集（replace_core_eval 仅影响
+    ///    新会话），序列结束后全局规则集复原，生产与其他会话不受影响。
+    async fn fork_session_with_rules(
+        &self,
+        parent_session_id: u64,
+        extra_rules: &[serde_json::Value],
+    ) -> evorule_workspace::WorkspaceResult<u64> {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        // 草稿规则转 TCB 形态（io_capability 与 Reactor 规则集均为 TCB JsonValue）
+        let converted: Vec<JsonValue> =
+            extra_rules.iter().map(|r| serde_to_tcb(r.clone())).collect();
+
+        let mut sessions = self.sessions.lock().await;
+
+        // 1. 权利面预检：生产规则集权利声明账本（io_type → 首声明方标签）
+        let mut emit_claims: BTreeMap<String, String> = BTreeMap::new();
+        let mut consume_claims: BTreeMap<String, String> = BTreeMap::new();
+        for (idx, rule) in sessions.core_eval().iter().enumerate() {
+            let (emit, consume): (BTreeSet<String>, BTreeSet<String>) = Self::io_capability(rule);
+            for t in emit {
+                emit_claims.entry(t).or_insert_with(|| format!("core_eval#{idx}"));
+            }
+            for t in consume {
+                consume_claims.entry(t).or_insert_with(|| format!("core_eval#{idx}"));
+            }
+        }
+        // 草稿逐条：先查冲突（对生产+草稿内部），再入账本
+        let mut conflicts: Vec<String> = Vec::new();
+        for (idx, rule) in converted.iter().enumerate() {
+            let (emit, consume): (BTreeSet<String>, BTreeSet<String>) = Self::io_capability(rule);
+            for t in &emit {
+                if let Some(owner) = emit_claims.get(t) {
+                    conflicts.push(format!("draft#{idx} emit io_type \"{t}\" 与 {owner} 冲突"));
+                }
+            }
+            for t in &consume {
+                if let Some(owner) = consume_claims.get(t) {
+                    conflicts.push(format!("draft#{idx} consume io_type \"{t}\" 与 {owner} 冲突"));
+                }
+            }
+            for t in emit {
+                emit_claims.entry(t).or_insert_with(|| format!("draft#{idx}"));
+            }
+            for t in consume {
+                consume_claims.entry(t).or_insert_with(|| format!("draft#{idx}"));
+            }
+        }
+        if !conflicts.is_empty() {
+            return Err(evorule_workspace::WorkspaceError::invalid_input(format!(
+                "草稿规则权利面冲突，拒绝启动沙盒: {}",
+                conflicts.join("; ")
+            )));
+        }
+
+        // 2. 锁内原子注入序列：replace → fork → restore
+        let mut combined = sessions.core_eval().to_vec();
+        combined.extend(converted);
+        let restored = sessions.replace_core_eval(combined);
+        let result = sessions.create_session_from_parent_at_version(parent_session_id, None);
+        sessions.replace_core_eval(restored);
+
+        match result {
+            Ok(id) => {
+                self.spawn_hit_stats_recorder(id);
+                self.spawn_writeback_forwarder(id);
+                Ok(id)
+            }
+            Err(evorule_governance::session::SessionError::NotFound { id }) => Err(
+                evorule_workspace::WorkspaceError::not_found("session", id.to_string()),
+            ),
+            Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => Err(
+                evorule_workspace::WorkspaceError::internal(format!(
+                    "session limit exceeded: {current}/{max}"
+                )),
+            ),
+            Err(e) => Err(evorule_workspace::WorkspaceError::internal(format!(
+                "fork_session_with_rules failed: {e:?}"
             ))),
         }
     }
@@ -15199,6 +15288,50 @@ mod tests {
         let router2 = make_test_router(&state2);
         let (status, _) = oneshot_json(router2, "GET", "/api/sessions/999999/anchors", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// fork_session_with_rules 三件机制契约（沙盒编排断链修复回归锚）：
+    /// ①权利面冲突 fail-fast 拒启（草稿 io_type 与宪法冲突）；②无冲突草稿
+    /// fork 成功且全局 core_eval 回滚（草稿仅进沙盒 Reactor）；③fork 后
+    /// 沙盒事实链为空（状态快照非事实历史，报告判定面前提）。
+    #[tokio::test]
+    async fn fork_with_rules_conflict_reject_and_restore() {
+        use evorule_workspace::SessionOps as _;
+
+        // 宪法声明 io_type "shared_io"（发射面）
+        let constitution = serde_json::json!({
+            "transform": [{"type": "io_request", "params": {"io_type": "shared_io"}}]
+        });
+        let api = SessionApi::new(vec![serde_to_tcb(constitution)], 100);
+        let parent = api.create_session().await.unwrap();
+
+        // ① 草稿声明同一 io_type → 权利面冲突拒启
+        let draft_conflict = serde_json::json!({
+            "transform": [{"type": "io_request", "params": {"io_type": "shared_io"}}]
+        });
+        let err = api
+            .fork_session_with_rules(parent, &[draft_conflict])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("权利面冲突"),
+            "io 冲突应拒启沙盒, got: {err}"
+        );
+
+        // ② 无冲突草稿（独立 io_type + 纯状态变换）→ fork 成功, 全局规则集回滚
+        let draft_ok = serde_json::json!({
+            "transform": [
+                {"type": "io_request", "params": {"io_type": "draft_only_io"}},
+                {"type": "set", "params": {"attr": "__exec__.payload.x", "operation": "set", "value": 1}},
+            ]
+        });
+        let before_len = api.sessions.lock().await.core_eval().len();
+        let sandbox = api.fork_session_with_rules(parent, &[draft_ok]).await.unwrap();
+        let after_len = api.sessions.lock().await.core_eval().len();
+        assert_eq!(before_len, after_len, "fork 序列结束后全局 core_eval 应回滚");
+
+        // ③ fork 后事实链为空（探针契约）
+        assert!(api.get_facts(sandbox).await.unwrap().is_empty());
     }
 
     fn make_test_state() -> (AppState, ReadinessFlag) {

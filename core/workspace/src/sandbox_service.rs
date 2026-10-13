@@ -11,12 +11,12 @@
 //!
 //! 1. 校验 workspace 成员权限
 //! 2. 计算 Draft 规则集 BLAKE3 哈希
-//! 3. Fork Production session → 新 sandbox session
+//! 3. Fork Production session → 新 sandbox session，**fork 时原子注入
+//!    Draft 规则集**（草稿规则仅进沙盒 Reactor；权利面冲突 fail-fast 拒启）
 //! 4. 记录 sandbox_sessions 表
-//! 5. 逐条加载 Draft 规则到 sandbox (send_command transform)
-//! 6. 逐条注入合成测试数据 (send_command)
-//! 7. 启动 MockIoResponder (自动回调 io_request)
-//! 8. 关闭时导出 test Fact + 生成测试报告
+//! 5. 逐条注入合成测试数据（用例即指令本体，与生产 /api/command 同形态）
+//! 6. 启动 MockIoResponder (自动回调 io_request)
+//! 7. 关闭时导出 test Fact + 生成测试报告
 //!
 //! # 关键决策
 //! - S1: 编排模块位于 workspace crate (依赖 workspace 表)
@@ -86,14 +86,13 @@ impl SandboxService {
     ///
     /// 流程 (SANDBOX_ORCHESTRATION_DESIGN.md §3.1):
     /// 1. 校验 Workspace 成员权限
-    /// 2. 查询规则版本 + 校验所属 workspace
-    /// 3. 计算 Draft 规则集 BLAKE3 哈希
-    /// 4. 获取当前 Production session_id (从 production_state 表)
-    /// 5. Fork Production session → 新 sandbox session
-    /// 6. 记录 sandbox_sessions 表
-    /// 7. 逐条加载 Draft 规则到 sandbox (send_command transform)
-    /// 8. 逐条注入合成测试数据 (send_command)
-    /// 9. 启动 MockIoResponder
+    /// 2. 查询规则版本 + 校验 + 计算 Draft 规则集 BLAKE3 哈希
+    /// 3. 解析草稿规则 JSON（fail-fast）
+    /// 4. 获取 Production session_id + fork 并原子注入草稿规则集
+    ///    （权利面冲突拒启；fork 后事实链空探针）
+    /// 5. 记录 sandbox_sessions 表
+    /// 6. 注入合成测试数据（用例即指令本体）
+    /// 7. 启动 MockIoResponder
     pub async fn start_sandbox(
         &self,
         workspace_id: &str,
@@ -107,15 +106,36 @@ impl SandboxService {
         let rule_versions = self.validate_rule_versions(workspace_id, &req)?;
         let draft_hash = compute_ruleset_hash(&rule_versions);
 
-        // 4. 获取 Production session_id + 5. Fork → 新 sandbox session
+        // 3. 解析草稿规则 JSON（逐条与规则文件同形态；解析失败 fail-fast）
+        let draft_rules = self.parse_draft_rules(&rule_versions)?;
+
+        // 4. 获取 Production session_id
+        //    5. fork 并注入草稿规则集（原子序列：草稿规则仅进沙盒 Reactor；
+        //    权利面冲突 fail-fast 拒启，此时尚未落 db，无孤儿记录）
         let parent_session_id = self.get_production_parent_session()?;
-        let tcb_session_id = self.session_ops.fork_session(parent_session_id).await?;
+        let tcb_session_id = self
+            .session_ops
+            .fork_session_with_rules(parent_session_id, &draft_rules)
+            .await?;
         info!(
             sandbox_session_id = tcb_session_id,
             parent_session_id = parent_session_id,
             workspace_id = %workspace_id,
-            "Sandbox session forked from production"
+            draft_rule_count = draft_rules.len(),
+            "Sandbox session forked from production with draft rules injected"
         );
+
+        // 探针（断链复发探测器）：fork 继承的是状态快照而非事实历史，
+        // 沙盒事实链应从零起步。非空 = fork 语义漂移（如未来 fork 开始复制
+        // 事实历史），报告按 Command 归组将错位——fail-fast 暴露，不静默。
+        let initial_facts = self.session_ops.get_facts(tcb_session_id).await?;
+        if !initial_facts.is_empty() {
+            let _ = self.session_ops.close_session(tcb_session_id).await;
+            return Err(WorkspaceError::internal(format!(
+                "fork 语义漂移: 沙盒事实链非空（{} 条初始事实），测试报告判定面将错位",
+                initial_facts.len()
+            )));
+        }
 
         // 6. 记录 sandbox_sessions 表
         let sandbox_id = self.db.insert_sandbox_session(
@@ -127,11 +147,11 @@ impl SandboxService {
             started_by,
         )?;
 
-        // 7. 逐条加载 Draft 规则到 sandbox (send_command transform)
-        self.load_rules_into_sandbox(tcb_session_id, &rule_versions)
-            .await?;
+        // 7.（已并入步骤 5）草稿规则经 fork 注入沙盒规则集——不再用
+        //    transform 包装指令搬运（宪法无对应规则，恒 Ignored→Error，
+        //    草稿从未真正生效的机制断链已修）
 
-        // 8. 注入合成测试数据
+        // 8. 注入合成测试数据（用例即指令本体）
         let test_cases = self
             .inject_test_cases(tcb_session_id, workspace_id, &req)
             .await?;
@@ -216,12 +236,16 @@ impl SandboxService {
             .map(|id| id as u64)
     }
 
-    /// 逐条加载 Draft 规则到 sandbox (send_command transform), 失败时关闭 session 并清理
-    async fn load_rules_into_sandbox(
+    /// 解析草稿规则 JSON（每条与规则文件同形态的单条规则）
+    ///
+    /// 解析失败 fail-fast。草稿规则经 [`SessionOps::fork_session_with_rules`]
+    /// 在 fork 时注入沙盒规则集（原 send_command transform 包装指令搬运路径
+    /// 已废除——宪法无对应规则致恒 Ignored→Error，草稿从未真正生效）。
+    fn parse_draft_rules(
         &self,
-        tcb_session_id: u64,
         rule_versions: &[RuleVersionRecord],
-    ) -> WorkspaceResult<()> {
+    ) -> WorkspaceResult<Vec<Value>> {
+        let mut rules = Vec::with_capacity(rule_versions.len());
         for rv in rule_versions {
             let rule_content: Value = serde_json::from_str(&rv.content).map_err(|e| {
                 WorkspaceError::internal(format!(
@@ -229,31 +253,9 @@ impl SandboxService {
                     rv.id
                 ))
             })?;
-            let instruction = serde_json::json!({
-                "type": "transform",
-                "payload": rule_content,
-            });
-            if let Err(e) = self
-                .session_ops
-                .send_command(tcb_session_id, instruction)
-                .await
-            {
-                // 加载失败,关闭已 fork 的 session 并清理 db 记录
-                warn!(
-                    error = %e,
-                    rule_version_id = %rv.id,
-                    "Failed to load rule into sandbox, cleaning up"
-                );
-                let _ = self.session_ops.close_session(tcb_session_id).await;
-                return Err(e);
-            }
+            rules.push(rule_content);
         }
-        info!(
-            count = rule_versions.len(),
-            sandbox_session_id = tcb_session_id,
-            "Draft rules loaded into sandbox"
-        );
-        Ok(())
+        Ok(rules)
     }
 
     /// 逐条注入合成测试数据, 返回解析后的 test_cases
@@ -286,13 +288,27 @@ impl SandboxService {
             ))
         })?;
 
-        for case in &test_cases {
-            let instruction = serde_json::json!({
-                "type": "command",
-                "payload": case,
-            });
+        for (idx, case) in test_cases.iter().enumerate() {
+            // 用例即指令本体：与生产 POST /api/command 同形态、同 TCB 消费路径
+            // （原 {"type":"command"} 包装是本服务发明的形态，无任何宪法/草稿
+            // 规则匹配，恒 Ignored→Error——用例从未真实执行的断链面之一）。
+            // 校验 fail-fast：非对象或缺非空 "type" 的用例无法被任何规则匹配，
+            // 且多半是数据集笔误——启动期拦截而非留到报告里变成 Failed 噪音。
+            // name/expected 等元数据字段随指令一并发送（TCB 对根部额外键零消费）。
+            let valid = case.is_object()
+                && case
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+            if !valid {
+                return Err(WorkspaceError::invalid_input(format!(
+                    "test_dataset {} 用例 #{} 必须是指令对象（含非空 \"type\" 指令类型字段）",
+                    dataset.id, idx
+                )));
+            }
             self.session_ops
-                .send_command(tcb_session_id, instruction)
+                .send_command(tcb_session_id, case.clone())
                 .await?;
         }
         info!(
@@ -719,10 +735,12 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// 测试用 SessionOps 桩 (记录 send_command 调用)
+    /// 测试用 SessionOps 桩 (记录 send_command/fork 注入调用)
     struct MockSessionOps {
         next_id: AtomicU64,
         commands_sent: Mutex<Vec<(u64, Value)>>,
+        /// fork_session_with_rules 注入的 (session_id, 草稿规则数组)
+        rules_injected: Mutex<Vec<(u64, Vec<Value>)>>,
     }
 
     use std::sync::Mutex;
@@ -732,6 +750,7 @@ mod tests {
             Self {
                 next_id: AtomicU64::new(start),
                 commands_sent: Mutex::new(Vec::new()),
+                rules_injected: Mutex::new(Vec::new()),
             }
         }
     }
@@ -743,6 +762,19 @@ mod tests {
         }
         async fn fork_session(&self, _parent: u64) -> WorkspaceResult<u64> {
             Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+        }
+        async fn fork_session_with_rules(
+            &self,
+            _parent: u64,
+            extra_rules: &[Value],
+        ) -> WorkspaceResult<u64> {
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            self.rules_injected
+                .lock()
+                .unwrap()
+                .push((id, extra_rules.to_vec()));
+            // 契约：fork 后事实链为空（状态快照非事实历史）
+            Ok(id)
         }
         async fn session_exists(&self, id: u64) -> bool {
             id < self.next_id.load(Ordering::SeqCst)
@@ -766,11 +798,26 @@ mod tests {
         async fn get_audit_export(&self, _id: u64) -> WorkspaceResult<String> {
             Ok(r#"[{"id":1,"type":"Command"},{"id":2,"type":"StateTransition"}]"#.to_string())
         }
-        async fn get_facts(&self, _id: u64) -> WorkspaceResult<Vec<Value>> {
-            Ok(vec![
-                serde_json::json!({"id": 1, "type": "Command"}),
-                serde_json::json!({"id": 2, "type": "StateTransition"}),
-            ])
+        async fn get_facts(&self, id: u64) -> WorkspaceResult<Vec<Value>> {
+            // 模拟真实契约：fork 后未注入指令前事实链为空（探针依赖此语义），
+            // 指令注入后按 O-439 完整事实形态返回样例
+            let has_commands = self
+                .commands_sent
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(sid, _)| *sid == id);
+            if has_commands {
+                Ok(vec![
+                    serde_json::json!({
+                        "id": 1, "type": "Command",
+                        "instruction": {"type": "increment", "params": {}},
+                    }),
+                    serde_json::json!({"id": 2, "type": "StateTransition"}),
+                ])
+            } else {
+                Ok(Vec::new())
+            }
         }
         async fn get_causal_chain(&self, _id: u64, _fact_id: u64) -> WorkspaceResult<Value> {
             Ok(serde_json::json!([]))
@@ -840,12 +887,13 @@ mod tests {
         let rule_svc = Arc::new(RuleMetaService::new(db.clone()));
         let rv = create_rule(&rule_svc, &ws_id, "rule-1").await;
 
-        // 创建测试数据集
+        // 创建测试数据集（用例即指令本体：含非空 "type" 指令类型；
+        // name 元数据字段随指令发送，报告按用例组序命名）
         let dataset_id = db
             .insert_test_dataset(
                 "ds-1",
                 Some(&ws_id),
-                r#"[{"event":"test1"},{"event":"test2"}]"#,
+                r#"[{"name":"用例1","type":"increment","params":{}},{"name":"用例2","type":"increment","params":{}}]"#,
                 2,
                 "owner-1",
                 None,
@@ -871,13 +919,20 @@ mod tests {
         assert!(!resp.draft_ruleset_hash.is_empty());
         assert_eq!(resp.test_case_count, 2);
 
-        // send_command 被调用: 1 次 transform + 2 次 command = 3 次
+        // 草稿规则经 fork 注入（不再走 send_command transform 搬运）
+        {
+            let injected = mock_ops.rules_injected.lock().unwrap();
+            assert_eq!(injected.len(), 1, "fork_session_with_rules 应恰好调用一次");
+            assert_eq!(injected[0].0, 500);
+            assert_eq!(injected[0].1.len(), 1, "1 条草稿规则应注入沙盒规则集");
+        }
+
+        // send_command 仅用例注入: 2 次直发（无 transform/command 包装指令）
         {
             let commands = mock_ops.commands_sent.lock().unwrap();
-            assert_eq!(commands.len(), 3);
-            assert_eq!(commands[0].1["type"], "transform");
-            assert_eq!(commands[1].1["type"], "command");
-            assert_eq!(commands[2].1["type"], "command");
+            assert_eq!(commands.len(), 2);
+            assert_eq!(commands[0].1["type"], "increment");
+            assert_eq!(commands[1].1["type"], "increment");
         }
 
         // 沙盒记录存在且状态为 running
@@ -929,7 +984,7 @@ mod tests {
             .insert_test_dataset(
                 "ds-1",
                 Some(&ws_id),
-                r#"[{"event":"test1"}]"#,
+                r#"[{"name":"用例1","type":"increment","params":{}}]"#,
                 1,
                 "owner-1",
                 None,

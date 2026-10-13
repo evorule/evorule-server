@@ -22,6 +22,8 @@
 //! - [`get_session_state`] — 获取会话当前状态快照
 //!
 //! ## 沙盒编排扩展 (SANDBOX_ORCHESTRATION_DESIGN.md §3.2)
+//! - [`fork_session_with_rules`] — fork 并原子注入草稿规则集（规则进沙盒
+//!   Reactor 规则集，权利面冲突 fail-fast 拒启）
 //! - [`get_audit_report`] — 获取审计报告 (含 BLAKE3 链验证)
 //! - [`get_audit_export`] — 获取审计链导出 (JSON 字符串)
 //! - [`get_facts`] — 获取 Fact 列表 (测试报告统计)
@@ -33,7 +35,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::error::WorkspaceResult;
+use crate::error::{WorkspaceError, WorkspaceResult};
 
 /// 会话操作抽象 trait
 ///
@@ -66,6 +68,30 @@ pub trait SessionOps: Send + Sync {
     ///
     /// 实现应调用 SessionManager::create_session_from_parent_at_version()
     async fn fork_session(&self, parent_session_id: u64) -> WorkspaceResult<u64>;
+
+    /// 从父会话 fork 新会话并注入额外规则集（沙盒编排扩展）
+    ///
+    /// `extra_rules` 为草稿规则 JSON 数组（每条与规则文件同形态的单条规则）。
+    /// 实现应原子完成：把草稿规则追加到当前全局规则集 → fork 父会话（新会话
+    /// Reactor 持含草稿的规则集 clone）→ 回滚全局规则集——草稿规则仅进入
+    /// 沙盒会话，生产与其他会话不受影响。
+    ///
+    /// 预检语义（fail-fast）：任一草稿规则的权利面（io_type 发射/消费）与
+    /// 生产规则集或草稿集内部冲突时返回 `invalid_input` 错误并明示冲突明细，
+    /// 不创建沙盒——避免冲突规则被静默剥除后测试建立在不完整规则集上
+    /// （静默通过禁令）。
+    ///
+    /// 缺省实现返回「不支持」：仅沙盒编排链路需要此能力，其他桥接实现
+    /// （发布/滚动/工作空间测试桩）无需关心。
+    async fn fork_session_with_rules(
+        &self,
+        _parent_session_id: u64,
+        _extra_rules: &[Value],
+    ) -> WorkspaceResult<u64> {
+        Err(WorkspaceError::internal(
+            "fork_session_with_rules not supported by this session bridge",
+        ))
+    }
 
     /// 检查会话是否存在
     ///
