@@ -159,7 +159,7 @@ tower = { version = "0.5", features = ["util"] }
 # [patch."https://gitee.com/evorule/evorule-rule.git"]
 # evorule-rule = { path = "../../evorule-rule" }
 # 待 evorule-rule 发版 crates.io 后可切换为 version 依赖进一步简化。
-evorule-rule = { git = "https://gitee.com/evorule/evorule-rule.git", rev = "28d35aef03d58b8916c4036ac4d55b808052162e" }
+evorule-rule = { git = "https://gitee.com/evorule/evorule-rule.git", rev = "9f85314fbf1609fb19e959a24b2ebd844251d118" }
 
 [features]
 # H6: metrics feature 已移除（Prometheus 实现始终启用，由 metrics_impl.rs 提供）
