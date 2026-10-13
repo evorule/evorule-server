@@ -26,6 +26,9 @@ use utoipa::OpenApi;
         crate::api::server::health,
         crate::api::server::liveness,
         crate::api::server::readiness,
+        // IO 形状契约导出（免认证，evo-agent 启动协商数据源；补登：
+        // #[utoipa::path] 注解曾在而 paths() 未收，openapi.json 漏报本端点）
+        crate::api::io_contract::io_contract_endpoint,
         // governance 组（单反应器模式）
         crate::api::server::submit_command,
         crate::api::server::update_payload,
@@ -163,6 +166,10 @@ use utoipa::OpenApi;
         crate::api::openapi::openapi_json,
     ),
     components(schemas(
+        // IO 形状契约（GET /api/io-contract 响应面）
+        crate::api::io_contract::IoContractResponse,
+        crate::api::io_contract::IoShapeSpec,
+        crate::api::io_contract::IoShapeConsumer,
         // 通用
         crate::api::server::ApiResponse,
         crate::api::server::HealthResponse,
@@ -322,6 +329,7 @@ mod tests {
             "/api/health/readiness",
             "/api/rules/validate",
             "/api/openapi.json",
+            "/api/io-contract",
             "/api/services",
             // ===== platform_auth_router =====
             "/api/platform/auth/bootstrap",
