@@ -1,8 +1,8 @@
-# EvoRule server 全链集成测试回归（O-432 方案 D：full-chain-tests 纳入常规回归）
+# EvoRule server 全链集成测试回归（装载防线整改方案 D：full-chain-tests 纳入常规回归）
 #
 # 背景：full-chain-tests 门控的三个跨仓 e2e（acceptance_full_chain / binding_e2e /
 # q12_data_asset_e2e）经 [[test]] required-features 门控（evorule-server/Cargo.toml），
-# 默认编译与 --all-features 均不参与，漂移窗口曾致 O-432（bundle 规则装载防线
+# 默认编译与 --all-features 均不参与，漂移窗口曾致 bundle 规则装载防线
 # 静默拒载数批未察觉）。本 workflow 显式启用门控收口。
 #
 # 说明：

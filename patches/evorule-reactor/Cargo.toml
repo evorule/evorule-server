@@ -9,7 +9,7 @@ repository = "https://gitee.com/evorule/evorule"
 homepage = "https://gitee.com/evorule/evorule"
 rust-version = "1.74"
 description = "Reactive fact-driven state transition engine with audit chain, time machine, and WAL"
-readme = "README.md"
+# readme 字段已随上游 crate README 移出公开仓（2026-10-13 公开面清洗批，正本见 knowledge 归档）
 documentation = "https://docs.rs/evorule-reactor"
 keywords = ["reactive", "audit", "rules-engine", "wal", "time-machine"]
 categories = ["asynchronous", "data-structures", "concurrency"]

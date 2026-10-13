@@ -71,9 +71,9 @@ pub(crate) fn seed_pass_sandbox(ws_db: &std::sync::Arc<evorule_workspace::Worksp
 
 /// 读取 server_eval.json 的 transform 数组并转为 TCB JsonValue（构造期宪法规则集）
 ///
-/// O-432 方案 C：`SessionApi::new_with_full_config` 首参传空 vec 会使导入期
+/// 装载防线整改方案 C：`SessionApi::new_with_full_config` 首参传空 vec 会使导入期
 /// 前置预判（predict_import_io_overlaps）的基线播种 zip 截断为空——预判无
-/// 权利面基线即 fail-open（登记 O-438）。构造传真实 core_eval 消除失明前提。
+/// 权利面基线即 fail-open（已登记整改）。构造传真实 core_eval 消除失明前提。
 ///
 /// 与 fault_recovery_test.rs 的 load_core_eval 同构（该文件直注评估集场景，
 /// 此处供 SessionApi 构造场景共用）。

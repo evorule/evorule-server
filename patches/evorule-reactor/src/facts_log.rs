@@ -2368,7 +2368,7 @@ mod tests {
     #[test]
     fn test_file_backend_via_trait_unchanged_roundtrip() {
         // 默认文件后端经 trait 对象分发,行为与直挂 WalWriter 一致(回归锁)
-        let path = temp_wal_path("reg026_file_trait");
+        let path = temp_wal_path("reg_file_trait_roundtrip");
         let log = FactsLog::with_wal(&path).unwrap();
         log.append(Fact::PayloadUpdate {
             id: FactId(1),

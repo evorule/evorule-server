@@ -191,8 +191,8 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi 
         .register(IoType::call_external(), svc_handler)
         .build();
     SessionApi::new_with_full_config(
-        // O-432 方案 C：构造传真实宪法（空 vec 会使导入期前置预判基线播种
-        // zip 截断为空 → io 重叠预判 fail-open，登记 O-438）
+        // 装载防线整改方案 C：构造传真实宪法（空 vec 会使导入期前置预判基线播种
+        // zip 截断为空 → io 重叠预判 fail-open，已登记整改）
         common::load_core_eval_transforms(&core_eval_path),
         100,
         None,
@@ -619,8 +619,8 @@ async fn acceptance_governance_to_execution_full_chain() {
     let bundle_json = serde_json::to_string(&bundle).unwrap();
     let bundle: evorule_rule::DatasetBundle = serde_json::from_str(&bundle_json).unwrap();
     let result = api.import_bundle(&bundle, false).await.unwrap();
-    // O-432 方案 B：防线透传回归锚——rejected_overlaps 非空 = bundle 规则被
-    // 装载防线静默剔除（O-432 根因②曾静默发生，此处显式断言不再无人消费）
+    // 装载防线整改方案 B：防线透传回归锚——rejected_overlaps 非空 = bundle 规则被
+    // 装载防线静默剔除（整改前曾静默发生，此处显式断言不再无人消费）
     assert!(
         result.rejected_overlaps.is_empty(),
         "import 装载防线不应拒载条目: {:?}",

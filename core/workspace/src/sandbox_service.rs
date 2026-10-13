@@ -800,7 +800,7 @@ mod tests {
         }
         async fn get_facts(&self, id: u64) -> WorkspaceResult<Vec<Value>> {
             // 模拟真实契约：fork 后未注入指令前事实链为空（探针依赖此语义），
-            // 指令注入后按 O-439 完整事实形态返回样例
+            // 指令注入后按沙盒报告判定整改确立的完整事实形态返回样例
             let has_commands = self
                 .commands_sent
                 .lock()

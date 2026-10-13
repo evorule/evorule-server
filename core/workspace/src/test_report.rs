@@ -126,7 +126,7 @@ fn is_case_group(command: Option<&serde_json::Value>) -> bool {
 
 /// 事实级失败判定：返回失败说明（None = 非失败事实）。
 ///
-/// 判定面（O-439 Failed 扩面）：
+/// 判定面（Failed 判定扩面整改）：
 /// - `Error`（TCB 错误/Ignored/max_rounds/队列溢出/超时）→ message；
 /// - `Violation`（enforce 强制拦截）→ reason；
 /// - 携带非空 error 的 `IoResponse`（下游 I/O 失败）→ error 文本。
@@ -250,7 +250,7 @@ impl TestReportBuilder {
 
     /// 构建测试报告 (计算统计 + BLAKE3 签名)
     ///
-    /// 判定语义（沙盒报告 P0 修复：判定归真，登记 O-439）：
+    /// 判定语义（沙盒报告 P0 修复：判定归真）：
     /// - **按 Command 事实边界归组**：一条用例指令在事实链上展开为多条事实
     ///   （Command + StateTransition/TransitionTrace/IoResponse/Error...），
     ///   1:1 转写会让 total_cases=事实条数且全部错位；
@@ -263,7 +263,7 @@ impl TestReportBuilder {
     ///   Violation 恒漏判，叠加 facts 形态错配实际恒 Passed）；
     /// - **启动噪声不静默**：噪声组中的失败事实转写为 TestAnomaly(warning) 留痕；
     /// - duration_ms/skipped 恒 0：真实执行度量属真用例执行模型专项
-    ///   （登记册 O-439 候选 b，未实施）。
+    ///   （候选改进项，未实施）。
     pub fn build(self) -> TestReport {
         let facts = self.facts.unwrap_or_default();
         let fact_count = facts.len();
