@@ -9,7 +9,7 @@
 //!   → 科学家建数据集(rule_engineer, org-b)
 //!   → LLM 草稿(历史批次 /llm/ops/draft_rule → mock evo-agent; 仅 Draft)
 //!   → 人工 gate two(条目 submit-candidate/approve + 数据集 lifecycle + 独立发布)
-//!   → 执行侧拉包直跑(快照包 → SessionApi import → call_service → echo 命中)
+//!   → 执行侧拉包直跑(快照包 → SessionApi import → 自有 io_type acc_echo_v1 → echo 命中)
 //!   → 审计回放(auth/lifecycle/llm 三审计链可追溯)
 //!   → 全程: 裁剪视图引用版本链(view_of) + 查询表达式(search/entries)
 //! ```
@@ -42,75 +42,61 @@ use evorule_workspace::SessionOps;
 /// 服务名（三层绑定对齐锚：治理声明 = 条目绑定 = 执行侧注册表键）
 const SVC: &str = "echo_svc_acc";
 
-/// 规则条目体（与 binding_e2e 同构的完整 rule_set 文档：call_service 触发/消费两分支）
+/// 规则条目体（与 binding_e2e 同构的完整 rule_set 文档：call_service 触发，
+/// 自有 io_type acc_echo_v1 消费——bundle 禁发射/消费平台保留 io_type。
+/// 发射+消费合并为**单条嵌套双路径规则**：装载防线 reject_overlapped_io_rules
+/// 对同一 io_type 的权利面独占、跨条目重叠 fail-closed 拒载，单条持有则合法）
 const RULE_BODY: &str = r#"{
     "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
     "kind": "rule_set",
     "id": "org.evorule.acc.e2e",
     "rule_id": "acc.e2e",
     "version": "0.1.0",
-    "description": "总验收规则 —— call_service 经 ServiceRegistry 路由到 echo_svc_acc，结果存入 payload.service_result",
+    "description": "总验收规则 —— call_service 触发后以自有 io_type acc_echo_v1 经 ServiceRegistry 路由到 echo_svc_acc，结果存入 payload.service_result（单条双路径：发射+消费同条持有 io 权利面）",
     "transform": [
         {
             "type": "branch",
             "params": {
-                "domain": {
-                    "type": "all",
-                    "inner": [
-                        { "type": "instruction", "instruction_type": "call_service" },
-                        {
-                            "type": "not",
-                            "inner": {
-                                "type": "exists",
-                                "path": "__exec__.payload.__io_results__.call_service"
-                            }
-                        }
-                    ]
-                },
+                "domain": { "type": "instruction", "instruction_type": "call_service" },
                 "on_true": [
                     {
-                        "type": "io_request",
+                        "type": "branch",
                         "params": {
-                            "io_type": "call_service",
-                            "service_name": "echo_svc_acc",
-                            "args": "__exec__.instruction.params.args"
+                            "domain": {
+                                "type": "exists",
+                                "path": "__exec__.payload.__io_results__.acc_echo_v1"
+                            },
+                            "on_true": [
+                                {
+                                    "type": "set",
+                                    "params": {
+                                        "attr": "service_result",
+                                        "operation": "set",
+                                        "value": "__exec__.payload.__io_results__.acc_echo_v1"
+                                    }
+                                },
+                                {
+                                    "type": "set",
+                                    "params": {
+                                        "attr": "__exec__.payload.__io_results__.acc_echo_v1",
+                                        "operation": "set",
+                                        "value": null
+                                    }
+                                },
+                                { "type": "push", "params": { "instructions": [{ "type": "noop" }] } }
+                            ],
+                            "on_false": [
+                                {
+                                    "type": "io_request",
+                                    "params": {
+                                        "io_type": "acc_echo_v1",
+                                        "service_name": "echo_svc_acc",
+                                        "args": "__exec__.instruction.params.args"
+                                    }
+                                }
+                            ]
                         }
                     }
-                ],
-                "on_false": []
-            }
-        },
-        {
-            "type": "branch",
-            "params": {
-                "domain": {
-                    "type": "all",
-                    "inner": [
-                        { "type": "instruction", "instruction_type": "call_service" },
-                        {
-                            "type": "exists",
-                            "path": "__exec__.payload.__io_results__.call_service"
-                        }
-                    ]
-                },
-                "on_true": [
-                    {
-                        "type": "set",
-                        "params": {
-                            "attr": "service_result",
-                            "operation": "set",
-                            "value": "__exec__.payload.__io_results__.call_service"
-                        }
-                    },
-                    {
-                        "type": "set",
-                        "params": {
-                            "attr": "__exec__.payload.__io_results__.call_service",
-                            "operation": "set",
-                            "value": null
-                        }
-                    },
-                    { "type": "push", "params": { "instructions": [{ "type": "noop" }] } }
                 ],
                 "on_false": []
             }
@@ -198,12 +184,16 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi 
     .unwrap();
     let http = Arc::new(HttpHandler::new_dev_allow_loopback());
     let svc_handler = Arc::new(ServiceRegistryHandler::new(registry.clone(), http));
+    // bundle 自有 io_type 注册（对应 RULE_BODY 的 io_request/`__io_results__` 引用；
+    // bundle 禁发射/消费平台保留 io_type，call_service 不对 bundle 通路开放）
     let dispatcher = evorule_governance::IoDispatcher::builder()
-        .register(IoType::call_service(), svc_handler.clone())
+        .register(IoType::new("acc_echo_v1"), svc_handler.clone())
         .register(IoType::call_external(), svc_handler)
         .build();
     SessionApi::new_with_full_config(
-        vec![],
+        // O-432 方案 C：构造传真实宪法（空 vec 会使导入期前置预判基线播种
+        // zip 截断为空 → io 重叠预判 fail-open，登记 O-438）
+        common::load_core_eval_transforms(&core_eval_path),
         100,
         None,
         false,
@@ -629,9 +619,20 @@ async fn acceptance_governance_to_execution_full_chain() {
     let bundle_json = serde_json::to_string(&bundle).unwrap();
     let bundle: evorule_rule::DatasetBundle = serde_json::from_str(&bundle_json).unwrap();
     let result = api.import_bundle(&bundle, false).await.unwrap();
+    // O-432 方案 B：防线透传回归锚——rejected_overlaps 非空 = bundle 规则被
+    // 装载防线静默剔除（O-432 根因②曾静默发生，此处显式断言不再无人消费）
+    assert!(
+        result.rejected_overlaps.is_empty(),
+        "import 装载防线不应拒载条目: {:?}",
+        result.rejected_overlaps
+    );
     assert_eq!(result.dataset_id, "ds-acc");
     assert_eq!(result.entry_count, 1);
     let session_id = api.create_session().await.unwrap();
+    // 会话主体声明：IoSubscriber 权限门 fail-closed（未声明 = Unknown = Deny，
+    // 自动分发的 IoRequest 被"permission denied"错误响应消费且不回写 payload）；
+    // 声明 human 走 default_policy.human = Allow，与生产声明流程同口径
+    api.declare_caller_role(session_id, "human").await.unwrap();
     api.send_command(
         session_id,
         json!({ "type": "call_service", "params": { "args": { "msg": "acceptance-ping" } } }),

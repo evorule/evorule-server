@@ -1,0 +1,48 @@
+# EvoRule server 全链集成测试回归（O-432 方案 D：full-chain-tests 纳入常规回归）
+#
+# 背景：full-chain-tests 门控的三个跨仓 e2e（acceptance_full_chain / binding_e2e /
+# q12_data_asset_e2e）经 [[test]] required-features 门控（evorule-server/Cargo.toml），
+# 默认编译与 --all-features 均不参与，漂移窗口曾致 O-432（bundle 规则装载防线
+# 静默拒载数批未察觉）。本 workflow 显式启用门控收口。
+#
+# 说明：
+# - evorule-rule 以 git 依赖锁定 rev（Cargo.toml），CI 独立 resolve，无需本地 patch
+# - echo/HTTP 后端均为测试进程自拉起的 127.0.0.1 loopback 服务，无外部依赖
+name: full-chain-tests
+
+on:
+  push:
+    branches: [main, master, "release/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# 显式最小权限（Scorecard Token-Permissions）：仅需只读
+permissions: read-all
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  full-chain:
+    name: full-chain e2e (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      # 构建缓存（workspace 根共享 target）
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: . -> target
+
+      # 门控三件套：命令在 crate 目录执行（required-features 归属 evorule-server 包）
+      - name: 全链集成测试（full-chain-tests 三件套）
+        working-directory: evorule-server
+        run: >
+          cargo test --features full-chain-tests
+          --test acceptance_full_chain
+          --test binding_e2e
+          --test q12_data_asset_e2e

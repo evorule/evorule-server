@@ -68,3 +68,53 @@ pub(crate) fn seed_pass_sandbox(ws_db: &std::sync::Arc<evorule_workspace::Worksp
     .unwrap();
     sid
 }
+
+/// 读取 server_eval.json 的 transform 数组并转为 TCB JsonValue（构造期宪法规则集）
+///
+/// O-432 方案 C：`SessionApi::new_with_full_config` 首参传空 vec 会使导入期
+/// 前置预判（predict_import_io_overlaps）的基线播种 zip 截断为空——预判无
+/// 权利面基线即 fail-open（登记 O-438）。构造传真实 core_eval 消除失明前提。
+///
+/// 与 fault_recovery_test.rs 的 load_core_eval 同构（该文件直注评估集场景，
+/// 此处供 SessionApi 构造场景共用）。
+pub(crate) fn load_core_eval_transforms(
+    core_eval_path: &std::path::Path,
+) -> Vec<evorule_tcb::JsonValue> {
+    let json_str = std::fs::read_to_string(core_eval_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", core_eval_path.display(), e));
+    let json: serde_json::Value =
+        serde_json::from_str(&json_str).expect("Failed to parse core_eval.json");
+    let transforms = json
+        .get("transform")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    transforms.into_iter().map(serde_to_tcb).collect()
+}
+
+/// serde_json::Value → evorule_tcb::JsonValue（递归同构转换）
+fn serde_to_tcb(v: serde_json::Value) -> evorule_tcb::JsonValue {
+    use evorule_tcb::JsonValue;
+    match v {
+        serde_json::Value::Null => JsonValue::Null,
+        serde_json::Value::Bool(b) => JsonValue::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                JsonValue::Integer(i)
+            } else {
+                JsonValue::String(n.to_string().into())
+            }
+        }
+        serde_json::Value::String(s) => JsonValue::String(s.into()),
+        serde_json::Value::Array(arr) => {
+            JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (k, val) in obj {
+                map.insert(k, serde_to_tcb(val));
+            }
+            JsonValue::Object(map)
+        }
+    }
+}
