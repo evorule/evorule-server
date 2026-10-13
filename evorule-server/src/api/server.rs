@@ -52,7 +52,7 @@ use evorule_reactor::{Fact, FactId, FactSender, FactsLog, IoType, TraceHit};
 use evorule_tcb::JsonValue;
 
 // 唯一装载通道（宪法收口）：生产/沙盒规则集装载一律经 core/rule_loader
-use evorule_rule_loader::{serde_to_tcb, LoadContext};
+use evorule_rule_loader::{serde_to_tcb, LoadContext, LoadSource};
 
 use evorule_workspace::api::WorkspaceState;
 
@@ -2454,6 +2454,7 @@ impl SessionApi {
 
     /// 加载路径的层级门禁包装：违规 warn + 拒载（fail-soft，与 schema 门禁同策略，
     /// 保证热重载可用性）。静默判定见 [`Self::tier_gate_reason`]。
+    #[cfg(test)]
     fn passes_tier_gate(
         p: &std::path::Path,
         rules_dir: &std::path::Path,
@@ -2498,12 +2499,15 @@ impl SessionApi {
     // extract_transform_array / passes_schema_gate / passes_discipline_gate（无 _with 桥）/
     // check_discipline_for_core_eval（无 _with 桥）已随装载收口删除：
     // 四步装载（schema 校验→剥壳→三门→provenance）统一走 evorule_rule_loader::
-    // load_rule_set；_with 变体（discipline 模式注入）保留供测试。
+    // load_rule_set。剩余 discipline/tier 门禁面仅测试用 → #[cfg(test)]，
+    // 生产二进制零残留（模式单一事实源已随 LoadContext::discipline_enforce 迁入
+    // rule_loader：env EVORULE_DISCIPLINE_GATE）。
 
     /// L2 纪律门禁模式开关：env `EVORULE_DISCIPLINE_GATE`。
     /// - `enforce`（大小写不敏感）= 违规拒载（业务文件 fail-soft / 宪法 fail-fast）；
     /// - 其余值（含缺省）= warn 纯观测（W1：只记结构化日志，照常装载）；
     /// - 非法值 = 按 warn 处理 + 告警日志（fail-open，门禁配置错误不放大为可用性事故）。
+    #[cfg(test)]
     fn discipline_gate_enforce() -> bool {
         match std::env::var("EVORULE_DISCIPLINE_GATE") {
             Ok(v) if v.eq_ignore_ascii_case("enforce") => true,
@@ -2521,6 +2525,7 @@ impl SessionApi {
     }
 
     /// 门禁模式横幅（每进程一次）：让运维在启动日志直接看到当前模式与切换方式
+    #[cfg(test)]
     fn discipline_gate_banner() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
@@ -2553,6 +2558,7 @@ impl SessionApi {
     ///
     /// 影子强制：日志级别 warn→error——违规不再淹没在日常 warn 噪音里，
     /// 「若 enforce 将拒载」必须大到不可忽视；文件照常装载（行动面不变）。
+    #[cfg(test)]
     fn log_discipline_violations(
         p: &std::path::Path,
         violations: &[evorule_discipline::Violation],
@@ -2583,6 +2589,7 @@ impl SessionApi {
     ///   一键降级 = env 切回 warn，无需发版；
     /// - 门禁自身求值失败：warn 期 fail-open（不拦装载），enforce 期 fail-closed
     ///   （「校验层缺位即不通过」）。
+    #[cfg(test)]
     fn passes_discipline_gate_with(
         p: &std::path::Path,
         arr: &[serde_json::Value],
@@ -2620,24 +2627,15 @@ impl SessionApi {
         }
     }
 
-    /// 纪律门禁（按 env 模式；测试用 `passes_discipline_gate_with` 注入模式）。
-    /// 生产调用面已随装载收口迁至 rule_loader（discipline_enforce 位随 LoadContext）；
-    /// 此桥保留仅供 tier_inventory 等零星面复用。
-    fn passes_discipline_gate(p: &std::path::Path, arr: &[serde_json::Value]) -> bool {
-        Self::passes_discipline_gate_with(p, arr, Self::discipline_gate_enforce())
-    }
+    /// 非 _with 桥（passes_discipline_gate / check_discipline_for_core_eval）已删：
+    /// 零星面（tier_inventory / 宪法 reload）直接调 _with 并显式传模式
+    /// （模式单一事实源 = `discipline_gate_enforce()`）。
 
     /// 宪法文件的纪律门禁（接线点②，宪法 loader）：
     /// 宪法走独立 loader、此前零门禁，补 L2 纪律门禁。enforce 期违规 = Err 拒启
     /// （fail-fast，与本 loader 既有的 call_external 校验同款）；warn 期仅告警。
-    /// 生产调用面已随装载收口迁至 rule_loader；此桥保留供宪法 reload 面复用。
-    fn check_discipline_for_core_eval(
-        p: &std::path::Path,
-        tcb: &[JsonValue],
-    ) -> Result<(), String> {
-        Self::check_discipline_for_core_eval_with(p, tcb, Self::discipline_gate_enforce())
-    }
-
+    /// 生产调用面已随装载收口迁至 rule_loader；_with 变体保留供测试面复用。
+    #[cfg(test)]
     fn check_discipline_for_core_eval_with(
         p: &std::path::Path,
         tcb: &[JsonValue],
