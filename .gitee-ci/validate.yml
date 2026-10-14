@@ -64,6 +64,9 @@ test:
   image: rust:1.97.1-slim
   script:
     - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
+    # 宪法仓检出：conformance 环测试（[CON-R-005]）跨仓依赖，测试内按
+    # 兄弟目录 <cwd>/evorule-system-rules 定位，缺源 fail-fast。
+    - git clone --depth 1 https://gitee.com/evorule/evorule-system-rules.git evorule-system-rules
     - cargo test --workspace --all-features
   rules:
     - changes:

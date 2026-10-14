@@ -174,6 +174,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 宪法仓检出：conformance 环测试（[CON-R-005]）跨仓依赖，测试内按
+      # 兄弟目录 <workspace>/evorule-system-rules 定位，缺源 fail-fast。
+      - name: Checkout evorule-system-rules (constitution repo)
+        uses: actions/checkout@v4
+        with:
+          repository: evorule/evorule-system-rules
+          ref: main
+          path: evorule-system-rules
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

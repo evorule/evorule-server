@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # validate-all.ps1
 # One-shot runner for all VERSION_STRATEGY validation scripts
 #
@@ -12,11 +12,14 @@
 #   2. 打 tag:  git tag v0.1.1
 #   3. 发布后:  pwsh scripts/validate-all.ps1               (tag 存在且与版本一致)
 #
-# 包含 8 项检查:
+# 包含 10 项检查:
 #   0. 门禁绕过检测 (EVORULE_SKIP_GATE 环境变量)
 #   1-5. validate-version / validate-changelog / validate-license / validate-cargolock / validate-release
 #   6. check_doc_safety.py (文档安全 + 交叉引用完整性 + 基调合规)
 #   7. check_schema_sync.py (内嵌 Schema 与 evorule-system-rules 源仓一致性)
+#   8. scan_constitution_parity.py (宪法语义手写提取禁令)
+#   9. conformance 环测试 (金样例装载档, 宪法仓兄弟目录在时执行)
+#   10. check_k6_metrics.ps1 (K6 双指标: 金样例覆盖率 + 报错向导覆盖率)
 
 [CmdletBinding()]
 param(
@@ -106,12 +109,48 @@ if ($LASTEXITCODE -ne 0) {
     $failed += 'scan_constitution_parity'
 }
 
+# === 9. conformance 环测试 ([CON-R-005]/[CON-L4-003]) ===
+# 金样例装载档合法集全过/非法集全拒（真装载路径闭环件）。
+# 宪法仓兄弟目录在时执行，不在时 [SKIP]（CI 侧由显式 checkout/clone 保证在场）。
+Write-Host "`n>>> [conformance] <<<" -ForegroundColor Magenta
+$rulesCandidate = Join-Path (Split-Path -Parent $repoRoot) "evorule-system-rules"
+$rulesAnchor = Join-Path (Join-Path $rulesCandidate "schemas") (Join-Path "rule_set" "v1.0.json")
+if (-not (Test-Path $rulesAnchor)) {
+    if ($env:EVORULE_RULES_SRC -and (Test-Path (Join-Path (Join-Path $env:EVORULE_RULES_SRC "schemas") (Join-Path "rule_set" "v1.0.json")))) {
+        $rulesCandidate = $env:EVORULE_RULES_SRC
+        $rulesAnchor = Join-Path (Join-Path $rulesCandidate "schemas") (Join-Path "rule_set" "v1.0.json")
+    }
+}
+if (Test-Path $rulesAnchor) {
+    Push-Location $repoRoot
+    try {
+        & cargo test -p evorule-rule-loader --test conformance
+        if ($LASTEXITCODE -ne 0) { $failed += 'conformance' }
+    } finally {
+        Pop-Location
+    }
+} else {
+    Write-Host "[SKIP] 宪法仓不可得($rulesCandidate)，跳过 conformance 环测试（CI 由 checkout 保证在场）" -ForegroundColor DarkGray
+}
+
+# === 10. K6 双指标 ([CON-K6-001]/[CON-L4-004]) ===
+# 金样例覆盖率 + 报错向导覆盖率（四段式模板测试），任一退化=红灯
+Write-Host "`n>>> [k6-metrics] <<<" -ForegroundColor Magenta
+if (Test-Path $rulesAnchor) {
+    & pwsh -NoProfile -File (Join-Path $repoRoot "scripts\check_k6_metrics.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        $failed += 'k6-metrics'
+    }
+} else {
+    Write-Host "[SKIP] 宪法仓不可得，跳过 K6 双指标（CI 由 checkout 保证在场）" -ForegroundColor DarkGray
+}
+
 # === SUMMARY ===
 Write-Host "`n=========== SUMMARY ===========" -ForegroundColor Cyan
-$totalChecks = 1 + $scripts.Count + 3  # gate-bypass + 5 scripts + doc-safety + schema-sync + constitution-parity
+$totalChecks = 1 + $scripts.Count + 5  # gate-bypass + 5 scripts + doc-safety + schema-sync + constitution-parity + conformance + k6-metrics
 if ($failed.Count -gt 0) {
     Write-Host "FAILED: $($failed -join ', ')" -ForegroundColor Red
     exit 1
 }
-Write-Host "ALL $totalChecks CHECKS PASSED (gate-bypass + 5 validate scripts + doc-safety + schema-sync + constitution-parity)" -ForegroundColor Green
+Write-Host "ALL $totalChecks CHECKS PASSED (gate-bypass + 5 validate scripts + doc-safety + schema-sync + constitution-parity + conformance + k6-metrics)" -ForegroundColor Green
 exit 0
