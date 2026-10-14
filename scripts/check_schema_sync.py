@@ -48,11 +48,18 @@ PAIRS = [
 ]
 
 
-def sha256(path: Path) -> str:
+def sha256_normalized(path: Path) -> str:
+    """[CON-R-007] 行尾归一化哈希：比较前将 CRLF 统一为 LF。
+
+    已实证 CRLF 假阳性（22 号档 §11.1/O-462）：源仓由 .gitattributes 强制
+    LF，但检出侧工作树可能因编辑器/工具引入 CRLF——裸字节哈希会把纯行尾
+    差异误报为内容漂移（狼来了报警训练人忽略报警）。内容语义以归一化后
+    字节为准；真实内容漂移（含行内 \r 字符）仍会被抓住。
+    """
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
+            h.update(chunk.replace(b"\r\n", b"\n"))
     return h.hexdigest()
 
 
@@ -96,10 +103,10 @@ def main() -> int:
             print(f"[ERROR] 源仓缺少 {src_rel}: {src}", file=sys.stderr)
             return 2
         if not dst.exists():
-            results.append({"file": src_rel, "status": "missing", "src_sha": sha256(src), "dst_sha": None})
+            results.append({"file": src_rel, "status": "missing", "src_sha": sha256_normalized(src), "dst_sha": None})
             all_ok = False
             continue
-        s1, s2 = sha256(src), sha256(dst)
+        s1, s2 = sha256_normalized(src), sha256_normalized(dst)
         if s1 != s2:
             results.append({"file": src_rel, "status": "drift", "src_sha": s1, "dst_sha": s2})
             all_ok = False
