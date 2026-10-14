@@ -30,6 +30,40 @@
 //!   级留痕观察（威胁建模 §十一 D-3 拍板：其余违规不升熔断级）；
 //! - 跳过谓词命中的 IoRequest（外部执行者应答）不经本闸（v1 边界，随误伤
 //!   数据细化）。
+//!
+//! # 部署实测要点（SG-3 端到端实测方法论，2026-10-14 实测沉淀）
+//!
+//! 熔断面端到端实测需要真实 IoRequest 流经静态层 deny 闸，以下为实测
+//! 路径与坑位（部署资产均为 gitignore 管辖，改测试态无 git 污染）：
+//!
+//! 1. **IoRequest 触发指令必须用 `call_service`，不能用 `http_get`**：
+//!    `http_get`/`query_db`/`save_memory` 已非内置指令类型（宪法
+//!    `server_eval.json` 头注），裸 `{"type":"io"}` 或 `{"type":"http_get"}`
+//!    提交只会得到 `Instruction ignored by TCB`（宪法无规则匹配）。
+//!    正确形态：`{"type":"call_service","params":{"service_name":"probe",
+//!    "args":{}}}`（或带 `tool_name`），经宪法 branch → `io_request`
+//!    元指令产生 `io_type=call_service` 的 IoRequest；
+//! 2. **路由资产须临时切测试态**：部署资产 `rules_dir/
+//!    00_constraint_route_policy.json` 缺省 `rules:[]` 零 deny（熔断永远
+//!    不触发）——实测前加入形如 `{"caller_role":"llm","io_type":
+//!    "call_service","target":"*","decision":"deny"}` 的规则，会话经
+//!    `POST /api/sessions` body `{"caller_role":"llm"}` 声明角色；
+//! 3. **改资产后必须重启**：`rules_dir` 合并装载发生在**启动/重载时**，
+//!    非每会话读盘（路由策略另有 OnceLock 进程缓存，同样不热更）；
+//!    启动须带工作目录 `D:\evorule-server`（宪法相对路径
+//!    `./resources/server_eval.json`）；
+//! 4. **连发与观察**：连发 call_service 至阈值（缺省 5），deny 不中断会话
+//!    （version 照常推进，IoResponse error 回写）；取证经
+//!    `GET /api/sessions/{id}/replay`——跳闸应有 `Violation(rule_index=18,
+//!    cause=10000 段)` + 信号 value（family/threshold/window_secs/count）+
+//!    `circuit=tripped` 全拒 IoResponse；
+//! 5. **复位验证**：缺省窗口 300s 太久，实测重启时以
+//!    `EVORULE_CIRCUIT_WINDOW_SECS=20` 缩短（部署 env 接缝，见 server 侧
+//!    route_policy_loader）；窗口过期后新请求应恢复普通 deny（error 串无
+//!    `tripped` 段）；
+//! 6. **实测后必须还原**：路由资产还原净形态 + 不带 env 净态重启，并以
+//!    A3 探针（`set meta_security.circuit_breaker` 信号 → 期待 `version=0`
+//!    拒链）确认 enforce 三锚仍在装载位。
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
