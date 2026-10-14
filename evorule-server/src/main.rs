@@ -54,6 +54,8 @@ use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
 use evorule_template_services::NATIVE_SERVICES as TEMPLATE_NATIVE_SERVICES;
+use evorule_browser_services::NATIVE_SERVICES as BROWSER_NATIVE_SERVICES;
+use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
@@ -713,6 +715,14 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "template-services",
         defs: TEMPLATE_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "browser-services",
+        defs: BROWSER_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "inference-services",
+        defs: INFERENCE_NATIVE_SERVICES,
     },
 ];
 

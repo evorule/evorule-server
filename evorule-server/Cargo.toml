@@ -69,6 +69,10 @@ evorule-indicator-services = { path = "../plugins/indicator-services" }
 #   REST /api/templates/render 与 NativeService template_render 共用本 crate 引擎 SSOT）
 evorule-template-services = { path = "../plugins/template-services" }
 
+# 浏览器操作能力原生插件（第五个进程内插件,zendriver-rs 驱动本机 Edge;
+#   evo-agent P0.5 操作能力面,ALE 解题用）
+evorule-browser-services = { path = "../plugins/browser-services" }
+
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，
 #  路由经服务注册表 HTTP 回落，进程独立/数据自持）

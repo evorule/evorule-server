@@ -1,0 +1,9 @@
+{
+  "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/inference-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 inference-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+  "version": 1,
+  "services": [
+    { "name": "inference_dimension_from_unit", "sensitive": false, "description": "SI 单位字符串解析为七分量量纲向量([L,M,T,I,Θ,N,J],确定性)" },
+    { "name": "inference_dimension_compare_units", "sensitive": false, "description": "两 SI 单位量纲等价性比较(七分量向量逐位相等判定,确定性)" },
+    { "name": "inference_dimension_verify_formula", "sensitive": false, "description": "物理公式量纲一致性验证(已知变量量纲推导四则与幂表达式,确定性)" }
+  ]
+}
