@@ -2513,25 +2513,17 @@ impl SessionApi {
     // 生产二进制零残留（模式单一事实源已随 LoadContext::discipline_enforce 迁入
     // rule_loader：env EVORULE_DISCIPLINE_GATE）。
 
-    /// L2 纪律门禁模式开关：env `EVORULE_DISCIPLINE_GATE`。
+    /// L2 纪律门禁模式开关：env `EVORULE_DISCIPLINE_GATE`（判定 SSOT =
+    /// evorule_rule_loader::discipline_enforce_from，R7 fail-closed 对齐）。
     /// - `enforce`（大小写不敏感）= 违规拒载（业务文件 fail-soft / 宪法 fail-fast）；
-    /// - 其余值（含缺省）= warn 纯观测（W1：只记结构化日志，照常装载）；
-    /// - 非法值 = 按 warn 处理 + 告警日志（fail-open，门禁配置错误不放大为可用性事故）。
+    /// - 缺省/空串/`warn` = warn 纯观测（W1 豁免期，复审期 2026-10-21）；
+    /// - 非法值 = panic 拒载（fail-closed，[CON-L2-004]/SR-13-R7：门禁配置错误
+    ///   不得静默降级为观测态）。
     #[cfg(test)]
     fn discipline_gate_enforce() -> bool {
-        match std::env::var("EVORULE_DISCIPLINE_GATE") {
-            Ok(v) if v.eq_ignore_ascii_case("enforce") => true,
-            Ok(v) if v.eq_ignore_ascii_case("warn") || v.is_empty() => false,
-            Ok(other) => {
-                tracing::warn!(
-                    target: "discipline_gate",
-                    value = %other,
-                    "EVORULE_DISCIPLINE_GATE 非法值，按 warn（纯观测）处理"
-                );
-                false
-            }
-            Err(_) => false,
-        }
+        evorule_rule_loader::discipline_enforce_from(
+            std::env::var("EVORULE_DISCIPLINE_GATE").ok().as_deref(),
+        )
     }
 
     /// 门禁模式横幅（每进程一次）：让运维在启动日志直接看到当前模式与切换方式
