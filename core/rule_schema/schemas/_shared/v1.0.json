@@ -723,6 +723,26 @@
           "const": true
         }
       }
+    },
+    "exec_context": {
+      "title": "exec_context",
+      "description": "__exec__ 三层语义契约（[CON-X-004]，文档性 $def——TCB 权威实现在evorule-tcb transition 层，本 def 为规则作者可查的正本）。层义：instruction=当步指令本体（case 数据随指令走此层：注入的测试用例facts/params/元数据全在 __exec__.instruction.*）；payload=父会话状态快照（当步求值时刻的父会话镜像——判卷读它会拿到陈旧/无关数据，A2 层错位根源）；queue=待执行指令队列。规则模板纪律：判卷/取用例数据一律读 __exec__.instruction.facts.*（或 .params.*），禁止读 __exec__.payload.facts.*。版本注记：v1.0 容器内新增文档性 $def（向前兼容，不升容器 $id；[CON-G-003] 语义扩展）。",
+      "x-contract-marker": true,
+      "type": "object",
+      "properties": {
+        "instruction": {
+          "type": "object",
+          "description": "当步指令本体（含 case facts/params；判卷数据源）"
+        },
+        "payload": {
+          "type": "object",
+          "description": "父会话状态快照（非当步数据源；判卷读此层=层错位）"
+        },
+        "queue": {
+          "type": "object",
+          "description": "待执行指令队列"
+        }
+      }
     }
   }
 }
