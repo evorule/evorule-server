@@ -1393,7 +1393,78 @@ impl SessionApi {
 
         rules_dir: &std::path::Path,
     ) -> Result<MergedLoadOutcome, String> {
-        let constitution = Self::load_core_eval_transforms(core_eval_path)?;
+        // ── 宪法件读取+装载收口（single constitution load path）──
+        // [CON-S-006] 旧壳名已退役（仓内零命中）：读文件→解析→
+        // schema 校验→剥壳→三门→provenance 四步直调 evorule_rule_loader 唯一通道，
+        // 与其他所有装载面同源。
+        let tcb_raw = match std::fs::read_to_string(core_eval_path) {
+            Ok(s) => s,
+            Err(e) => {
+                // 兼容检测（拒绝静默回退）:v0.4.1 起 server 份宪法业务规则集由
+                // core_eval.json 更名为 server_eval.json。检测到"新名缺失但旧名存在"时,
+                // 显式给出迁移指引而非自动回退读旧名——遵循"系统自愈 + 用户可见"原则。
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    let legacy = core_eval_path.with_file_name("core_eval.json");
+                    if core_eval_path.file_name().and_then(|n| n.to_str())
+                        == Some("server_eval.json")
+                        && legacy.exists()
+                    {
+                        return Err(format!(
+                            "宪法文件 {} 不存在,但同目录检测到旧名 {} — v0.4.1 起 server 份宪法\
+                             业务规则集已更名为 server_eval.json(,与 evorule 仓宪法原则区分)。\
+                             迁移指引: ①将旧文件重命名为 server_eval.json;或 ②以 --core-eval / \
+                             EVORULE_CORE_EVAL / 配置文件 paths.core_eval 显式指定旧路径",
+                            core_eval_path.display(),
+                            legacy.display()
+                        ));
+                    }
+                }
+                return Err(format!(
+                    "读取宪法文件失败 {}: {}",
+                    core_eval_path.display(),
+                    e
+                ));
+            }
+        };
+        let tcb_json: serde_json::Value = serde_json::from_str(&tcb_raw)
+            .map_err(|e| format!("解析宪法文件失败: {}", e))?;
+        let ctx = LoadContext::constitution(&core_eval_path.display().to_string());
+        let loaded = evorule_rule_loader::load_rule_set(&tcb_json, &ctx).map_err(|e| {
+            format!(
+                "宪法文件 {} 装载门禁未过: {}",
+                core_eval_path.display(),
+                e
+            )
+        })?;
+        let constitution = loaded.engine_rules;
+
+        // 修复(2026-09-01): call_external 指令规则是 LLM 审计桥的平台契约。
+        // 会话反应器的 IoRequest 完全由宪法规则驱动;若宪法缺该规则,LLM 审计桥命令会被
+        // all([]) 兜底规则静默 no-op(无 IoRequest、无 Error 事实),违反"拒绝静默通过"原则。
+        // 因此启动期 fail-fast 校验,并给出可自诊断的修复指引。
+        // （transform 数组空态由 rule_loader minItems=1 门拒绝，此处不再重复检查。）
+        let has_call_external = constitution.iter().any(|r| {
+            r.get("params")
+                .and_then(|p| p.get("domain"))
+                .and_then(|d| {
+                    d.get("type").and_then(|t| t.as_str()).map(|t| {
+                        t == "instruction"
+                            && d.get("instruction_type")
+                                .and_then(|it| it.as_str())
+                                .is_some_and(|it| it == "call_external")
+                    })
+                })
+                .unwrap_or(false)
+        });
+        if !has_call_external {
+            return Err(format!(
+                "宪法文件 {} 缺少 call_external 指令规则 — LLM 审计桥将静默失效,拒绝启动。\
+                 自诊断指引: ①检查该文件 transform 数组中是否存在 params.domain.instruction_type == \"call_external\" 的规则;\
+                 ②v0.4.0 最小评估集不含该规则(ReAct 剧本迁出决策),需升级至 v0.4.1+ 或从源仓权威宪法同步;\
+                 ③若为自定义宪法,请补入该规则或改用 --core-eval 指向完整宪法",
+                core_eval_path.display()
+            ));
+        }
 
         let constitution_len = constitution.len();
 
@@ -1944,96 +2015,6 @@ impl SessionApi {
         );
     }
 
-    /// 加载 TCB 宪法 core_eval.json 的 transform 数组。
-    ///
-    ///
-    /// 要求文件存在、可解析、`transform` 字段非空，任一不满足返回 Err。
-    ///
-    fn load_core_eval_transforms(
-        core_eval_path: &std::path::Path,
-    ) -> Result<Vec<JsonValue>, String> {
-        let tcb_raw = match std::fs::read_to_string(core_eval_path) {
-            Ok(s) => s,
-            Err(e) => {
-                // 兼容检测（拒绝静默回退）:v0.4.1 起 server 份宪法业务规则集由
-                // core_eval.json 更名为 server_eval.json。检测到"新名缺失但旧名存在"时,
-                // 显式给出迁移指引而非自动回退读旧名——遵循"系统自愈 + 用户可见"原则。
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    let legacy = core_eval_path.with_file_name("core_eval.json");
-                    if core_eval_path.file_name().and_then(|n| n.to_str())
-                        == Some("server_eval.json")
-                        && legacy.exists()
-                    {
-                        return Err(format!(
-                            "宪法文件 {} 不存在,但同目录检测到旧名 {} — v0.4.1 起 server 份宪法\
-                             业务规则集已更名为 server_eval.json(,与 evorule 仓宪法原则区分)。\
-                             迁移指引: ①将旧文件重命名为 server_eval.json;或 ②以 --core-eval / \
-                             EVORULE_CORE_EVAL / 配置文件 paths.core_eval 显式指定旧路径",
-                            core_eval_path.display(),
-                            legacy.display()
-                        ));
-                    }
-                }
-                return Err(format!(
-                    "读取宪法文件失败 {}: {}",
-                    core_eval_path.display(),
-                    e
-                ));
-            }
-        };
-
-        let tcb_json: serde_json::Value =
-            serde_json::from_str(&tcb_raw).map_err(|e| format!("解析宪法文件失败: {}", e))?;
-
-        // 宪法装载收口（single constitution load path）：schema 校验→剥壳→三门→
-        // provenance 四步经 evorule_rule_loader 唯一通道，与其他所有装载面同源。
-        let ctx = LoadContext::constitution(&core_eval_path.display().to_string());
-        let loaded = evorule_rule_loader::load_rule_set(&tcb_json, &ctx).map_err(|e| {
-            format!(
-                "宪法文件 {} 装载门禁未过: {}",
-                core_eval_path.display(),
-                e
-            )
-        })?;
-        let tcb = loaded.engine_rules;
-
-        if tcb.is_empty() {
-            return Err(format!(
-                "宪法文件 {} 的 transform 数组为空",
-                core_eval_path.display()
-            ));
-        }
-
-        // 修复(2026-09-01): call_external 指令规则是 LLM 审计桥的平台契约。
-        // 会话反应器的 IoRequest 完全由宪法规则驱动;若宪法缺该规则,LLM 审计桥命令会被
-        // all([]) 兜底规则静默 no-op(无 IoRequest、无 Error 事实),违反"拒绝静默通过"原则。
-        // 因此启动期 fail-fast 校验,并给出可自诊断的修复指引。
-        let has_call_external = tcb.iter().any(|r| {
-            r.get("params")
-                .and_then(|p| p.get("domain"))
-                .and_then(|d| {
-                    d.get("type").and_then(|t| t.as_str()).map(|t| {
-                        t == "instruction"
-                            && d.get("instruction_type")
-                                .and_then(|it| it.as_str())
-                                .is_some_and(|it| it == "call_external")
-                    })
-                })
-                .unwrap_or(false)
-        });
-        if !has_call_external {
-            return Err(format!(
-                "宪法文件 {} 缺少 call_external 指令规则 — LLM 审计桥将静默失效,拒绝启动。\
-                 自诊断指引: ①检查该文件 transform 数组中是否存在 params.domain.instruction_type == \"call_external\" 的规则;\
-                 ②v0.4.0 最小评估集不含该规则(ReAct 剧本迁出决策),需升级至 v0.4.1+ 或从源仓权威宪法同步;\
-                 ③若为自定义宪法,请补入该规则或改用 --core-eval 指向完整宪法",
-                core_eval_path.display()
-            ));
-        }
-
-        Ok(tcb)
-    }
-
     /// 扫描业务规则目录（递归，含 `rules/bundles/{bundle_id}/` 子目录，T3），按注入序
     /// 治理排序加载所有 *.json 的 transform 数组（排除 `bundle_manifest.json`）：
     /// 晋升约束（`00_constraint_promoted_` 前缀 + `metadata.promoted_at`）按晋升时间
@@ -2496,7 +2477,7 @@ impl SessionApi {
         }
     }
 
-    // extract_transform_array / passes_schema_gate / passes_discipline_gate（无 _with 桥）/
+    // 旧手写提取桥（transform 数组直取/schema 判型/discipline 判型，无 _with 桥）/
     // check_discipline_for_core_eval（无 _with 桥）已随装载收口删除：
     // 四步装载（schema 校验→剥壳→三门→provenance）统一走 evorule_rule_loader::
     // load_rule_set。剩余 discipline/tier 门禁面仅测试用 → #[cfg(test)]，

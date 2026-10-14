@@ -340,7 +340,7 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: Option<&str>) -> Ses
     SessionApi::new_with_full_config(
         // 装载防线整改方案 C：构造传真实宪法（空 vec 会使导入期前置预判基线播种
         // zip 截断为空 → io 重叠预判 fail-open，已登记整改）
-        common::load_core_eval_transforms(&core_eval_path),
+        common::load_constitution_transforms(&core_eval_path),
         100,
         None,
         false,

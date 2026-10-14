@@ -77,7 +77,7 @@ pub(crate) fn seed_pass_sandbox(ws_db: &std::sync::Arc<evorule_workspace::Worksp
 ///
 /// 与 fault_recovery_test.rs 的 load_core_eval 同构（该文件直注评估集场景，
 /// 此处供 SessionApi 构造场景共用）。
-pub(crate) fn load_core_eval_transforms(
+pub(crate) fn load_constitution_transforms(
     core_eval_path: &std::path::Path,
 ) -> Vec<evorule_tcb::JsonValue> {
     let json_str = std::fs::read_to_string(core_eval_path)
