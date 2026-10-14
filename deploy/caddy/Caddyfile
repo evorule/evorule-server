@@ -1,0 +1,65 @@
+# evorule-server 生产反代配方（安全路由与网关 SG-4 商品面基线批）
+#
+# 用法：部署侧将 <域名> 替换为实际域名后 `caddy run --config Caddyfile`。
+# 拓扑约定：evorule-server 绑定 127.0.0.1:18080（禁止 0.0.0.0 裸用），
+# 本反代是唯一对外暴露面（自动 HTTPS）；全部组件 loopback 互连。
+# 完整部署基线见 docs/deploy-baseline.md（照配验收清单在 §8）。
+
+{
+	# 关闭 Caddy 管理端点（默认监听 localhost:2019，生产不需要）
+	admin off
+
+	# 证书自动续期由 Caddy 内建；如部署在无公网 80/443 环境需改用 DNS challenge，
+	# 见 README.md「证书签发」节
+}
+
+# 生产站点：替换为实际域名（自动 HTTPS，需 80/443 公网可达）
+https://<域名> {
+	# 访问日志（部署侧可按需改输出目标；字段含客户端 IP/路径/状态码/耗时）
+	log {
+		output file ./logs/caddy-access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+	}
+
+	# 安全响应头
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# 移除暴露后端指纹的头
+		-Server
+	}
+
+	# 反代至 evorule-server（唯一必经点；Caddy 层不解析 evorule 语义）
+	reverse_proxy 127.0.0.1:18080 {
+		# SSE 流式端点（/api/sessions/{id}/events 等）即时冲刷，禁缓冲
+		flush_interval -1
+
+		# 上游健康检查（失败自动摘除）
+		health_uri /api/health
+		health_interval 10s
+		health_timeout 5s
+	}
+
+	# 限流（可选增强）：Caddy 核心无内置限流模块，需 xcaddy 构建 rate_limit 插件，
+	# 构建步骤见 README.md。未启用时限流执法主面＝server 内建 200 req/s（缺省）。
+	# 启用示例（插件就绪后取消注释并按需调整）：
+	# rate_limit {
+	# 	zone dynamic_zone {
+	# 		match {
+	# 			path /api/*
+	# 		}
+	# 		key {remote_host}
+	# 		events 100
+	# 		window 1s
+	# 	}
+	# }
+}
+
+# HTTP→HTTPS 跳转（自动 HTTPS 已内建；此处显式声明 ACME 挑战放行）
+http://<域名> {
+	redir https://{host}{uri} permanent
+}

@@ -1,0 +1,44 @@
+# evorule-server 本机验证配方（安全路由与网关 SG-4 商品面基线批）
+#
+# 用途：本机照配部署验证（J-SG4 负向实测同款形态）——自签证书、全 loopback，
+# 不对外暴露、不污染现网端口。生产配方见 Caddyfile。
+#
+# 前置：被代理的 evorule-server 实例须按部署基线以认证模式启动，例如：
+#   evorule-server.exe --addr 127.0.0.1:28080 --auth-token <token> \
+#     --core-eval ./resources/server_eval.json --rules-dir <rules 目录>
+# 启动：caddy run --config Caddyfile.dev
+# 验证：curl -k https://127.0.0.1:28443/api/health -H "Authorization: Bearer <token>"
+
+{
+	# 本机验证无需管理端点
+	admin off
+	# 自签证书由 tls internal 的本地 CA 签发（CA 根证书缺省落用户目录，
+	# 信任该根后浏览器/curl 可免 -k；导入：Get-ChildItem Cert:\CurrentUser\Root 配合
+	# $env:USERPROFILE\AppData\Roaming\Caddy\pki\authorities\local\root.crt）
+}
+
+# 本机验证站点：仅绑 loopback，自签证书（tls internal）
+https://127.0.0.1:28443 {
+	# 站点地址中的 host 不限定绑定接口，显式 bind 收敛到 loopback
+	bind 127.0.0.1
+
+	log {
+		output file ./logs/caddy-dev-access.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+	}
+
+	header {
+		X-Content-Type-Options "nosniff"
+		# 自签环境不发 HSTS（避免污染本机浏览器对该 host 的强制策略）
+	}
+
+	reverse_proxy 127.0.0.1:28080 {
+		# SSE 流式端点即时冲刷
+		flush_interval -1
+		health_uri /api/health
+		health_interval 10s
+		health_timeout 5s
+	}
+}
