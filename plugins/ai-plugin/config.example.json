@@ -6,5 +6,9 @@
   "llm_api_key": "",
   "llm_model": "MiniMax-Text-01",
   "llm_temperature": 0.2,
-  "llm_timeout_ms": 60000
+  "llm_timeout_ms": 60000,
+  "_llm_execute_url_说明": "SG-1 件1 扩展型执行体（POST /llm/execute）：provider 全 URL 形态（不做 /chat/completions 拼接）；不填 = 扩展执行体未就绪，既有 ai_plugin_chat 通道不受影响",
+  "llm_execute_url": "https://api.minimaxi.com/v1/text/chatcompletion_v2",
+  "_model_allowlist_path_说明": "llm_execute_url 配置后必填（fail-closed 执法面）：模型准入白名单物料 00_constraint_model_allowlist.json 的 server 侧副本路径；缺失/装载失败 = /llm/execute 拒绝所有请求",
+  "model_allowlist_path": "data/agent-governance/rules/00_constraint_model_allowlist.json"
 }

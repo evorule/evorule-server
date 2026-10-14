@@ -14,11 +14,17 @@
 //!        → 400 { "error": "..." }  请求体非法
 //!        → 500 { "error": "..." }  插件配置问题（fail-fast 自诊断）
 //!        → 502 { "error": "..." }  server 不可达/协议/引擎/LLM 失败（错误已回写 io_response）
+//!   POST /llm/execute（SG-1 件1 扩展型执行体，单规格双消费）
+//!        body: OpenAI 兼容请求体原样（7 键全量透传，不裁剪）
+//!        → 200 agent LlmResponse 同构四键 {content, tool_calls, finish_reason, token_usage}
+//!        → 500 { "error": "..." }  扩展执行体未配置/白名单物料未就绪（fail-closed）
+//!        → 502 { "error": "..." }  provider 失败 / 模型不在准入白名单（网络入口执法）
 //!   GET  /health      存活探针
 //!
-//! 红线：本进程内禁止 call_external 审计回路之外的任何 LLM 直连
-//! （`call_llm` 仅在 sidecar IoRequest 分支内被调用，见 lib.rs）；凭据
-//! 不进日志/错误消息。
+//! 红线：本进程内 LLM 出站仅两条受管辖路径——①call_external 审计回路内的
+//! `call_llm`（sidecar IoRequest 分支专用，见 lib.rs）；②扩展执行体
+//! `call_llm_ext`（POST /llm/execute，模型白名单网络入口执法，prompt 已由
+//! agent 侧命令事实先行入链）。其余任何直连禁止；凭据不进日志/错误消息。
 //!
 //! 配置：`ai-plugin.json`（--config 指定；缺省依次找 exe 同目录/工作目录）。
 //! 缺文件 fail-fast 自诊断退出——不静默、不带缺省凭据启动（清单缺省禁用，
@@ -32,9 +38,11 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use evorule_ai_plugin::{
-    build_http_client, run_audited_chat, ChatRequest, PluginConfig, PluginError,
+    build_http_client, build_llm_execute_client, call_llm_ext, load_model_allowlist_file,
+    run_audited_chat, ChatRequest, PluginConfig, PluginError,
 };
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -42,6 +50,10 @@ use std::sync::Arc;
 struct PluginState {
     cfg: Arc<PluginConfig>,
     http: std::sync::Arc<reqwest::Client>,
+    /// 扩展执行体出站客户端（重定向禁令 + connect 超时；独立于 sidecar 回路客户端）
+    execute_http: std::sync::Arc<reqwest::Client>,
+    /// 模型准入白名单（None = 扩展执行体未就绪，/llm/execute 显式拒绝）
+    allowlist: Arc<Option<BTreeSet<String>>>,
 }
 
 fn main() {
@@ -107,6 +119,35 @@ fn main() {
     );
 
     let listen_addr = cfg.listen_addr.clone();
+    // 扩展执行体就绪判定（SG-1 件1）：llm_execute_url 配置即要求白名单物料
+    // 可加载——加载失败仅降级为「/llm/execute 全拒」（fail-closed，自诊断
+    // 留痕），不阻断既有 /services/ai_plugin_chat 通道启动。
+    let allowlist = if cfg.llm_execute_url.is_some() {
+        match cfg.model_allowlist_path.as_deref() {
+            None => {
+                tracing::warn!(
+                    "llm_execute_url 已配置但 model_allowlist_path 缺失: /llm/execute 将以\
+                     自诊断消息拒绝所有请求（fail-closed）"
+                );
+                None
+            }
+            Some(p) => match load_model_allowlist_file(p) {
+                Ok(set) => {
+                    tracing::info!("模型白名单物料装载成功: {p}（{} 个模型）", set.len());
+                    Some(set)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "模型白名单物料装载失败: {e}（/llm/execute 将以自诊断消息\
+                         拒绝所有请求，fail-closed）"
+                    );
+                    None
+                }
+            },
+        }
+    } else {
+        None
+    };
     let state = PluginState {
         cfg: Arc::new(cfg),
         http: std::sync::Arc::new(match build_http_client() {
@@ -116,6 +157,14 @@ fn main() {
                 std::process::exit(1);
             }
         }),
+        execute_http: std::sync::Arc::new(match build_llm_execute_client() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[ai-plugin] {e}");
+                std::process::exit(1);
+            }
+        }),
+        allowlist: Arc::new(allowlist),
     };
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -131,6 +180,7 @@ fn main() {
     runtime.block_on(async move {
         let app = Router::new()
             .route("/services/ai_plugin_chat", post(ai_plugin_chat))
+            .route("/llm/execute", post(llm_execute))
             .route("/health", get(health))
             .with_state(state);
         let listener = match tokio::net::TcpListener::bind(&listen_addr).await {
@@ -188,6 +238,35 @@ fn resolve_config(explicit: Option<PathBuf>) -> Result<(PathBuf, String), String
 
 async fn health() -> Json<Value> {
     Json(json!({ "ok": true, "service": "ai-plugin" }))
+}
+
+/// 扩展型执行体端点（SG-1 件1）：body 原样 → 四键。
+/// 未就绪（未配置/白名单物料未装载）→ 500 自诊断（fail-closed，绝不静默放行）；
+/// 白名单违规/provider 失败 → 502 显式上抛（fail-visible，无静默兜底）。
+async fn llm_execute(State(st): State<PluginState>, Json(body): Json<Value>) -> Response {
+    let Some(allowlist) = st.allowlist.as_ref() else {
+        let diag = if st.cfg.llm_execute_url.is_some() {
+            "扩展执行体未就绪: model_allowlist_path 未配置或白名单物料装载失败\
+             （见启动日志；物料 = 00_constraint_model_allowlist.json server 侧副本）"
+                .to_string()
+        } else {
+            "扩展执行体未就绪: 配置键 llm_execute_url / model_allowlist_path 未填写\
+             （provider 全 URL 形态，如 https://api.minimaxi.com/v1/text/chatcompletion_v2）"
+                .to_string()
+        };
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": diag })),
+        )
+            .into_response();
+    };
+    match call_llm_ext(&st.cfg, &st.execute_http, allowlist, &body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => {
+            tracing::warn!("llm/execute 失败: {e}");
+            error_response(&e)
+        }
+    }
 }
 
 async fn ai_plugin_chat(State(st): State<PluginState>, Json(body): Json<Value>) -> Response {

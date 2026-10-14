@@ -43,6 +43,7 @@
 use futures_util::StreamExt;
 use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
@@ -52,6 +53,22 @@ pub const SIDECAR_WAIT_TIMEOUT_MS: u64 = 90_000;
 
 /// LLM 请求超时缺省（毫秒）
 pub const LLM_TIMEOUT_DEFAULT_MS: u64 = 60_000;
+
+/// 扩展执行体（/llm/execute）出站请求总超时（秒）。
+///
+/// 对齐 server io 1800/3600s 体系（交接档 SG-1 件1；2026-10-14 统帅裁决
+/// 「对齐 1800s」，原在途值 300s 系与 agent 侧 G3 同窗的保守取值）。
+///
+/// 已知缝隙留痕（登记不就地修）：agent 侧中继段 request_timeout 仍为
+/// G3 `DEFAULT_REQUEST_TIMEOUT_SECS=300`（与 step_budget 启动断言耦合，
+/// 改大将放大 step_timeout 校验面、触碰 runner 配置红线）——provider
+/// 耗时超 300s 时 agent 中继段先断，链路实际上限由该段决定；待专门
+/// 裁决后另行处理。
+pub const LLM_EXECUTE_TIMEOUT_SECS: u64 = 1800;
+
+/// 扩展执行体出站连接超时（秒）——与 agent 侧 `DEFAULT_CONNECT_TIMEOUT_SECS`
+/// 同策略：无人值守运行不得在挂死端点上无限等待。
+pub const LLM_EXECUTE_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 /// 工具循环轮次上限（回归验证；代码级常量，配置不可调——防失控循环）
 pub const MAX_TOOL_ROUNDS: usize = 8;
@@ -122,6 +139,15 @@ pub struct PluginConfig {
     /// 白名单 `TOOLS` 内的工具名——配置不可注入新工具；空 = 工具面关闭，
     /// 行为与 回归验证 单轮回路完全一致）
     pub tools_enabled: Vec<String>,
+    /// 扩展执行体 provider 全 URL（POST /llm/execute 出站；全 URL 形态，
+    /// 不做 /chat/completions 拼接，如 MiniMax
+    /// `https://api.minimaxi.com/v1/text/chatcompletion_v2`）。
+    /// 未配置 = 扩展执行体未就绪（既有 /services/ai_plugin_chat 通道不受影响）。
+    pub llm_execute_url: Option<String>,
+    /// 模型准入白名单物料路径（`00_constraint_model_allowlist.json` server 侧副本）。
+    /// `llm_execute_url` 配置后为 fail-closed 执法面：物料缺失/解析空集 →
+    /// 扩展执行体拒绝所有 /llm/execute 请求（显式自诊断，绝不静默放行）。
+    pub model_allowlist_path: Option<String>,
 }
 
 fn require_str(v: &Value, key: &str) -> Result<String, PluginError> {
@@ -165,6 +191,8 @@ impl std::fmt::Debug for PluginConfig {
             .field("llm_temperature", &self.llm_temperature)
             .field("llm_timeout_ms", &self.llm_timeout_ms)
             .field("tools_enabled", &self.tools_enabled)
+            .field("llm_execute_url", &self.llm_execute_url)
+            .field("model_allowlist_path", &self.model_allowlist_path)
             .finish()
     }
 }
@@ -300,6 +328,11 @@ impl PluginConfig {
                 list
             }
         };
+        let llm_execute_url = optional_str(v, "llm_execute_url");
+        if let Some(u) = &llm_execute_url {
+            require_http(u, "llm_execute_url")?;
+        }
+        let model_allowlist_path = optional_str(v, "model_allowlist_path");
         Ok(Self {
             listen_addr: listen_addr.to_string(),
             server_base_url,
@@ -311,6 +344,8 @@ impl PluginConfig {
             llm_temperature,
             llm_timeout_ms,
             tools_enabled,
+            llm_execute_url,
+            model_allowlist_path,
         })
     }
 
@@ -855,6 +890,376 @@ pub async fn call_llm(
         })?;
     let usage = v.get("usage").filter(|u| u.is_object()).cloned();
     Ok((content.to_string(), usage))
+}
+
+// ---------------------------------------------------------------------------
+// 扩展型执行体（SG-1 件1）：POST /llm/execute 的 LLM 出站路径
+//
+// 单规格双消费：agent 主循环（execute/execute_stream 中继）与既有
+// call_llm 通道并存，本路径不改后者。请求侧 body 原样透传（7 键不裁剪：
+// model/messages/temperature/max_tokens/stream/tools/tool_choice——Q2 实锚
+// 全量透传），响应侧统一聚合为 agent `LlmResponse` 同构四键。
+// ---------------------------------------------------------------------------
+
+/// 从模型准入白名单物料（`00_constraint_model_allowlist.json`，rule_set 形态）
+/// 推导允许的模型集合。
+///
+/// 判定：收集物料中所有 `{"type":"eq","path":"instruction.params.model",
+/// "value":"<model>"}` 节点的 value（与 server 侧引擎同构的约束表达）。
+/// 物料可读但推不出任何条目 → Err（fail-closed：宁可显式拒绝服务，
+/// 绝不静默空集放行）。
+pub fn parse_model_allowlist(v: &Value) -> Result<BTreeSet<String>, PluginError> {
+    let mut set = BTreeSet::new();
+    collect_model_eq_values(v, &mut set);
+    if set.is_empty() {
+        return Err(PluginError::Config(
+            "模型白名单物料解析为空集（未找到 path=\"instruction.params.model\" 的 eq 约束节点）\
+             ——fail-closed 不放行，请核对物料版本形状"
+                .to_string(),
+        ));
+    }
+    Ok(set)
+}
+
+/// 从 `00_constraint_model_allowlist.json` server 侧副本文件加载白名单集合。
+pub fn load_model_allowlist_file(path: &str) -> Result<BTreeSet<String>, PluginError> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| PluginError::Config(format!("模型白名单物料读取失败({path}): {e}")))?;
+    let v: Value = serde_json::from_str(&content)
+        .map_err(|e| PluginError::Config(format!("模型白名单物料 JSON 非法({path}): {e}")))?;
+    parse_model_allowlist(&v)
+}
+
+fn collect_model_eq_values(v: &Value, out: &mut BTreeSet<String>) {
+    match v {
+        Value::Object(m) => {
+            if m.get("type").and_then(Value::as_str) == Some("eq")
+                && m.get("path").and_then(Value::as_str) == Some("instruction.params.model")
+            {
+                if let Some(model) = m.get("value").and_then(Value::as_str) {
+                    let model = model.trim();
+                    if !model.is_empty() {
+                        out.insert(model.to_string());
+                    }
+                }
+            }
+            for child in m.values() {
+                collect_model_eq_values(child, out);
+            }
+        }
+        Value::Array(a) => {
+            for child in a {
+                collect_model_eq_values(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 扩展执行体出站 HTTP 客户端：重定向禁令（P0-1 同策略：3xx 可能复发
+/// Authorization 头）+ 连接超时（无人值守不挂死）。
+pub fn build_llm_execute_client() -> Result<reqwest::Client, PluginError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(LLM_EXECUTE_CONNECT_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| PluginError::Config(format!("扩展执行体 HTTP 客户端构建失败: {e}")))
+}
+
+/// 扩展执行体 LLM 调用 —— /llm/execute 端点的唯一出站路径。
+///
+/// - 请求：`body` 原样透传到 provider（全量透传，不裁剪任何键）；
+///   provider URL 取配置键 `llm_execute_url`（全 URL 形态）；
+///   凭据复用 `llm_api_key`（环境变量 `EVORULE_AI_PLUGIN_LLM_API_KEY` 优先）。
+/// - 白名单执法：`body.model` 必须在 `allowlist` 内，违者显式拒 + warn 留痕
+///   （网络入口执法，先于任何出站流量）。
+/// - 响应：非流式解析 OpenAI 兼容 JSON；流式（`stream:true`）按 SSE 聚合。
+///   两者统一输出 agent `LlmResponse` 同构四键：
+///   `{content, tool_calls:[{tool_name,args}]|null, finish_reason, token_usage}`。
+/// - 超时：总 300s + connect 10s（客户端层）；失败分类与 `call_llm` 同风格，
+///   错误消息不含 key。
+pub async fn call_llm_ext(
+    cfg: &PluginConfig,
+    http: &reqwest::Client,
+    allowlist: &BTreeSet<String>,
+    body: &Value,
+) -> Result<Value, PluginError> {
+    let Some(url) = cfg.llm_execute_url.as_deref() else {
+        return Err(PluginError::Config(
+            "配置键 'llm_execute_url' 未填写（provider 全 URL 形态，如 \
+             https://api.minimaxi.com/v1/text/chatcompletion_v2）"
+                .to_string(),
+        ));
+    };
+    let model = body.get("model").and_then(Value::as_str).map(str::trim);
+    let model = match model {
+        Some(m) if !m.is_empty() => m,
+        _ => {
+            return Err(PluginError::Llm(
+                "请求体缺少非空字符串 'model' 字段，扩展执行体拒绝执行".to_string(),
+            ))
+        }
+    };
+    if !allowlist.contains(model) {
+        tracing::warn!(
+            model,
+            "llm/execute: 模型不在工作区准入白名单，网络入口显式拒绝（物料: \
+             00_constraint_model_allowlist.json server 侧副本）"
+        );
+        return Err(PluginError::Llm(format!(
+            "模型 '{model}' 不在本工作区模型准入白名单（网络入口执法，\
+             见 00_constraint_model_allowlist）"
+        )));
+    }
+
+    let is_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let resp = http
+        .post(url)
+        .bearer_auth(&cfg.llm_api_key)
+        .json(body)
+        .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({url}): {e}")))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(200).collect();
+        let kind = match status.as_u16() {
+            401 => "鉴权失败(apiKey 无效)",
+            429 => "限流(429)",
+            _ => "上游错误",
+        };
+        return Err(PluginError::Llm(format!("LLM HTTP {status}({kind}): {snippet}")));
+    }
+    if is_stream {
+        execute_stream_aggregate(resp).await
+    } else {
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| PluginError::Llm(format!("LLM 响应 JSON 解析失败: {e}")))?;
+        completion_four_keys(&v)
+    }
+}
+
+/// 非流式 OpenAI 兼容响应 → 四键（与 agent `parse_success_response` 同构，
+/// 含 MiniMax 200+JSON 业务错误体检测与缺 choices 显式失败）。
+fn completion_four_keys(v: &Value) -> Result<Value, PluginError> {
+    if let Some(base_resp) = v.get("base_resp") {
+        let status_code = base_resp.get("status_code").and_then(Value::as_i64);
+        let is_error = match status_code {
+            Some(code) => code != 0,
+            None => true, // 有 base_resp 无 status_code：形态异常，按错误处理
+        };
+        if is_error {
+            let status_msg = base_resp
+                .get("status_msg")
+                .and_then(Value::as_str)
+                .unwrap_or("(no status_msg)");
+            return Err(PluginError::Llm(format!(
+                "LLM API business error (status_code={status_code:?}): {status_msg}"
+            )));
+        }
+    }
+    let has_choices = v
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    if !has_choices {
+        let snippet: String = v.to_string().chars().take(300).collect();
+        return Err(PluginError::Llm(format!(
+            "LLM API response missing choices: {snippet}"
+        )));
+    }
+    let choice = v
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first());
+    let content = choice
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    // OpenAI wire 形状 → 内部统一形状（与 agent parse_success_response 逐字段同构；
+    // arguments 字符串解析为对象，失败 fallback {}——与 agent 流式路径一致）
+    let tool_calls = choice
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            let normalized: Vec<Value> = arr
+                .iter()
+                .filter_map(|tc| {
+                    let name = tc
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str)
+                        .or_else(|| tc.get("tool_name").and_then(Value::as_str))
+                        .map(str::to_string)?;
+                    let args = match tc.get("function").and_then(|f| f.get("arguments")) {
+                        Some(Value::String(s)) => {
+                            serde_json::from_str::<Value>(s).unwrap_or(json!({}))
+                        }
+                        Some(obj @ Value::Object(_)) => obj.clone(),
+                        _ => json!({}),
+                    };
+                    Some(json!({ "tool_name": name, "args": args }))
+                })
+                .collect();
+            Value::Array(normalized)
+        });
+    let finish_reason = choice
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let token_usage = v.get("usage").cloned();
+    Ok(json!({
+        "content": content,
+        "tool_calls": tool_calls,
+        "finish_reason": finish_reason,
+        "token_usage": token_usage,
+    }))
+}
+
+/// SSE tool_call 按 index 聚合器（与 agent ToolCallAccumulator 同构；
+/// id 仅线路语义，四键输出不含——与 agent to_tool_call 输出面一致）
+#[derive(Default)]
+struct SseToolAcc {
+    name: Option<String>,
+    arguments: String,
+}
+
+/// 流式 SSE 响应 → 四键聚合（与 agent `execute_stream` 解析语义逐条同构：
+/// 帧切分/data 行提取/[DONE]/content 拼接/tool_call 按 index 累积/
+/// finish_reason 末值/usage 末帧；流自然收尾不发 [DONE] 亦成立；
+/// 200+JSON 业务错误体显式转错；零帧显式失败禁止静默空响应）。
+async fn execute_stream_aggregate(resp: reqwest::Response) -> Result<Value, PluginError> {
+    if let Some(ct) = resp.headers().get(CONTENT_TYPE) {
+        let ct_str = ct.to_str().unwrap_or("");
+        if ct_str.contains("application/json") {
+            let text = resp.text().await.unwrap_or_default();
+            let preview: String = text.chars().take(300).collect();
+            return Err(PluginError::Llm(format!(
+                "LLM API returned JSON instead of SSE stream: {preview}"
+            )));
+        }
+    }
+    let full = resp
+        .text()
+        .await
+        .map_err(|e| PluginError::Llm(format!("SSE body 读取失败: {e}")))?;
+    let mut content_acc = String::new();
+    let mut tool_acc: BTreeMap<usize, SseToolAcc> = BTreeMap::new();
+    let mut finish_reason: Option<String> = None;
+    let mut token_usage: Option<Value> = None;
+    let mut saw_data_frame = false;
+
+    for frame in full.split("\n\n") {
+        let frame_str = frame.trim_end_matches('\n').trim_end_matches('\r');
+        let data: String = frame_str
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:").map(|s| s.trim_start()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() {
+            continue;
+        }
+        saw_data_frame = true;
+        if data.trim() == "[DONE]" {
+            break;
+        }
+        let frame_json: Value = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("llm/execute: SSE 帧解析失败（跳过，流继续）: {e}");
+                continue;
+            }
+        };
+        let choice = frame_json
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first());
+        if let Some(choice) = choice {
+            let delta = choice.get("delta");
+            if let Some(c) = delta
+                .and_then(|d| d.get("content"))
+                .and_then(Value::as_str)
+            {
+                content_acc.push_str(c);
+            }
+            if let Some(tcs) = delta
+                .and_then(|d| d.get("tool_calls"))
+                .and_then(Value::as_array)
+            {
+                for tc in tcs {
+                    let index = tc
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize;
+                    let entry = tool_acc.entry(index).or_default();
+                    if let Some(func) = tc.get("function") {
+                        if let Some(name) = func.get("name").and_then(Value::as_str) {
+                            entry.name = Some(name.to_string());
+                        }
+                        if let Some(args) = func.get("arguments").and_then(Value::as_str) {
+                            entry.arguments.push_str(args);
+                        }
+                    }
+                }
+            }
+            if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
+                finish_reason = Some(fr.to_string());
+            }
+        }
+        if let Some(u) = frame_json.get("usage") {
+            token_usage = Some(u.clone());
+        }
+    }
+
+    if !saw_data_frame {
+        let leftover = full.trim();
+        if leftover.is_empty() {
+            return Err(PluginError::Llm(
+                "SSE 流不含任何 data 帧（空 body）".to_string(),
+            ));
+        }
+        let preview: String = leftover.chars().take(500).collect();
+        return Err(PluginError::Llm(format!(
+            "SSE 流不含任何 data 帧; raw body: {preview}"
+        )));
+    }
+
+    let tool_calls: Option<Value> = {
+        let normalized: Vec<Value> = tool_acc
+            .values()
+            .filter_map(|e| {
+                let name = e.name.clone()?;
+                let args_str = if e.arguments.is_empty() {
+                    "{}"
+                } else {
+                    e.arguments.as_str()
+                };
+                let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                Some(json!({ "tool_name": name, "args": args }))
+            })
+            .collect();
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(Value::Array(normalized))
+        }
+    };
+    // 与 agent 流式路径一致：无 finish_reason 时兜底 "stop"
+    let finish_reason = finish_reason.or_else(|| Some("stop".to_string()));
+    Ok(json!({
+        "content": content_acc,
+        "tool_calls": tool_calls,
+        "finish_reason": finish_reason,
+        "token_usage": token_usage,
+    }))
 }
 
 /// 自编排审计回路结果：回复文本 + sidecar 会话 id（供审计对账：
@@ -1474,6 +1879,291 @@ mod tests {
         assert_eq!(e.id, Some(3));
         let mut bad = String::from("data: not-json\n\n");
         assert!(next_sse_event(&mut bad).is_err());
+    }
+
+    // ---------- 扩展执行体（SG-1 件1）：配置键 / 白名单物料 / call_llm_ext ----------
+
+    fn ext_cfg(url: &str) -> PluginConfig {
+        PluginConfig::from_json_str(&format!(
+            r#"{{"server_base_url":"http://x","llm_endpoint":"http://x",
+                "llm_api_key":"test-key","llm_model":"m","llm_execute_url":"{url}"}}"#
+        ))
+        .unwrap()
+    }
+
+    fn allowlist_one(model: &str) -> BTreeSet<String> {
+        BTreeSet::from([model.to_string()])
+    }
+
+    #[test]
+    fn config_llm_execute_url_optional_and_scheme_checked() {
+        let plain = PluginConfig::from_json_str(
+            r#"{"server_base_url":"http://x","llm_endpoint":"http://x","llm_api_key":"k","llm_model":"m"}"#,
+        )
+        .unwrap();
+        assert!(plain.llm_execute_url.is_none());
+        assert!(plain.model_allowlist_path.is_none());
+        let with = ext_cfg("http://127.0.0.1:1/v1/text/chatcompletion_v2");
+        assert_eq!(
+            with.llm_execute_url.as_deref(),
+            Some("http://127.0.0.1:1/v1/text/chatcompletion_v2")
+        );
+        let err = PluginConfig::from_json_str(
+            r#"{"server_base_url":"http://x","llm_endpoint":"http://x","llm_api_key":"k",
+                "llm_model":"m","llm_execute_url":"ftp://x"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("仅支持 http/https"));
+    }
+
+    #[test]
+    fn model_allowlist_parses_material_and_fails_closed_on_empty() {
+        // 物料形状 = 00_constraint_model_allowlist.json（rule_set + not(eq) 约束）
+        let material = json!({
+            "kind": "rule_set",
+            "transform": [{
+                "type": "enforce",
+                "params": {
+                    "domain": { "type": "all", "inner": [
+                        { "type": "instruction", "instruction_type": "call_external" },
+                        { "type": "not", "inner": { "type": "eq",
+                            "path": "instruction.params.model", "value": "MiniMax-M2.5" } }
+                    ]}
+                }
+            }]
+        });
+        let set = parse_model_allowlist(&material).unwrap();
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("MiniMax-M2.5"));
+        // 空物料 fail-closed（绝不静默空集放行）
+        let err = parse_model_allowlist(&json!({"kind": "rule_set", "transform": []})).unwrap_err();
+        assert!(err.to_string().contains("空集"));
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_passthrough_and_four_keys_non_stream() {
+        let captured = Arc::new(Mutex::new(None::<Value>));
+        let auth_seen = Arc::new(Mutex::new(None::<String>));
+        let (cap, auth) = (captured.clone(), auth_seen.clone());
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(
+                move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                    let cap = cap.clone();
+                    let auth = auth.clone();
+                    async move {
+                        *cap.lock().unwrap() = Some(body);
+                        *auth.lock().unwrap() = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        Json(json!({
+                            "choices": [{
+                                "message": {
+                                    "content": "hello",
+                                    "tool_calls": [{
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "f",
+                                            "arguments": "{\"a\":1}"
+                                        }
+                                    }]
+                                },
+                                "finish_reason": "tool_calls"
+                            }],
+                            "usage": {"total_tokens": 7}
+                        }))
+                    }
+                },
+            ),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let request_body = json!({
+            "model": "MiniMax-M2.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "tools": [{"type": "function", "function": {"name": "f"}}],
+            "tool_choice": "auto",
+            "stream": false
+        });
+        let out = call_llm_ext(&cfg, &build_http_client().unwrap(), &allowlist_one("MiniMax-M2.5"), &request_body)
+            .await
+            .unwrap();
+        // 请求侧：body 原样透传（7 键不裁剪）+ Bearer 凭据
+        assert_eq!(
+            captured.lock().unwrap().as_ref().unwrap(),
+            &request_body,
+            "请求体必须原样透传"
+        );
+        assert_eq!(
+            auth_seen.lock().unwrap().as_deref(),
+            Some("Bearer test-key")
+        );
+        // 响应侧：agent LlmResponse 同构四键
+        assert_eq!(out["content"], "hello");
+        assert_eq!(
+            out["tool_calls"],
+            json!([{"tool_name": "f", "args": {"a": 1}}])
+        );
+        assert_eq!(out["finish_reason"], "tool_calls");
+        assert_eq!(out["token_usage"], json!({"total_tokens": 7}));
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_aggregates_sse() {
+        // 流自然收尾（无 [DONE]，与 MiniMax/录制件一致）；tool_call 按 index 分片累积
+        let sse = [
+            r#"data: {"choices":[{"delta":{"content":"he"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"llo"}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":"{\"a\""}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":1}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"total_tokens":7}}"#,
+        ]
+        .join("\n\n");
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let sse = sse.clone();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        sse,
+                    )
+                }
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let body = json!({
+            "model": "MiniMax-M2.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+        let out = call_llm_ext(&cfg, &build_http_client().unwrap(), &allowlist_one("MiniMax-M2.5"), &body)
+            .await
+            .unwrap();
+        assert_eq!(out["content"], "hello");
+        assert_eq!(
+            out["tool_calls"],
+            json!([{"tool_name": "f", "args": {"a": 1}}]),
+            "arguments 分片必须按 index 聚合后再解析"
+        );
+        assert_eq!(out["finish_reason"], "tool_calls");
+        assert_eq!(out["token_usage"], json!({"total_tokens": 7}));
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_rejects_model_outside_allowlist_before_http() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let h = h.clone();
+                async move {
+                    h.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"choices": []}))
+                }
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let http = build_http_client().unwrap();
+        let err = call_llm_ext(
+            &cfg,
+            &http,
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "evil-m", "messages": []}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("白名单"), "{err}");
+        // 缺 model 字段同样显式拒绝
+        let err = call_llm_ext(&cfg, &http, &allowlist_one("MiniMax-M2.5"), &json!({"messages": []}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("model"), "{err}");
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "拒绝必须发生在出站之前");
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_json_error_body_is_explicit_failure() {
+        // MiniMax 形态：HTTP 200 + JSON 业务错误体——按 SSE 解析会静默空响应，必须显式转错
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    json!({"base_resp": {"status_code": 1004, "status_msg": "invalid"}})
+                        .to_string(),
+                )
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let err = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("JSON instead of SSE"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_provider_http_error_surfaced() {
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let err = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "MiniMax-M2.5", "messages": []}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("500"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_empty_sse_stream_fails() {
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                    String::new(),
+                )
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let err = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("data 帧"), "{err}");
+    }
+
+    /// 测试辅助：随机端口起 axum 服务，返回监听地址（host:port）
+    async fn spawn_app(app: Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        addr
     }
 
     // ---------- build_http_client：重定向门禁 ----------
