@@ -912,8 +912,44 @@ impl WorkspaceDb {
 // rule_versions 表 CRUD
 // =============================================================================
 
+/// [CON-L1-001] 持久层写入门：规则内容 schema 权威校验（与 rule_meta_service
+/// validate_content 同源同函数 `evorule_rule_tools::validator::validate_rule_json`，
+/// 畸形 JSON 优雅返回违规不 panic）。返回 None=合法；Some(detail)=违规摘要
+/// （前 3 条 Error 级，空则兜底文案）。
+fn rule_content_schema_violation(content: &str) -> Option<String> {
+    let report = evorule_rule_tools::validator::validate_rule_json(content);
+    if report.valid {
+        return None;
+    }
+    let detail = report
+        .results
+        .iter()
+        .filter(|r| r.severity == evorule_rule_tools::validator::ValidationSeverity::Error)
+        .take(3)
+        .map(|r| match &r.path {
+            Some(p) => format!("{} ({})", r.message, p),
+            None => r.message.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(if detail.is_empty() {
+        "schema validation failed without itemized errors".to_string()
+    } else {
+        detail
+    })
+}
+
 impl WorkspaceDb {
     pub fn insert_rule_version(&self, rv: &RuleVersionRecord) -> WorkspaceResult<()> {
+        // [CON-L1-001] 持久层写入门（SR-14 升格）：rule_versions 的唯一 content
+        // INSERT 路径内置 schema 权威校验——绕过 rule_meta_service 的直写也过
+        // 不了闸（条文「唯一入口的强制层」）。service 层 validate_content 保留
+        // （fail-fast 更早、报错形态更友好），与发布门禁同族的双层防御。
+        if let Some(detail) = rule_content_schema_violation(&rv.content) {
+            return Err(WorkspaceError::invalid_input(format!(
+                "rule_version content violates schema (persistence gate [CON-L1-001]): {detail}"
+            )));
+        }
         let conn = self.lock()?;
         conn.execute(
             "INSERT INTO rule_versions
@@ -2685,6 +2721,73 @@ mod tests {
         db.insert_rule(&rule3).unwrap();
     }
 
+    /// [CON-L1-001] 持久层写入门（SR-14 升格）：绕过 service 的直写也被
+    /// schema 权威校验拦截（畸形 JSON + 结构违规两形态），合法内容放行。
+    #[test]
+    fn test_insert_rule_version_persistence_gate() {
+        let db = make_db();
+        let ws = make_workspace(&db, "team", "owner-1");
+        let now = Utc::now();
+
+        let rule = RuleRecord {
+            id: ulid::Ulid::new().to_string(),
+            workspace_id: ws.id.clone(),
+            name: "gate-rule".to_string(),
+            current_version_id: None,
+            state: RuleState::Draft,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            description: None,
+            created_by: "owner-1".to_string(),
+            metadata: "{}".to_string(),
+        };
+        db.insert_rule(&rule).unwrap();
+
+        // 畸形 JSON 拒收（门禁错误含 CON-L1-001 锚名）
+        let bad_json = RuleVersionRecord {
+            id: ulid::Ulid::new().to_string(),
+            rule_id: rule.id.clone(),
+            version: 1,
+            content_hash: "h1".to_string(),
+            content: "not-json{{".to_string(),
+            created_at: now,
+            state: RuleVersionState::Current,
+            created_by: "owner-1".to_string(),
+        };
+        let err = db.insert_rule_version(&bad_json).unwrap_err();
+        assert!(
+            err.to_string().contains("persistence gate [CON-L1-001]"),
+            "gate error must carry the CON anchor, got: {err}"
+        );
+
+        // 结构违规（缺 transform）拒收
+        let bad_shape = RuleVersionRecord {
+            id: ulid::Ulid::new().to_string(),
+            rule_id: rule.id.clone(),
+            version: 2,
+            content_hash: "h2".to_string(),
+            content: r#"{"foo":1}"#.to_string(),
+            created_at: now,
+            state: RuleVersionState::Current,
+            created_by: "owner-1".to_string(),
+        };
+        assert!(db.insert_rule_version(&bad_shape).is_err());
+
+        // 合法内容放行（旁路写入对照）
+        let ok = RuleVersionRecord {
+            id: ulid::Ulid::new().to_string(),
+            rule_id: rule.id.clone(),
+            version: 3,
+            content_hash: "h3".to_string(),
+            content: r#"{"transform":[{"type":"set","params":{"attr":"__exec__.payload.x","operation":"set","value":1}}]}"#.to_string(),
+            created_at: now,
+            state: RuleVersionState::Current,
+            created_by: "owner-1".to_string(),
+        };
+        db.insert_rule_version(&ok).unwrap();
+    }
+
     #[test]
     fn test_rule_version_crud() {
         let db = make_db();
@@ -2715,7 +2818,7 @@ mod tests {
             rule_id: rule.id.clone(),
             version: 1,
             content_hash: "hash-1".to_string(),
-            content: r#"{"transform":[{"type":"noop"}]}"#.to_string(),
+            content: r#"{"transform":[{"type":"set","params":{"attr":"__exec__.payload.x","operation":"set","value":1}}]}"#.to_string(),
             created_at: now,
             state: RuleVersionState::Current,
             created_by: "owner-1".to_string(),
@@ -2798,7 +2901,7 @@ mod tests {
             rule_id: rule.id.clone(),
             version: 1,
             content_hash: "hash".to_string(),
-            content: "{}".to_string(),
+            content: r#"{"transform":[{"type":"set","params":{"attr":"__exec__.payload.x","operation":"set","value":1}}]}"#.to_string(),
             created_at: now,
             state: RuleVersionState::Current,
             created_by: "owner-1".to_string(),
