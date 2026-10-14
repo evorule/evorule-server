@@ -7,19 +7,32 @@
     "path": {
       "type": "string",
       "pattern": "^(?:[A-Za-z0-9_$\\-\\\\]+(?:\\[[0-9]+\\])?)(?:(?:\\.(?:[A-Za-z0-9_$\\-\\\\]+(?:\\[[0-9]+\\])?))|(?:\\.\\[[0-9]+\\]))*$",
-      "not": { "pattern": "__io_result__" },
+      "not": {
+        "pattern": "__io_result__"
+      },
       "description": "路径语法（权威源 evorule-tcb/src/path.rs 实际解析器，分隔符仅 . [ \\，其余字符均为字段名）。identifier 允许 [A-Za-z0-9_$\\-\\\\]（含 $，兼容 __exec__.payload.$schema 迁移写法）；index = 1*DIGIT。拒绝空段（x. /.x /x..y /items[0]..name）、缺闭合括号（[0）、空索引（[]）、非数字索引（[abc]）、索引后非法拼接（[0]abc）。not.__io_result__：I/O 结果字段强制复数 __io_results__（P1-03），单数 __io_result__ 拒绝（yuanze-demos 08/012/013/014/016 高频运行时错误）。"
     },
     "payload_attr_path": {
       "allOf": [
-        { "$ref": "#/$defs/path" },
-        { "not": { "pattern": "^payload\\." } }
+        {
+          "$ref": "#/$defs/path"
+        },
+        {
+          "not": {
+            "pattern": "^payload\\."
+          }
+        }
       ],
       "description": "写侧 attr 专用（set/increment/decrement 的 params.attr，方案 a）：语法同 path，但禁止 payload. 前缀。引擎语义：attr 相对 __exec__.payload 解析，带 payload. 前缀会双重嵌套写入 payload.payload.*（静默失败：不报错但写到错误位置，哨兵/业务规则永远读不到）。正确写法：直接写 payload 内相对路径（如 meta_guard.cleared_for_move），或用 __exec__.payload. 显式全形式。读侧（domain.path）不受此限——读路径相对 __exec__ 根，payload.x 恰是正确形态。引擎 exec_set 对运行时解析出的 payload. 前缀 attr 同样硬拒（双层防御，覆盖绕过 schema 的执行入口）。"
     },
     "path_or_literal": {
-      "if": { "type": "string", "pattern": "^__" },
-      "then": { "$ref": "#/$defs/path" },
+      "if": {
+        "type": "string",
+        "pattern": "^__"
+      },
+      "then": {
+        "$ref": "#/$defs/path"
+      },
       "description": "字面量或路径引用（与引擎 resolve_path_or_literal 语义一致）：非字符串、或非 __ 前缀字符串按字面量放行（如 service_name 字面量、中文提示词、数字）；__ 前缀字符串必须解析为合法路径（含复数强制）。防止把拼写错误的 __ 路径当字面量静默放过。"
     },
     "domain": {
@@ -31,43 +44,154 @@
         },
         {
           "type": "object",
-          "required": ["type"],
+          "required": [
+            "type"
+          ],
           "properties": {
             "type": {
-              "enum": ["eq", "lt", "exists", "instruction", "all", "not", "has_fields"],
+              "enum": [
+                "eq",
+                "lt",
+                "exists",
+                "instruction",
+                "all",
+                "not",
+                "has_fields"
+              ],
               "description": "7 基础域类型（权威源 evorule-tcb/src/domain.rs L128-139）。派生域（gt/or/le/ge/ne）是 core_eval 用 all/not/lt/eq 组合出来的，不在枚举内。嵌套一律用 inner，禁止 domain/domains 字段（P0-03）。"
             },
-            "path": { "$ref": "#/$defs/path", "description": "eq/lt/exists/has_fields 的求值路径（必填，纯路径语义，同 resolve_exec_path）" },
-            "value": { "$ref": "#/$defs/path_or_literal", "description": "eq/lt 的字面量比较值；__ 前缀字符串按路径引用校验语法（语义上 eq/lt 比较字面量，见沙箱 P17）" }
+            "path": {
+              "$ref": "#/$defs/path",
+              "description": "eq/lt/exists/has_fields 的求值路径（必填，纯路径语义，同 resolve_exec_path）"
+            },
+            "value": {
+              "$ref": "#/$defs/path_or_literal",
+              "description": "eq/lt 的字面量比较值；__ 前缀字符串按路径引用校验语法（语义上 eq/lt 比较字面量，见沙箱 P17）"
+            }
           },
           "allOf": [
             {
-              "if": { "properties": { "type": { "const": "eq" } } },
-              "then": { "required": ["path", "value"] }
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "eq"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "path",
+                  "value"
+                ]
+              }
             },
             {
-              "if": { "properties": { "type": { "const": "lt" } } },
-              "then": { "required": ["path", "value"] }
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "lt"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "path",
+                  "value"
+                ]
+              }
             },
             {
-              "if": { "properties": { "type": { "const": "exists" } } },
-              "then": { "required": ["path"] }
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "exists"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "path"
+                ]
+              }
             },
             {
-              "if": { "properties": { "type": { "const": "instruction" } } },
-              "then": { "required": ["instruction_type"] }
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "instruction"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "instruction_type"
+                ]
+              }
             },
             {
-              "if": { "properties": { "type": { "const": "has_fields" } } },
-              "then": { "required": ["path", "fields"], "properties": { "fields": { "type": "array", "minItems": 1, "items": { "type": "string" } } } }
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "has_fields"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "path",
+                  "fields"
+                ],
+                "properties": {
+                  "fields": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
             },
             {
-              "if": { "properties": { "type": { "const": "all" } } },
-              "then": { "required": ["inner"], "properties": { "inner": { "type": "array", "items": { "$ref": "#/$defs/domain" } } } }
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "all"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "inner"
+                ],
+                "properties": {
+                  "inner": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/domain"
+                    }
+                  }
+                }
+              }
             },
             {
-              "if": { "properties": { "type": { "const": "not" } } },
-              "then": { "required": ["inner"], "properties": { "inner": { "$ref": "#/$defs/domain" } } }
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "not"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "inner"
+                ],
+                "properties": {
+                  "inner": {
+                    "$ref": "#/$defs/domain"
+                  }
+                }
+              }
             }
           ],
           "additionalProperties": true
@@ -84,42 +208,57 @@
         {
           "type": "object",
           "description": "指令层业务指令（权威源：core_eval.json 中匹配的 instruction_type）。push.instructions 的项；结构宽松（type 任意字符串 + params）。注意：increment/decrement/noop/set 等指令层类型不等于元指令层类型。控制流指令（set/increment/decrement/sequence/conditional/while_loop）做结构门禁：set.attr 路径语法（防 x. 运行时错误）、sequence.instructions 数组、conditional/while_loop 的 domain 结构。",
-          "required": ["type"],
+          "required": [
+            "type"
+          ],
           "properties": {
-            "type": { "type": "string" },
-            "params": { "type": "object" }
+            "type": {
+              "type": "string"
+            },
+            "params": {
+              "type": "object"
+            }
           },
           "allOf": [
             {
-              "if": { "properties": { "type": { "enum": ["set", "increment", "decrement"] } } },
-              "then": {
+              "if": {
                 "properties": {
-                  "params": {
-                    "type": "object",
-                    "required": ["attr", "operation"],
-                    "properties": {
-                      "attr": { "$ref": "#/$defs/payload_attr_path", "description": "必填：payload 路径；语法非法（如 x.）与 payload. 前缀双重嵌套（方案 a）在提交期即被拦截，避免运行时 PathResolutionFailed 或静默写歪" },
-                      "operation": { "enum": ["set", "add", "sub"], "description": "必填；increment→add / decrement→sub / set→set" },
-                      "value": { "$ref": "#/$defs/path_or_literal", "description": "set 指令的值（字面量或 __ 路径引用）" },
-                      "delta": { "description": "increment/decrement 指令的增量（core_eval 从 instruction.params.delta 读取）" }
-                    },
-                    "additionalProperties": true
+                  "type": {
+                    "enum": [
+                      "set",
+                      "increment",
+                      "decrement"
+                    ]
                   }
                 }
-              }
-            },
-            {
-              "if": { "properties": { "type": { "const": "sequence" } } },
+              },
               "then": {
                 "properties": {
                   "params": {
                     "type": "object",
-                    "required": ["instructions"],
+                    "required": [
+                      "attr",
+                      "operation"
+                    ],
                     "properties": {
-                      "instructions": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": { "$ref": "#/$defs/instruction" }
+                      "attr": {
+                        "$ref": "#/$defs/payload_attr_path",
+                        "description": "必填：payload 路径；语法非法（如 x.）与 payload. 前缀双重嵌套（方案 a）在提交期即被拦截，避免运行时 PathResolutionFailed 或静默写歪"
+                      },
+                      "operation": {
+                        "enum": [
+                          "set",
+                          "add",
+                          "sub"
+                        ],
+                        "description": "必填；increment→add / decrement→sub / set→set"
+                      },
+                      "value": {
+                        "$ref": "#/$defs/path_or_literal",
+                        "description": "set 指令的值（字面量或 __ 路径引用）"
+                      },
+                      "delta": {
+                        "description": "increment/decrement 指令的增量（core_eval 从 instruction.params.delta 读取）"
                       }
                     },
                     "additionalProperties": true
@@ -128,16 +267,28 @@
               }
             },
             {
-              "if": { "properties": { "type": { "const": "conditional" } } },
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "sequence"
+                  }
+                }
+              },
               "then": {
                 "properties": {
                   "params": {
                     "type": "object",
-                    "required": ["domain", "then", "else"],
+                    "required": [
+                      "instructions"
+                    ],
                     "properties": {
-                      "domain": { "$ref": "#/$defs/domain" },
-                      "then": { "oneOf": [ { "$ref": "#/$defs/instruction" }, { "type": "array", "items": { "$ref": "#/$defs/instruction" } } ], "description": "条件成立执行的指令（单条或数组，兼容 demos 写法）" },
-                      "else": { "oneOf": [ { "$ref": "#/$defs/instruction" }, { "type": "array", "items": { "$ref": "#/$defs/instruction" } } ], "description": "条件不成立执行的指令（单条或数组，兼容 demos 写法）" }
+                      "instructions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "$ref": "#/$defs/instruction"
+                        }
+                      }
                     },
                     "additionalProperties": true
                   }
@@ -145,15 +296,94 @@
               }
             },
             {
-              "if": { "properties": { "type": { "const": "while_loop" } } },
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "conditional"
+                  }
+                }
+              },
               "then": {
                 "properties": {
                   "params": {
                     "type": "object",
-                    "required": ["condition", "body"],
+                    "required": [
+                      "domain",
+                      "then",
+                      "else"
+                    ],
                     "properties": {
-                      "condition": { "$ref": "#/$defs/domain" },
-                      "body": { "oneOf": [ { "$ref": "#/$defs/instruction" }, { "type": "array", "items": { "$ref": "#/$defs/instruction" } } ], "description": "循环体（单条或数组，兼容 demos 写法）" }
+                      "domain": {
+                        "$ref": "#/$defs/domain"
+                      },
+                      "then": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/$defs/instruction"
+                          },
+                          {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/instruction"
+                            }
+                          }
+                        ],
+                        "description": "条件成立执行的指令（单条或数组，兼容 demos 写法）"
+                      },
+                      "else": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/$defs/instruction"
+                          },
+                          {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/instruction"
+                            }
+                          }
+                        ],
+                        "description": "条件不成立执行的指令（单条或数组，兼容 demos 写法）"
+                      }
+                    },
+                    "additionalProperties": true
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "while_loop"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "type": "object",
+                    "required": [
+                      "condition",
+                      "body"
+                    ],
+                    "properties": {
+                      "condition": {
+                        "$ref": "#/$defs/domain"
+                      },
+                      "body": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/$defs/instruction"
+                          },
+                          {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/instruction"
+                            }
+                          }
+                        ],
+                        "description": "循环体（单条或数组，兼容 demos 写法）"
+                      }
                     },
                     "additionalProperties": true
                   }
@@ -167,27 +397,54 @@
     },
     "transform_rule": {
       "type": "object",
-      "required": ["type", "params"],
+      "required": [
+        "type",
+        "params"
+      ],
       "properties": {
         "type": {
-          "enum": ["set", "push", "branch", "io_request", "enforce"],
+          "enum": [
+            "set",
+            "push",
+            "branch",
+            "io_request",
+            "enforce"
+          ],
           "description": "5 元指令类型（权威源 evorule-tcb/src/executor.rs META_INSTRUCTION_TYPES）。注意：noop/increment/decrement 是指令层，不是元指令层，不得出现在此枚举（P0-01）；enforce 仅允许出现在 L2 元规则文件（tier=meta），业务文件/L3 携带由 server 装载门禁拒载（回归验证）；collect/merge 已退役（规则清理方案 2026-09-14）。"
         },
-        "params": { "type": "object" }
+        "params": {
+          "type": "object"
+        }
       },
       "additionalProperties": false,
       "description": "条目级键白名单 = {type, params}，未知键 fail-fast（additionalProperties:false）。背景（意图静默丢失防御）：LLM 转写产物曾把匹配条件写成条目级 condition 字段，引擎静默忽略导致约束对所有指令无条件触发——条件语义只能经 params 内的 domain/enforce 原语表达；条目级未知键一律提交期报错并列明键名，杜绝起草意图在转写环节静默丢失。",
       "allOf": [
         {
-          "if": { "properties": { "type": { "const": "enforce" } } },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "enforce"
+              }
+            }
+          },
           "then": {
             "properties": {
               "params": {
                 "type": "object",
-                "required": ["domain", "reason"],
+                "required": [
+                  "domain",
+                  "reason"
+                ],
                 "properties": {
-                  "domain": { "$ref": "#/$defs/domain", "description": "匹配即强制中断剩余 transform 并拒绝执行违规指令（引擎级阻止，非留痕）；与 branch 的 domain 同构（7 域类型）" },
-                  "reason": { "type": "string", "minLength": 1, "description": "必填违规说明：命中时随系统独占 Violation 事实审计回显；无 reason 的拦截不可审计，不允许静默强制" }
+                  "domain": {
+                    "$ref": "#/$defs/domain",
+                    "description": "匹配即强制中断剩余 transform 并拒绝执行违规指令（引擎级阻止，非留痕）；与 branch 的 domain 同构（7 域类型）"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "必填违规说明：命中时随系统独占 Violation 事实审计回显；无 reason 的拦截不可审计，不允许静默强制"
+                  }
                 },
                 "additionalProperties": true
               }
@@ -195,16 +452,39 @@
           }
         },
         {
-          "if": { "properties": { "type": { "const": "set" } } },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "set"
+              }
+            }
+          },
           "then": {
             "properties": {
               "params": {
                 "type": "object",
-                "required": ["attr", "operation", "value"],
+                "required": [
+                  "attr",
+                  "operation",
+                  "value"
+                ],
                 "properties": {
-                  "attr": { "$ref": "#/$defs/payload_attr_path", "description": "payload 路径（相对或 __exec__.payload.X 全路径）；引用 __ 开头字段需显式前缀（core_eval v0.3.1 约束）；payload. 前缀禁止（方案 a，双重嵌套静默写歪）" },
-                  "operation": { "enum": ["set", "add", "sub"], "description": "纯覆盖语义：业务 set 指令的 operation=set 固定为覆盖，params 里的 add/sub 会被忽略（A-1）；算术更新必须用 increment/decrement 指令 + set operation=add/sub" },
-                  "value": { "$ref": "#/$defs/path_or_literal", "description": "必填：字面量或 __ 开头路径引用字符串。引擎 exec_set 对缺失 value 报 MissingField（resolve_path_or_literal(None)）——不能省略；__ 路径必须语法合法（防 x. 等运行时错误）" }
+                  "attr": {
+                    "$ref": "#/$defs/payload_attr_path",
+                    "description": "payload 路径（相对或 __exec__.payload.X 全路径）；引用 __ 开头字段需显式前缀（core_eval v0.3.1 约束）；payload. 前缀禁止（方案 a，双重嵌套静默写歪）"
+                  },
+                  "operation": {
+                    "enum": [
+                      "set",
+                      "add",
+                      "sub"
+                    ],
+                    "description": "纯覆盖语义：业务 set 指令的 operation=set 固定为覆盖，params 里的 add/sub 会被忽略（A-1）；算术更新必须用 increment/decrement 指令 + set operation=add/sub"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/path_or_literal",
+                    "description": "必填：字面量或 __ 开头路径引用字符串。引擎 exec_set 对缺失 value 报 MissingField（resolve_path_or_literal(None)）——不能省略；__ 路径必须语法合法（防 x. 等运行时错误）"
+                  }
                 },
                 "additionalProperties": true
               }
@@ -212,17 +492,33 @@
           }
         },
         {
-          "if": { "properties": { "type": { "const": "push" } } },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "push"
+              }
+            }
+          },
           "then": {
             "properties": {
               "params": {
                 "type": "object",
-                "required": ["instructions"],
+                "required": [
+                  "instructions"
+                ],
                 "properties": {
                   "instructions": {
                     "oneOf": [
-                      { "type": "array", "items": { "$ref": "#/$defs/instruction" } },
-                      { "type": "string", "description": "路径引用（如 __exec__.instruction.params.instructions）" }
+                      {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/instruction"
+                        }
+                      },
+                      {
+                        "type": "string",
+                        "description": "路径引用（如 __exec__.instruction.params.instructions）"
+                      }
                     ]
                   }
                 },
@@ -232,16 +528,37 @@
           }
         },
         {
-          "if": { "properties": { "type": { "const": "branch" } } },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "branch"
+              }
+            }
+          },
           "then": {
             "properties": {
               "params": {
                 "type": "object",
-                "required": ["domain", "on_true"],
+                "required": [
+                  "domain",
+                  "on_true"
+                ],
                 "properties": {
-                  "domain": { "$ref": "#/$defs/domain" },
-                  "on_true": { "type": "array", "items": { "$ref": "#/$defs/transform_rule" } },
-                  "on_false": { "type": "array", "items": { "$ref": "#/$defs/transform_rule" } }
+                  "domain": {
+                    "$ref": "#/$defs/domain"
+                  },
+                  "on_true": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/transform_rule"
+                    }
+                  },
+                  "on_false": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/transform_rule"
+                    }
+                  }
                 },
                 "additionalProperties": true
               }
@@ -249,16 +566,29 @@
           }
         },
         {
-          "if": { "properties": { "type": { "const": "io_request" } } },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "io_request"
+              }
+            }
+          },
           "then": {
             "properties": {
               "params": {
                 "type": "object",
-                "required": ["io_type"],
+                "required": [
+                  "io_type"
+                ],
                 "properties": {
-                  "io_type": { "type": "string", "description": "如 call_external / call_service；I/O 结果按 io_type 隔离写入 __io_results__.<io_type>（复数，P1-03）" }
+                  "io_type": {
+                    "type": "string",
+                    "description": "如 call_external / call_service；I/O 结果按 io_type 隔离写入 __io_results__.<io_type>（复数，P1-03）"
+                  }
                 },
-                "additionalProperties": { "$ref": "#/$defs/path_or_literal" },
+                "additionalProperties": {
+                  "$ref": "#/$defs/path_or_literal"
+                },
                 "description": "io_type 专属参数（call_external: messages 必填路径 + tools? 可选；call_service: service_name + args?）。可选参数必须以 '?' 后缀显式声明（审计决策）：键名带 ? 时路径解析失败可跳过（业务性缺省），不带 ? 时解析失败立即报错——可选必须显式声明，禁止静默推断。所有参数值经 resolve_path_or_literal：__ 前缀字符串必须语法合法（防 x. 等运行时错误）"
               }
             }
@@ -268,7 +598,9 @@
     },
     "service_entry": {
       "type": "object",
-      "required": ["url"],
+      "required": [
+        "url"
+      ],
       "properties": {
         "url": {
           "type": "string",
@@ -281,7 +613,9 @@
         },
         "headers": {
           "type": "object",
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "可选；值必须是字符串；注册表 headers 优先于规则 params 的 headers（防规则私自加鉴权头）"
         },
         "timeout_ms": {
@@ -295,7 +629,14 @@
     },
     "llm_verdict": {
       "type": "object",
-      "required": ["kind", "key", "verdict", "prompt_hash", "model", "origin"],
+      "required": [
+        "kind",
+        "key",
+        "verdict",
+        "prompt_hash",
+        "model",
+        "origin"
+      ],
       "properties": {
         "kind": {
           "const": "llm_verdict",
@@ -307,7 +648,10 @@
           "description": "判定键（如 content.safety）：规则条件经 payload 注入路径（facts.llm_verdict.<key>）用现有 exists/eq 原子消费此键；键名小写点分，防路径文法歧义"
         },
         "verdict": {
-          "type": ["boolean", "string"],
+          "type": [
+            "boolean",
+            "string"
+          ],
           "description": "判定结果：boolean；或字符串形态 pass/fail（二元判定惯例）。value 形态（判定产出数值/枚举值）时必须携带 value 字段"
         },
         "value": {
@@ -340,14 +684,45 @@
       "allOf": [
         {
           "if": {
-            "properties": { "verdict": { "const": "value" } },
-            "required": ["verdict"]
+            "properties": {
+              "verdict": {
+                "const": "value"
+              }
+            },
+            "required": [
+              "verdict"
+            ]
           },
-          "then": { "required": ["value"] }
+          "then": {
+            "required": [
+              "value"
+            ]
+          }
         }
       ],
       "additionalProperties": false,
       "description": "LLM 判定事实载荷 v1.0：LLM 在 agent 层完成语义判定后的事实化结构——判定事实化（结构化+落审计链+prompt 指纹）后，规则面以现有原子（exists/eq）消费，引擎零 LLM 依赖。design rationale：confidence 与 origin 不参与确定性求值面；本 $def 为校验层定义，不改变引擎已消费的机器语义（schema-evolution-sop 红线合规）。"
+    },
+    "sandbox_case_instruction": {
+      "title": "sandbox_case_instruction",
+      "description": "沙盒用例注入指令形态判定的宪法锚（[CON-X-003]，[CON-L2-005#4] 迁移件）。语义：注入器与测试报告的 is_case_group 同锚此 def 的 instruction_type 常量，禁止双写白名单。v1.1 新增：用例即指令本体（原 type==command 包装形态已废弃——该包装为本服务发明，无宪法规则匹配，恒 Ignored→Error，属断链面）。判定口径：x-sandbox-case-marker===true 的 instruction_type 值即用例指令。 版本注记：v1.0 容器内新增 $def（向前兼容，不升容器 $id；[CON-G-003] 语义扩展）。",
+      "x-sandbox-case-marker": true,
+      "type": "object",
+      "required": [
+        "type",
+        "x-sandbox-case-marker"
+      ],
+      "properties": {
+        "type": {
+          "description": "用例指令类型枚举（eval_* 家族；非白名单封闭集——未知形态归启动噪声组留痕，不冒充用例）",
+          "type": "string",
+          "pattern": "^eval_[a-z0-9_]+$"
+        },
+        "x-sandbox-case-marker": {
+          "description": "机器可读锚：注入器与 is_case_group 生成的共享常量从此键读取，schema 校验面与代码判定面同源",
+          "const": true
+        }
+      }
     }
   }
 }

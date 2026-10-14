@@ -112,16 +112,17 @@ fn group_facts_by_command(
     groups
 }
 
-/// 用例组识别：仅沙盒用例注入指令形态（`instruction.type == "command"`，
-/// 见 sandbox_service.inject_test_cases 的包装）计为测试用例；
-/// 规则装载（transform）/未知指令类型/缺失 instruction 归启动噪声组
-/// （白名单口径：未知形态宁可降为噪声留痕，不冒充用例）。
+/// 用例组识别：仅宪法锚定的沙盒用例指令形态计为测试用例（[CON-X-003]：
+/// `is_sandbox_case_instruction` 读 `_shared` `sandbox_case_instruction` $def，
+/// eval_* 家族）；规则装载（transform）/未知指令类型/缺失 instruction 归启动
+/// 噪声组（白名单口径：未知形态宁可降为噪声留痕，不冒充用例）。
+/// 历史注：2026-10-14 前锚废弃字面量 `type=="command"`（注入器改「用例即指令
+/// 本体」后该形态从未出现——现网用例全部误归噪声的活 bug，本批修复）。
 fn is_case_group(command: Option<&serde_json::Value>) -> bool {
     command
         .and_then(|c| c.get("instruction"))
-        .and_then(|i| i.get("type"))
-        .and_then(|v| v.as_str())
-        == Some("command")
+        .map(evorule_rule_schema::is_sandbox_case_instruction)
+        .unwrap_or(false)
 }
 
 /// 事实级失败判定：返回失败说明（None = 非失败事实）。
@@ -387,12 +388,13 @@ mod tests {
     use super::*;
 
     /// 构造沙盒用例注入形态的 Command 事实
-    /// (instruction.type == "command", 见 sandbox_service.inject_test_cases)
+    /// (instruction.type == "eval_*"，宪法 sandbox_case_instruction 锚，
+    ///  见 sandbox_service.inject_test_cases 与 [CON-X-003])
     fn case_command(id: u64) -> serde_json::Value {
         serde_json::json!({
             "type": "Command",
             "id": id,
-            "instruction": {"type": "command", "payload": {"k": "v"}},
+            "instruction": {"type": "eval_hello", "payload": {"k": "v"}},
         })
     }
 
@@ -404,6 +406,18 @@ mod tests {
             "id": id,
             "instruction": {"type": "transform", "payload": {}},
         })
+    }
+
+    /// 废弃形态回归锁：旧 "command" 字面量（历史白名单口径）在宪法锚下必须
+    /// 归噪声组——防锚回退（[CON-X-003] 判据：双写扫描零命中 + 形态演进有锁）
+    #[test]
+    fn legacy_command_literal_is_noise_not_case() {
+        let legacy = serde_json::json!({
+            "type": "Command",
+            "id": 1,
+            "instruction": {"type": "command", "payload": {}},
+        });
+        assert!(!is_case_group(Some(&legacy)));
     }
 
     #[test]

@@ -292,19 +292,17 @@ impl SandboxService {
             // 用例即指令本体：与生产 POST /api/command 同形态、同 TCB 消费路径
             // （原 {"type":"command"} 包装是本服务发明的形态，无任何宪法/草稿
             // 规则匹配，恒 Ignored→Error——用例从未真实执行的断链面之一）。
-            // 校验 fail-fast：非对象或缺非空 "type" 的用例无法被任何规则匹配，
-            // 且多半是数据集笔误——启动期拦截而非留到报告里变成 Failed 噪音。
+            // 校验 fail-fast（[CON-X-003] 同锚）：用例类型必须命中宪法
+            // sandbox_case_instruction 锚（eval_* 家族）——非对象/非 eval_* 形态
+            // 无法被用例报告正确归组（is_case_group 同锚判定），启动期拦截而非
+            // 留到报告里变成 startup_noise 假阴。
             // name/expected 等元数据字段随指令一并发送（TCB 对根部额外键零消费）。
             let valid = case.is_object()
-                && case
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .map(|s| !s.trim().is_empty())
-                    .unwrap_or(false);
+                && evorule_rule_schema::is_sandbox_case_instruction(case);
             if !valid {
                 return Err(WorkspaceError::invalid_input(format!(
-                    "test_dataset {} 用例 #{} 必须是指令对象（含非空 \"type\" 指令类型字段）",
-                    dataset.id, idx
+                    "test_dataset {} 用例 #{} 必须是宪法锚定的用例指令对象（type 命中 {} $def，如 eval_hello）",
+                    dataset.id, idx, evorule_rule_schema::SANDBOX_CASE_DEF_NAME
                 )));
             }
             self.session_ops
@@ -887,13 +885,13 @@ mod tests {
         let rule_svc = Arc::new(RuleMetaService::new(db.clone()));
         let rv = create_rule(&rule_svc, &ws_id, "rule-1").await;
 
-        // 创建测试数据集（用例即指令本体：含非空 "type" 指令类型；
-        // name 元数据字段随指令发送，报告按用例组序命名）
+        // 创建测试数据集（用例即指令本体：type 命中宪法 sandbox_case_instruction
+        // 锚（eval_* 家族）；name 元数据字段随指令发送，报告按用例组序命名）
         let dataset_id = db
             .insert_test_dataset(
                 "ds-1",
                 Some(&ws_id),
-                r#"[{"name":"用例1","type":"increment","params":{}},{"name":"用例2","type":"increment","params":{}}]"#,
+                r#"[{"name":"用例1","type":"eval_increment","params":{}},{"name":"用例2","type":"eval_increment","params":{}}]"#,
                 2,
                 "owner-1",
                 None,
@@ -931,8 +929,8 @@ mod tests {
         {
             let commands = mock_ops.commands_sent.lock().unwrap();
             assert_eq!(commands.len(), 2);
-            assert_eq!(commands[0].1["type"], "increment");
-            assert_eq!(commands[1].1["type"], "increment");
+            assert_eq!(commands[0].1["type"], "eval_increment");
+            assert_eq!(commands[1].1["type"], "eval_increment");
         }
 
         // 沙盒记录存在且状态为 running
@@ -984,7 +982,7 @@ mod tests {
             .insert_test_dataset(
                 "ds-1",
                 Some(&ws_id),
-                r#"[{"name":"用例1","type":"increment","params":{}}]"#,
+                r#"[{"name":"用例1","type":"eval_increment","params":{}}]"#,
                 1,
                 "owner-1",
                 None,

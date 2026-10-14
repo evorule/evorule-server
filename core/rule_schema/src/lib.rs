@@ -48,6 +48,97 @@ const KNOWLEDGE_ID: &str = "https://evorule.org/schemas/knowledge/v1.0.json";
 const MAX_TRANSFORM_RULES: usize = 64;
 
 // ============================================================================
+// 宪法锚常量（[CON-X-003]：注入器与 is_case_group 同锚 _shared $def，禁双写）
+// ============================================================================
+
+/// 沙盒用例指令形态的宪法锚（读 `_shared` `sandbox_case_instruction` $def 的
+/// `x-sandbox-case-marker`；模式串 `^eval_[a-z0-9_]+$` 由此常量唯一供出）。
+/// 装载期经 `parse_sandbox_case_anchor()` 从内嵌 SHARED_JSON 提取，双面
+/// （sandbox_service 注入校验 / test_report is_case_group）**必须**消费本常量，
+/// 禁止再写第二份字面量（[CON-L4-001] P2 类别）。
+pub const SANDBOX_CASE_DEF_NAME: &str = "sandbox_case_instruction";
+pub const SANDBOX_CASE_MARKER_KEY: &str = "x-sandbox-case-marker";
+
+/// 从内嵌 `_shared` $def 提取锚数据（启动一次；def 缺失=宪法未含锚，fail-fast
+/// 编译期 include + 运行期 panic 双保险——锚缺失属宪法回退，宁可炸不可静默双写）。
+pub fn sandbox_case_type_pattern() -> &'static str {
+    static PATTERN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| parse_sandbox_case_anchor().0)
+}
+
+/// 用例组判定（注入器与报告层共用；instr.type 匹配宪法 eval_* 模式）。
+/// 匹配器与 $def pattern `^eval_[a-z0-9_]+$` 同语义手写（避免为单 pattern 拉
+/// regex 依赖）；锚一致性由 sandbox_case_anchor_tests 锁（pattern 变更即红）。
+pub fn is_sandbox_case_instruction(instr: &Value) -> bool {
+    let ty = instr.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    matches_eval_pattern(ty)
+}
+
+/// `^eval_` 前缀 + ≥1 个 [a-z0-9_] 段，全串匹配（等价 ^eval_[a-z0-9_]+$）
+fn matches_eval_pattern(s: &str) -> bool {
+    let rest = match s.strip_prefix("eval_") {
+        Some(r) if !r.is_empty() => r,
+        _ => return false,
+    };
+    rest.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// 解析锚：返回 (type_pattern, marker_bool)
+fn parse_sandbox_case_anchor() -> (String, bool) {
+    let shared: Value = serde_json::from_str(SHARED_JSON).expect("内嵌 _shared schema 必须可解析");
+    let def = shared
+        .pointer("/$defs/sandbox_case_instruction")
+        .unwrap_or_else(|| panic!("宪法 _shared 缺 {SANDBOX_CASE_DEF_NAME} $def（[CON-X-003] 锚回退——须同步 evorule-system-rules ≥ v1.1）"));
+    let pattern = def
+        .pointer("/properties/type/pattern")
+        .and_then(|v| v.as_str())
+        .expect("sandbox_case_instruction.type.pattern 缺失")
+        .to_string();
+    let marker = def
+        .get(SANDBOX_CASE_MARKER_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    (pattern, marker)
+}
+
+#[cfg(test)]
+mod sandbox_case_anchor_tests {
+    use super::*;
+
+    #[test]
+    fn anchor_extracted_from_constitution() {
+        let (pat, marker) = parse_sandbox_case_anchor();
+        assert_eq!(pat, "^eval_[a-z0-9_]+$");
+        assert!(marker, "x-sandbox-case-marker 必须=true");
+    }
+
+    #[test]
+    fn case_forms_match_and_noise_rejected() {
+        for ty in ["eval_hello", "eval_service_call", "eval_a1_b2"] {
+            assert!(is_sandbox_case_instruction(&serde_json::json!({"type": ty})), "{ty}");
+        }
+        for ty in ["command", "transform", "set", "", "call_service", "Eval_X", "eval_", "eval_aB"] {
+            assert!(!is_sandbox_case_instruction(&serde_json::json!({"type": ty})), "{ty}");
+        }
+    }
+
+    /// 锚-匹配器一致性：宪法 pattern 串与手写匹配器必须同语义（pattern 若在
+    /// 宪法侧演进，此测试红=强制同步匹配器——双写漂移防线）
+    #[test]
+    fn matcher_locked_to_constitution_pattern() {
+        let (pat, _) = parse_sandbox_case_anchor();
+        assert_eq!(pat, "^eval_[a-z0-9_]+$", "宪法 pattern 演进须同步 matches_eval_pattern");
+        // 代表性样本双向验证
+        for s in ["eval_ok_1", "eval_x"] {
+            let re_semantic = s.starts_with("eval_")
+                && s.len() > 5
+                && s[5..].bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+            assert_eq!(matches_eval_pattern(s), re_semantic, "{s}");
+        }
+    }
+}
+
+// ============================================================================
 // 校验结果
 // ============================================================================
 
