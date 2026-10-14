@@ -29,7 +29,7 @@ use crate::models::{
 };
 
 /// 当前 schema 版本
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 
 /// SQLite 数据库封装
 ///
@@ -114,6 +114,9 @@ impl WorkspaceDb {
         }
         if current < 7 {
             migrate_v7(&conn)?;
+        }
+        if current < 8 {
+            migrate_v8(&conn)?;
         }
         Ok(())
     }
@@ -477,6 +480,24 @@ fn migrate_v7(conn: &Connection) -> WorkspaceResult<()> {
     )
     .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v7: {e}")))?;
     record_migration(conn, 7)
+}
+
+/// v8 迁移: 拒收留痕表（[CON-L1-003]，SR-15 件6）——L1 写入门拒收报文留痕
+fn migrate_v8(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS rejection_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            logged_at TEXT NOT NULL,
+            source TEXT NOT NULL,
+            level TEXT NOT NULL,
+            violation_summary TEXT NOT NULL,
+            message_id TEXT NOT NULL
+        );
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v8: {e}")))?;
+    record_migration(conn, 8)
 }
 
 // =============================================================================
@@ -932,6 +953,21 @@ fn rule_content_schema_violation(content: &str) -> Option<String> {
     )
 }
 
+/// [CON-L1-003] 拒收留痕记录（rejection_log 行，SR-15 件6）
+#[derive(Debug, Clone)]
+pub struct RejectionRecord {
+    pub id: i64,
+    pub logged_at: String,
+    /// 来源（如 persistence_gate）
+    pub source: String,
+    /// 门层级（L1=持久层写入门）
+    pub level: String,
+    /// 违规条目摘要（四段式报文 ① 行）
+    pub violation_summary: String,
+    /// 报文 ID=四段式报文内容哈希前 12 位（evorule-hash SSOT）
+    pub message_id: String,
+}
+
 impl WorkspaceDb {
     pub fn insert_rule_version(&self, rv: &RuleVersionRecord) -> WorkspaceResult<()> {
         // [CON-L1-001] 持久层写入门（SR-14 升格）：rule_versions 的唯一 content
@@ -939,6 +975,18 @@ impl WorkspaceDb {
         // 不了闸（条文「唯一入口的强制层」）。service 层 validate_content 保留
         // （fail-fast 更早、报错形态更友好），与发布门禁同族的双层防御。
         if let Some(detail) = rule_content_schema_violation(&rv.content) {
+            // [CON-L1-003] 拒收留痕（SR-15 件6）：报文 ID=四段式报文内容哈希前
+            // 12 位（evorule-hash SSOT）；留痕失败仅告警不阻断拒收主流程。
+            let message_id: String =
+                evorule_hash::digest(detail.as_bytes()).chars().take(12).collect();
+            let summary = detail
+                .lines()
+                .nth(1)
+                .unwrap_or(detail.as_str())
+                .to_string();
+            if let Err(e) = self.insert_rejection("persistence_gate", "L1", &summary, &message_id) {
+                tracing::warn!(error = %e, "rejection_log 写入失败（留痕失败不阻断拒收）");
+            }
             return Err(WorkspaceError::invalid_input(format!(
                 "rule_version content violates schema (persistence gate [CON-L1-001]):\n{detail}"
             )));
@@ -961,6 +1009,55 @@ impl WorkspaceDb {
         )
         .map_err(WorkspaceError::from)?;
         Ok(())
+    }
+
+    /// [CON-L1-003] 拒收留痕写入（门处调用；留痕失败由调用方告警不阻断）
+    pub fn insert_rejection(
+        &self,
+        source: &str,
+        level: &str,
+        violation_summary: &str,
+        message_id: &str,
+    ) -> WorkspaceResult<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO rejection_log (logged_at, source, level, violation_summary, message_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                Utc::now().to_rfc3339(),
+                source,
+                level,
+                violation_summary,
+                message_id
+            ],
+        )
+        .map_err(WorkspaceError::from)?;
+        Ok(())
+    }
+
+    /// [CON-L1-003] 拒收留痕读取（最近 limit 条，新在前）
+    pub fn list_rejections(&self, limit: usize) -> WorkspaceResult<Vec<RejectionRecord>> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, logged_at, source, level, violation_summary, message_id
+                 FROM rejection_log ORDER BY id DESC LIMIT ?1",
+            )
+            .map_err(WorkspaceError::from)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok(RejectionRecord {
+                    id: row.get(0)?,
+                    logged_at: row.get(1)?,
+                    source: row.get(2)?,
+                    level: row.get(3)?,
+                    violation_summary: row.get(4)?,
+                    message_id: row.get(5)?,
+                })
+            })
+            .map_err(WorkspaceError::from)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(WorkspaceError::from)
     }
 
     pub fn get_rule_version(&self, id: &str) -> WorkspaceResult<RuleVersionRecord> {
@@ -2779,6 +2876,55 @@ mod tests {
             created_by: "owner-1".to_string(),
         };
         db.insert_rule_version(&ok).unwrap();
+    }
+
+    /// [CON-L1-003] 拒收留痕（SR-15 件6）：持久层门拒收时 rejection_log 落一行
+    /// （时间/来源/L1/违规摘要/报文 ID=四段式报文哈希前 12 位），可查。
+    #[test]
+    fn test_persistence_gate_writes_rejection_log() {
+        let db = make_db();
+        let ws = make_workspace(&db, "team", "owner-1");
+        let now = Utc::now();
+
+        let rule = RuleRecord {
+            id: ulid::Ulid::new().to_string(),
+            workspace_id: ws.id.clone(),
+            name: "reject-log-rule".to_string(),
+            current_version_id: None,
+            state: RuleState::Draft,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            description: None,
+            created_by: "owner-1".to_string(),
+            metadata: "{}".to_string(),
+        };
+        db.insert_rule(&rule).unwrap();
+
+        let bad = RuleVersionRecord {
+            id: ulid::Ulid::new().to_string(),
+            rule_id: rule.id.clone(),
+            version: 1,
+            content_hash: "h-bad".to_string(),
+            content: r#"{"transform":[{"type":"set","params":{"operation":"set","value":1}}]}"#
+                .to_string(),
+            created_at: now,
+            state: RuleVersionState::Current,
+            created_by: "owner-1".to_string(),
+        };
+        let err = db.insert_rule_version(&bad).unwrap_err();
+        let msg = err.to_string();
+        // 拒收报文含四段式全段（[CON-K2-001]/[CON-L1-002]）
+        assert!(msg.contains("① 违什么："), "{msg}");
+        assert!(msg.contains("④ 正确形态"), "{msg}");
+        assert!(msg.contains("→ 导览："), "{msg}");
+
+        let log = db.list_rejections(10).unwrap();
+        assert_eq!(log.len(), 1, "拒收应留痕一行");
+        assert_eq!(log[0].source, "persistence_gate");
+        assert_eq!(log[0].level, "L1");
+        assert!(log[0].violation_summary.contains("违什么"), "{:?}", log[0]);
+        assert_eq!(log[0].message_id.len(), 12, "报文 ID=哈希前 12 位");
     }
 
     #[test]
