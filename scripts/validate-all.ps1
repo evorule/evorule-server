@@ -95,12 +95,23 @@ if ($LASTEXITCODE -ne 0) {
     $failed += 'check_schema_sync'
 }
 
+# === 8. scan_constitution_parity.py (宪法语义手写提取禁令, [CON-L4-001]/[CON-L4-002]) ===
+# 模式表: P1 transform 直取 / P2 硬编码指令白名单 / P3 手写 serde_to_tcb;
+# 豁免清单 scripts/allowed_exceptions.conf (显式登记: 理由|责任人|复审期);
+# 命中未豁免 = exit 1 阻断 (CI 红灯), 注释关闭=后门被禁
+Write-Host "`n>>> [scan_constitution_parity] <<<" -ForegroundColor Magenta
+$parityScript = Join-Path $repoRoot "scripts\scan_constitution_parity.py"
+& python $parityScript
+if ($LASTEXITCODE -ne 0) {
+    $failed += 'scan_constitution_parity'
+}
+
 # === SUMMARY ===
 Write-Host "`n=========== SUMMARY ===========" -ForegroundColor Cyan
-$totalChecks = 1 + $scripts.Count + 2  # gate-bypass + 5 scripts + doc-safety + schema-sync
+$totalChecks = 1 + $scripts.Count + 3  # gate-bypass + 5 scripts + doc-safety + schema-sync + constitution-parity
 if ($failed.Count -gt 0) {
     Write-Host "FAILED: $($failed -join ', ')" -ForegroundColor Red
     exit 1
 }
-Write-Host "ALL $totalChecks CHECKS PASSED (gate-bypass + 5 validate scripts + doc-safety + schema-sync)" -ForegroundColor Green
+Write-Host "ALL $totalChecks CHECKS PASSED (gate-bypass + 5 validate scripts + doc-safety + schema-sync + constitution-parity)" -ForegroundColor Green
 exit 0

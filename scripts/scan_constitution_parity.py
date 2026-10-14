@@ -9,8 +9,14 @@
 #         P2 指令形态白名单：`== "command"` 等硬编码判型（须引宪法 $def 常量）
 #         P3 手写 serde_to_tcb：第二份转换实现（唯一实现=rule_loader::serde_to_tcb）
 #
-# 豁免纪律：命中默认 exit 1；确属合法者入 allowed_exceptions.conf
-#           （每条含路径:行号锚+理由+责任人+复审期），禁止注释关闭。
+# 豁免纪律：命中默认 exit 1；确属合法者入 allowed_exceptions.conf 以
+#           **行锚定**（path:lineStart-lineEnd 或 path:line）登记——行级锚保证
+#           只放行已审查的具体行，文件未来新增漂移照样 HIT（红灯演练实证：
+#           文件级豁免曾把注入漂移静默吞掉，2026-10-14 修复为行锚定）；
+#           禁止注释关闭。条目格式：
+#             <path:line[-lineEnd]> | <pattern-id|*> | <理由 | 责任人 | 复审期>
+#           行锚漂移容忍：锚行±0 精确；锚失配（如重构移行）= 退化为 HIT，
+#           须重新登记（防豁免烂尾=每条豁免的复审期约束）。
 #
 # 用法：
 #   python scripts/scan_constitution_parity.py            # 扫本仓
@@ -47,46 +53,59 @@ PATTERNS = [
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
 EXEMPT_FILE = DEFAULT_ROOT / "scripts" / "allowed_exceptions.conf"
 
-# 结构性豁免（扫描器内置：唯一实现点与测试面天然合法，无需逐条登记）
+# 结构性豁免（扫描器内置：唯一实现点与测试面天然合法，无需逐条登记）。
+# 仅此一个 crate 级豁免——rule_loader 是唯一装载通道本体。
 STRUCTURAL_EXEMPTS = {
-    # P1：唯一装载通道 crate 自身（剥壳语义的正主）
     "core/rule_loader/src/lib.rs": {"P1-transform-direct", "P3-serde-to-tcb-rewrite"},
-    # P2：tier 门 enforce 限定是治理门语义（宪法 tier_gate 条文自带），非白名单判型
-    "core/rule_loader/src/lib.rs#P2": set(),
 }
 
 SKIP_DIRS = {"target", "node_modules", ".git", "patches"}
 
 
+def parse_anchor(anchor):
+    """'path:12' -> (path, 12, 12); 'path:12-30' -> (path, 12, 30)"""
+    if ":" not in anchor:
+        return anchor, None, None  # 无行锚=文件级（仅结构性豁免同待遇，登记时须理由强化）
+    path, _, lines = anchor.rpartition(":")
+    m = re.match(r"^(\d+)(?:-(\d+))?$", lines)
+    if not m:
+        return anchor, None, None
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else start
+    return path, start, end
+
+
 def load_exemptions():
-    """解析 allowed_exceptions.conf：path:line 锚 或 path 通配；# 开头为注释"""
-    exemptions = []  # [(path_substr, pattern_id, reason)]
+    """解析 allowed_exceptions.conf：行锚条目优先；# 开头为注释"""
+    exemptions = []  # [(path, line_start, line_end, pattern_id, reason)]
     if not EXEMPT_FILE.exists():
         return exemptions
     for raw in EXEMPT_FILE.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        # 格式: <path-substr> | <pattern-id|*> | <理由+责任人+复审期>
         parts = [p.strip() for p in line.split("|")]
         if len(parts) >= 3:
-            exemptions.append((parts[0], parts[1], "|".join(parts[2:])))
+            path, ls, le = parse_anchor(parts[0])
+            exemptions.append((path, ls, le, parts[1], "|".join(parts[2:])))
     return exemptions
 
 
 def is_exempt(rel_path, pattern_id, line_no, exemptions):
-    # 结构性豁免（文件级）
+    rel_norm = rel_path.replace("\\", "/")
+    # 结构性豁免（rule_loader crate 本体=唯一实现点）
     for key, pats in STRUCTURAL_EXEMPTS.items():
-        if key.endswith("#P2"):
-            continue
-        if rel_path.replace("\\", "/").endswith(key) and (
-            pattern_id in pats or "*" in pats
-        ):
+        if rel_norm.endswith(key) and pattern_id in pats:
             return f"structural:{key}"
-    # 显式豁免清单（路径子串+模式匹配；行级锚优先精确）
-    for path_sub, pat, reason in exemptions:
-        if path_sub in rel_path.replace("\\", "/") and pat in (pattern_id, "*"):
-            return f"conf:{reason[:60]}"
+    # 行锚豁免：路径匹配 + 行号落锚段 + 模式匹配；无行锚条目=文件级（从严：仍放行
+    # 但输出标记 file-scope，复审期须补行锚）
+    for path, ls, le, pat, reason in exemptions:
+        if path in rel_norm or rel_norm.endswith(path):
+            if pat in (pattern_id, "*"):
+                if ls is None:
+                    return f"file-scope:{reason[:50]}"
+                if ls <= line_no <= le:
+                    return f"line:{ls}-{le}:{reason[:40]}"
     return None
 
 
@@ -112,11 +131,11 @@ def main():
             text = rs_file.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        lines = text.splitlines()
         for pat in PATTERNS:
             for m in pat["regex"].finditer(text):
                 line_no = text.count("\n", 0, m.start()) + 1
-                # 取该行文本判断是否注释（粗判：行首Strip后以 // 或 /// 开头 → 文档注释不算）
-                line_text = text.splitlines()[line_no - 1].strip()
+                line_text = lines[line_no - 1].strip() if line_no <= len(lines) else ""
                 if line_text.startswith("//"):
                     continue
                 ex = is_exempt(rel, pat["id"], line_no, exemptions)
