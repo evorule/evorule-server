@@ -113,9 +113,16 @@ impl SandboxService {
         //    5. fork 并注入草稿规则集（原子序列：草稿规则仅进沙盒 Reactor；
         //    权利面冲突 fail-fast 拒启，此时尚未落 db，无孤儿记录）
         let parent_session_id = self.get_production_parent_session()?;
+        // R4/[CON-S-003]：草稿治理指纹=真实 DB 治理事实（版本 ID 逐条对应
+        // draft_rules 同序 + compute_ruleset_hash 草稿集哈希），穿透 fork 实现
+        // 侧装载 ctx——禁止 provenance 伪造（"draft#i"+空 hash 已退役）
+        let provenance = crate::session_bridge::DraftRulesProvenance {
+            rule_version_ids: rule_versions.iter().map(|rv| rv.id.clone()).collect(),
+            ruleset_hash: draft_hash.clone(),
+        };
         let tcb_session_id = self
             .session_ops
-            .fork_session_with_rules(parent_session_id, &draft_rules)
+            .fork_session_with_rules(parent_session_id, &draft_rules, &provenance)
             .await?;
         info!(
             sandbox_session_id = tcb_session_id,
@@ -779,6 +786,7 @@ mod tests {
             &self,
             _parent: u64,
             extra_rules: &[Value],
+            _provenance: &crate::session_bridge::DraftRulesProvenance,
         ) -> WorkspaceResult<u64> {
             let id = self.next_id.fetch_add(1, Ordering::SeqCst);
             self.rules_injected

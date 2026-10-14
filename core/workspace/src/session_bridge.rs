@@ -37,6 +37,20 @@ use serde_json::Value;
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 
+/// 草稿规则集治理指纹（R4/[CON-S-003] fork provenance 补真）
+///
+/// 由编排侧（start_sandbox）从 DB 治理事实构造：rule_versions 真实版本 ID
+/// + compute_ruleset_hash 草稿集哈希——fork 实现侧逐条装载 ctx 据此携带，
+/// 禁止再出现 `draft#i` 伪造标签+空 hash（provenance 必须与治理链对齐，
+/// 沙盒裁决铸 `sandbox:` 背书=治理行为，铸造信任者必须留真指纹）。
+#[derive(Debug, Clone)]
+pub struct DraftRulesProvenance {
+    /// 与 `extra_rules` 等长按序对应：每条草稿规则的治理版本 ID（rule_versions.id）
+    pub rule_version_ids: Vec<String>,
+    /// 草稿规则集 BLAKE3 哈希（`compute_ruleset_hash` 口径）
+    pub ruleset_hash: String,
+}
+
 /// 会话操作抽象 trait
 ///
 /// 由 evorule-server 中的 `SessionApi` 实现。
@@ -83,10 +97,15 @@ pub trait SessionOps: Send + Sync {
     ///
     /// 缺省实现返回「不支持」：仅沙盒编排链路需要此能力，其他桥接实现
     /// （发布/滚动/工作空间测试桩）无需关心。
+    ///
+    /// `provenance`（R4/[CON-S-003]）：草稿治理指纹——实现侧装载 ctx 必须据此
+    /// 携带真实版本 ID+ruleset hash（长度必须与 `extra_rules` 一致，不一致
+    /// fail-fast 拒启）。
     async fn fork_session_with_rules(
         &self,
         _parent_session_id: u64,
         _extra_rules: &[Value],
+        _provenance: &DraftRulesProvenance,
     ) -> WorkspaceResult<u64> {
         Err(WorkspaceError::internal(
             "fork_session_with_rules not supported by this session bridge",

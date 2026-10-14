@@ -192,6 +192,11 @@ pub struct Provenance {
     pub venue: Venue,
     pub composition: Composition,
     pub l2_class: L2Class,
+    /// 内容指纹（R4/[CON-S-003] 补课）：对装载输入文档的 blake3（`blake3:hex`，
+    /// SSOT 经 evorule-hash，族 B 哈希纪律禁自写口径）。路径指纹描述「从哪来」，
+    /// 内容指纹描述「装的是什么」——路径不变内容变/路径变内容同都可区分；
+    /// 序列化取 serde_json 紧凑字节（Value 键序= BTreeMap，确定性）。
+    pub content_hash: String,
     pub gates: GatesPassed,
     pub constitution_version: &'static str,
     /// 装载时间戳（unix 秒；确定性装载=时间戳仅入 provenance，不入规则语义）
@@ -343,6 +348,11 @@ pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, Co
     domain_on_missing_gate(&transform_arr, ctx.l2_class)?;
 
     // ── 步骤 4：provenance ──
+    // 内容指纹（R4/[CON-S-003]）：对输入文档字节算 blake3（evorule-hash SSOT）。
+    // serde_json::Value 键序=BTreeMap（无 preserve_order），紧凑序列化确定性。
+    let content_bytes = serde_json::to_vec(doc).map_err(|e| {
+        ConstitutionError::ProvenanceIncomplete(format!("输入文档序列化失败: {e}"))
+    })?;
     let engine_rules: Vec<JsonValue> = transform_arr.into_iter().map(serde_to_tcb).collect();
     Ok(LoadedRuleset {
         engine_rules,
@@ -352,6 +362,7 @@ pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, Co
             venue: ctx.venue,
             composition: ctx.composition,
             l2_class: ctx.l2_class,
+            content_hash: evorule_hash::prefixed(&evorule_hash::digest(&content_bytes)),
             gates: GatesPassed { tier_gate: true, discipline_gate: true, domain_on_missing_gate: true },
             constitution_version: CONSTITUTION_SCHEMA_VERSION,
             loaded_at_unix: now_unix(),
@@ -861,5 +872,43 @@ mod tests {
         let round = sj::to_value(&loaded.provenance).unwrap();
         assert_eq!(round["source"]["kind"], "api");
         assert_eq!(round["source"]["caller"], "probe-client");
+
+        // 内容指纹（R4）：provenance 可序列化携带 content_hash
+        let ctx = LoadContext::constitution("tcb/core_eval.json");
+        let loaded = load_rule_set(&valid_rule_set(), &ctx).unwrap();
+        let round = sj::to_value(&loaded.provenance).unwrap();
+        assert!(
+            round["content_hash"].as_str().unwrap_or("").starts_with("blake3:"),
+            "content_hash 应带 blake3: 前缀: {}",
+            round["content_hash"]
+        );
+    }
+
+    #[test]
+    fn provenance_content_hash_deterministic_and_content_bound() {
+        // R4/[CON-S-003] 判据：同文档两次装载 → 同内容指纹（确定性）；
+        // 不同文档 → 不同指纹（内容绑定）；路径指纹与内容指纹分工独立。
+        let loaded_a1 = load_rule_set(&valid_rule_set(), &LoadContext::business_file("a.json"))
+            .expect("装载应通过");
+        let loaded_a2 = load_rule_set(&valid_rule_set(), &LoadContext::business_file("b.json"))
+            .expect("装载应通过");
+        assert!(
+            loaded_a1.provenance.content_hash.starts_with("blake3:"),
+            "content_hash 应带 blake3: 前缀: {}",
+            loaded_a1.provenance.content_hash
+        );
+        assert_eq!(
+            loaded_a1.provenance.content_hash, loaded_a2.provenance.content_hash,
+            "同内容不同路径 → 同内容指纹（内容绑定，路径另由 source 承载）"
+        );
+        // 不同内容 → 不同指纹
+        let mut other = valid_rule_set();
+        other["metadata"]["title"] = json!("不同内容");
+        let loaded_other =
+            load_rule_set(&other, &LoadContext::business_file("a.json")).expect("装载应通过");
+        assert_ne!(
+            loaded_a1.provenance.content_hash, loaded_other.provenance.content_hash,
+            "不同内容 → 不同内容指纹"
+        );
     }
 }

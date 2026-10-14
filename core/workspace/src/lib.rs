@@ -73,7 +73,7 @@ pub use publish_service::PublishService;
 pub use rolling_session::{RollingSessionService, RollingSwapResult};
 pub use rule_meta_service::RuleMetaService;
 pub use sandbox_service::{sandbox_report_dir, SandboxService, SANDBOX_REPORT_DIR};
-pub use session_bridge::SessionOps;
+pub use session_bridge::{DraftRulesProvenance, SessionOps};
 pub use session_switched::{SessionSwitchedBroadcaster, SessionSwitchedEvent};
 pub use test_report::{TestReport, TestReportBuilder};
 pub use verdict_service::VerdictService;

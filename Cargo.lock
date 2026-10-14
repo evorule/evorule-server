@@ -883,8 +883,6 @@ dependencies = [
 [[package]]
 name = "evorule-governance"
 version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5e72dc988ee06d8419516cfcb54d737d05613812f20838c70c34bf88668e452"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -1048,6 +1046,7 @@ name = "evorule-rule-loader"
 version = "0.1.0"
 dependencies = [
  "evorule-discipline",
+ "evorule-hash",
  "evorule-rule-schema",
  "evorule-tcb",
  "serde",

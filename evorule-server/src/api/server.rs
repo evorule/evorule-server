@@ -3403,8 +3403,19 @@ impl evorule_workspace::SessionOps for SessionApi {
         &self,
         parent_session_id: u64,
         extra_rules: &[serde_json::Value],
+        provenance: &evorule_workspace::DraftRulesProvenance,
     ) -> evorule_workspace::WorkspaceResult<u64> {
         use std::collections::{BTreeMap, BTreeSet};
+
+        // R4/[CON-S-003]：治理指纹与规则数必须一一对应（fail-fast——错位即
+        // provenance 失真，静默截断=静默通过禁令不容）
+        if provenance.rule_version_ids.len() != extra_rules.len() {
+            return Err(evorule_workspace::WorkspaceError::invalid_input(format!(
+                "草稿治理指纹与规则数不一致（{} 条规则 vs {} 个版本 ID），拒绝启动沙盒",
+                extra_rules.len(),
+                provenance.rule_version_ids.len()
+            )));
+        }
 
         let sessions = self.sessions.lock().await;
 
@@ -3416,14 +3427,16 @@ impl evorule_workspace::SessionOps for SessionApi {
         // （含宪法前缀段）+ 过门草稿 的全集。草稿先经 rule_loader 三门
         // （tier 门拒沙盒草稿携 enforce=治理旁路；schema 门剥壳=A 缺陷消解），
         // 门禁不过 fail-fast 拒启（此时尚未落 db，无孤儿记录）。
+        // 装载 ctx 携带真实治理指纹（R4）：逐条 ctx=自身版本 ID+草稿集哈希，
+        // provenance 与 DB 治理链对齐（"draft#i"+空 hash 伪造已退役）。
         let global_ruleset = sessions.core_eval().to_vec();
         let global_len = global_ruleset.len();
         let mut converted: Vec<JsonValue> = Vec::with_capacity(global_len + extra_rules.len());
         converted.extend(global_ruleset);
         for (i, r) in extra_rules.iter().enumerate() {
             let ctx = LoadContext::sandbox(LoadSource::DbDraft {
-                rule_version_ids: (0..extra_rules.len()).map(|j| format!("draft#{j}")).collect(),
-                ruleset_hash: String::new(),
+                rule_version_ids: vec![provenance.rule_version_ids[i].clone()],
+                ruleset_hash: provenance.ruleset_hash.clone(),
             });
             match evorule_rule_loader::load_rule_set(r, &ctx) {
                 Ok(loaded) => converted.extend(loaded.engine_rules),
@@ -15265,7 +15278,7 @@ mod tests {
     /// 面前提）。
     #[tokio::test]
     async fn fork_with_rules_conflict_reject_and_restore() {
-        use evorule_workspace::SessionOps as _;
+        use evorule_workspace::{DraftRulesProvenance, SessionOps as _};
 
         // 宪法声明 io_type "shared_io"（发射面）
         let constitution = serde_json::json!({
@@ -15273,13 +15286,18 @@ mod tests {
         });
         let api = SessionApi::new(vec![serde_to_tcb(constitution)], 100);
         let parent = api.create_session().await.unwrap();
+        // R4：测试治理指纹（标签 ID；真实链路由 start_sandbox 传 DB 版本 ID）
+        let prov = |vid: &str| DraftRulesProvenance {
+            rule_version_ids: vec![vid.to_string()],
+            ruleset_hash: "blake3:test-draft-ruleset".to_string(),
+        };
 
         // ① 草稿声明同一 io_type → 权利面冲突拒启
         let draft_conflict = serde_json::json!({
             "transform": [{"type": "io_request", "params": {"io_type": "shared_io"}}]
         });
         let err = api
-            .fork_session_with_rules(parent, &[draft_conflict])
+            .fork_session_with_rules(parent, &[draft_conflict], &prov("test-draft-0"))
             .await
             .unwrap_err();
         assert!(
@@ -15296,7 +15314,7 @@ mod tests {
         });
         let before = api.sessions.lock().await.core_eval().to_vec();
         let sandbox = api
-            .fork_session_with_rules(parent, &[draft_ok])
+            .fork_session_with_rules(parent, &[draft_ok], &prov("test-draft-0"))
             .await
             .unwrap();
         let after = api.sessions.lock().await.core_eval().to_vec();
@@ -15311,7 +15329,7 @@ mod tests {
     /// 含宪法前缀段；草稿携 enforce（治理旁路）被 tier 门 fail-fast 拒启。
     #[tokio::test]
     async fn fork_with_rules_constitution_not_replaced() {
-        use evorule_workspace::SessionOps as _;
+        use evorule_workspace::{DraftRulesProvenance, SessionOps as _};
 
         // 宪法：一条 set 规则（可识别标记）
         let constitution = serde_json::json!({
@@ -15321,6 +15339,11 @@ mod tests {
         let rules: Vec<serde_json::Value> = constitution["transform"].as_array().unwrap().clone();
         let api = SessionApi::new(rules.iter().map(|r| serde_to_tcb(r.clone())).collect(), 100);
         let parent = api.create_session().await.unwrap();
+        // R4：测试治理指纹（标签 ID；真实链路由 start_sandbox 传 DB 版本 ID）
+        let prov = |vid: &str| DraftRulesProvenance {
+            rule_version_ids: vec![vid.to_string()],
+            ruleset_hash: "blake3:test-draft-ruleset".to_string(),
+        };
 
         // ① 沙盒草稿携 enforce → tier 门拒启（B2 消解：沙盒非 L2，禁止治理旁路原语）
         let draft_enforce = serde_json::json!({
@@ -15330,7 +15353,7 @@ mod tests {
             }]
         });
         let err = api
-            .fork_session_with_rules(parent, &[draft_enforce])
+            .fork_session_with_rules(parent, &[draft_enforce], &prov("test-draft-0"))
             .await
             .unwrap_err();
         assert!(
@@ -15347,7 +15370,7 @@ mod tests {
             ]
         });
         let sandbox = api
-            .fork_session_with_rules(parent, &[draft_ok])
+            .fork_session_with_rules(parent, &[draft_ok], &prov("test-draft-0"))
             .await
             .unwrap();
         api.send_command(
