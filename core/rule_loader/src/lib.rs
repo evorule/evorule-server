@@ -269,6 +269,116 @@ impl std::error::Error for ConstitutionError {}
 /// O-431 后沙盒裁决铸 `sandbox:` 背书=治理行为；铸造信任者必须自守治理纪律，
 /// 沙盒草稿与生产规则同守三门。
 pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, ConstitutionError> {
+    let (engine_rules, provenance) = load_one(doc, ctx, ctx.composition)?;
+    Ok(LoadedRuleset {
+        engine_rules,
+        provenance,
+    })
+}
+
+/// 合并装载部件（[CON-S-005] 装载门合并：部件文档+部件装载上下文成对提交）
+#[derive(Debug, Clone)]
+pub struct MergedPart {
+    /// 部件文档（与单件装载同形态：带壳 rule_set / 部分壳 / 裸数组）
+    pub doc: Value,
+    /// 部件装载上下文（source/l2_class/venue 以部件自身治理事实声明；
+    /// composition 字段在合并入口被强制为 Merged）
+    pub ctx: LoadContext,
+}
+
+/// 合并装载的单部件结果（[CON-S-003] provenance 逐部件留痕）
+#[derive(Debug, Clone, Serialize)]
+pub struct PartOutcome {
+    /// 部件溯源指纹（composition=Merged；content_hash 对部件文档计算）
+    pub provenance: Provenance,
+    /// 部件贡献的引擎规则条数（调用方 sources 标签展开依据）
+    pub rule_count: usize,
+}
+
+/// 合并装载结果（[CON-S-005] 装载门合并）
+#[derive(Debug, Clone)]
+pub struct MergedLoaded {
+    /// 全部件按传入序拼合的引擎规则（宪法在前=调用方传入序纪律）
+    pub engine_rules: Vec<JsonValue>,
+    /// 逐部件结果（与传入 parts 同序同长）
+    pub parts: Vec<PartOutcome>,
+}
+
+/// 合并装载入口（[CON-S-005] 定稿：两层分工之「装载门合并」层）。
+///
+/// 生产/DB·API 路径的多部件合并**必须**经此入口：各部件以自身 ctx 重过
+/// 四步门（与单件装载确定性等判），**函数内**按传入序拼合——禁止调用方
+/// 拿单件结果自行 extend 拼装。任一部件门禁失败=整体失败（fail-fast，
+/// 零部分装载），报错带部件序号标注。
+///
+/// 与「会话挂载合并」（SR-03，fork 时 core_eval_override 挂载面）分工：
+/// 本入口管装载期合并；挂载期合并由 governance 侧实施（沙盒=全局规则集
+/// +过门草稿全集，不在本函数管辖）。
+pub fn load_rule_set_merged(parts: &[MergedPart]) -> Result<MergedLoaded, ConstitutionError> {
+    // minItems=1：空部件清单=空规则集（transform minItems 同理拒）
+    if parts.is_empty() {
+        return Err(ConstitutionError::SchemaViolation(four_part(
+            "合并装载部件清单为空（minItems=1）",
+            "$（合并部件清单）",
+            RULE_SET_URL,
+            MINIMAL_TRANSFORM_RULE,
+        )));
+    }
+    let mut engine_rules: Vec<JsonValue> = Vec::new();
+    let mut outcomes: Vec<PartOutcome> = Vec::with_capacity(parts.len());
+    for (i, part) in parts.iter().enumerate() {
+        // 部件以自身 ctx 重过四步门（与单件装载同 ctx 同判=确定性等判），
+        // composition 强制 Merged（合并语义由入口统一，部件 ctx 声明不生效）
+        let (rules, provenance) =
+            load_one(&part.doc, &part.ctx, Composition::Merged).map_err(|e| annotate_part(e, i))?;
+        outcomes.push(PartOutcome {
+            provenance,
+            rule_count: rules.len(),
+        });
+        engine_rules.extend(rules);
+    }
+    Ok(MergedLoaded {
+        engine_rules,
+        parts: outcomes,
+    })
+}
+
+/// 部件序号标注（报错定位：merged 报错必须可指涉到第几个部件）
+fn annotate_part(e: ConstitutionError, idx: usize) -> ConstitutionError {
+    let prefix = format!("合并装载部件 #{idx}: ");
+    match e {
+        ConstitutionError::SchemaViolation(mut f) => {
+            f.violation.insert_str(0, &prefix);
+            ConstitutionError::SchemaViolation(f)
+        }
+        ConstitutionError::ShellUnrecognized(mut f) => {
+            f.violation.insert_str(0, &prefix);
+            ConstitutionError::ShellUnrecognized(f)
+        }
+        ConstitutionError::TierGate(mut f) => {
+            f.violation.insert_str(0, &prefix);
+            ConstitutionError::TierGate(f)
+        }
+        ConstitutionError::DisciplineGate(mut f) => {
+            f.violation.insert_str(0, &prefix);
+            ConstitutionError::DisciplineGate(f)
+        }
+        ConstitutionError::DomainOnMissingGate(mut f) => {
+            f.violation.insert_str(0, &prefix);
+            ConstitutionError::DomainOnMissingGate(f)
+        }
+        other => other,
+    }
+}
+
+/// 四步主体（[CON-L2-002]：版本协商→schema 校验→剥壳→三门→provenance）。
+/// 组合语义由 `composition` 参数决定：单件=ctx.composition 透传；
+/// 合并入口强制 Merged。结构性豁免=本 crate 唯一实现点（[CON-L4-001]）。
+fn load_one(
+    doc: &Value,
+    ctx: &LoadContext,
+    composition: Composition,
+) -> Result<(Vec<JsonValue>, Provenance), ConstitutionError> {
     // ── 步骤 0：$schema 版本协商（[CON-S-004]）──
     // 带壳文档声明 $schema 时，必须命中本 crate 内嵌校验器认识的版本。
     // _meta pattern 只查 URL 形态（任意 v主.次 均过）——若无此门，v2.0 文档会
@@ -354,20 +464,18 @@ pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, Co
         ConstitutionError::ProvenanceIncomplete(format!("输入文档序列化失败: {e}"))
     })?;
     let engine_rules: Vec<JsonValue> = transform_arr.into_iter().map(serde_to_tcb).collect();
-    Ok(LoadedRuleset {
-        engine_rules,
-        provenance: Provenance {
-            source_kind: source_kind(&ctx.source),
-            source: ctx.source.clone(),
-            venue: ctx.venue,
-            composition: ctx.composition,
-            l2_class: ctx.l2_class,
-            content_hash: evorule_hash::prefixed(&evorule_hash::digest(&content_bytes)),
-            gates: GatesPassed { tier_gate: true, discipline_gate: true, domain_on_missing_gate: true },
-            constitution_version: CONSTITUTION_SCHEMA_VERSION,
-            loaded_at_unix: now_unix(),
-        },
-    })
+    let provenance = Provenance {
+        source_kind: source_kind(&ctx.source),
+        source: ctx.source.clone(),
+        venue: ctx.venue,
+        composition,
+        l2_class: ctx.l2_class,
+        content_hash: evorule_hash::prefixed(&evorule_hash::digest(&content_bytes)),
+        gates: GatesPassed { tier_gate: true, discipline_gate: true, domain_on_missing_gate: true },
+        constitution_version: CONSTITUTION_SCHEMA_VERSION,
+        loaded_at_unix: now_unix(),
+    };
+    Ok((engine_rules, provenance))
 }
 
 /// 来源类别标签（provenance 留痕；完整 LoadSource 详情由调用方入审计日志）
@@ -910,5 +1018,76 @@ mod tests {
             loaded_a1.provenance.content_hash, loaded_other.provenance.content_hash,
             "不同内容 → 不同内容指纹"
         );
+    }
+
+    // ===== [CON-S-005] 装载门合并（R5：merged 入口判据）=====
+
+    #[test]
+    fn merged_loads_parts_in_order_with_outcomes() {
+        // 宪法部件 + 业务部件按传入序拼合；逐部件 outcome（rule_count+provenance）
+        let constitution_part = MergedPart {
+            doc: valid_rule_set(),
+            ctx: LoadContext::constitution("tcb/server_eval.json"),
+        };
+        let business_part = MergedPart {
+            doc: json!([
+                { "type": "set", "params": { "attr": "y", "operation": "set", "value": 1 } },
+                { "type": "set", "params": { "attr": "z", "operation": "set", "value": 2 } }
+            ]),
+            ctx: LoadContext::business_file("rules/biz.json"),
+        };
+        let merged = load_rule_set_merged(&[constitution_part, business_part])
+            .expect("合法部件合并应通过");
+        // 拼合序 = 传入序（宪法在前）
+        assert_eq!(merged.engine_rules.len(), 3, "宪法 1 条+业务 2 条");
+        assert_eq!(merged.parts.len(), 2);
+        assert_eq!(merged.parts[0].rule_count, 1);
+        assert_eq!(merged.parts[1].rule_count, 2);
+        // 逐部件 provenance：composition 强制 Merged，l2_class 保留部件自身身份
+        assert_eq!(merged.parts[0].provenance.composition, Composition::Merged);
+        assert_eq!(merged.parts[1].provenance.composition, Composition::Merged);
+        assert_eq!(merged.parts[0].provenance.l2_class, L2Class::Constitution);
+        assert_eq!(merged.parts[1].provenance.l2_class, L2Class::None);
+        // 内容指纹逐部件可序列化（[CON-S-003]）
+        assert!(merged.parts[0].provenance.content_hash.starts_with("blake3:"));
+        assert_ne!(
+            merged.parts[0].provenance.content_hash, merged.parts[1].provenance.content_hash,
+            "不同部件文档 → 不同内容指纹"
+        );
+    }
+
+    #[test]
+    fn merged_rejects_enforce_draft_part_after_constitution() {
+        // [CON-S-005] 判据：草稿携 enforce 在合并后被 tier 门拒——
+        // 合并路径不因「宪法部件合法」而放过后续部件的治理旁路
+        let constitution_part = MergedPart {
+            doc: valid_rule_set(),
+            ctx: LoadContext::constitution("tcb/server_eval.json"),
+        };
+        let enforce_draft = MergedPart {
+            doc: json!({
+                "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+                "kind": "rule_set", "id": "x.y.e", "version": "0.1.0",
+                "metadata": { "title": "合并路径 enforce 旁路" },
+                "transform": [
+                    { "type": "enforce", "params": { "domain": { "type": "all", "inner": [] }, "reason": "merge-path bypass" } }
+                ]
+            }),
+            ctx: LoadContext::business_file("rules/evil.json"),
+        };
+        let err = load_rule_set_merged(&[constitution_part, enforce_draft])
+            .expect_err("合并路径 enforce 草稿应被 tier 门拒");
+        assert!(matches!(err, ConstitutionError::TierGate(_)));
+        let msg = format!("{err}");
+        assert!(msg.contains("合并装载部件 #1"), "报错应标注部件序号: {msg}");
+        assert!(msg.contains("enforce 仅允许"));
+    }
+
+    #[test]
+    fn merged_empty_parts_rejected() {
+        // minItems=1：空部件清单 fail-fast（空规则集不得经合并通道成立）
+        let err = load_rule_set_merged(&[]).expect_err("空部件清单应拒");
+        assert!(matches!(err, ConstitutionError::SchemaViolation(_)));
+        assert!(format!("{err}").contains("部件清单为空"));
     }
 }

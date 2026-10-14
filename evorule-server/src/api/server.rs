@@ -52,7 +52,7 @@ use evorule_reactor::{Fact, FactId, FactSender, FactsLog, IoType, TraceHit};
 use evorule_tcb::JsonValue;
 
 // 唯一装载通道（宪法收口）：生产/沙盒规则集装载一律经 core/rule_loader
-use evorule_rule_loader::{serde_to_tcb, LoadContext, LoadSource};
+use evorule_rule_loader::{serde_to_tcb, LoadContext, LoadSource, MergedPart};
 
 use evorule_workspace::api::WorkspaceState;
 
@@ -1435,14 +1435,25 @@ impl SessionApi {
         let tcb_json: serde_json::Value = serde_json::from_str(&tcb_raw)
             .map_err(|e| format!("解析宪法文件失败: {}", e))?;
         let ctx = LoadContext::constitution(&core_eval_path.display().to_string());
-        let loaded = evorule_rule_loader::load_rule_set(&tcb_json, &ctx).map_err(|e| {
+
+        // ── 装载门合并（R5/[CON-S-005] 定稿：两层分工之「装载门合并」层）──
+        // 宪法部件在前 + rules_dir 部件按注入序在后，装载与拼装统一在
+        // load_rule_set_merged 函数内完成（禁调用方拼装）；各部件以自身
+        // ctx 重过四步门（与单件门确定性等判），任一部件失败=整体拒载。
+        // io 重叠/domain 防线是生产防线（非三门），仍在本函数后续段执行。
+        let (dir_parts, dir_labels) = Self::load_rules_dir_with_sources(rules_dir);
+        let mut parts = Vec::with_capacity(1 + dir_parts.len());
+        parts.push(MergedPart { doc: tcb_json, ctx });
+        parts.extend(dir_parts);
+        let merged = evorule_rule_loader::load_rule_set_merged(&parts).map_err(|e| {
             format!(
-                "宪法文件 {} 装载门禁未过: {}",
+                "合并装载门禁未过（宪法 {} + rules_dir 部件）: {}",
                 core_eval_path.display(),
                 e
             )
         })?;
-        let constitution = loaded.engine_rules;
+        let constitution_len = merged.parts[0].rule_count;
+        let constitution = &merged.engine_rules[..constitution_len];
 
         // 修复(2026-09-01): call_external 指令规则是 LLM 审计桥的平台契约。
         // 会话反应器的 IoRequest 完全由宪法规则驱动;若宪法缺该规则,LLM 审计桥命令会被
@@ -1472,17 +1483,18 @@ impl SessionApi {
             ));
         }
 
-        let constitution_len = constitution.len();
+        // 来源标签展开（[CON-S-005] 拼装在 loader 内完成，标签按部件 rule_count
+        // 对齐引擎合并序——layout 下标一致性不变式保持）
+        let mut sources = Vec::with_capacity(merged.engine_rules.len());
+        sources.extend(std::iter::repeat_n("core_eval".to_string(), constitution_len));
+        for (i, label) in dir_labels.iter().enumerate() {
+            sources.extend(std::iter::repeat_n(
+                label.clone(),
+                merged.parts[i + 1].rule_count,
+            ));
+        }
 
-        let (extra, extra_sources) = Self::load_rules_dir_with_sources(rules_dir);
-
-        let mut rules = constitution;
-
-        let mut sources = vec!["core_eval".to_string(); constitution_len];
-
-        rules.extend(extra);
-
-        sources.extend(extra_sources);
+        let rules = merged.engine_rules;
 
         // 装载期 I/O 权利面独占防线：先剔除重叠条目，再以剔除后列表构建
         // layout（下标一致性不变式保持：layout 与引擎输入同源同长度）
@@ -2031,11 +2043,14 @@ impl SessionApi {
     ///
     /// warn 日志并跳过该文件（fail-soft，保证热重载可用性）。
     ///
-    /// 带 per-rule 来源标签装载 rules_dir
+    /// 装载 rules_dir 为合并部件清单（per-part 来源标签）
     ///
-    /// 来源标签 = 相对 rules_dir 的文件路径（`/` 归一化），与合并列表等长。
+    /// 来源标签 = 相对 rules_dir 的文件路径（`/` 归一化），与部件清单等长；
+    /// 规则条数展开由调用方按合并结果的 parts[i].rule_count 完成。
     /// 目录不存在返回空（纯宪法规则集）。
-    fn load_rules_dir_with_sources(rules_dir: &std::path::Path) -> (Vec<JsonValue>, Vec<String>) {
+    fn load_rules_dir_with_sources(
+        rules_dir: &std::path::Path,
+    ) -> (Vec<MergedPart>, Vec<String>) {
         if !rules_dir.exists() {
             return (Vec::new(), Vec::new());
         }
@@ -2054,27 +2069,30 @@ impl SessionApi {
         // 失配条目 fail-fast 拒载（ERROR 不静默；拒载原因在收集阶段明示）
         let tampered = Self::collect_tampered_bundle_files(rules_dir);
 
-        let mut out: Vec<JsonValue> = Vec::new();
+        let mut parts: Vec<MergedPart> = Vec::new();
 
-        let mut sources: Vec<String> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
 
         for p in paths {
             if tampered.contains(&p) {
                 continue; // 复验失配/manifest 非法——收集阶段已 ERROR 留痕
             }
-            if let Some(extra) = Self::parse_rule_file(&p, rules_dir) {
+            // R5/[CON-S-005]：返回部件（文档+部件 ctx）而非装载结果——装载与
+            // 拼装统一在 load_rule_set_merged 函数内完成（禁调用方拼装）。
+            // 标签与部件一一对应，规则条数展开由调用方按 parts[i].rule_count。
+            if let Some((doc, ctx)) = Self::parse_rule_file(&p, rules_dir) {
                 // 来源标签 = 相对 rules_dir 的路径（/ 归一化，URL/标签安全）
                 let rel = p
                     .strip_prefix(rules_dir)
                     .unwrap_or(&p)
                     .to_string_lossy()
                     .replace('\\', "/");
-                sources.extend(std::iter::repeat_n(rel, extra.len()));
-                out.extend(extra);
+                labels.push(rel);
+                parts.push(MergedPart { doc, ctx });
             }
         }
 
-        (out, sources)
+        (parts, labels)
     }
 
     /// 递归收集规则 .json 文件路径：跳过子目录的 manifest，其余按目录展开
@@ -2340,12 +2358,15 @@ impl SessionApi {
     ///
     /// 文件读取/解析失败或格式不符时 warn 并返回 None（fail-soft，保证热重载可用性）。
     ///
-    fn parse_rule_file(p: &std::path::Path, rules_dir: &std::path::Path) -> Option<Vec<JsonValue>> {
+    fn parse_rule_file(
+        p: &std::path::Path,
+        rules_dir: &std::path::Path,
+    ) -> Option<(serde_json::Value, LoadContext)> {
         let json = Self::load_rule_doc(p)?;
 
         // 业务/约束文件装载收口（single constitution load path）：
         // L2 身份由调用方按治理事实判定（rules_dir 根目录 00_constraint_*/00_meta_*
-        // 前缀 = 纄束文件；其余 = 业务文件），tier 门（正向声明+反向伪造+enforce
+        // 前缀 = 约束文件；其余 = 业务文件），tier 门（正向声明+反向伪造+enforce
         // 限定）/schema 门/discipline 门/eq-lt domain 门四步同源走 rule_loader。
         let is_root_meta = p.parent().map(|d| d == rules_dir).unwrap_or(false)
             && p.file_name()
@@ -2358,20 +2379,22 @@ impl SessionApi {
         } else {
             LoadContext::business_file(&path_str)
         };
-        match evorule_rule_loader::load_rule_set(&json, &ctx) {
-            Ok(loaded) => Some(loaded.engine_rules),
-            Err(e) => {
-                // 门禁拒绝=治理纪律执行（B2 类旁路在此消解）；保留生产 loader 的
-                // fail-soft 语义（warn+跳过该文件，其余文件照常装载）+ fail-visible
-                //（拒载明细上浮至合并层，与旧 schema gate 同可查面）
-                tracing::warn!(
-                    "规则文件 {} 装载门禁未过，已拒载: {}",
-                    p.display(),
-                    e
-                );
-                None
-            }
+        // V2 fail-soft 单文件预筛门（豁免保留）：同 ctx 走 load_rule_set 四步，
+        // 与 merged 入口的部件门确定性等判——此处拒载的文件不进合并清单
+        // （warn+跳过保目录可用性，fail-visible 明细上浮）；幸存部件的装载与
+        // 拼装统一由 load_rule_set_merged 函数内完成（[CON-S-005] 禁调用方拼装）
+        if let Err(e) = evorule_rule_loader::load_rule_set(&json, &ctx) {
+            // 门禁拒绝=治理纪律执行（B2 类旁路在此消解）；保留生产 loader 的
+            // fail-soft 语义（warn+跳过该文件，其余文件照常装载）+ fail-visible
+            //（拒载明细上浮至合并层，与旧 schema gate 同可查面）
+            tracing::warn!(
+                "规则文件 {} 装载门禁未过，已拒载: {}",
+                p.display(),
+                e
+            );
+            return None;
         }
+        Some((json, ctx))
     }
 
     /// 层级门禁判定核心（静默版，加载路径与 tier_inventory 清单共用单一权威实现）。
@@ -14102,7 +14125,7 @@ mod tests {
             &constraint_body("旧约束", Some("2026-09-21T08:00:00Z")),
         );
 
-        let (rules, sources) = SessionApi::load_rules_dir_with_sources(&dir);
+        let (parts, sources) = SessionApi::load_rules_dir_with_sources(&dir);
 
         let idx = |name: &str| {
             sources
@@ -14110,7 +14133,7 @@ mod tests {
                 .position(|s| s == name)
                 .unwrap_or_else(|| panic!("来源标签 {name} 缺失"))
         };
-        assert_eq!(rules.len(), sources.len(), "规则与来源标签等长不变式");
+        assert_eq!(parts.len(), sources.len(), "部件与来源标签等长不变式（R5 per-part）");
         assert!(
             idx("00_constraint_promoted_new.json") < idx("00_constraint_promoted_old.json"),
             "新晋升先于旧晋升（promoted_at 降序）"
