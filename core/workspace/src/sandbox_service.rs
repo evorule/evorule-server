@@ -661,6 +661,20 @@ impl SandboxService {
         let cases: Vec<Value> = serde_json::from_str(&req.cases_json).map_err(|e| {
             WorkspaceError::invalid_input(format!("cases_json is not a JSON array: {e}"))
         })?;
+
+        // [CON-L1-001] 写入门禁：每个用例必须命中宪法 sandbox_case_instruction
+        // 锚（[CON-X-003]，eval_* 家族）。与 inject_test_cases 的 fail-fast 同锚
+        // 同法——创建期拦截脏数据集落库，而非留到沙盒启动才炸（旁路写入=拒，
+        // 无降级通道）。
+        for (idx, case) in cases.iter().enumerate() {
+            if !case.is_object() || !evorule_rule_schema::is_sandbox_case_instruction(case) {
+                return Err(WorkspaceError::invalid_input(format!(
+                    "cases_json[{idx}] 必须是宪法锚定的用例指令对象（type 命中 {} $def，如 eval_hello）",
+                    evorule_rule_schema::SANDBOX_CASE_DEF_NAME
+                )));
+            }
+        }
+
         let case_count = cases.len() as i64;
 
         // 校验 workspace_id 一致性 (如果指定了 workspace_id)
@@ -969,6 +983,64 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(WorkspaceError::Forbidden(_))));
+    }
+
+    /// [CON-L1-001] 旁路写入拒绝：create_test_dataset 落库期宪法锚门禁——
+    /// 非 eval_* 形态（含旧 command 字面量）与非法 JSON 数组元素一律拒，
+    /// 无降级通道（创建期拦截，不留到沙盒启动延迟爆）。
+    #[tokio::test]
+    async fn test_create_dataset_rejects_non_anchored_cases() {
+        let (sandbox_svc, _db, _mock_ops, ws_svc) = make_services();
+        let ws_id = create_workspace(&ws_svc, "owner-1").await;
+
+        use crate::models::CreateTestDatasetRequest;
+        // 旧字面量形态（历史白名单口径，宪法无此指令类型）
+        let legacy = sandbox_svc
+            .create_test_dataset(
+                &ws_id,
+                CreateTestDatasetRequest {
+                    name: "legacy-form".into(),
+                    cases_json: r#"[{"name":"c1","type":"command","params":{}}]"#.into(),
+                    created_by: "owner-1".into(),
+                    workspace_id: None,
+                    description: None,
+                },
+            )
+            .await;
+        assert!(
+            matches!(&legacy, Err(WorkspaceError::InvalidInput(m)) if m.contains("sandbox_case_instruction")),
+            "legacy literal must be rejected at write gate: {legacy:?}"
+        );
+
+        // 非对象元素
+        let junk = sandbox_svc
+            .create_test_dataset(
+                &ws_id,
+                CreateTestDatasetRequest {
+                    name: "junk".into(),
+                    cases_json: r#"["not-an-object"]"#.into(),
+                    created_by: "owner-1".into(),
+                    workspace_id: None,
+                    description: None,
+                },
+            )
+            .await;
+        assert!(matches!(&junk, Err(WorkspaceError::InvalidInput(_))));
+
+        // 宪法锚形态过门（对照：合法 eval_* 落库成功）
+        let ok = sandbox_svc
+            .create_test_dataset(
+                &ws_id,
+                CreateTestDatasetRequest {
+                    name: "anchored".into(),
+                    cases_json: r#"[{"name":"c1","type":"eval_hello","params":{}}]"#.into(),
+                    created_by: "owner-1".into(),
+                    workspace_id: None,
+                    description: None,
+                },
+            )
+            .await;
+        assert!(ok.is_ok(), "anchored eval_* form must pass: {ok:?}");
     }
 
     #[tokio::test]
