@@ -914,29 +914,22 @@ impl WorkspaceDb {
 
 /// [CON-L1-001] 持久层写入门：规则内容 schema 权威校验（与 rule_meta_service
 /// validate_content 同源同函数 `evorule_rule_tools::validator::validate_rule_json`，
-/// 畸形 JSON 优雅返回违规不 panic）。返回 None=合法；Some(detail)=违规摘要
-/// （前 3 条 Error 级，空则兜底文案）。
+/// 畸形 JSON 优雅返回违规不 panic）。返回 None=合法；Some(四段式报文)=违规
+/// （[CON-L1-002]/[CON-K2-001] 同源 formatter，SR-15 件5：违什么/在哪/正本/
+/// 正确形态 + 导览尾段）。
 fn rule_content_schema_violation(content: &str) -> Option<String> {
     let report = evorule_rule_tools::validator::validate_rule_json(content);
     if report.valid {
         return None;
     }
-    let detail = report
-        .results
-        .iter()
-        .filter(|r| r.severity == evorule_rule_tools::validator::ValidationSeverity::Error)
-        .take(3)
-        .map(|r| match &r.path {
-            Some(p) => format!("{} ({})", r.message, p),
-            None => r.message.clone(),
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    Some(if detail.is_empty() {
-        "schema validation failed without itemized errors".to_string()
-    } else {
-        detail
-    })
+    Some(
+        evorule_rule_tools::four_segment::render_gate(
+            &report,
+            content,
+            "CON-L1-001 持久层写入门",
+        )
+        .unwrap_or_else(|| "schema validation failed without itemized errors".to_string()),
+    )
 }
 
 impl WorkspaceDb {
@@ -947,7 +940,7 @@ impl WorkspaceDb {
         // （fail-fast 更早、报错形态更友好），与发布门禁同族的双层防御。
         if let Some(detail) = rule_content_schema_violation(&rv.content) {
             return Err(WorkspaceError::invalid_input(format!(
-                "rule_version content violates schema (persistence gate [CON-L1-001]): {detail}"
+                "rule_version content violates schema (persistence gate [CON-L1-001]):\n{detail}"
             )));
         }
         let conn = self.lock()?;

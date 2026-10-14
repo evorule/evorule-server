@@ -43,9 +43,11 @@ use serde::Deserialize;
 use std::path::{Component, PathBuf};
 use tracing::info;
 
+pub mod four_segment;
 pub mod safety;
 pub mod validator;
 
+pub use four_segment::{render_gate, render_issue, GUIDE_REF, SCHEMA_REFERENCE_URL};
 pub use safety::{analyze_rule_safety, SafetyIssue, SafetyReport, SafetySeverity};
 pub use validator::{validate_rule_json, ValidationReport, ValidationResult, ValidationSeverity};
 

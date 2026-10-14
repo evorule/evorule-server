@@ -54,19 +54,16 @@ impl RuleMetaService {
         // 发布门禁仍保留为最后闸（防绕过 CRUD 直写落盘的路径）。
         let report = evorule_rule_tools::validator::validate_rule_json(content);
         if !report.valid {
-            let detail = report
-                .results
-                .iter()
-                .filter(|r| r.severity == evorule_rule_tools::validator::ValidationSeverity::Error)
-                .take(3)
-                .map(|r| match &r.path {
-                    Some(p) => format!("{} ({})", r.message, p),
-                    None => r.message.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
+            // [CON-L1-002] 四段式报文（SR-15 件5：fail-fast 更早、报错即指路，
+            // 与持久层写入门同源同 formatter）
+            let detail = evorule_rule_tools::four_segment::render_gate(
+                &report,
+                content,
+                "CON-L1-001 起草期校验",
+            )
+            .unwrap_or_else(|| "schema validation failed".to_string());
             return Err(WorkspaceError::invalid_input(format!(
-                "rule content violates schema (会被发布门禁拒收): {detail}"
+                "rule content violates schema (会被发布门禁拒收):\n{detail}"
             )));
         }
         Ok(())

@@ -99,7 +99,7 @@ fn run_validate(
     if let Some(f) = file {
         let content = std::fs::read_to_string(&f)?;
         let report = evorule_rule_tools::validate_rule_json(&content);
-        print_report(&report, &f);
+        print_report(&report, &f, &content);
         had_error = !report.valid;
     } else if let Some(d) = dir {
         let files = match collect_rule_files(&d) {
@@ -117,7 +117,7 @@ fn run_validate(
             match std::fs::read_to_string(&f) {
                 Ok(content) => {
                     let report = evorule_rule_tools::validate_rule_json(&content);
-                    print_report(&report, &f);
+                    print_report(&report, &f, &content);
                     println!();
                     if !report.valid {
                         had_error = true;
@@ -200,7 +200,11 @@ fn collect_rule_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn print_report(report: &evorule_rule_tools::ValidationReport, file: &Path) {
+fn print_report(
+    report: &evorule_rule_tools::ValidationReport,
+    file: &Path,
+    content: &str,
+) {
     let status = if report.valid {
         "✓ 通过"
     } else {
@@ -213,14 +217,21 @@ fn print_report(report: &evorule_rule_tools::ValidationReport, file: &Path) {
         status, report.error_count, report.warning_count, report.info_count
     );
     for r in &report.results {
-        let icon = match r.severity {
-            evorule_rule_tools::ValidationSeverity::Error => "  ✗ ERROR",
-            evorule_rule_tools::ValidationSeverity::Warning => "  ⚠ WARN ",
-            evorule_rule_tools::ValidationSeverity::Info => "  ℹ INFO ",
-        };
-        let loc = r.path.as_deref().unwrap_or("-");
-        let rule = r.rule_name.as_deref().unwrap_or("-");
-        println!("{icon} [{rule}] [{loc}] {}", r.message);
+        match r.severity {
+            // [CON-K2-001] Error 条目输出四段式报文（SR-15 件5：报错即指路）
+            evorule_rule_tools::ValidationSeverity::Error => {
+                println!(
+                    "{}",
+                    evorule_rule_tools::four_segment::render_issue(r, content, "CLI validate 结构门禁")
+                );
+            }
+            evorule_rule_tools::ValidationSeverity::Warning => {
+                println!("  ⚠ WARN  [{}] {}", r.path.as_deref().unwrap_or("-"), r.message);
+            }
+            evorule_rule_tools::ValidationSeverity::Info => {
+                println!("  ℹ INFO  [{}] {}", r.path.as_deref().unwrap_or("-"), r.message);
+            }
+        }
     }
 }
 
