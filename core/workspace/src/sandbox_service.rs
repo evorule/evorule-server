@@ -61,6 +61,25 @@ pub fn sandbox_report_dir() -> std::path::PathBuf {
         .join(SANDBOX_REPORT_DIR)
 }
 
+/// 从数据集 cases_json 提取测试 case 显式名（按序对应用例组，报告据此命名）。
+/// dataset 缺失/解析失败时回退空（报告回退默认命名 "Case #N"，如实降级不阻塞）。
+/// 活 session 报告（generate_test_report）与关闭态报告共用，保证两出口命名口径一致。
+fn extract_case_names(cases_json: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<Value>>(cases_json)
+        .map(|cases| {
+            cases
+                .iter()
+                .map(|c| {
+                    c.get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// 沙盒编排服务
 ///
 /// 持有 `Arc<WorkspaceDb>` + `Arc<dyn SessionOps>`。
@@ -496,24 +515,12 @@ impl SandboxService {
         let facts_val = self.session_ops.get_facts(tcb_session_id).await?;
 
         // 提取测试 case 显式名(按序对应 facts, 报告据此命名不再 unknown)。
-        // dataset 缺失/解析失败时回退默认命名, 不阻塞报告生成(如实降级)。
-        let case_names: Vec<String> = self
+        let case_names = self
             .db
             .get_test_dataset(sandbox.test_dataset_id)
             .ok()
             .flatten()
-            .and_then(|ds| serde_json::from_str::<Vec<Value>>(&ds.cases_json).ok())
-            .map(|cases| {
-                cases
-                    .iter()
-                    .map(|c| {
-                        c.get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string()
-                    })
-                    .collect()
-            })
+            .map(|ds| extract_case_names(&ds.cases_json))
             .unwrap_or_default();
 
         let report = TestReportBuilder::new()
@@ -605,6 +612,15 @@ impl SandboxService {
         let facts_val = facts?;
 
         // 构建测试报告
+        // 用例显式名接线：活 session 报告与关闭态报告同口径（此前仅关闭态
+        // 接线，GET report 恒回退 "Case #N"，按名判据/审计可读性断链）。
+        let case_names = self
+            .db
+            .get_test_dataset(sandbox.test_dataset_id)
+            .ok()
+            .flatten()
+            .map(|ds| extract_case_names(&ds.cases_json))
+            .unwrap_or_default();
         let report = TestReportBuilder::new()
             .sandbox_id(sandbox_id.to_string())
             .workspace_id(sandbox.workspace_id.clone())
@@ -614,6 +630,7 @@ impl SandboxService {
             .state(state_val)
             .audit(audit_val)
             .facts(facts_val)
+            .case_names(case_names)
             .build();
 
         Ok(report)
@@ -831,7 +848,7 @@ mod tests {
                 Ok(vec![
                     serde_json::json!({
                         "id": 1, "type": "Command",
-                        "instruction": {"type": "increment", "params": {}},
+                        "instruction": {"type": "eval_increment", "params": {}},
                     }),
                     serde_json::json!({"id": 2, "type": "StateTransition"}),
                 ])
@@ -1092,6 +1109,21 @@ mod tests {
         assert!(!report.report_hash.is_empty());
         assert_eq!(report.audit_info.audit_chain_length, 5);
         assert!(report.audit_info.audit_chain_verified);
+        // 用例显式名接线（活 session 报告与关闭态同口径）：
+        // dataset 单条用例 name="用例1"，mock facts 单 Command 组（eval_* 锚命中）
+        assert_eq!(report.cases.len(), 1, "单用例应成单用例组");
+        assert_eq!(report.cases[0].case_name, "用例1");
+    }
+
+    #[test]
+    fn test_extract_case_names() {
+        // 有名/缺名/坏 JSON 三形态
+        assert_eq!(
+            extract_case_names(r#"[{"name":"a","type":"eval_x"},{"type":"eval_y"}]"#),
+            vec!["a".to_string(), String::new()]
+        );
+        assert_eq!(extract_case_names("not json"), Vec::<String>::new());
+        assert_eq!(extract_case_names("[]"), Vec::<String>::new());
     }
 
     #[test]
