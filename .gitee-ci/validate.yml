@@ -46,9 +46,11 @@ lint:
   stage: lint
   image: rust:1.97.1-slim
   script:
-    - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git
+    - apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config git python3
     - cargo fmt --all -- --check
     - cargo clippy --workspace --all-targets -- -D warnings
+    # 宪法语义手写提取禁令扫描（[CON-L4-001]/[CON-L4-002] · 强阻塞，漂移=红灯）
+    - python3 scripts/scan_constitution_parity.py
   rules:
     - changes:
         - "**/*.rs"

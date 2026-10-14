@@ -87,6 +87,12 @@ jobs:
       - name: check_doc_safety.py
         run: python3 scripts/check_doc_safety.py --skip-git
 
+      # 宪法语义手写提取禁令扫描（[CON-L4-001]/[CON-L4-002] · 强阻塞）
+      # 各仓源码零手写宪法语义实现，漂移=红灯；豁免行锚制入仓
+      # （scripts/allowed_exceptions.conf，每条含理由/责任人/复审期）
+      - name: scan_constitution_parity.py
+        run: python3 scripts/scan_constitution_parity.py
+
   # ===== 原生服务声明漂移检查（回归验证/P0-2 · 零 cargo 依赖）=====
   # SSOT = 本仓 plugins/*/official_native_services.json；
   # 治理侧嵌入副本 = evorule-rule src/model/*.embedded.json。
