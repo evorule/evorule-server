@@ -24,6 +24,7 @@ pub mod permissions;
 pub mod platform_auth;
 pub mod plugin_packs;
 pub mod plugin_probe;
+pub mod route_policy_loader;
 pub mod server;
 pub mod template_render;
 pub mod writeback_forward;

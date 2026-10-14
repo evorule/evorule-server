@@ -96,13 +96,20 @@ impl MockIoResponder {
     }
 
     /// 获取合成响应 (按 io_type,未配置时返回通用 mock)
+    ///
+    /// SG-2/G-5 收口：出口统一打 `__sandbox__` 标记——沙箱会话的 IoResponse
+    /// 与生产流量在 Fact 内容层可区分（审计链可过滤）。TCB 零改动：标记打在
+    /// IoResponse.result JSON 内容层，不新增 Fact 变体/字段。
     pub async fn get_response(&self, io_type: &str) -> serde_json::Value {
-        self.response_templates
+        let mut response = self
+            .response_templates
             .lock()
             .await
             .get(io_type)
             .cloned()
-            .unwrap_or_else(|| serde_json::json!({"status": "mock", "result": null}))
+            .unwrap_or_else(|| serde_json::json!({"status": "mock", "result": null}));
+        tag_sandbox(&mut response);
+        response
     }
 
     /// 是否正在运行
@@ -113,6 +120,13 @@ impl MockIoResponder {
     /// 获取关联的 session_id
     pub fn session_id(&self) -> u64 {
         self.session_id
+    }
+}
+
+/// SG-2/G-5 收口：合成响应统一打 `__sandbox__` 标记（同层展开，业务字段保留顶层）
+fn tag_sandbox(response: &mut serde_json::Value) {
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("__sandbox__".to_string(), serde_json::Value::Bool(true));
     }
 }
 
@@ -137,9 +151,12 @@ mod tests {
 
         let db_resp = responder.get_response("query_db").await;
         assert_eq!(db_resp["status"], "ok");
+        // SG-2/G-5：合成响应必须带 __sandbox__ 标记（与生产流量可区分）
+        assert_eq!(db_resp["__sandbox__"], true);
 
         let unknown_resp = responder.get_response("unknown_type").await;
         assert_eq!(unknown_resp["status"], "mock");
+        assert_eq!(unknown_resp["__sandbox__"], true);
 
         responder.stop().await;
         assert!(!responder.is_running());
@@ -158,6 +175,8 @@ mod tests {
         let resp = responder.get_response("query_db").await;
         assert_eq!(resp["custom"], true);
         assert_eq!(resp["rows"][0]["id"], 1);
+        // SG-2/G-5：自定义合成响应同样必须带 __sandbox__ 标记
+        assert_eq!(resp["__sandbox__"], true);
     }
 
     #[tokio::test]

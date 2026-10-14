@@ -1,0 +1,120 @@
+[package]
+name = "evorule-governance"
+# vendored patch 基线 v0.8.5（主仓 a2e14cf，SG-2 路由策略资产化批）；删除条件见 README-PATCH.md
+version = "0.8.5"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+authors = ["EvoRule Project"]
+repository = "https://gitee.com/evorule/evorule"
+homepage = "https://gitee.com/evorule/evorule"
+rust-version = "1.74"
+description = "Governance layer primitives: audit chain, rule validation, time machine, I/O dispatching"
+readme = "README.md"
+documentation = "https://docs.rs/evorule-governance"
+keywords = ["governance", "audit", "rules-engine", "validation", "time-machine"]
+# H6 后已移除 axum（web-programming）和 sqlx（database）依赖，更新 categories 以匹配当前纯机制层定位
+categories = ["asynchronous", "config", "data-structures", "development-tools"]
+# 发布到 crates.io 时排除开发产物/演示数据（下游依赖消费者不需要）
+exclude = [
+    "data/",                 # demo.sqlite 演示数据库
+    "**/hash_snapshot.txt",  # 哈希快照（开发产物）
+    "verification/",         # 差分测试源码（下游不需要）
+    "benches/",              # Criterion 性能基准源码（dev-only）
+    "demo.db",               # 可能存在的 SQLite 演示库文件
+    "scripts/",              # 开发辅助脚本
+    "tests/verify_audit.py", # Python 审计验证脚本（dev-only）
+    "proptest-regressions/", # proptest 回归测试用例缓存
+    "rust-toolchain.toml",   # 开发工具链固定
+    "**/*.log",              # 各类运行日志
+    "install_log.txt",       # 工具安装日志
+]
+
+
+# vendored 独立 crate：不继承 workspace lints（与主仓 [workspace.lints.rust] 对齐的
+# unexpected_cfgs 宽容由消费方 workspace 决定）
+[dependencies]
+# vendored 内联：path 依赖改为纯 version（evorule-reactor 经消费方 [patch.crates-io]
+# 解析到 vendored 0.8.4，与 ^0.8.3 兼容）
+evorule-tcb = { version = "0.8.3" }
+
+# 日志
+tracing = "0.1"
+# H5: tracing-subscriber 已迁移到 evorule-server(仅 bin 初始化日志用)
+
+# H6: prometheus 依赖已移除（metrics 迁移到 evorule-server 独立仓 evorule-server/src/metrics_impl.rs + core/metrics/）
+# 核心层仅保留 IoMetrics trait 定义（无外部依赖），应用层通过依赖注入提供 Prometheus 实现
+
+# H5: I/O Handler SDK (sqlx/reqwest) 已迁移到 evorule-server 独立仓 core/io_handlers/
+# evorule-governance 不再依赖具体 I/O 实现,仅保留 IoHandler trait(机制) + IoDispatcher(框架)
+
+# 审计组件
+blake3 = "1"                                              # 哈希
+flate2 = { version = "1.0", features = ["rust_backend"] } # P05：审计链 gzip 压缩
+# G-A1：审计锚点签名（真实性/防抵赖）。ed25519（RFC 8032）确定性签名，无 RNG，兼容确定性执行纪律
+ed25519-dalek = "2"
+# G-A1：getrandom 按编译目标分块——wasm32 下需 js feature（浏览器 crypto.getRandomValues）
+# 仅密钥生成（一次性运维）用 OS 熵源，不进入确定性执行路径
+
+# H6: HTTP API 依赖已迁移到 evorule-server（axum/tower/tower-http/tower_governor/governor/subtle）
+# 核心层不再包含 HTTP 路由处理（机制-策略分离）
+
+# 热重载已移除（应用层功能）
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"                                 # P2-9：JSON 配置文件(v6.1 起替代 TOML)
+
+# 错误处理
+thiserror = "2"
+
+# WASM 适配：reactor 与 tokio 按编译目标分块
+# - wasm32 下禁用 rt-multi-thread（WASM 无多线程 runtime）
+# - persistence 两个目标均保持启用（见下方 wasm32 块注释，2026-09-14 更正）
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+evorule-reactor = { version = "0.8.3", features = ["persistence"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+getrandom = { version = "0.2", features = ["std"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# persistence 在 wasm32 下**保持启用**：governance 的 fs 相关生产代码未做 cfg 门控，
+# 禁用 feature 会导致 13 处编译错误。std::fs 在 wasm32 下可编译但运行时返回
+# Unsupported，最小原型使用内存模式、不调用持久化 API。
+# 注意：此处与 reactor 侧同款，属"仅求可编译"，非"wasm32 可用"。
+evorule-reactor = { version = "0.8.3", features = ["persistence"] }
+# `time` 不可裁剪（TB-WASM-004）：生产代码 src/io_subscriber.rs:409 在瞬时错误指数退避
+# 重试路径中使用 `tokio::time::sleep(backoff).await`，无 wasm32 门控。
+# 与 reactor 侧同理——保留只为编过，wasm32 下 `std::time::Instant` 未实现，
+# 凡真正可达的计时调用都会运行时 panic。
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+getrandom = { version = "0.2", features = ["std", "js"] }
+
+[dev-dependencies]
+tempfile = "3"
+# H6: reqwest 已移除（HTTP API 测试已迁移到 evorule-server）
+# 形式化验证:proptest 差分测试(位于 verification/ 目录)
+proptest = "1.4"
+# 性能基准(criterion) — 041 v2.0 A8: 审计链 audit_new + verify 基线
+# 仅 dev 依赖,不进入 release 产物。
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# 041 v2.0 A8: 审计链 audit_new / verify 性能基准
+[[bench]]
+name = "audit_chain"
+path = "benches/audit_chain.rs"
+harness = false
+
+# 形式化验证相关测试目标(位于 verification/ 目录,非默认 tests/ 目录)
+# differential_test: P0-9/P0-10 差分测试(版本一致性 + rewind vs FactsLog)
+[[test]]
+name = "differential_test"
+path = "verification/differential_test.rs"
+
+[features]
+default = []
+# H6: metrics feature 已移除（IoMetrics trait 总是可用，Prometheus 实现由应用层提供）
+# H6: auth feature 已移除（auth.rs 已迁移到 evorule-server，应用层默认启用认证）
+persistence = ["evorule-reactor/persistence"]
+
+# H5: evorule-server 已两次外迁 → 最终位于 evorule-server 独立仓（顶层 evorule-server/ crate）
+# evorule-governance 现在是纯 lib crate,不含任何 bin target
+# 注: evorule CLI 在本仓 workspace 内独立 crate（evorule-cli/）

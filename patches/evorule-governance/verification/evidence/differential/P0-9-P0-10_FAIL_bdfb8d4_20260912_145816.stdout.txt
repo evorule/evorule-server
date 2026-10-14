@@ -1,0 +1,19 @@
+   Compiling zerocopy v0.8.57
+   Compiling crossbeam-utils v0.8.23
+   Compiling crossbeam-epoch v0.9.21
+   Compiling crossbeam-deque v0.8.8
+   Compiling crc32fast v1.5.1
+   Compiling evorule-tcb v0.5.0 (/mnt/d/evorule/evorule-tcb)
+   Compiling blake3 v1.8.7
+   Compiling evorule-reactor v0.5.0 (/mnt/d/evorule/evorule-reactor)
+   Compiling miniz_oxide v0.9.1
+   Compiling tokio v1.53.1
+   Compiling thiserror-impl v2.0.20
+   Compiling evorule-governance v0.5.0 (/mnt/d/evorule/evorule-governance)
+   Compiling flate2 v1.1.10
+error: failed to build archive at `/mnt/d/evorule/target/debug/deps/libcrossbeam_epoch-1ca42cd25bcad44f.rlib`: failed to remove temporary directory: Cannot allocate memory (os error 12) at path "/mnt/d/evorule/target/debug/deps/.tmpUzchjv.temp-archive"
+
+error: could not compile `crossbeam-epoch` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+warning: evorule-tcb@0.5.0: evorule-tcb 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-tcb@0.5.0: evorule-tcb 策略层检测 PASSED - 未发现策略层反模式

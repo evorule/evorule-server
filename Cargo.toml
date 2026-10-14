@@ -69,5 +69,12 @@ codegen-units = 1
 # 替换注册表实例，无双实例类型冲突；0.6.1/0.7 线同机制先例）。
 # 删除条件：主仓发布 ≥0.8.5 且含同形 API → 删本段+patches/ 目录，依赖回
 # 纯 version，cargo update 验证一致（补丁差异面见 patches/evorule-reactor/README-PATCH.md）。
+# [patch.crates-io] 重引（安全路由与网关 SG-2 批）：evorule-governance vendored 补丁——
+# 路由策略资产化（RoutePolicy 三元决策表 + PermissionGate::with_route_policy/check_routed
+# + IoSubscriber deny 回写 route 语义留痕）。未经主仓发版前，以仓内
+# patches/evorule-governance 路径补丁先行（与 evorule-reactor 同机制先例）。
+# 删除条件：主仓发布 ≥0.8.6 且含同形 API → 删本段+patches/evorule-governance，
+# 依赖回纯 version，cargo update 验证一致（补丁差异面见 patches/evorule-governance/README-PATCH.md）。
 [patch.crates-io]
 evorule-reactor = { path = "patches/evorule-reactor" }
+evorule-governance = { path = "patches/evorule-governance" }

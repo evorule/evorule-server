@@ -2053,12 +2053,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .map_err(|e| format!("hit-stats 指标注册失败: {}", e))?,
     );
+    let mut main_gate = PermissionGate::new(Arc::new(shared_facts.clone()));
+    // SG-2：静态路由策略资产装配（可选收紧层；缺失/解析失败不装配 + 显式留痕）
+    if let Some(policy) =
+        evorule_server::api::route_policy_loader::shared_route_policy(&cfg.rules_dir)
+    {
+        main_gate = main_gate.with_route_policy((*policy).clone());
+    }
     let subscriber = IoSubscriber::new(dispatcher)
         .with_metrics(metrics.clone())
         .with_skip(Arc::new(
             evorule_server::api::server::is_external_executor_request,
         ))
-        .with_permission_gate(PermissionGate::new(Arc::new(shared_facts.clone())));
+        .with_permission_gate(main_gate);
 
     // C6 装配可观测信号（DEV-5：ASSURANCE.md §3.6 条款 5）：主干 I/O 分发路径已注入
     // PermissionGate，标记 true 使外部可通过 GET /api/health 的 guard_assembled 区分

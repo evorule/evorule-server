@@ -883,8 +883,6 @@ dependencies = [
 [[package]]
 name = "evorule-governance"
 version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5e72dc988ee06d8419516cfcb54d737d05613812f20838c70c34bf88668e452"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -1019,7 +1017,6 @@ dependencies = [
 [[package]]
 name = "evorule-rule"
 version = "0.5.0"
-source = "git+https://gitee.com/evorule/evorule-rule.git?rev=9f85314fbf1609fb19e959a24b2ebd844251d118#9f85314fbf1609fb19e959a24b2ebd844251d118"
 dependencies = [
  "argon2",
  "axum",

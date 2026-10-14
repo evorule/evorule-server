@@ -893,12 +893,18 @@ impl SessionApi {
 
                 // 注入会话级 caller_role resolver（应用层接缝；
                 // 声明随 WAL 事实，回放确定性成立）
-                let gate = PermissionGate::new(Arc::new(self.shared_facts.clone()))
+                let mut gate = PermissionGate::new(Arc::new(self.shared_facts.clone()))
                     .with_caller_role_resolver(
                         crate::api::caller_role_resolver::session_caller_role_resolver(
                             session.facts_log.clone(),
                         ),
                     );
+                // SG-2：静态路由策略资产装配（可选收紧层；缺失/解析失败不装配 + 显式留痕）
+                if let Some(policy) =
+                    crate::api::route_policy_loader::shared_route_policy(&self.rules_dir)
+                {
+                    gate = gate.with_route_policy((*policy).clone());
+                }
 
                 let subscriber = IoSubscriber::new(dispatcher.clone())
                     .with_metrics(metrics)
@@ -3315,12 +3321,18 @@ impl evorule_workspace::SessionOps for SessionApi {
 
                         // 注入会话级 caller_role resolver（应用层接缝；
                         // 声明随 WAL 事实，回放确定性成立）
-                        let gate = PermissionGate::new(Arc::new(self.shared_facts.clone()))
+                        let mut gate = PermissionGate::new(Arc::new(self.shared_facts.clone()))
                             .with_caller_role_resolver(
                                 crate::api::caller_role_resolver::session_caller_role_resolver(
                                     session.facts_log.clone(),
                                 ),
                             );
+                        // SG-2：静态路由策略资产装配（可选收紧层；缺失/解析失败不装配 + 显式留痕）
+                        if let Some(policy) =
+                            crate::api::route_policy_loader::shared_route_policy(&self.rules_dir)
+                        {
+                            gate = gate.with_route_policy((*policy).clone());
+                        }
 
                         let subscriber = IoSubscriber::new(dispatcher.clone())
                             .with_skip(Arc::new(is_external_executor_request))

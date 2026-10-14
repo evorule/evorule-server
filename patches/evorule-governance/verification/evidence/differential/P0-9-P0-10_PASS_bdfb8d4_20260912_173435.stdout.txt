@@ -1,0 +1,36 @@
+   Compiling crossbeam-epoch v0.9.21
+warning: evorule-tcb@0.5.0: evorule-tcb 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-tcb@0.5.0: evorule-tcb 策略层检测 PASSED - 未发现策略层反模式
+   Compiling blake3 v1.8.7
+   Compiling evorule-reactor v0.5.0 (/mnt/d/evorule/evorule-reactor)
+   Compiling evorule-tcb v0.5.0 (/mnt/d/evorule/evorule-tcb)
+   Compiling crc32fast v1.5.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling crossbeam-deque v0.8.8
+   Compiling flate2 v1.1.10
+   Compiling evorule-governance v0.5.0 (/mnt/d/evorule/evorule-governance)
+   Compiling thiserror v2.0.20
+   Compiling rayon-core v1.13.0
+warning: evorule-reactor@0.5.0: evorule-reactor 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-reactor@0.5.0: evorule-reactor 策略层检测 PASSED - 未发现策略层反模式
+   Compiling rayon v1.12.0
+warning: evorule-governance@0.5.0: evorule-governance 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-governance@0.5.0: evorule-governance 策略层检测 PASSED - 未发现策略层反模式
+   Compiling ciborium-ll v0.2.2
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.11.0
+   Compiling criterion v0.5.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.73s
+     Running verification/differential_test.rs (target/debug/deps/differential_test-ad24678e4760ddc0)
+
+running 5 tests
+test diff_rewind_vs_factslog_payload_update ... ok
+test diff_rewind_vs_factslog_state_transition ... ok
+test diff_rewind_vs_factslog_mixed ... ok
+test diff_version_consistency_single_command ... ok
+test diff_version_consistency_multi_command ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.22s
+

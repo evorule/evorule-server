@@ -1,0 +1,5 @@
+   Compiling crossbeam-epoch v0.9.21
+   Compiling crc32fast v1.5.1
+warning: evorule-tcb@0.5.0: evorule-tcb 变更治理门禁 PASSED - CHANGE_REQUEST.md 验证通过
+warning: evorule-tcb@0.5.0: evorule-tcb 策略层检测 PASSED - 未发现策略层反模式
+   Compiling half v2.7.1
