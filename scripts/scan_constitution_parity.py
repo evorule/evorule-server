@@ -26,6 +26,7 @@
 # =============================================================================
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -122,24 +123,30 @@ def main():
     exemptions = load_exemptions()
     hits = []
     scanned = 0
-    for rs_file in root.rglob("*.rs"):
-        rel = str(rs_file.relative_to(root))
-        if any(skip in rs_file.parts for skip in SKIP_DIRS):
-            continue
-        scanned += 1
-        try:
-            text = rs_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        lines = text.splitlines()
-        for pat in PATTERNS:
-            for m in pat["regex"].finditer(text):
-                line_no = text.count("\n", 0, m.start()) + 1
-                line_text = lines[line_no - 1].strip() if line_no <= len(lines) else ""
-                if line_text.startswith("//"):
-                    continue
-                ex = is_exempt(rel, pat["id"], line_no, exemptions)
-                hits.append((rel, line_no, pat["id"], pat["desc"], ex))
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 目录枚举层剪枝（O-459）：SKIP_DIRS 在遍历时整目录剔除，不深入
+        # target/ 等大规模构建目录（原 rglob 语义=全枚举后逐文件过滤，
+        # cargo 构建期间枚举本身即达分钟级）
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fn in filenames:
+            if not fn.endswith(".rs"):
+                continue
+            rs_file = Path(dirpath) / fn
+            rel = str(rs_file.relative_to(root))
+            scanned += 1
+            try:
+                text = rs_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            lines = text.splitlines()
+            for pat in PATTERNS:
+                for m in pat["regex"].finditer(text):
+                    line_no = text.count("\n", 0, m.start()) + 1
+                    line_text = lines[line_no - 1].strip() if line_no <= len(lines) else ""
+                    if line_text.startswith("//"):
+                        continue
+                    ex = is_exempt(rel, pat["id"], line_no, exemptions)
+                    hits.append((rel, line_no, pat["id"], pat["desc"], ex))
 
     unexempted = [h for h in hits if h[4] is None]
     exempted = [h for h in hits if h[4] is not None]
