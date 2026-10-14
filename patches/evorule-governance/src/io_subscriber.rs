@@ -20,11 +20,12 @@
 //! - `SendError`：command 通道关闭（反应器已退出），返回 `IoSubscriberError::CommandClosed`
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use evorule_reactor::{EventReceiver, Fact, FactId, FactSender, IoCallContext, IoType};
 use evorule_tcb::JsonValue;
 
+use crate::circuit_breaker::{CircuitState, CIRCUIT_BREAKER_ATTR};
 use crate::io_dispatcher::IoDispatcher;
 use crate::metrics::{NoOpMetrics, SharedMetrics};
 use crate::permission::{PermissionGate, Verdict};
@@ -122,6 +123,11 @@ pub struct IoSubscriber {
     /// 默认 None = 不做权限判定（行为与历史版本一致）；注入后每次自动分发的
     /// IoRequest 在 dispatch 前按权限快照做"入口仲裁"（`PermissionGate::check`）。
     gate: Option<PermissionGate>,
+    /// 可选会话级熔断状态（SG-3 family-②「白名单外锚点连发」）。
+    /// 默认 None = 熔断面关闭（行为与 SG-2 一致）；注入后静态层 deny 按滑动
+    /// 窗口计数，达阈值跳闸：熔断信号指令提交会话（规则层 enforce 拒链入链）
+    /// + 跳闸持续期内 egress 全量拒绝，窗口过期自动复位。
+    circuit: Option<CircuitState>,
 }
 
 impl IoSubscriber {
@@ -136,6 +142,7 @@ impl IoSubscriber {
             metrics: Arc::new(NoOpMetrics),
             skip: None,
             gate: None,
+            circuit: None,
         }
     }
 
@@ -175,6 +182,23 @@ impl IoSubscriber {
     /// 装了一个策略为空的门同样是装配，是否达到预期仍需调用方自证。
     pub fn permission_gate_enabled(&self) -> bool {
         self.gate.is_some()
+    }
+
+    /// 注入会话级熔断状态（builder 模式；SG-3 family-②）
+    ///
+    /// 注入后，本订阅者对**静态路由层 deny**（`route` 命中，即白名单外锚点
+    /// 拒绝）按滑动窗口计数：
+    /// - 达阈值 → 跳闸：熔断信号指令 `set meta_security.circuit_breaker = ...`
+    ///   经 command 通道提交会话（规则层 `00_constraint_enforce_anchor.json`
+    ///   第 3 条 enforce 拒链 = 跳闸证据确定性入链）+ 跳闸持续期内后续 egress
+    ///   全量拒绝（error 串带 `circuit=tripped` 段）；
+    /// - 窗口过期自动复位重新计数。
+    ///
+    /// 未装配 = 熔断面关闭（行为与 SG-2 一致）。计数/跳闸语义见
+    /// [`crate::circuit_breaker`] 模块文档。
+    pub fn with_circuit_breaker(mut self, state: CircuitState) -> Self {
+        self.circuit = Some(state);
+        self
     }
 
     /// 注入跳过谓词（builder 模式）
@@ -330,6 +354,31 @@ impl IoSubscriber {
         // （fail-closed）。
         // SG-2：check_routed 额外给出静态路由语义，拼入 error 串（确定性构造，
         // 无时间戳/路径分隔符），使 deny / ask-fallback 与 default deny 可区分。
+        // SG-3：熔断闸位先于权限门——跳闸持续期内 egress 全量拒绝（静态层
+        // deny 连发熔断的持续语义；窗口过期自动复位）。
+        if let Some(circuit) = &mut self.circuit {
+            if circuit.is_tripped(Instant::now()) {
+                self.metrics.inc_io_errors(io_type.as_str());
+                tracing::warn!(
+                    request_id = %request_id,
+                    io_type = %io_type.as_str(),
+                    "IoRequest 被会话熔断闸位拒绝（circuit=tripped）"
+                );
+                let response = Fact::IoResponse {
+                    id: self.next_fact_id(),
+                    request_id,
+                    result: JsonValue::Null,
+                    error: Some(format!(
+                        "circuit breaker tripped (circuit=tripped): io_type={} {}",
+                        io_type.as_str(),
+                        "egress denied until window expiry"
+                    )),
+                };
+                return command_tx.send(response).map_err(|_| {
+                    IoSubscriberError::CommandClosed(format!("request_id={request_id}"))
+                });
+            }
+        }
         if let Some(gate) = &self.gate {
             let mut ctx = IoCallContext::new(cause, 0, None);
             let (verdict, route) = gate.check_routed(&mut ctx, io_type.as_str(), Some(&params));
@@ -351,6 +400,44 @@ impl IoSubscriber {
                     route = ?route,
                     "IoRequest 权限判定未通过，回写错误 IoResponse"
                 );
+                // SG-3：静态层 deny 计数（family-② 白名单外锚点连发）——仅
+                // route 命中的静态收紧拒绝计数（动态表 deny 属 PermissionGate
+                // 级留痕观察，威胁建模 §十一 D-3 拍板）；达阈值 → 跳闸 + 熔断
+                // 信号指令提交会话（规则层 enforce 拒链 = 跳闸证据确定性入链）。
+                if route.is_some() {
+                    if let Some(circuit) = &mut self.circuit {
+                        if let Some(signal) = circuit.record_deny(Instant::now()) {
+                            let instruction = JsonValue::object_from_pairs(&[
+                                ("type", JsonValue::from("set")),
+                                (
+                                    "params",
+                                    JsonValue::object_from_pairs(&[
+                                        ("attr", JsonValue::from(CIRCUIT_BREAKER_ATTR)),
+                                        ("operation", JsonValue::from("set")),
+                                        ("value", signal),
+                                    ]),
+                                ),
+                            ]);
+                            // 信号提交失败不阻断本次 deny 回写（通道关闭时主
+                            // 响应同样失败）；warn 留痕禁静默。
+                            if let Err(err) = command_tx.send(Fact::Command {
+                                id: self.next_fact_id(),
+                                instruction,
+                            }) {
+                                tracing::warn!(
+                                    request_id = %request_id,
+                                    error = %err,
+                                    "熔断信号指令提交失败（command 通道异常）"
+                                );
+                            } else {
+                                tracing::warn!(
+                                    request_id = %request_id,
+                                    "熔断跳闸：静态层 deny 达阈值，circuit_breaker 信号已提交会话"
+                                );
+                            }
+                        }
+                    }
+                }
                 self.metrics.inc_io_errors(io_type.as_str());
                 let response = Fact::IoResponse {
                     id: self.next_fact_id(),

@@ -2060,12 +2060,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         main_gate = main_gate.with_route_policy((*policy).clone());
     }
-    let subscriber = IoSubscriber::new(dispatcher)
+    let mut subscriber = IoSubscriber::new(dispatcher)
         .with_metrics(metrics.clone())
         .with_skip(Arc::new(
             evorule_server::api::server::is_external_executor_request,
         ))
         .with_permission_gate(main_gate);
+    // SG-3：会话级熔断装配（可选收紧层；阈值 0 = 熔断面关闭 = 误伤回退开关；
+    // 未装配时行为与 SG-2 一致。主干单反应器一份独立 CircuitState）
+    if let Some(circuit_cfg) =
+        evorule_server::api::route_policy_loader::circuit_config_from_env()
+    {
+        subscriber = subscriber.with_circuit_breaker(
+            evorule_governance::circuit_breaker::CircuitState::new(circuit_cfg),
+        );
+        info!(
+            "会话熔断面已装配（SG-3）：静态层 deny 达阈值跳闸（EVORULE_CIRCUIT_THRESHOLD/WINDOW_SECS）"
+        );
+    }
 
     // C6 装配可观测信号（DEV-5：ASSURANCE.md §3.6 条款 5）：主干 I/O 分发路径已注入
     // PermissionGate，标记 true 使外部可通过 GET /api/health 的 guard_assembled 区分

@@ -906,10 +906,19 @@ impl SessionApi {
                     gate = gate.with_route_policy((*policy).clone());
                 }
 
-                let subscriber = IoSubscriber::new(dispatcher.clone())
+                let mut subscriber = IoSubscriber::new(dispatcher.clone())
                     .with_metrics(metrics)
                     .with_skip(Arc::new(is_external_executor_request))
                     .with_permission_gate(gate);
+                // SG-3：会话级熔断装配（可选收紧层；阈值 0 = 熔断面关闭 =
+                // 误伤回退开关。每会话独立 CircuitState，计数天然会话作用域）
+                if let Some(circuit_cfg) =
+                    crate::api::route_policy_loader::circuit_config_from_env()
+                {
+                    subscriber = subscriber.with_circuit_breaker(
+                        evorule_governance::circuit_breaker::CircuitState::new(circuit_cfg),
+                    );
+                }
 
                 tokio::spawn(async move {
                     if let Err(e) = subscriber.run(event_rx, command_tx).await {
@@ -3349,9 +3358,18 @@ impl evorule_workspace::SessionOps for SessionApi {
                             gate = gate.with_route_policy((*policy).clone());
                         }
 
-                        let subscriber = IoSubscriber::new(dispatcher.clone())
+                        let mut subscriber = IoSubscriber::new(dispatcher.clone())
                             .with_skip(Arc::new(is_external_executor_request))
                             .with_permission_gate(gate);
+                        // SG-3：会话级熔断装配（可选收紧层；阈值 0 = 熔断面关闭 =
+                        // 误伤回退开关。每会话独立 CircuitState，计数天然会话作用域）
+                        if let Some(circuit_cfg) =
+                            crate::api::route_policy_loader::circuit_config_from_env()
+                        {
+                            subscriber = subscriber.with_circuit_breaker(
+                                evorule_governance::circuit_breaker::CircuitState::new(circuit_cfg),
+                            );
+                        }
 
                         tokio::spawn(async move {
                             if let Err(e) = subscriber.run(event_rx, command_tx).await {

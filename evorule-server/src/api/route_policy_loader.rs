@@ -17,7 +17,9 @@
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
+use evorule_governance::circuit_breaker::CircuitConfig;
 use evorule_governance::permission::RoutePolicy;
 
 /// 资产文件名（rules_dir 根目录正本）
@@ -26,6 +28,7 @@ pub const ROUTE_POLICY_FILE: &str = "00_constraint_route_policy.json";
 static SHARED: OnceLock<Option<Arc<RoutePolicy>>> = OnceLock::new();
 static MISSING_WARNED: OnceLock<()> = OnceLock::new();
 static PARSE_WARNED: OnceLock<()> = OnceLock::new();
+static CIRCUIT_CFG: OnceLock<Option<CircuitConfig>> = OnceLock::new();
 
 /// 进程级共享加载（首次调用读盘并缓存；三处 gate 装配点共用同一份）
 pub fn shared_route_policy(rules_dir: &Path) -> Option<Arc<RoutePolicy>> {
@@ -70,6 +73,66 @@ pub fn load_route_policy(rules_dir: &Path) -> Option<Arc<RoutePolicy>> {
             None
         }
     }
+}
+
+/// SG-3 会话级熔断配置（env 接缝，进程级缓存；三处装配点共用同一份）
+///
+/// - `EVORULE_CIRCUIT_THRESHOLD`：滑窗内静态层 deny 计数阈值，缺省 5；
+///   `0` = 熔断面关闭（误伤回退开关）
+/// - `EVORULE_CIRCUIT_WINDOW_SECS`：计数/跳闸窗口秒数，缺省 300
+/// - 非法值（非数字 / 窗口 0）→ 缺省 + warn 每进程一次（禁止静默）
+///
+/// 返回 `None` = 不装配熔断面，行为与 SG-2 一致。
+pub fn circuit_config_from_env() -> Option<CircuitConfig> {
+    *CIRCUIT_CFG.get_or_init(|| {
+        circuit_config_from_raw(
+            std::env::var("EVORULE_CIRCUIT_THRESHOLD").ok().as_deref(),
+            std::env::var("EVORULE_CIRCUIT_WINDOW_SECS").ok().as_deref(),
+        )
+    })
+}
+
+/// 纯解析内核（单测入口；生产装配走 [`circuit_config_from_env`]）
+fn circuit_config_from_raw(threshold: Option<&str>, window: Option<&str>) -> Option<CircuitConfig> {
+    const DEFAULT_THRESHOLD: u32 = 5;
+    const DEFAULT_WINDOW_SECS: u64 = 300;
+
+    let threshold = match threshold {
+        None => DEFAULT_THRESHOLD,
+        Some(raw) => raw.trim().parse::<u32>().unwrap_or_else(|_| {
+            tracing::warn!(
+                target: "route_policy",
+                key = "EVORULE_CIRCUIT_THRESHOLD",
+                value = %raw,
+                default = DEFAULT_THRESHOLD,
+                "熔断阈值 env 非法，按缺省值装配（每进程仅告警一次）"
+            );
+            DEFAULT_THRESHOLD
+        }),
+    };
+    let window_secs = match window {
+        None => DEFAULT_WINDOW_SECS,
+        Some(raw) => match raw.trim().parse::<u64>() {
+            Ok(v) if v > 0 => v,
+            _ => {
+                tracing::warn!(
+                    target: "route_policy",
+                    key = "EVORULE_CIRCUIT_WINDOW_SECS",
+                    value = %raw,
+                    default = DEFAULT_WINDOW_SECS,
+                    "熔断窗口 env 非法（非数字或 0），按缺省值装配（每进程仅告警一次）"
+                );
+                DEFAULT_WINDOW_SECS
+            }
+        },
+    };
+    if threshold == 0 {
+        return None; // 熔断面关闭（误伤回退开关；行为与 SG-2 一致）
+    }
+    Some(CircuitConfig {
+        threshold,
+        window: Duration::from_secs(window_secs),
+    })
 }
 
 #[cfg(test)]
@@ -133,5 +196,39 @@ mod tests {
         .unwrap();
         assert!(load_route_policy(&dir).is_none());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- SG-3 熔断配置解析（circuit_config_from_raw 纯内核）----
+
+    #[test]
+    fn circuit_defaults_when_unset() {
+        let cfg = circuit_config_from_raw(None, None).expect("缺省必须装配熔断面");
+        assert_eq!(cfg.threshold, 5);
+        assert_eq!(cfg.window, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn circuit_zero_threshold_disables() {
+        assert!(circuit_config_from_raw(Some("0"), None).is_none(), "阈值 0 = 误伤回退开关（不装配）");
+    }
+
+    #[test]
+    fn circuit_illegal_values_fall_back_to_defaults() {
+        let cfg = circuit_config_from_raw(Some("abc"), Some("-3")).expect("非法值必须回退缺省");
+        assert_eq!(cfg.threshold, 5);
+        assert_eq!(cfg.window, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn circuit_zero_window_is_illegal() {
+        let cfg = circuit_config_from_raw(Some("3"), Some("0")).expect("窗口 0 视为非法回退缺省");
+        assert_eq!(cfg.window, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn circuit_custom_values_applied() {
+        let cfg = circuit_config_from_raw(Some("7"), Some("60")).expect("自定义值必须生效");
+        assert_eq!(cfg.threshold, 7);
+        assert_eq!(cfg.window, Duration::from_secs(60));
     }
 }

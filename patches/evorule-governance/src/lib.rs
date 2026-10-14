@@ -40,6 +40,7 @@
 // H6: api 模块已迁出本 crate（机制-策略分离，核心层不再包含 HTTP API 代码）
 pub mod anchor;
 pub mod auditor;
+pub mod circuit_breaker;
 pub mod clock;
 pub mod hash;
 pub mod io_dispatcher;
