@@ -2524,8 +2524,9 @@ impl SessionApi {
 
     /// L2 纪律门禁模式开关：env `EVORULE_DISCIPLINE_GATE`（判定 SSOT =
     /// evorule_rule_loader::discipline_enforce_from，R7 fail-closed 对齐）。
-    /// - `enforce`（大小写不敏感）= 违规拒载（业务文件 fail-soft / 宪法 fail-fast）；
-    /// - 缺省/空串/`warn` = warn 纯观测（W1 豁免期，复审期 2026-10-21）；
+    /// - 缺省/空串/`enforce`（大小写不敏感）= 违规拒载（业务文件 fail-soft /
+    ///   宪法 fail-fast；W1 观测期豁免已于 2026-10-14 收口，SR-16）；
+    /// - 显式 `warn` = warn 纯观测（一键降级回退口保留）；
     /// - 非法值 = panic 拒载（fail-closed，[CON-L2-004]/SR-13-R7：门禁配置错误
     ///   不得静默降级为观测态）。
     #[cfg(test)]
@@ -2551,9 +2552,9 @@ impl SessionApi {
             if !enforce {
                 tracing::warn!(
                     target: "discipline_gate",
-                    "当前为 warn 影子强制模式（缺省）：违规文件照常装载但以 ERROR 级 \
-                     大声曝光（若 enforce 将拒载）；flip 条件 = 影子期违规归零 \
-                     （整改三步走：普查→影子强制→分面灰度）"
+                    "当前为 warn 观测模式（显式 env，一键降级回退口）：违规文件照常装载 \
+                     但以 ERROR 级大声曝光（若 enforce 将拒载）；缺省已收口为 enforce \
+                     （W1 豁免 2026-10-14 收口）"
                 );
             }
         });
@@ -13550,7 +13551,8 @@ mod tests {
     }
 
     /// 端到端：经 load_merged_transforms_from_fs 全管线验证接线点 ①（parse_rule_file）。
-    /// 宪法 2 条 + 违规文件 1 条；按当前 env 模式断言是否计入（缺省 warn → 计入）。
+    /// 宪法 2 条 + 违规文件 1 条；按当前 env 模式断言是否计入（缺省 enforce → 拒载；
+    /// 显式 warn → 计入）。
     #[test]
     fn discipline_gate_wired_into_parse_rule_file_pipeline() {
         let tmp = tempfile::tempdir().unwrap();

@@ -61,7 +61,8 @@ fn locate_rules_repo() -> Option<PathBuf> {
 #[test]
 fn conformance_golden_loader_docs() {
     // 确定性钳制：discipline 门 enforce 位不受开发者环境干扰
-    // （合法金样例统一走 warn 期放行语义——[CON-L2-004] W1 观测期）
+    // （缺省路径 = enforce 语义——[CON-L2-004] W1 观测期豁免已收口，SR-16；
+    //   合法金样例自身合规，enforce 下必须全过；显式 warn 环境不得污染判定）
     std::env::remove_var("EVORULE_DISCIPLINE_GATE");
 
     let repo = locate_rules_repo().unwrap_or_else(|| {

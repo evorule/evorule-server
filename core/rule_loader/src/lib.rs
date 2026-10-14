@@ -84,13 +84,15 @@ pub enum L2Class { None, Constraint, Constitution }
 
 /// discipline 门 enforce 位的 env 值判定（单一事实源，server 测试桥同调本函数）。
 /// R7/[CON-L2-004] fail-closed 收口：合法值域 = {缺省/空串, "warn", "enforce"}
-/// （大小写不敏感）——缺省/空串/warn = `false`（W1 观测期放行+留痕，复审期
-/// 2026-10-21）；"enforce" = `true`（违规拒载）；**非法值 = panic 拒载**：
+/// （大小写不敏感）——**缺省/空串/"enforce" = `true`**（违规拒载；W1 观测期豁免
+/// 已于 2026-10-14 收口：复审观测数据干净，统帅裁定提前切 enforce 缺省，见
+/// 25 号档 [CON-L2-004] W1 收口注记与 SR-16）；显式 `"warn"` = `false`
+/// （观测期回退口保留：一键降级 env 切 warn，无需发版）；**非法值 = panic 拒载**：
 /// 门禁配置错误属部署事故，fail-closed 快速失败优于静默降级为观测态，
 /// 报错携带修正指引。
 pub fn discipline_enforce_from(value: Option<&str>) -> bool {
     match value {
-        None | Some("") => false,
+        None | Some("") => true,
         Some(v) if v.eq_ignore_ascii_case("enforce") => true,
         Some(v) if v.eq_ignore_ascii_case("warn") => false,
         Some(other) => panic!(
@@ -108,11 +110,11 @@ pub struct LoadContext {
     pub composition: Composition,
     /// L2 身份（调用方依治理事实声明，provenance 留痕可审计）
     pub l2_class: L2Class,
-    /// discipline 门 enforce 位（W1 观测期渐进收口：true=拒载违规，false=放行+留痕）。
-    /// 缺省 false（warn 影子期）：env EVORULE_DISCIPLINE_GATE 为 warn/缺省/空串时
-    /// 放行但结构化日志曝光——渐进整改三步走（普查→影子→灰度）的治理决定
-    /// （SR-02 决策 2；W1 豁免已登记 25 号档 [CON-L2-004]，v1.0.3/R7 起非法值
-    /// fail-closed，复审期 2026-10-21）。
+    /// discipline 门 enforce 位（W1 观测期豁免已于 2026-10-14 收口：缺省 true=
+    /// 违规拒载；env EVORULE_DISCIPLINE_GATE 显式 warn 时 false=放行+留痕，
+    /// 为一键降级回退口）。
+    /// env 为 warn/缺省/空串判定与渐进收口史见 `discipline_enforce_from`；
+    /// 非法值 fail-closed（SR-13/R7）。
     pub discipline_enforce: bool,
 }
 
@@ -597,7 +599,7 @@ fn discipline_gate(transform_arr: &[Value], ctx: &LoadContext) -> Result<(), Con
             let codes: Vec<String> =
                 report.violations.iter().map(|v| v.code.clone()).collect();
             if !ctx.discipline_enforce {
-                // W1 观测期：放行+结构化留痕（与生产 discipline_gate_enforce 同语义）
+                // 显式 warn（回退口）：放行+结构化留痕（缺省已收口为 enforce，SR-16）
                 tracing::warn!(
                     target: "discipline_gate",
                     codes = %codes.join(","),
@@ -1041,9 +1043,10 @@ mod tests {
 
     #[test]
     fn discipline_env_value_mapping() {
-        // 缺省/空串/warn（大小写不敏感）→ 观测位 false；enforce（大小写不敏感）→ true
-        assert!(!discipline_enforce_from(None));
-        assert!(!discipline_enforce_from(Some("")));
+        // SR-16 收口后：缺省/空串（大小写不敏感）/enforce → true（违规拒载，W1
+        // 观测期豁免已收口）；显式 warn（大小写不敏感）→ false（观测期回退口保留）
+        assert!(discipline_enforce_from(None));
+        assert!(discipline_enforce_from(Some("")));
         assert!(!discipline_enforce_from(Some("warn")));
         assert!(!discipline_enforce_from(Some("WARN")));
         assert!(discipline_enforce_from(Some("enforce")));

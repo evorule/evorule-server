@@ -454,7 +454,7 @@ Config loading priority: **CLI args > env vars (prefix `EVORULE_`) > JSON config
 | `EVORULE_DEMO_AUTH` | `--demo-auth` | `false` | Demo login toggle (on by default in quick-start packages; production recommends off) |
 | `EVORULE_WEB_DIR` | `--web-dir` | (empty) | Static frontend hosting dir (SPA fallback index.html; unset = no hosting) |
 | `EVORULE_PLUGIN_ADMIN_TOKEN__<ID>` | — | (empty) | Per-external-plugin admin token for the approval proxy (uppercase-underscore id, e.g. `EVORULE_PLUGIN_ADMIN_TOKEN__FINANCE_CONFIG`; unset = proxy returns 503 for that plugin) |
-| `EVORULE_DISCIPLINE_GATE` | — | `warn` | L2 rule-shape discipline gate mode: `warn` (shadow-enforce, default) / `enforce` (reject on violation); invalid values fall back to `warn` with a warning log — see [Discipline Gate](#discipline-gate-l2-rule-shape-discipline) |
+| `EVORULE_DISCIPLINE_GATE` | — | `enforce` | L2 rule-shape discipline gate mode: `enforce` (reject on violation, default since the W1 observation-period exemption was closed 2026-10-14) / `warn` (shadow-enforce fallback, opt-in); invalid values fail closed (startup rejection) — see [Discipline Gate](#discipline-gate-l2-rule-shape-discipline) |
 
 ### Discipline Gate (L2 rule-shape discipline)
 
@@ -465,9 +465,9 @@ The server validates rule-set shape discipline (DC-01..DC-09) at two wiring poin
 
 Modes (`EVORULE_DISCIPLINE_GATE`):
 
-- `warn` (default, shadow-enforce): violating files still load (behavior unchanged — absorbs residual gate false-positives so unregistered legitimate rule sets can never render the system unloadable), but every violation is logged at **ERROR** level (file / dc_code / node_type / node_path / reason + "would be rejected under enforce") and counted; after rule loading completes the server prints a one-shot shadow summary (violation file count; 0 = shadow period clean). Flip condition: zero violations during the shadow period. Expose-as-enforce, act-as-warn.
-- `enforce`: violations reject loading/startup as described above.
-- Invalid values: treated as `warn` with a warning log (fail-open by design — a gate misconfiguration must not escalate into an availability incident).
+- `enforce` (default since 2026-10-14): violations reject loading/startup as described above. The W1 observation-period exemption (warn default) was closed after the review audit found zero observed violations across the observation window.
+- `warn` (opt-in fallback, shadow-enforce): violating files still load (behavior unchanged), but every violation is logged at **ERROR** level (file / dc_code / node_type / node_path / reason + "would be rejected under enforce") and counted; after rule loading completes the server prints a one-shot shadow summary (violation file count; 0 = shadow period clean). One-knob rollback for production incidents — no release needed.
+- Invalid values: fail closed (startup rejection with a corrective hint — a gate misconfiguration is a deployment incident and must not silently degrade into observation mode).
 
 ### JSON Config File
 
