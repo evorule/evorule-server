@@ -36,31 +36,9 @@ use tower::ServiceExt;
 
 // ===== 辅助函数 =====
 
-/// `serde_json::Value` → `evorule_tcb::JsonValue`（与 main.rs / server.rs 中一致）
-fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
-    match v {
-        serde_json::Value::Null => JsonValue::Null,
-        serde_json::Value::Bool(b) => JsonValue::Bool(b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                JsonValue::Integer(i)
-            } else {
-                JsonValue::String(n.to_string().into())
-            }
-        }
-        serde_json::Value::String(s) => JsonValue::String(s.into()),
-        serde_json::Value::Array(arr) => {
-            JsonValue::Array(arr.into_iter().map(serde_to_tcb).collect())
-        }
-        serde_json::Value::Object(obj) => {
-            let mut map = BTreeMap::new();
-            for (k, val) in obj {
-                map.insert(k, serde_to_tcb(val));
-            }
-            JsonValue::Object(map)
-        }
-    }
-}
+/// `serde_json::Value` → `evorule_tcb::JsonValue`：收编 rule_loader 唯一实现
+/// （[CON-L4-001]；本地手写份已删）
+use evorule_rule_loader::serde_to_tcb;
 
 /// 加载 `server_eval.json`
 fn load_core_eval() -> Vec<JsonValue> {
@@ -77,10 +55,12 @@ fn load_core_eval() -> Vec<JsonValue> {
     });
     let json: serde_json::Value =
         serde_json::from_str(&json_str).expect("Failed to parse server_eval.json");
-    json.get("transform")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().cloned().map(serde_to_tcb).collect())
-        .unwrap_or_default()
+    // 剥壳+转换收编 rule_loader 唯一通道（[CON-L4-001] 夹具与生产装载同源过门）
+    let ctx = evorule_rule_loader::LoadContext::constitution(&core_eval_path.display().to_string());
+    match evorule_rule_loader::load_rule_set(&json, &ctx) {
+        Ok(loaded) => loaded.engine_rules,
+        Err(e) => panic!("server_eval 夹具装载门禁未过: {e}"),
+    }
 }
 
 /// 构造测试用 `WorkspaceState`（内存 SQLite + 桥接到 SessionApi）

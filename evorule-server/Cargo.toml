@@ -138,6 +138,9 @@ subsetter = "0.2.6"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
+# 宪法装载唯一通道（测试夹具剥壳/转换收编：tests/* 的 load_core_eval 与
+# serde_to_tcb 手写份已改调 rule_loader，[CON-L4-001] 零手写语义实现）
+evorule-rule-loader = { path = "../core/rule_loader" }
 # H6: benchmarks 迁移到应用层后需要的依赖
 # bench_determinism/long_session/throughput 通过 HTTP 调用 evorule-server 进行压测
 # (reqwest 已上移至 [dependencies],dev 场景自动可用)

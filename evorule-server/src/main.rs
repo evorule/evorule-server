@@ -1256,10 +1256,10 @@ fn load_external_plugins(
     Ok(out)
 }
 
-/// 将 `serde_json::Value` 转换为 `evorule_tcb::JsonValue`
-///
-/// 注：runtime 改用 `SessionApi::load_merged_transforms_from_fs` 后，此函数仅在
-/// `load_core_eval`（单元测试专用）中使用，故整体标 `#[cfg(test)]`。
+/// 将 `serde_json::Value` 转换为 `evorule_tcb::JsonValue`（测试专用，[CON-L4-001]
+/// 收编说明：与 rule_loader::serde_to_tcb 同构；此份随 #[cfg(test)] 编译不进
+/// 生产二进制，且 main.rs 测试夹具形态依赖本地闭包——保留理由=cfg(test) 域内
+/// 使用面极窄，复审期 2026-11-01 前评估改调 loader）
 #[cfg(test)]
 fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
     use std::collections::BTreeMap;
