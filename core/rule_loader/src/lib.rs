@@ -610,6 +610,29 @@ pub fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
 // 测试（[CON-S-001] 判据：三分支 source × 两 venue 覆盖）
 // ============================================================================
 
+// ============================================================================
+// 跨面 parity 测试钩子（[CON-L4-002] V3/V4；仅供 server.rs 对齐测试消费，
+// 非装载 API——两门为 crate 私有实现，跨 crate parity 断言经此只读暴露）
+// ============================================================================
+
+/// V3 对齐测试钩子：tier 门判定（同 load_rule_set 步骤③内部语义）
+#[doc(hidden)]
+pub fn tier_gate_for_test(
+    transform_arr: &[Value],
+    doc: &Value,
+    ctx: &LoadContext,
+) -> Result<(), ConstitutionError> {
+    tier_gate(transform_arr, doc, ctx)
+}
+
+/// V4 对齐测试钩子：eq/lt domain 门违规明细（同步骤③内部语义）
+#[doc(hidden)]
+pub fn walk_eq_lt_domain_for_test(v: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    walk_eq_lt_domain(v, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19410,4 +19410,145 @@ mod tests {
         assert!(!SessionApi::contains_enforce_rule(&without));
         assert!(!SessionApi::contains_enforce_rule(&embedded));
     }
+
+    // ===== V3/V4 parity 对齐测试（把关报告动作序列④尾；[CON-L4-002] V3/V4 风险面）=====
+    // 锁「清单面（server.rs 既有语义）与装载面（rule_loader 唯一通道）对同一文档
+    // 判定一致」——两实现长期并存（管辖分工见 SR-02 决策 3），漂移即红灯。
+    mod parity {
+        use super::*;
+        use evorule_rule_loader::{L2Class, LoadContext, LoadSource, Venue};
+
+        /// 构造与生产 parse_rule_file 同形态的 LoadContext
+        fn ctx_for(l2: L2Class) -> LoadContext {
+            LoadContext {
+                source: LoadSource::File {
+                    path: "parity_probe.json".to_string(),
+                },
+                venue: Venue::Production,
+                composition: evorule_rule_loader::Composition::Standalone,
+                l2_class: l2,
+                discipline_enforce: false,
+            }
+        }
+
+        /// V3：tier 门 parity——同一文档，清单面（tier_gate_reason 以文件名+目录
+        /// 判 L2）与装载面（tier_gate 以调用方治理事实判 L2）在等价 L2 判定输入下
+        /// 判定必须一致（同过/同拒）。
+        #[test]
+        fn v3_tier_gate_parity_same_verdict() {
+            let rules_dir = std::path::Path::new("/tmp/rules");
+            let cases: Vec<(&str, &str, serde_json::Value, bool)> = vec![
+                // (文件名, 描述, 文档, 应否通过)
+                // L2 约束文件 + tier=constraint → 双面同过
+                (
+                    "00_constraint_x.json",
+                    "constraint+tier",
+                    serde_json::json!({"metadata":{"tier":"constraint"},"transform":[]}),
+                    true,
+                ),
+                // L2 约束文件缺 tier → 双面同拒
+                (
+                    "00_constraint_x.json",
+                    "constraint 缺 tier",
+                    serde_json::json!({"metadata":{},"transform":[]}),
+                    false,
+                ),
+                // 业务文件携带 tier（层级伪造）→ 双面同拒
+                (
+                    "biz_rule.json",
+                    "业务文件伪造 tier",
+                    serde_json::json!({"metadata":{"tier":"constraint"},"transform":[]}),
+                    false,
+                ),
+                // 业务文件含 enforce → 双面同拒
+                (
+                    "biz_rule.json",
+                    "业务文件携 enforce",
+                    serde_json::json!({"transform":[{"type":"enforce","params":{}}]}),
+                    false,
+                ),
+                // 业务文件干净 → 双面同过
+                (
+                    "biz_rule.json",
+                    "业务文件干净",
+                    serde_json::json!({"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}),
+                    true,
+                ),
+            ];
+            for (fname, desc, doc, should_pass) in cases {
+                let p = rules_dir.join(fname);
+                // 清单面：is_root_meta = 父目录==rules_dir && is_l2_meta_file_name
+                let is_root_meta = p.parent() == Some(rules_dir)
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(is_l2_meta_file_name)
+                        .unwrap_or(false);
+                let list_face = SessionApi::tier_gate_reason(&p, rules_dir, &doc).is_ok();
+                // 装载面：等价 L2 治理事实
+                let l2 = if is_root_meta { L2Class::Constraint } else { L2Class::None };
+                let arr: Vec<serde_json::Value> = doc
+                    .get("transform")
+                    .and_then(|t| t.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let load_face =
+                    evorule_rule_loader::tier_gate_for_test(&arr, &doc, &ctx_for(l2)).is_ok();
+                assert_eq!(
+                    list_face, load_face,
+                    "V3 parity 破裂 [{desc}]：清单面={list_face} 装载面={load_face}"
+                );
+                assert_eq!(
+                    list_face, should_pass,
+                    "V3 基准漂移 [{desc}]：清单面={list_face} 预期={should_pass}"
+                );
+            }
+        }
+
+        /// V4：eq/lt domain 门 parity——同一规则树，装载面 walk_eq_lt_domain 与
+        /// 清单面 domain_gate_violations 的三道门（missing/invalid/ambiguous）
+        /// 命中集合必须等价（门类逐一对齐）。
+        #[test]
+        fn v4_domain_gate_parity_same_violations() {
+            let samples = [
+                // 缺 on_missing
+                r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"x"},"on_true":[],"on_false":[]}}"#,
+                // on_missing 非法值
+                r#"{"type":"branch","params":{"domain":{"type":"lt","path":"payload.c","value":5,"on_missing":"warn"},"on_true":[],"on_false":[]}}"#,
+                // value 字面量歧义（历史写作错误形态）
+                r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.m","value":"instruction.params.milestone_target","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                // 干净声明（零违例）
+                r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"done","on_missing":"error"},"on_true":[],"on_false":[]}}"#,
+                // 嵌套 inner 内缺声明（walk 整树语义）
+                r#"{"type":"branch","params":{"domain":{"type":"all","inner":[{"type":"exists","path":"payload.a"},{"type":"eq","path":"payload.b","value":"y"}]},"on_true":[],"on_false":[]}}"#,
+                // __ 前缀显式路径引用=合法（不误伤）
+                r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"__exec__.payload.__io_results__.x","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+            ];
+            for body in samples {
+                let v: serde_json::Value = serde_json::from_str(body).unwrap();
+                let tcb_rule = serde_to_tcb(v.clone());
+                // 清单面：生产纯函数
+                let prod = SessionApi::domain_gate_violations(&tcb_rule);
+                // 装载面：walk_eq_lt_domain
+                let load = evorule_rule_loader::walk_eq_lt_domain_for_test(&v);
+                // 门类集合等价（顺序不保证一致，按特征串比对）
+                let classify = |detail: &str| {
+                    if detail.contains("缺 on_missing") {
+                        "missing"
+                    } else if detail.contains("非法") {
+                        "invalid"
+                    } else {
+                        "ambiguous"
+                    }
+                };
+                let mut prod_set: Vec<&str> = prod.iter().map(|d| classify(&d.detail)).collect();
+                let mut load_set: Vec<&str> = load.iter().map(|s| classify(s)).collect();
+                prod_set.sort();
+                load_set.sort();
+                assert_eq!(
+                    prod_set, load_set,
+                    "V4 parity 破裂：清单面={prod_set:?} 装载面={load_set:?}（样本 {body}）"
+                );
+            }
+        }
+    }
 }

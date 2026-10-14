@@ -18,7 +18,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -35,10 +34,6 @@ use evorule_tcb::JsonValue;
 use tower::ServiceExt;
 
 // ===== 辅助函数 =====
-
-/// `serde_json::Value` → `evorule_tcb::JsonValue`：收编 rule_loader 唯一实现
-/// （[CON-L4-001]；本地手写份已删）
-use evorule_rule_loader::serde_to_tcb;
 
 /// 加载 `server_eval.json`
 fn load_core_eval() -> Vec<JsonValue> {
