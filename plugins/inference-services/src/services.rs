@@ -261,3 +261,287 @@ pub fn mk_compare() -> std::sync::Arc<dyn NativeService> {
 pub fn mk_verify_formula() -> std::sync::Arc<dyn NativeService> {
     std::sync::Arc::new(DimensionVerifyFormula)
 }
+
+// ============================================================================
+// 规则静态分析三服务（112 阶段 2，设计文档 §五）
+// ============================================================================
+
+use std::collections::BTreeSet;
+
+use crate::conflict::{detect_conflicts, ConflictReport};
+use crate::cycle::{detect_cycles, CycleReport};
+use crate::rw_extract::{extract, RuleRw};
+
+/// 公共入参：`{"rules": [...], "sources": [...], "include_constitution"?: bool}`
+struct RulesetArgs<'a> {
+    rules: &'a [JsonValue],
+    sources: Vec<String>,
+    include_constitution: bool,
+}
+
+/// 解析规则集公共入参（fail-fast 附指引）
+fn ruleset_args<'a>(args: &'a JsonValue) -> Result<RulesetArgs<'a>, String> {
+    let rules = match args.get("rules") {
+        Some(JsonValue::Array(items)) => items,
+        Some(_) => {
+            return Err(
+                "参数 rules 须为数组 — 自诊断指引: 规则集为 core_eval 形态 JSON 数组\
+                 （合并列表 + 来源标签等长对齐）"
+                    .to_string(),
+            )
+        }
+        None => {
+            return Err("缺少必填参数 rules — 自诊断指引: 形如 {\"rules\": [...], \
+                 \"sources\": [\"core_eval\", \"server_eval\", \"rules/x.json\", ...]}"
+                .to_string())
+        }
+    };
+    let sources = match args.get("sources") {
+        Some(JsonValue::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    JsonValue::String(s) => out.push(s.to_string()),
+                    _ => {
+                        return Err("参数 sources 须为字符串数组 — 自诊断指引: 来源标签形如 \
+                             \"core_eval\" / \"server_eval\" / \"rules/<相对路径>\""
+                            .to_string())
+                    }
+                }
+            }
+            out
+        }
+        Some(_) => return Err("参数 sources 须为字符串数组".to_string()),
+        None => {
+            return Err(
+                "缺少必填参数 sources — 自诊断指引: 与 rules 等长的来源标签数组\
+                 （对齐 RulesetLayout 合并序：core_eval 在前 + rules_dir 字典序）"
+                    .to_string(),
+            )
+        }
+    };
+    let include_constitution = match args.get("include_constitution") {
+        Some(JsonValue::Bool(b)) => *b,
+        Some(_) => {
+            return Err(
+                "参数 include_constitution 须为布尔值 — 自诊断指引: 缺省 false（宪法段豁免）"
+                    .to_string(),
+            )
+        }
+        None => false,
+    };
+    Ok(RulesetArgs {
+        rules,
+        sources,
+        include_constitution,
+    })
+}
+
+/// RuleRw → JsonValue（诚实标注位全量透出）
+fn rw_to_json(rw: &RuleRw) -> JsonValue {
+    let set_json = |s: &BTreeSet<String>| {
+        JsonValue::Array(s.iter().map(|v| JsonValue::string(v.clone())).collect())
+    };
+    let const_pairs: Vec<JsonValue> = rw
+        .const_writes
+        .iter()
+        .map(|(k, v)| {
+            JsonValue::object_from_pairs(&[
+                ("path", JsonValue::string(k.clone())),
+                ("literal", JsonValue::string(v.clone())),
+            ])
+        })
+        .collect();
+    let io_pairs: Vec<JsonValue> = rw
+        .ios
+        .iter()
+        .map(|e| {
+            JsonValue::object_from_pairs(&[
+                ("io_type", JsonValue::string(e.io_type.clone())),
+                (
+                    "service_name",
+                    match &e.service_name {
+                        Some(s) => JsonValue::string(s.clone()),
+                        None => JsonValue::Null,
+                    },
+                ),
+            ])
+        })
+        .collect();
+    JsonValue::object_from_pairs(&[
+        ("id", JsonValue::string(rw.id.clone())),
+        ("source", JsonValue::string(rw.source.clone())),
+        (
+            "index",
+            JsonValue::Integer(i64::try_from(rw.index).unwrap_or(-1)),
+        ),
+        ("reads", set_json(&rw.reads)),
+        ("writes", set_json(&rw.writes)),
+        ("const_writes", JsonValue::Array(const_pairs)),
+        ("ios", JsonValue::Array(io_pairs)),
+        ("instr_types", set_json(&rw.instr_types)),
+        ("domain_dyn", JsonValue::Bool(rw.domain_dyn)),
+        ("write_dyn", JsonValue::Bool(rw.write_dyn)),
+        ("domain_universal", JsonValue::Bool(rw.domain_universal)),
+        ("excluded", JsonValue::Bool(rw.excluded)),
+    ])
+}
+
+fn cycles_to_json(report: &CycleReport) -> JsonValue {
+    let cycle_list = |cycles: &[Vec<String>]| {
+        JsonValue::Array(
+            cycles
+                .iter()
+                .map(|c| {
+                    JsonValue::Array(c.iter().map(|id| JsonValue::string(id.clone())).collect())
+                })
+                .collect(),
+        )
+    };
+    JsonValue::object_from_pairs(&[
+        ("has_cycles", JsonValue::Bool(report.has_cycles)),
+        (
+            "cycle_count",
+            JsonValue::Integer(i64::try_from(report.cycle_count).unwrap_or(-1)),
+        ),
+        ("static_cycles", cycle_list(&report.static_cycles)),
+        (
+            "conservative_cycles",
+            cycle_list(&report.conservative_cycles),
+        ),
+        (
+            "topological_order",
+            JsonValue::Array(
+                report
+                    .topological_order
+                    .iter()
+                    .map(|id| JsonValue::string(id.clone()))
+                    .collect(),
+            ),
+        ),
+        (
+            "safe_rules",
+            JsonValue::Array(
+                report
+                    .safe_rules
+                    .iter()
+                    .map(|id| JsonValue::string(id.clone()))
+                    .collect(),
+            ),
+        ),
+        (
+            "unsafe_rules",
+            JsonValue::Array(
+                report
+                    .unsafe_rules
+                    .iter()
+                    .map(|id| JsonValue::string(id.clone()))
+                    .collect(),
+            ),
+        ),
+        (
+            "excluded",
+            JsonValue::Array(
+                report
+                    .excluded
+                    .iter()
+                    .map(|id| JsonValue::string(id.clone()))
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
+fn conflicts_to_json(report: &ConflictReport) -> JsonValue {
+    let items: Vec<JsonValue> = report
+        .conflicts
+        .iter()
+        .map(|c| {
+            JsonValue::object_from_pairs(&[
+                ("rule_id_1", JsonValue::string(c.rule_id_1.clone())),
+                ("rule_id_2", JsonValue::string(c.rule_id_2.clone())),
+                ("conflict_type", JsonValue::string(c.conflict_type.clone())),
+                ("description", JsonValue::string(c.description.clone())),
+                ("conservative", JsonValue::Bool(c.conservative)),
+            ])
+        })
+        .collect();
+    JsonValue::object_from_pairs(&[
+        ("has_conflicts", JsonValue::Bool(report.has_conflicts)),
+        (
+            "conflict_count",
+            JsonValue::Integer(i64::try_from(report.conflict_count).unwrap_or(-1)),
+        ),
+        ("conflicts", JsonValue::Array(items)),
+        (
+            "excluded",
+            JsonValue::Array(
+                report
+                    .excluded
+                    .iter()
+                    .map(|id| JsonValue::string(id.clone()))
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
+// ── inference_rw_extract ──
+
+/// 规则读写集静态提取服务（环/冲突检测的共享底座，调试与 CI 直连用）
+pub struct RuleRwExtract;
+
+impl NativeService for RuleRwExtract {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let rws = extract(parsed.rules, &parsed.sources, parsed.include_constitution)?;
+        let items: Vec<JsonValue> = rws.iter().map(rw_to_json).collect();
+        Ok(JsonValue::object_from_pairs(&[(
+            "results",
+            JsonValue::Array(items),
+        )]))
+    }
+}
+
+// ── inference_cycle_detect ──
+
+/// 规则集内环路检测服务（静态/保守分层，宪法段默认豁免显式标注）
+pub struct RuleCycleDetect;
+
+impl NativeService for RuleCycleDetect {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let rws = extract(parsed.rules, &parsed.sources, parsed.include_constitution)?;
+        let report = detect_cycles(&rws)?;
+        Ok(cycles_to_json(&report))
+    }
+}
+
+// ── inference_conflict_detect ──
+
+/// 规则集内冲突检测服务（六类型学，R-1 裁定口径）
+pub struct RuleConflictDetect;
+
+impl NativeService for RuleConflictDetect {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let rws = extract(parsed.rules, &parsed.sources, parsed.include_constitution)?;
+        let report = detect_conflicts(&rws)?;
+        Ok(conflicts_to_json(&report))
+    }
+}
+
+/// 声明表构造子：读写集提取服务
+pub fn mk_rw_extract() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleRwExtract)
+}
+
+/// 声明表构造子：环路检测服务
+pub fn mk_cycle_detect() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleCycleDetect)
+}
+
+/// 声明表构造子：冲突检测服务
+pub fn mk_conflict_detect() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleConflictDetect)
+}

@@ -20,10 +20,19 @@
 //! 1. `inference_dimension_from_unit` — SI 单位字符串 → 七分量量纲向量
 //! 2. `inference_dimension_compare_units` — 两单位量纲等价性比较
 //! 3. `inference_dimension_verify_formula` — 物理公式量纲一致性验证
+//!    （1-3 = 阶段 1 量纲分析）
+//! 4. `inference_rw_extract` — 规则读写集静态提取（阶段 2 共享底座）
+//! 5. `inference_cycle_detect` — 规则集内环路检测（静态/保守分层）
+//! 6. `inference_conflict_detect` — 规则集内冲突检测（六类型学）
+//!    （4-6 = 阶段 2 规则静态分析；设计文档 112-阶段2-规则模型映射设计.md，
+//!    裁定 R-1~R-4；v4 仅算法底稿+测试预言，模型层零照搬）
 
 #![forbid(unsafe_code)]
 
+pub mod conflict;
+pub mod cycle;
 pub mod dimension;
+pub mod rw_extract;
 pub mod services;
 
 use std::sync::Arc;
@@ -35,7 +44,9 @@ use evorule_tcb::JsonValue;
 // 机制件(trait/声明项/过滤路由器)在 plugin-kit,本 crate 自持声明表+薄壳具名路由器
 pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 
-use crate::services::{mk_compare, mk_from_unit, mk_verify_formula};
+use crate::services::{
+    mk_compare, mk_conflict_detect, mk_cycle_detect, mk_from_unit, mk_rw_extract, mk_verify_formula,
+};
 
 // ============================================================================
 // 声明表（SSOT 配对文件: official_native_services.json; 顺序即声明序,
@@ -62,6 +73,25 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "物理公式量纲一致性验证(已知变量量纲推导四则与幂表达式,确定性)",
         make: mk_verify_formula,
+    },
+    NativeServiceDef {
+        name: "inference_rw_extract",
+        sensitive: false,
+        description: "规则读写集静态提取(规范化路径+I/O出边+动态标注,纯函数确定性)",
+        make: mk_rw_extract,
+    },
+    NativeServiceDef {
+        name: "inference_cycle_detect",
+        sensitive: false,
+        description: "规则集内环路检测(Kahn拓扑+环路径提取,静态/保守分层,确定性)",
+        make: mk_cycle_detect,
+    },
+    NativeServiceDef {
+        name: "inference_conflict_detect",
+        sensitive: false,
+        description:
+            "规则集内冲突检测(六类型学:常量矛盾/顺序遮蔽/写竞争/互补域/循环写/IO串台,只报告不拦截)",
+        make: mk_conflict_detect,
     },
 ];
 

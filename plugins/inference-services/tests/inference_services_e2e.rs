@@ -391,6 +391,540 @@ fn native_service_names_derived_from_table() {
             "inference_dimension_from_unit",
             "inference_dimension_compare_units",
             "inference_dimension_verify_formula",
+            "inference_rw_extract",
+            "inference_cycle_detect",
+            "inference_conflict_detect",
         ]
+    );
+}
+
+// ============================================================================
+// 阶段 2：规则静态分析三服务（112 号，设计文档 §五/§六）
+// ============================================================================
+
+use std::sync::Arc;
+
+/// 构造 core_eval 形态的 branch+eq+set 规则
+fn branch_eq_write(path: &str, eq_val: &str, attr: &str, value: i64) -> JsonValue {
+    JsonValue::object_from_pairs(&[
+        ("type", JsonValue::string("branch")),
+        (
+            "params",
+            JsonValue::object_from_pairs(&[
+                (
+                    "domain",
+                    JsonValue::object_from_pairs(&[
+                        ("type", JsonValue::string("eq")),
+                        ("path", JsonValue::string(path)),
+                        ("value", JsonValue::string(eq_val)),
+                    ]),
+                ),
+                (
+                    "on_true",
+                    JsonValue::Array(vec![JsonValue::object_from_pairs(&[
+                        ("type", JsonValue::string("set")),
+                        (
+                            "params",
+                            JsonValue::object_from_pairs(&[
+                                ("attr", JsonValue::string(attr)),
+                                ("value", JsonValue::Integer(value)),
+                            ]),
+                        ),
+                    ])]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+/// 规则集入参（来源标签自动生成 rules/rN.json）
+fn rs_args(rules: Vec<JsonValue>) -> JsonValue {
+    let sources: Vec<JsonValue> = (0..rules.len())
+        .map(|i| JsonValue::string(format!("rules/r{i}.json")))
+        .collect();
+    JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(rules)),
+        ("sources", JsonValue::Array(sources)),
+    ])
+}
+
+#[tokio::test]
+async fn rw_extract_reports_reads_writes_and_flags() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    // r0: 静态写 payload.x 常量；r1: 宪法形态动态写（attr 路径引用）
+    let rules = vec![
+        branch_eq_write("__exec__.payload.flag", "on", "x", 42),
+        JsonValue::object_from_pairs(&[
+            ("type", JsonValue::string("set")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    (
+                        "attr",
+                        JsonValue::string("__exec__.instruction.params.attr"),
+                    ),
+                    ("value", JsonValue::Integer(1)),
+                ]),
+            ),
+        ]),
+    ];
+    let out = router
+        .execute(&svc_params("inference_rw_extract", rs_args(rules)))
+        .await
+        .unwrap();
+    let items = out
+        .get("results")
+        .and_then(|v| v.as_array())
+        .expect("results 数组");
+    assert_eq!(items.len(), 2);
+    let r0 = &items[0];
+    assert_eq!(
+        r0.get("id").and_then(|v| v.as_str()),
+        Some("rules/r0.json#0")
+    );
+    let reads0 = r0
+        .get("reads")
+        .and_then(|v| v.as_array())
+        .expect("reads 数组");
+    assert!(reads0.iter().any(|v| v.as_str() == Some("payload.flag")));
+    let writes0 = r0
+        .get("writes")
+        .and_then(|v| v.as_array())
+        .expect("writes 数组");
+    assert!(writes0.iter().any(|v| v.as_str() == Some("payload.x")));
+    assert_eq!(r0.get("write_dyn"), Some(&JsonValue::Bool(false)));
+    let r1 = &items[1];
+    assert_eq!(r1.get("write_dyn"), Some(&JsonValue::Bool(true)));
+}
+
+#[tokio::test]
+async fn cycle_detect_finds_two_node_static_cycle() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    // r0 存在 b 写 a；r1 存在 a 写 b → 静态环
+    let mk = |guard: &str, attr: &str| {
+        JsonValue::object_from_pairs(&[
+            ("type", JsonValue::string("branch")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    (
+                        "domain",
+                        JsonValue::object_from_pairs(&[
+                            ("type", JsonValue::string("exists")),
+                            ("path", JsonValue::string(guard)),
+                        ]),
+                    ),
+                    (
+                        "on_true",
+                        JsonValue::Array(vec![JsonValue::object_from_pairs(&[
+                            ("type", JsonValue::string("set")),
+                            (
+                                "params",
+                                JsonValue::object_from_pairs(&[
+                                    ("attr", JsonValue::string(attr)),
+                                    ("value", JsonValue::Integer(1)),
+                                ]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+            ),
+        ])
+    };
+    let rules = vec![mk("__exec__.payload.b", "a"), mk("__exec__.payload.a", "b")];
+    let out = router
+        .execute(&svc_params("inference_cycle_detect", rs_args(rules)))
+        .await
+        .unwrap();
+    assert_eq!(out.get("has_cycles"), Some(&JsonValue::Bool(true)));
+    assert_eq!(out.get("cycle_count"), Some(&JsonValue::Integer(1)));
+    let cycles = out
+        .get("static_cycles")
+        .and_then(|v| v.as_array())
+        .expect("static_cycles 数组");
+    assert_eq!(cycles.len(), 1);
+    let cycle = cycles[0].as_array().expect("环为数组");
+    assert_eq!(cycle.len(), 2);
+    assert!(out
+        .get("excluded")
+        .and_then(|v| v.as_array())
+        .expect("excluded")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn cycle_detect_acyclic_reports_topological_order() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let rules = vec![
+        branch_eq_write("__exec__.payload.mode", "a", "x", 1),
+        branch_eq_write("__exec__.payload.flag", "on", "y", 2),
+    ];
+    let out = router
+        .execute(&svc_params("inference_cycle_detect", rs_args(rules)))
+        .await
+        .unwrap();
+    assert_eq!(out.get("has_cycles"), Some(&JsonValue::Bool(false)));
+    let topo = out
+        .get("topological_order")
+        .and_then(|v| v.as_array())
+        .expect("topological_order 数组");
+    assert_eq!(topo.len(), 2);
+}
+
+#[tokio::test]
+async fn conflict_detect_contradictory_and_shadow() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    // 常量矛盾对
+    let rules1 = vec![
+        branch_eq_write("__exec__.payload.mode", "a", "x", 1),
+        branch_eq_write("__exec__.payload.mode", "a", "x", 2),
+    ];
+    let out1 = router
+        .execute(&svc_params(
+            "inference_conflict_detect",
+            rs_args(rules1.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(out1.get("has_conflicts"), Some(&JsonValue::Bool(true)));
+    let conflicts1 = out1
+        .get("conflicts")
+        .and_then(|v| v.as_array())
+        .expect("conflicts 数组");
+    assert!(conflicts1.iter().any(|c| {
+        c.get("conflict_type").and_then(|v| v.as_str()) == Some("contradictory_constants")
+    }));
+    // 同常量 → 良性无冲突
+    let rules2 = vec![
+        branch_eq_write("__exec__.payload.mode", "a", "x", 1),
+        branch_eq_write("__exec__.payload.mode", "a", "x", 1),
+    ];
+    let out2 = router
+        .execute(&svc_params("inference_conflict_detect", rs_args(rules2)))
+        .await
+        .unwrap();
+    assert_eq!(out2.get("has_conflicts"), Some(&JsonValue::Bool(false)));
+    // 指令类型互斥 → 可证不重叠
+    let mk_instr = |t: &str, value: i64| {
+        JsonValue::object_from_pairs(&[
+            ("type", JsonValue::string("branch")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    (
+                        "domain",
+                        JsonValue::object_from_pairs(&[
+                            ("type", JsonValue::string("instruction")),
+                            ("instruction_type", JsonValue::string(t)),
+                        ]),
+                    ),
+                    (
+                        "on_true",
+                        JsonValue::Array(vec![JsonValue::object_from_pairs(&[
+                            ("type", JsonValue::string("set")),
+                            (
+                                "params",
+                                JsonValue::object_from_pairs(&[
+                                    ("attr", JsonValue::string("x")),
+                                    ("value", JsonValue::Integer(value)),
+                                ]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+            ),
+        ])
+    };
+    let rules3 = vec![mk_instr("increment", 1), mk_instr("decrement", 2)];
+    let out3 = router
+        .execute(&svc_params("inference_conflict_detect", rs_args(rules3)))
+        .await
+        .unwrap();
+    assert_eq!(out3.get("has_conflicts"), Some(&JsonValue::Bool(false)));
+}
+
+#[tokio::test]
+async fn conflict_detect_io_result_contention() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let mk_io = |n: i64| {
+        JsonValue::object_from_pairs(&[
+            ("type", JsonValue::string("branch")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    (
+                        "domain",
+                        JsonValue::object_from_pairs(&[
+                            ("type", JsonValue::string("instruction")),
+                            ("instruction_type", JsonValue::string("call_service")),
+                        ]),
+                    ),
+                    (
+                        "on_false",
+                        JsonValue::Array(vec![JsonValue::object_from_pairs(&[
+                            ("type", JsonValue::string("io_request")),
+                            (
+                                "params",
+                                JsonValue::object_from_pairs(&[
+                                    ("io_type", JsonValue::string("call_service")),
+                                    ("marker", JsonValue::Integer(n)),
+                                ]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+            ),
+        ])
+    };
+    let rules = vec![mk_io(1), mk_io(2)];
+    let out = router
+        .execute(&svc_params("inference_conflict_detect", rs_args(rules)))
+        .await
+        .unwrap();
+    let conflicts = out
+        .get("conflicts")
+        .and_then(|v| v.as_array())
+        .expect("conflicts 数组");
+    assert!(conflicts.iter().any(|c| {
+        c.get("conflict_type").and_then(|v| v.as_str()) == Some("io_result_contention")
+    }));
+}
+
+#[tokio::test]
+async fn constitution_excluded_by_default_and_listed() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let dyn_rule = JsonValue::object_from_pairs(&[
+        ("type", JsonValue::string("set")),
+        (
+            "params",
+            JsonValue::object_from_pairs(&[
+                (
+                    "attr",
+                    JsonValue::string("__exec__.instruction.params.attr"),
+                ),
+                ("value", JsonValue::Integer(1)),
+            ]),
+        ),
+    ]);
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(vec![dyn_rule.clone()])),
+        (
+            "sources",
+            JsonValue::Array(vec![JsonValue::string("core_eval")]),
+        ),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_cycle_detect", args))
+        .await
+        .unwrap();
+    let excluded = out
+        .get("excluded")
+        .and_then(|v| v.as_array())
+        .expect("excluded 数组");
+    assert_eq!(excluded.len(), 1);
+    assert_eq!(excluded[0].as_str(), Some("core_eval#0"));
+    // 显式包含 → 不豁免
+    let args2 = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(vec![dyn_rule])),
+        (
+            "sources",
+            JsonValue::Array(vec![JsonValue::string("core_eval")]),
+        ),
+        ("include_constitution", JsonValue::Bool(true)),
+    ]);
+    let out2 = router
+        .execute(&svc_params("inference_cycle_detect", args2))
+        .await
+        .unwrap();
+    assert!(out2
+        .get("excluded")
+        .and_then(|v| v.as_array())
+        .expect("excluded")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn ruleset_services_fail_fast_with_guidance() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    // 缺 sources
+    let bad = JsonValue::object_from_pairs(&[("rules", JsonValue::Array(vec![]))]);
+    let err = router
+        .execute(&svc_params("inference_cycle_detect", bad))
+        .await
+        .unwrap_err();
+    assert!(err.contains("sources"), "错误须含缺失参数指引: {err}");
+    // 长度不一致
+    let bad2 = JsonValue::object_from_pairs(&[
+        (
+            "rules",
+            JsonValue::Array(vec![branch_eq_write("payload.m", "a", "x", 1)]),
+        ),
+        ("sources", JsonValue::Array(vec![])),
+    ]);
+    let err2 = router
+        .execute(&svc_params("inference_rw_extract", bad2))
+        .await
+        .unwrap_err();
+    assert!(err2.contains("长度不一致"));
+    // 未知服务仍走 HTTP 回落（诚实错误）
+    struct SentinelHandler;
+    #[async_trait::async_trait]
+    impl IoHandler for SentinelHandler {
+        async fn execute(&self, _params: &JsonValue) -> evorule_reactor::IoResult {
+            Err("unknown-service-fallback".to_string())
+        }
+    }
+    let router2 = InferenceServiceRouter::new(Arc::new(SentinelHandler));
+    let err3 = router2
+        .execute(&svc_params(
+            "inference_unknown",
+            JsonValue::object_from_pairs(&[]),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err3, "unknown-service-fallback");
+}
+
+#[tokio::test]
+async fn ruleset_services_deterministic_double_run() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let rules = vec![
+        branch_eq_write("__exec__.payload.mode", "a", "x", 1),
+        branch_eq_write("__exec__.payload.mode", "a", "x", 2),
+    ];
+    for svc in [
+        "inference_rw_extract",
+        "inference_cycle_detect",
+        "inference_conflict_detect",
+    ] {
+        let params = svc_params(svc, rs_args(rules.clone()));
+        let r1 = router.execute(&params).await.unwrap();
+        let r2 = router.execute(&params).await.unwrap();
+        assert_eq!(
+            r1.to_string(),
+            r2.to_string(),
+            "{svc} 同输入两次执行必须逐位一致"
+        );
+    }
+}
+
+// ============================================================================
+// 真实语料回归（env 门控：EVORULE_CORPUS=1 时执行；CI 无本地语料路径自动跳过）
+// 设计文档 §六.2：宪法 core_eval.json / 部署面 server_eval.json / rules_dir 全量跑
+// ============================================================================
+
+fn corpus_enabled() -> bool {
+    std::env::var("EVORULE_CORPUS").ok().as_deref() == Some("1")
+}
+
+fn load_json_array(path: &str) -> Vec<JsonValue> {
+    let raw = std::fs::read_to_string(path).expect("语料文件可读");
+    let doc: serde_json::Value = serde_json::from_str(&raw).expect("语料为合法 JSON");
+    let arr = doc
+        .get("transform")
+        .and_then(|v| v.as_array())
+        .expect("语料含 transform 数组");
+    // serde_json::Value → evorule_tcb::JsonValue 通用转换（语料加载专用）
+    fn conv(v: &serde_json::Value) -> JsonValue {
+        match v {
+            serde_json::Value::Null => JsonValue::Null,
+            serde_json::Value::Bool(b) => JsonValue::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    JsonValue::Integer(i)
+                } else {
+                    JsonValue::string(n.to_string())
+                }
+            }
+            serde_json::Value::String(s) => JsonValue::string(s.clone()),
+            serde_json::Value::Array(items) => JsonValue::Array(items.iter().map(conv).collect()),
+            serde_json::Value::Object(map) => {
+                let pairs: Vec<(String, JsonValue)> =
+                    map.iter().map(|(k, v)| (k.clone(), conv(v))).collect();
+                JsonValue::object_from_pairs_owned(pairs)
+            }
+        }
+    }
+    arr.iter().map(conv).collect()
+}
+
+/// 三份真实规则集（宪法 + 部署面 + 部署规则）全量通过三服务：
+/// 断言 = 不 panic / 不 Err / 输出结构完备 / 双跑位元一致。
+/// 宪法段豁免桶下预期无环无冲突（部署面是否有真实发现人工复核，不做硬断言）。
+#[tokio::test]
+async fn real_corpus_smoke_three_sources() {
+    if !corpus_enabled() {
+        return;
+    }
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let mut sources: Vec<JsonValue> = Vec::new();
+    let mut rules: Vec<JsonValue> = Vec::new();
+    // ① 宪法（豁免桶）
+    for r in load_json_array("D:/evorule/evorule-tcb/core_eval.json") {
+        rules.push(r);
+        sources.push(JsonValue::string("core_eval"));
+    }
+    // ② 部署面
+    for r in load_json_array("D:/evorule-server/resources/server_eval.json") {
+        rules.push(r);
+        sources.push(JsonValue::string("server_eval"));
+    }
+    // ③ 部署规则（字典序）
+    let mut rule_files: Vec<String> = std::fs::read_dir("D:/evorule-server/rules")
+        .expect("rules_dir 可读")
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            if p.extension()?.to_str()? == "json" {
+                p.to_str().map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect();
+    rule_files.sort();
+    for f in &rule_files {
+        for r in load_json_array(f) {
+            rules.push(r);
+            sources.push(JsonValue::string(format!(
+                "rules/{}",
+                std::path::Path::new(f)
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )));
+        }
+    }
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(rules)),
+        ("sources", JsonValue::Array(sources)),
+    ]);
+    for svc in [
+        "inference_rw_extract",
+        "inference_cycle_detect",
+        "inference_conflict_detect",
+    ] {
+        let params = svc_params(svc, args.clone());
+        let r1 = router.execute(&params).await;
+        assert!(r1.is_ok(), "{svc} 真实语料不得 Err: {:?}", r1.err());
+        let r2 = router.execute(&params).await.unwrap();
+        assert_eq!(
+            r1.unwrap().to_string(),
+            r2.to_string(),
+            "{svc} 真实语料双跑必须位元一致"
+        );
+    }
+    // 宪法豁免桶显式标注
+    let out = router
+        .execute(&svc_params("inference_cycle_detect", args))
+        .await
+        .unwrap();
+    let excluded = out
+        .get("excluded")
+        .and_then(|v| v.as_array())
+        .expect("excluded 数组");
+    assert!(
+        excluded.iter().any(|v| v.as_str() == Some("core_eval#0")),
+        "宪法段须显式出现在豁免清单"
     );
 }

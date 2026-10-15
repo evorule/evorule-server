@@ -1191,6 +1191,7 @@ dependencies = [
  "evorule-governance",
  "evorule-hash",
  "evorule-indicator-services",
+ "evorule-inference-services",
  "evorule-io-handlers",
  "evorule-physics-services",
  "evorule-plugin-kit",
