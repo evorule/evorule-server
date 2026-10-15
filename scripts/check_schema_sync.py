@@ -28,6 +28,12 @@ evorule-system-rules 是 Schema 的单一事实来源（SSOT）。evorule-server
     schemas/rule_set/v1.0.json
     schemas/_shared/v1.0.json
     schemas/_meta/v1.0.json
+
+扩展层检查（SR-17 件4/B4，[CON-D-004]/R-006 扩面）:
+    扫描 evorule-rule 仓 data/domain_schemas/*.json（除迁移映射表）的 $id——
+    /schemas/ 宪法本域权威路径（非 /schemas/domain/ 段）不得被扩展层实体占用
+    （双权威消失的机器判据）。命中即漂移（exit 1）；全干净则在输出面追加
+    「扩展层」段（N 件 0 撒谎命中）。
 """
 
 from __future__ import annotations
@@ -81,6 +87,49 @@ def locate_source(explicit: str | None) -> Path | None:
     return None
 
 
+def locate_rule_repo() -> Path | None:
+    """定位 evorule-rule 仓根（扩展层实体所在仓；env 覆盖，缺省兄弟仓布局）。"""
+    env = os.environ.get("EVORULE_RULE_REPO")
+    candidates = [Path(env)] if env else []
+    this_server_root = Path(__file__).resolve().parent.parent
+    candidates.append(this_server_root.parent / "evorule-rule")
+    for c in candidates:
+        if (c / "data" / "domain_schemas").is_dir():
+            return c
+    return None
+
+
+def scan_extension_layer() -> tuple[int, list[dict]]:
+    """[CON-D-004] 扩展层 $id 撒谎扫描（SR-17 件4/B4）。
+
+    返回 (扫描件数, 撒谎命中清单)：扩展层实体（evorule-rule 仓
+    data/domain_schemas/*.json，除 id-migration-map.json）的 $id 挂宪法本域
+    权威路径（/schemas/ 前缀且非 /schemas/domain/ 段）即命中——实体在扩展层
+    而标识宣称宪法权威=双权威。rule 仓不在检出时返回 (0, [])（可选面，
+    主功能不受影响；硬性覆盖由宪法仓 verify-all 第十四步 check_domain_meta 承担）。
+    """
+    rule_root = locate_rule_repo()
+    if rule_root is None:
+        return 0, []
+    domain_dir = rule_root / "data" / "domain_schemas"
+    scanned = 0
+    hits: list[dict] = []
+    for p in sorted(domain_dir.glob("*.json")):
+        if p.name == "id-migration-map.json":
+            continue
+        scanned += 1
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            hits.append({"file": f"data/domain_schemas/{p.name}", "id": None, "why": "JSON 解析失败"})
+            continue
+        sid = doc.get("$id", "")
+        if isinstance(sid, str) and sid.startswith("https://evorule.org/schemas/") and not sid.startswith("https://evorule.org/schemas/domain/"):
+            hits.append({"file": f"data/domain_schemas/{p.name}", "id": sid,
+                         "why": "扩展层实体占用宪法本域权威路径（$id 未挂 domain 命名域）"})
+    return scanned, hits
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Schema 跨仓一致性守卫")
     parser.add_argument("--source", default=None, help="evorule-system-rules 仓根目录")
@@ -113,6 +162,11 @@ def main() -> int:
         else:
             results.append({"file": src_rel, "status": "ok", "src_sha": s1, "dst_sha": s2})
 
+    # 扩展层 $id 撒谎扫描（SR-17 件4/B4，[CON-D-004]）：独立于 --sync（同步三份
+    # 副本无法消除扩展层占用宪法权威路径的撒谎，须按迁移映射表对齐后消除）
+    ext_scanned, ext_hits = scan_extension_layer()
+    ext_ok = not ext_hits
+
     if args.sync:
         if not all_ok:
             for r in results:
@@ -127,11 +181,14 @@ def main() -> int:
         else:
             print("[SYNC] 已一致，无需同步")
 
+    all_ok = all_ok and ext_ok
+
     if args.as_json:
         print(json.dumps({
             "source": str(source_root),
             "consistent": all_ok,
             "files": results,
+            "extension": {"ok": ext_ok, "lied_hits": ext_hits},
         }, ensure_ascii=False, indent=2))
     else:
         for r in results:
@@ -139,8 +196,14 @@ def main() -> int:
             print(f"  {mark} {r['file']}")
             if r["status"] == "drift":
                 print(f"        src={r['src_sha'][:12]}  dst={r['dst_sha'][:12]}")
+        # 扩展层段（SR-17 件4/B4 输出面）
+        print(f"  [EXT] 扩展层 domain 域检查 (SR-17 件4): {ext_scanned} 件扫描, 撒谎命中 {len(ext_hits)}")
+        for h in ext_hits:
+            print(f"    [LIED] {h['file']}: $id={h['id']} — {h['why']}")
         if all_ok:
             print(f"ALL SCHEMA FILES CONSISTENT with {source_root}")
+        elif ext_hits and all(r["status"] == "ok" for r in results):
+            print(f"[FAIL] 扩展层 $id 撒谎命中: 按 data/domain_schemas/id-migration-map.json 对齐消费方后消除（--sync 不适用于扩展层）")
         else:
             print(f"[FAIL] Schema 漂移: 请用 python scripts/check_schema_sync.py --sync 同步")
 
