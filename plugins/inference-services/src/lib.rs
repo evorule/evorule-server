@@ -33,15 +33,25 @@
 //! `inference_backward_plan`（后向链规划，目标反推生产者链，复用 rw_extract）、
 //! `inference_effect_predict`（效果预测，rw_extract 之上影响分级薄层）、
 //! `inference_convergence_check`（收敛检测，环复用 cycle_detect）。
+//!
+//! 差分等价反事实批次（详见仓内设计文档；
+//! combination/six_way 聚合壳按裁定不移植）：`inference_counterfactual_analyze`
+//! （反事实差异分析，双前向仿真 + 终态可观测面 diff，控制面单列）、
+//! `inference_equivalence_probe`（等价探针，结构比较 + 有限探针行为证据，
+//! probe_equivalent 为证据语义非数学证明）、`inference_differential_diff`
+//! （规则集差分，读写集结构化 diff，保守方向声明）。
 
 #![forbid(unsafe_code)]
 
 pub mod backward;
 pub mod conflict;
 pub mod convergence;
+pub mod counterfactual;
 pub mod cycle;
+pub mod differential;
 pub mod dimension;
 pub mod effect;
+pub mod equivalence;
 pub mod forward_sim;
 pub mod rw_extract;
 pub mod services;
@@ -56,8 +66,9 @@ use evorule_tcb::JsonValue;
 pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 
 use crate::services::{
-    mk_backward_plan, mk_compare, mk_conflict_detect, mk_convergence_check, mk_cycle_detect,
-    mk_effect_predict, mk_forward_simulate, mk_from_unit, mk_rw_extract, mk_verify_formula,
+    mk_backward_plan, mk_compare, mk_conflict_detect, mk_convergence_check,
+    mk_counterfactual_analyze, mk_cycle_detect, mk_differential_diff, mk_effect_predict,
+    mk_equivalence_probe, mk_forward_simulate, mk_from_unit, mk_rw_extract, mk_verify_formula,
 };
 
 // ============================================================================
@@ -128,6 +139,25 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "收敛检测(自修改/环复用/步数上界,静态可判定子集,undetermined显式,确定性)",
         make: mk_convergence_check,
+    },
+    NativeServiceDef {
+        name: "inference_counterfactual_analyze",
+        sensitive: false,
+        description: "反事实差异分析(双前向仿真+终态可观测面diff,控制面单列,确定性解释,确定性)",
+        make: mk_counterfactual_analyze,
+    },
+    NativeServiceDef {
+        name: "inference_equivalence_probe",
+        sensitive: false,
+        description:
+            "等价探针(结构比较+有限探针行为证据,probe_equivalent为证据语义非数学证明,确定性)",
+        make: mk_equivalence_probe,
+    },
+    NativeServiceDef {
+        name: "inference_differential_diff",
+        sensitive: false,
+        description: "规则集差分(读写集结构化diff,写异必不同/读异可能不同的保守方向,确定性)",
+        make: mk_differential_diff,
     },
 ];
 

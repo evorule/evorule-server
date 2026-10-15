@@ -32,6 +32,95 @@ use evorule_tcb::JsonValue;
 
 use crate::dimension::{FormulaDimensionInferencer, SIDimension};
 
+/// 从 args 解析可选 `max_steps`（缺省 [`DEFAULT_MAX_STEPS`]；类型 / 上限校验 fail-fast）。
+fn parse_max_steps(args: &JsonValue) -> Result<usize, String> {
+    match args.get("max_steps") {
+        Some(JsonValue::Integer(n)) if *n >= 0 => {
+            let n = usize::try_from(*n).unwrap_or(MAX_STEPS_CAP);
+            if n > MAX_STEPS_CAP {
+                return Err(format!(
+                    "max_steps={n} 超过硬上限 {MAX_STEPS_CAP} — 自诊断指引: \
+                     仿真是分析工具不是执行器"
+                ));
+            }
+            Ok(n)
+        }
+        Some(JsonValue::Integer(_)) => Err("参数 max_steps 须为非负整数".to_string()),
+        Some(_) => Err("参数 max_steps 须为整数".to_string()),
+        None => Ok(DEFAULT_MAX_STEPS),
+    }
+}
+
+/// 从 args 提取对象形态的合成文档参数（缺字段 / 非对象 → Err，fail-fast 附指引）。
+fn doc_arg<'a>(args: &'a JsonValue, key: &str) -> Result<&'a JsonValue, String> {
+    match args.get(key) {
+        Some(d @ JsonValue::Object(_)) => Ok(d),
+        Some(_) => Err(format!(
+            "参数 {key} 须为对象 — 自诊断指引: 合成 __exec__ 文档,形如 \
+             {{\"instruction\": {{...}}, \"payload\": {{...}}, \"queue\": [...]}}"
+        )),
+        None => Err(format!(
+            "缺少必填参数 {key} — 自诊断指引: 合成 __exec__ 文档,形如 \
+             {{\"instruction\": {{...}}, \"payload\": {{...}}, \"queue\": [...]}}"
+        )),
+    }
+}
+
+/// 从 args 解析一组命名规则集（`{rules_key}` / `{sources_key}`），来源标签克隆持有。
+fn parse_named_ruleset<'a>(
+    args: &'a JsonValue,
+    rules_key: &str,
+    sources_key: &str,
+) -> Result<(&'a [JsonValue], Vec<String>), String> {
+    let rules = match args.get(rules_key) {
+        Some(JsonValue::Array(items)) => items,
+        Some(_) => {
+            return Err(format!(
+                "参数 {rules_key} 须为数组 — 自诊断指引: 规则集为合并列表形态 JSON 数组"
+            ))
+        }
+        None => {
+            return Err(format!(
+                "缺少必填参数 {rules_key} — 自诊断指引: 形如 {{\"{rules_key}\": [...], \
+                 \"{sources_key}\": [\"core_eval\", \"server_eval\", \"rules/x.json\", ...]}}"
+            ))
+        }
+    };
+    let sources = match args.get(sources_key) {
+        Some(JsonValue::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    JsonValue::String(s) => out.push(s.to_string()),
+                    _ => {
+                        return Err(format!(
+                            "参数 {sources_key} 须为字符串数组 — 自诊断指引: 来源标签形如 \
+                             \"core_eval\" / \"server_eval\" / \"rules/<相对路径>\""
+                        ))
+                    }
+                }
+            }
+            out
+        }
+        Some(_) => return Err(format!("参数 {sources_key} 须为字符串数组")),
+        None => {
+            return Err(format!(
+                "缺少必填参数 {sources_key} — 自诊断指引: 与 {rules_key} 等长的来源标签数组\
+                 （对齐 RulesetLayout 合并序：core_eval 在前 + rules_dir 字典序）"
+            ))
+        }
+    };
+    if rules.len() != sources.len() {
+        return Err(format!(
+            "{rules_key}({}) 与 {sources_key}({}) 长度不一致 — 自诊断指引: \
+             来源标签须与规则列表等长且按合并序对齐",
+            rules.len(),
+            sources.len()
+        ));
+    }
+    Ok((rules, sources))
+}
+
 /// 七分量向量 → JsonValue 数组（[L, M, T, I, Θ, N, J]，逐位 Integer）
 fn dim_to_json(dim: &SIDimension) -> JsonValue {
     JsonValue::Array(
@@ -287,45 +376,7 @@ struct RulesetArgs<'a> {
 
 /// 解析规则集公共入参（fail-fast 附指引）
 fn ruleset_args<'a>(args: &'a JsonValue) -> Result<RulesetArgs<'a>, String> {
-    let rules = match args.get("rules") {
-        Some(JsonValue::Array(items)) => items,
-        Some(_) => {
-            return Err(
-                "参数 rules 须为数组 — 自诊断指引: 规则集为 core_eval 形态 JSON 数组\
-                 （合并列表 + 来源标签等长对齐）"
-                    .to_string(),
-            )
-        }
-        None => {
-            return Err("缺少必填参数 rules — 自诊断指引: 形如 {\"rules\": [...], \
-                 \"sources\": [\"core_eval\", \"server_eval\", \"rules/x.json\", ...]}"
-                .to_string())
-        }
-    };
-    let sources = match args.get("sources") {
-        Some(JsonValue::Array(items)) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                match item {
-                    JsonValue::String(s) => out.push(s.to_string()),
-                    _ => {
-                        return Err("参数 sources 须为字符串数组 — 自诊断指引: 来源标签形如 \
-                             \"core_eval\" / \"server_eval\" / \"rules/<相对路径>\""
-                            .to_string())
-                    }
-                }
-            }
-            out
-        }
-        Some(_) => return Err("参数 sources 须为字符串数组".to_string()),
-        None => {
-            return Err(
-                "缺少必填参数 sources — 自诊断指引: 与 rules 等长的来源标签数组\
-                 （对齐 RulesetLayout 合并序：core_eval 在前 + rules_dir 字典序）"
-                    .to_string(),
-            )
-        }
-    };
+    let (rules, sources) = parse_named_ruleset(args, "rules", "sources")?;
     let include_constitution = match args.get("include_constitution") {
         Some(JsonValue::Bool(b)) => *b,
         Some(_) => {
@@ -562,36 +613,8 @@ pub struct RuleForwardSimulate;
 impl NativeService for RuleForwardSimulate {
     fn execute(&self, args: &JsonValue) -> IoResult {
         let parsed = ruleset_args(args)?;
-        let max_steps = match args.get("max_steps") {
-            Some(JsonValue::Integer(n)) if *n >= 0 => {
-                let n = usize::try_from(*n).unwrap_or(MAX_STEPS_CAP);
-                if n > MAX_STEPS_CAP {
-                    return Err(format!(
-                        "max_steps={n} 超过硬上限 {MAX_STEPS_CAP} — 自诊断指引: \
-                         仿真是分析工具不是执行器"
-                    ));
-                }
-                n
-            }
-            Some(JsonValue::Integer(_)) => return Err("参数 max_steps 须为非负整数".to_string()),
-            Some(_) => return Err("参数 max_steps 须为整数".to_string()),
-            None => DEFAULT_MAX_STEPS,
-        };
-        let document = match args.get("initial_document") {
-            Some(d @ JsonValue::Object(_)) => d,
-            Some(_) => {
-                return Err("参数 initial_document 须为对象 — 自诊断指引: 形如 \
-                     {\"instruction\": {...}, \"payload\": {...}, \"queue\": [...]}"
-                    .to_string())
-            }
-            None => {
-                return Err(
-                    "缺少必填参数 initial_document — 自诊断指引: 合成 __exec__ 文档，\
-                     形如 {\"instruction\": {...}, \"payload\": {...}, \"queue\": [...]}"
-                        .to_string(),
-                )
-            }
-        };
+        let max_steps = parse_max_steps(args)?;
+        let document = doc_arg(args, "initial_document")?;
         let report = forward_simulate(parsed.rules, &parsed.sources, document, max_steps)?;
         Ok(JsonValue::object_from_pairs(&[
             ("stopped_reason", JsonValue::string(report.stopped_reason)),
@@ -859,4 +882,226 @@ pub fn mk_effect_predict() -> std::sync::Arc<dyn NativeService> {
 /// 声明表构造子：收敛检测服务
 pub fn mk_convergence_check() -> std::sync::Arc<dyn NativeService> {
     std::sync::Arc::new(RuleConvergenceCheck)
+}
+
+// ============================================================================
+// 规则推理三服务（阶段 4：反事实 / 等价探针 / 差分）
+// ============================================================================
+
+/// 仿真控制面摘要（终止原因 + 步数 + I/O 断流 + enforce 短路）
+fn sim_brief(report: &crate::forward_sim::SimulationReport) -> JsonValue {
+    let io_pair = |io: &Option<(String, String)>| match io {
+        Some((id, t)) => JsonValue::object_from_pairs(&[
+            ("rule_id", JsonValue::string(id.clone())),
+            ("io_type", JsonValue::string(t.clone())),
+        ]),
+        None => JsonValue::Null,
+    };
+    let halt_pair = |h: &Option<(String, String)>| match h {
+        Some((id, reason)) => JsonValue::object_from_pairs(&[
+            ("rule_id", JsonValue::string(id.clone())),
+            ("reason", JsonValue::string(reason.clone())),
+        ]),
+        None => JsonValue::Null,
+    };
+    JsonValue::object_from_pairs(&[
+        ("stopped_reason", JsonValue::string(report.stopped_reason)),
+        (
+            "steps",
+            JsonValue::Integer(i64::try_from(report.steps).unwrap_or(-1)),
+        ),
+        ("blocked_on_io", io_pair(&report.blocked_on_io)),
+        ("halted", halt_pair(&report.halted)),
+    ])
+}
+
+/// 反事实差异分析服务：双前向仿真 + 终态可观测面 diff
+pub struct RuleCounterfactualAnalyze;
+
+impl NativeService for RuleCounterfactualAnalyze {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let max_steps = parse_max_steps(args)?;
+        let original_document = doc_arg(args, "original_document")?;
+        let hypothetical_document = doc_arg(args, "hypothetical_document")?;
+        let report = crate::counterfactual::analyze(
+            parsed.rules,
+            &parsed.sources,
+            original_document,
+            hypothetical_document,
+            max_steps,
+        )?;
+        let diffs: Vec<JsonValue> = report
+            .diffs
+            .iter()
+            .map(|d| {
+                JsonValue::object_from_pairs(&[
+                    ("path", JsonValue::string(d.path.clone())),
+                    ("kind", JsonValue::string(d.kind)),
+                    (
+                        "original_value",
+                        d.original_value.clone().unwrap_or(JsonValue::Null),
+                    ),
+                    (
+                        "hypothetical_value",
+                        d.hypothetical_value.clone().unwrap_or(JsonValue::Null),
+                    ),
+                ])
+            })
+            .collect();
+        Ok(JsonValue::object_from_pairs(&[
+            ("original", sim_brief(&report.original)),
+            ("hypothetical", sim_brief(&report.hypothetical)),
+            ("diffs", JsonValue::Array(diffs)),
+            ("truncated", JsonValue::Bool(report.truncated)),
+            ("explanation", JsonValue::string(report.explanation)),
+            (
+                "simulation_scope",
+                JsonValue::string(
+                    "同前向链仿真:无 I/O 响应/无并发/无治理面干预,不动点≠真实系统行为;只对比终态,无步级归因",
+                ),
+            ),
+        ]))
+    }
+}
+
+/// 等价探针服务：结构比较 + 有限探针行为证据（probe_equivalent ≠ 数学证明）
+pub struct RuleEquivalenceProbe;
+
+impl NativeService for RuleEquivalenceProbe {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let (rules1, sources1) = parse_named_ruleset(args, "rules1", "sources1")?;
+        let (rules2, sources2) = parse_named_ruleset(args, "rules2", "sources2")?;
+        if args.get("max_steps").is_some() {
+            return Err(
+                "本服务不接受 max_steps — 自诊断指引: 探针仿真统一使用缺省步数上限\
+                 （防止单探针步数爆炸掩盖差异面）"
+                    .to_string(),
+            );
+        }
+        let probe_inputs: &[JsonValue] =
+            match args.get("probe_inputs") {
+                Some(JsonValue::Array(items)) => items,
+                Some(_) => return Err(
+                    "参数 probe_inputs 须为数组 — 自诊断指引: 探针输入是合成 __exec__ 文档数组,\
+                     缺省视为空(只做结构比较)"
+                        .to_string(),
+                ),
+                None => &[],
+            };
+        let report = crate::equivalence::compare_rulesets(
+            rules1,
+            &sources1,
+            rules2,
+            &sources2,
+            probe_inputs,
+        )?;
+        let counterexample = match &report.counterexample {
+            Some(cx) => JsonValue::object_from_pairs(&[
+                (
+                    "probe_index",
+                    JsonValue::Integer(i64::try_from(cx.probe_index).unwrap_or(-1)),
+                ),
+                ("summary", JsonValue::string(cx.summary.clone())),
+            ]),
+            None => JsonValue::Null,
+        };
+        Ok(JsonValue::object_from_pairs(&[
+            ("verdict", JsonValue::string(report.verdict)),
+            (
+                "structural_identical",
+                JsonValue::Bool(report.structural_identical),
+            ),
+            (
+                "probes_run",
+                JsonValue::Integer(i64::try_from(report.probes_run).unwrap_or(-1)),
+            ),
+            ("counterexample", counterexample),
+            ("note", JsonValue::string(report.note)),
+        ]))
+    }
+}
+
+/// 规则集差分服务：读写集结构化 diff（保守方向声明）
+pub struct RuleDifferentialDiff;
+
+impl NativeService for RuleDifferentialDiff {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let (rules1, sources1) = parse_named_ruleset(args, "rules1", "sources1")?;
+        let (rules2, sources2) = parse_named_ruleset(args, "rules2", "sources2")?;
+        let include_constitution =
+            match args.get("include_constitution") {
+                Some(JsonValue::Bool(b)) => *b,
+                Some(_) => return Err(
+                    "参数 include_constitution 须为布尔值 — 自诊断指引: 缺省 false（宪法段豁免）"
+                        .to_string(),
+                ),
+                None => false,
+            };
+        let report = crate::differential::diff_rulesets(
+            rules1,
+            &sources1,
+            rules2,
+            &sources2,
+            include_constitution,
+        )?;
+        let str_set = |v: &[String]| {
+            JsonValue::Array(v.iter().map(|s| JsonValue::string(s.clone())).collect())
+        };
+        let indices: Vec<JsonValue> = report
+            .changed_indices
+            .iter()
+            .map(|d| {
+                JsonValue::object_from_pairs(&[
+                    (
+                        "index",
+                        JsonValue::Integer(i64::try_from(d.index).unwrap_or(-1)),
+                    ),
+                    ("source", JsonValue::string(d.source.clone())),
+                ])
+            })
+            .collect();
+        Ok(JsonValue::object_from_pairs(&[
+            ("added_writes", str_set(&report.set_diff.added_writes)),
+            ("removed_writes", str_set(&report.set_diff.removed_writes)),
+            ("added_reads", str_set(&report.set_diff.added_reads)),
+            ("removed_reads", str_set(&report.set_diff.removed_reads)),
+            ("added_ios", str_set(&report.set_diff.added_ios)),
+            ("removed_ios", str_set(&report.set_diff.removed_ios)),
+            ("aligned", JsonValue::Bool(report.aligned)),
+            ("changed_indices", JsonValue::Array(indices)),
+            (
+                "set1_dynamic_writes",
+                JsonValue::Integer(i64::try_from(report.set1_dynamic_writes).unwrap_or(-1)),
+            ),
+            (
+                "set2_dynamic_writes",
+                JsonValue::Integer(i64::try_from(report.set2_dynamic_writes).unwrap_or(-1)),
+            ),
+            (
+                "set1_dynamic_domains",
+                JsonValue::Integer(i64::try_from(report.set1_dynamic_domains).unwrap_or(-1)),
+            ),
+            (
+                "set2_dynamic_domains",
+                JsonValue::Integer(i64::try_from(report.set2_dynamic_domains).unwrap_or(-1)),
+            ),
+            ("note", JsonValue::string(report.note)),
+        ]))
+    }
+}
+
+/// 声明表构造子：反事实差异分析服务
+pub fn mk_counterfactual_analyze() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleCounterfactualAnalyze)
+}
+
+/// 声明表构造子：等价探针服务
+pub fn mk_equivalence_probe() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleEquivalenceProbe)
+}
+
+/// 声明表构造子：规则集差分服务
+pub fn mk_differential_diff() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleDifferentialDiff)
 }

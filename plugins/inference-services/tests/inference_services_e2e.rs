@@ -398,6 +398,9 @@ fn native_service_names_derived_from_table() {
             "inference_backward_plan",
             "inference_effect_predict",
             "inference_convergence_check",
+            "inference_counterfactual_analyze",
+            "inference_equivalence_probe",
+            "inference_differential_diff",
         ]
     );
 }
@@ -1176,4 +1179,313 @@ async fn forward_simulate_e2e_missing_doc_fails_fast() {
         .execute(&svc_params("inference_forward_simulate", args))
         .await;
     assert!(r.is_err(), "缺 initial_document 必须 fail-fast");
+}
+
+// ── 阶段 4：反事实 / 等价探针 / 差分三服务 ──
+
+fn stage4_cond_rule() -> JsonValue {
+    // flag 存在 → set x=1（条件写，反事实传播材料）
+    JsonValue::object_from_pairs(&[
+        ("type", str_val("branch")),
+        (
+            "params",
+            JsonValue::object_from_pairs(&[
+                (
+                    "domain",
+                    JsonValue::object_from_pairs(&[
+                        ("type", str_val("exists")),
+                        ("path", str_val("__exec__.payload.flag")),
+                    ]),
+                ),
+                (
+                    "on_true",
+                    JsonValue::Array(vec![JsonValue::object_from_pairs(&[
+                        ("type", str_val("set")),
+                        (
+                            "params",
+                            JsonValue::object_from_pairs(&[
+                                ("attr", str_val("x")),
+                                ("operation", str_val("set")),
+                                ("value", JsonValue::Integer(1)),
+                            ]),
+                        ),
+                    ])]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+fn stage4_doc(flag: bool) -> JsonValue {
+    let payload = if flag {
+        JsonValue::object_from_pairs(&[("flag", JsonValue::Bool(true))])
+    } else {
+        JsonValue::object_from_pairs(&[])
+    };
+    JsonValue::object_from_pairs(&[
+        ("payload", payload),
+        ("instruction", JsonValue::object_from_pairs(&[])),
+        ("queue", JsonValue::Array(vec![])),
+    ])
+}
+
+#[tokio::test]
+async fn counterfactual_analyze_e2e_propagation() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(vec![stage4_cond_rule()])),
+        ("sources", JsonValue::Array(vec![str_val("rules/a.json")])),
+        ("original_document", stage4_doc(true)),
+        ("hypothetical_document", stage4_doc(false)),
+        ("max_steps", JsonValue::Integer(16)),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_counterfactual_analyze", args))
+        .await
+        .unwrap();
+    // 两侧均 fixpoint（无 io 规则），可观测面差异 = flag 消失 + x 消失
+    assert_eq!(
+        out.get("original")
+            .unwrap()
+            .get("stopped_reason")
+            .and_then(|v| v.as_str()),
+        Some("fixpoint")
+    );
+    assert_eq!(
+        out.get("hypothetical")
+            .unwrap()
+            .get("stopped_reason")
+            .and_then(|v| v.as_str()),
+        Some("fixpoint")
+    );
+    let diffs = out.get("diffs").unwrap().as_array().unwrap();
+    let mut paths: Vec<&str> = diffs
+        .iter()
+        .map(|d| d.get("path").and_then(|v| v.as_str()).unwrap())
+        .collect();
+    paths.sort_unstable();
+    // 空容器按叶值保留:无 flag 侧 payload 为空对象 → "payload" 叶差异在内
+    assert_eq!(paths, vec!["payload", "payload.flag", "payload.x"]);
+    assert!(!out.get("truncated").and_then(JsonValue::as_bool).unwrap());
+    assert!(out
+        .get("explanation")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("3 条"));
+    // simulation_scope 诚实声明在场
+    assert!(out
+        .get("simulation_scope")
+        .and_then(|v| v.as_str())
+        .is_some());
+}
+
+#[tokio::test]
+async fn counterfactual_analyze_e2e_deterministic() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let mk_args = || {
+        JsonValue::object_from_pairs(&[
+            ("rules", JsonValue::Array(vec![stage4_cond_rule()])),
+            ("sources", JsonValue::Array(vec![str_val("rules/a.json")])),
+            ("original_document", stage4_doc(true)),
+            ("hypothetical_document", stage4_doc(false)),
+        ])
+    };
+    let a = router
+        .execute(&svc_params("inference_counterfactual_analyze", mk_args()))
+        .await
+        .unwrap();
+    let b = router
+        .execute(&svc_params("inference_counterfactual_analyze", mk_args()))
+        .await
+        .unwrap();
+    assert_eq!(a.to_string(), b.to_string(), "同输入两次执行须逐位一致");
+}
+
+#[tokio::test]
+async fn counterfactual_analyze_e2e_missing_doc_fails_fast() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(vec![stage4_cond_rule()])),
+        ("sources", JsonValue::Array(vec![str_val("rules/a.json")])),
+        ("original_document", stage4_doc(true)),
+    ]);
+    let r = router
+        .execute(&svc_params("inference_counterfactual_analyze", args))
+        .await;
+    assert!(r.is_err(), "缺 hypothetical_document 必须 fail-fast");
+}
+
+fn stage4_set_rules(value: i64) -> (Vec<JsonValue>, Vec<JsonValue>) {
+    let rule = JsonValue::object_from_pairs(&[
+        ("type", str_val("set")),
+        (
+            "params",
+            JsonValue::object_from_pairs(&[
+                ("attr", str_val("x")),
+                ("operation", str_val("set")),
+                ("value", JsonValue::Integer(value)),
+            ]),
+        ),
+    ]);
+    let sources = vec![str_val("rules/a.json")];
+    (vec![rule], sources)
+}
+
+#[tokio::test]
+async fn equivalence_probe_e2e_three_verdicts() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    // ① 结构全同 → 短路,探针不运行
+    let (r1, s1) = stage4_set_rules(1);
+    let args = JsonValue::object_from_pairs(&[
+        ("rules1", JsonValue::Array(r1.clone())),
+        ("sources1", JsonValue::Array(s1.clone())),
+        ("rules2", JsonValue::Array(r1.clone())),
+        ("sources2", JsonValue::Array(s1.clone())),
+        ("probe_inputs", JsonValue::Array(vec![stage4_doc(true)])),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_equivalence_probe", args))
+        .await
+        .unwrap();
+    assert_eq!(
+        out.get("verdict").and_then(|v| v.as_str()),
+        Some("structurally_identical")
+    );
+    assert_eq!(out.get("probes_run").and_then(|v| v.as_i64()), Some(0));
+    // ② 常量值不同 + 打中差异的探针 → differed 附反例
+    let (r1, s1) = stage4_set_rules(1);
+    let (r2, s2) = stage4_set_rules(2);
+    let args = JsonValue::object_from_pairs(&[
+        ("rules1", JsonValue::Array(r1)),
+        ("sources1", JsonValue::Array(s1)),
+        ("rules2", JsonValue::Array(r2)),
+        ("sources2", JsonValue::Array(s2)),
+        ("probe_inputs", JsonValue::Array(vec![stage4_doc(true)])),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_equivalence_probe", args))
+        .await
+        .unwrap();
+    assert_eq!(
+        out.get("verdict").and_then(|v| v.as_str()),
+        Some("differed")
+    );
+    let cx = out.get("counterexample").unwrap();
+    assert_eq!(cx.get("probe_index").and_then(|v| v.as_i64()), Some(0));
+    // ③ 结构不同 + 未提供探针 → 不做任何行为断言
+    let (r1, s1) = stage4_set_rules(1);
+    let (r2, s2) = stage4_set_rules(2);
+    let args = JsonValue::object_from_pairs(&[
+        ("rules1", JsonValue::Array(r1)),
+        ("sources1", JsonValue::Array(s1)),
+        ("rules2", JsonValue::Array(r2)),
+        ("sources2", JsonValue::Array(s2)),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_equivalence_probe", args))
+        .await
+        .unwrap();
+    assert_eq!(
+        out.get("verdict").and_then(|v| v.as_str()),
+        Some("structural_difference_unprobed")
+    );
+    assert!(out
+        .get("note")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("不能断言"));
+}
+
+#[tokio::test]
+async fn equivalence_probe_e2e_rejects_max_steps() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let (r1, s1) = stage4_set_rules(1);
+    let (r2, s2) = stage4_set_rules(2);
+    let args = JsonValue::object_from_pairs(&[
+        ("rules1", JsonValue::Array(r1)),
+        ("sources1", JsonValue::Array(s1)),
+        ("rules2", JsonValue::Array(r2)),
+        ("sources2", JsonValue::Array(s2)),
+        ("max_steps", JsonValue::Integer(8)),
+    ]);
+    let r = router
+        .execute(&svc_params("inference_equivalence_probe", args))
+        .await;
+    assert!(
+        r.is_err(),
+        "不接受 max_steps 必须 fail-fast(诚实拒绝,不静默忽略)"
+    );
+}
+
+#[tokio::test]
+async fn differential_diff_e2e_buckets() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    // 写路径不同: r1 写 x=1, r2 写 y=1 → added y / removed x + 必然不同
+    let mk_set = |attr: &str| {
+        JsonValue::object_from_pairs(&[
+            ("type", str_val("set")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    ("attr", str_val(attr)),
+                    ("operation", str_val("set")),
+                    ("value", JsonValue::Integer(1)),
+                ]),
+            ),
+        ])
+    };
+    let args = JsonValue::object_from_pairs(&[
+        ("rules1", JsonValue::Array(vec![mk_set("x")])),
+        ("sources1", JsonValue::Array(vec![str_val("rules/a.json")])),
+        ("rules2", JsonValue::Array(vec![mk_set("y")])),
+        ("sources2", JsonValue::Array(vec![str_val("rules/a.json")])),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_differential_diff", args))
+        .await
+        .unwrap();
+    let added = out
+        .get("added_writes")
+        .and_then(|v| v.as_array())
+        .unwrap()
+        .iter()
+        .any(|s| s.as_str() == Some("payload.y"));
+    let removed = out
+        .get("removed_writes")
+        .and_then(|v| v.as_array())
+        .unwrap()
+        .iter()
+        .any(|s| s.as_str() == Some("payload.x"));
+    assert!(added && removed);
+    assert!(out
+        .get("note")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("必然不同"));
+    assert!(out.get("aligned").and_then(JsonValue::as_bool).unwrap());
+    assert_eq!(
+        out.get("changed_indices")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .len(),
+        1
+    );
+    // 全同集:不做任何等价断言
+    let rule = mk_set("x");
+    let src = JsonValue::Array(vec![str_val("rules/a.json")]);
+    let args = JsonValue::object_from_pairs(&[
+        ("rules1", JsonValue::Array(vec![rule.clone()])),
+        ("sources1", src.clone()),
+        ("rules2", JsonValue::Array(vec![rule])),
+        ("sources2", src),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_differential_diff", args))
+        .await
+        .unwrap();
+    assert!(out
+        .get("note")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("不做任何等价断言"));
 }
