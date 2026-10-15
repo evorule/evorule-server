@@ -24,10 +24,10 @@
 //! 4. `inference_rw_extract` — 规则读写集静态提取（阶段 2 共享底座）
 //! 5. `inference_cycle_detect` — 规则集内环路检测（静态/保守分层）
 //! 6. `inference_conflict_detect` — 规则集内冲突检测（六类型学）
-//!    （4-6 = 阶段 2 规则静态分析；设计文档 112-阶段2-规则模型映射设计.md，
-//!    裁定 R-1~R-4；v4 仅算法底稿+测试预言，模型层零照搬）
+//!    （4-6 = 规则静态分析批次；详见仓内设计文档：
+//!    v4 仅算法底稿+测试预言，模型层零照搬）
 //!
-//! 阶段 3（推理服务；设计文档 112-阶段3-推理服务映射设计.md，裁定 R-1~R-5；
+//! 推理服务批次（详见仓内设计文档；
 //! sensitivity/causal/information 按裁定不移植）：`inference_forward_simulate`
 //! （前向链仿真，合成文档迭代到不动点，enforce 前置门对齐，io 诚实断流）、
 //! `inference_backward_plan`（后向链规划，目标反推生产者链，复用 rw_extract）、

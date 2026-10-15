@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 收敛检测（112 阶段 3，R-2 裁定口径：与 cycle_detect 去重）。
+//! 收敛检测（与环路检测去重口径）。
 //!
 //! 算法底稿 = v4 `convergence.rs` 的五检查框架；现行模型下的取舍：
 //! - **保留**：① 自修改条件（no-termination 静态代理：规则写自身域读路径）
@@ -9,7 +9,7 @@
 //! - **不做**：v4 的 PriorityStarvation。列表序语义下"前序写 + 后序域读
 //!   同路径"是普通顺序数据依赖（后序本就该看到前序的写），独立饥饿检查
 //!   会把一切正常链误报为风险——饥饿语义由 conflict 的 shadow_risk
-//!   （顺序遮蔽）承担，本模块不重复、不重算（实施期发现，替代 R-2 初稿
+//!   （顺序遮蔽）承担，本模块不重复、不重算（实施期发现，替代初稿
 //!   的"列表序饥饿重定义"方案）。
 //! - **不重复实现**：self-loop / cycle 两项与 [`crate::cycle`] 完全同图
 //!   同判定——本模块内部直接调用 [`crate::cycle::detect_cycles`]，输出

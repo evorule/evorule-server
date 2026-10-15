@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 后向链规划（112 阶段 3，复用阶段 2 rw_extract 底座）。
+//! 后向链规划（复用规则读写集静态提取底座）。
 //!
 //! 给定目标写路径与初始可用路径集，反推"哪些规则以何顺序执行能产出目标、
 //! 哪些输入必须外部提供"。算法底稿 = v4 `backward.rs`（已废弃）的生产者

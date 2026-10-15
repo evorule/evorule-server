@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 规则集内环路检测（112 号阶段 2，设计文档 §三）。
+//! 规则集内环路检测（静态推理服务，设计文档 §三）。
 //!
 //! # 算法骨架
 //!
@@ -12,7 +12,7 @@
 //! # 建图（现行语义）
 //!
 //! - **静态边** a→b：`writes(a) ∩ reads(b) ≠ ∅`（a 的产出是 b 的输入）。
-//! - **保守边**（单向多报，绝不静默漏，裁定 R-3）：
+//! - **保守边**（单向多报，绝不静默漏）：
 //!   1. `write_dyn(a)` 且（b 读 `instruction.*` 或 b 也是动态写/动态域）——
 //!      a 的写位置运行时才定形，可能与 b 的指令参数读发生数据相关；
 //!   2. `domain_dyn(b)` 且 a 写 `instruction.*`——b 的域条件运行时从指令
@@ -208,7 +208,7 @@ pub fn detect_cycles(rws: &[RuleRw]) -> Result<CycleReport, String> {
 /// 边判定：a→b 的类别（None = 无边）
 fn edge_kind(a: &RuleRw, b: &RuleRw) -> Option<EdgeKind> {
     // 静态边：写读交集；但动态写表达式空间（instruction.*）的交集降级为
-    // 保守边（R-3 细化，2026-10-15 真实语料回归发现）：form-2 动态写的
+    // 保守边（2026-10-15 真实语料回归发现）：form-2 动态写的
     // 写集条目是 attr 表达式本身（如 instruction.params.attr），不是真实
     // payload 位置——部署面自持的 increment/decrement/set 桥接剧本规则
     // （与宪法同源自引用形态）在此空间互相成边会产生假静态环。

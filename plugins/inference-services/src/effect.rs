@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 规则效果预测（112 阶段 3，R-3 裁定：rw_extract 之上的分类薄层）。
+//! 规则效果预测（规则读写集静态提取之上的分类薄层）。
 //!
 //! 算法底稿 = v4 `effect_predict.rs`（影响分级思想）；模型层全部按现行
 //! 模型重写：读写集直接消费阶段 2 [`crate::rw_extract`] 输出，不重复

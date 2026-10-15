@@ -263,7 +263,7 @@ pub fn mk_verify_formula() -> std::sync::Arc<dyn NativeService> {
 }
 
 // ============================================================================
-// 规则静态分析三服务（112 阶段 2，设计文档 §五）
+// 规则静态分析三服务（设计文档 §五）
 // ============================================================================
 
 use std::collections::BTreeSet;
@@ -525,7 +525,7 @@ impl NativeService for RuleCycleDetect {
 
 // ── inference_conflict_detect ──
 
-/// 规则集内冲突检测服务（六类型学，R-1 裁定口径）
+/// 规则集内冲突检测服务（六类型学）
 pub struct RuleConflictDetect;
 
 impl NativeService for RuleConflictDetect {
@@ -553,10 +553,10 @@ pub fn mk_conflict_detect() -> std::sync::Arc<dyn NativeService> {
 }
 
 // ============================================================================
-// 规则推理四服务（112 阶段 3，设计文档 §二，R-1~R-3 裁定口径）
+// 规则推理四服务（设计文档 §二）
 // ============================================================================
 
-/// 前向链仿真服务：合成 `__exec__` 文档上迭代到不动点（R-1 语义）
+/// 前向链仿真服务：合成 `__exec__` 文档上迭代到不动点
 pub struct RuleForwardSimulate;
 
 impl NativeService for RuleForwardSimulate {
@@ -745,7 +745,7 @@ impl NativeService for RuleBackwardPlan {
     }
 }
 
-/// 效果预测服务：rw_extract 之上的影响分级薄层（R-3）
+/// 效果预测服务：rw_extract 之上的影响分级薄层
 pub struct RuleEffectPredict;
 
 impl NativeService for RuleEffectPredict {

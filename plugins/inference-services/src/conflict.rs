@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 规则集内冲突检测（112 号阶段 2，设计文档 §四，裁定 R-1）。
+//! 规则集内冲突检测（静态推理服务，设计文档 §四）。
 //!
 //! # 类型学（v4 五类按现行语义重写，零照搬）
 //!
@@ -23,8 +23,8 @@
 //! # 域重叠判定（静态保守）
 //!
 //! 仅在**可证伪**方向判否：两侧 `instruction` 域约束集互斥 → 不重叠；
-//! 其余（含动态域、无约束域、路径读域）一律保守判可能重叠（多报方向，
-//! 裁定 R-3）。路径读域不用于判否——不同属性的域条件可同时满足。
+//! 其余（含动态域、无约束域、路径读域）一律保守判可能重叠（多报方向）。
+//! 路径读域不用于判否——不同属性的域条件可同时满足。
 
 #![forbid(unsafe_code)]
 

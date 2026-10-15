@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 规则读写集静态提取器（112 号阶段 2 核心，设计文档 §二）。
+//! 规则读写集静态提取器（静态推理服务核心，设计文档 §二）。
 //!
 //! # 定位
 //!
@@ -30,7 +30,7 @@
 //! - **域本身为路径引用**（宪法 conditional/while_loop 实锤形态）→ 记读 +
 //!   置 `domain_dyn`（域可达性静态不可判定）。
 //!
-//! # 分桶（设计裁定 R-2）
+//! # 分桶
 //!
 //! `source == "core_eval"` 的宪法规则默认进入豁免桶（`excluded = true`）——
 //! 宪法是自引用形态（读/写 `instruction.params.attr`、域动态），静态图上

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 前向链仿真（112 阶段 3，R-1 裁定口径）。
+//! 前向链仿真（合成文档迭代到不动点）。
 //!
 //! 在合成 `__exec__` 文档上迭代施加规则效果，直到不动点 / 步数上限 /
 //! I/O 断流 / enforce 短路 / 状态振荡。算法底稿 = v4 `forward.rs`（已废弃），
@@ -33,7 +33,7 @@ use std::collections::BTreeSet;
 use evorule_tcb::executor::{execute_meta_instruction, MetaInstructionResult};
 use evorule_tcb::JsonValue;
 
-/// 仿真步数缺省值（R-1）
+/// 仿真步数缺省值
 pub const DEFAULT_MAX_STEPS: usize = 64;
 /// 仿真步数硬上限
 pub const MAX_STEPS_CAP: usize = 1000;
@@ -104,7 +104,7 @@ fn try_rule(rule: &JsonValue, state: &JsonValue, rule_id: &str) -> Result<StepOu
     }
 }
 
-/// 执行前向链仿真（R-1 语义，见模块文档）。
+/// 执行前向链仿真（见模块文档）。
 ///
 /// # Errors
 ///
