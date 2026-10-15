@@ -118,3 +118,8 @@ persistence = ["evorule-reactor/persistence"]
 # H5: evorule-server 已两次外迁 → 最终位于 evorule-server 独立仓（顶层 evorule-server/ crate）
 # evorule-governance 现在是纯 lib crate,不含任何 bin target
 # 注: evorule CLI 在本仓 workspace 内独立 crate（evorule-cli/）
+
+# 空 [workspace] 表：显式脱离 server 工作区（经根 [patch.crates-io] 以路径补丁
+# 替换注册表实例；不入 members——补丁自带 dev-deps/tests，须在本目录独立测试；
+# 与 patches/evorule-reactor 同机制先例）
+[workspace]

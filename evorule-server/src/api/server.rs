@@ -480,6 +480,16 @@ pub struct SessionApi {
     /// 注入发生在 Schema 门禁之后：transform_rule 条目级键白名单针对用户/LLM
     /// 产物，服务端系统注入不属其对象。
     caller_roles: Arc<std::sync::Mutex<std::collections::HashMap<u64, String>>>,
+
+    /// 惰性同 sid 复活开关（缺省开）
+    ///
+    /// 开启时，续聊/查态入口对不在内存表的会话先尝试从 WAL 归档按原 sid 复活
+    /// （`session_or_rehydrate`）；关闭则逐位回到「不在表即 404」的既有语义。
+    rehydrate_enabled: bool,
+
+    /// Prometheus 指标句柄（复活路径 spawn IoSubscriber/inc_sessions 用；
+    /// None 时以 noop 兜底——桥接路径与测试构造无 State 注入）
+    metrics: Option<SharedMetrics>,
 }
 
 /// external 插件管理面端点(审批代理转发目标 + server 侧持有的 admin token)
@@ -804,6 +814,12 @@ impl SessionApi {
 
             // 会话级 caller_role 声明表（默认空=全部会话不声明，零回归）
             caller_roles: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+
+            // 惰性同 sid 复活开关（缺省开；builder/配置面可关，关闭即回到既有 404 语义）
+            rehydrate_enabled: true,
+
+            // Prometheus 指标（生产路径 main.rs 经 with_shared_metrics 注入；缺省 None=noop 兜底）
+            metrics: None,
         }
     }
 
@@ -816,6 +832,23 @@ impl SessionApi {
         hit_stats: Arc<crate::api::hit_stats::HitStatsAggregator>,
     ) -> Self {
         self.hit_stats = hit_stats;
+        self
+    }
+
+    /// 覆盖惰性同 sid 复活开关（builder 模式；缺省开）
+    ///
+    /// 关闭后续聊/查态入口对不在内存表的会话维持 404（既有语义逐位回归）。
+    pub fn with_session_rehydrate(mut self, enabled: bool) -> Self {
+        self.rehydrate_enabled = enabled;
+        self
+    }
+
+    /// 注入 Prometheus 指标句柄（builder 模式）
+    ///
+    /// 复活路径的 inc_sessions 与 IoSubscriber 装配消费；未注入（桥接路径/
+    /// 测试构造）时以 noop 兜底，行为一致仅无指标。
+    pub fn with_shared_metrics(mut self, metrics: SharedMetrics) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -933,6 +966,121 @@ impl SessionApi {
                 tracing::info!(session_id, "IoSubscriber 已为 session 启动");
             }
         }
+    }
+
+    /// 会话获取或惰性复活（续聊/查态四入口共用）
+    ///
+    /// 快路径（行为零变化）：会话在内存表 → touch 后返回克隆。
+    /// 未命中且复活开关开：锁外读 WAL 归档并全链哈希校验（fail-closed，
+    /// 损坏归档绝不复活），随后锁内按原 sid 复活（`rehydrate_session_from_wal`，
+    /// 内部含并发复活双查），锁外补装配随行任务（hit-stats/回写转发/IoSubscriber，
+    /// 与 create_session 成功路径同款三件套防漂移）。
+    ///
+    /// API 层命令 ID 计数器按归档最大 Command ID 续起——命令 ID（高位区）
+    /// 与反应器 FactId（低位区）分属两个独立计数器，复活时各自按类续起
+    /// 保持两区不相交，防新事实与恢复历史在 fact_id_index 内碰撞。
+    async fn session_or_rehydrate(
+        &self,
+        session_id: u64,
+    ) -> Result<session::Session, RehydrateRejection> {
+        // 快路径：内存表命中 → touch → 返回
+        {
+            let sessions = self.sessions.lock().await;
+            if let Some(session) = sessions.get_session(session_id) {
+                sessions.touch_session(session_id);
+                return Ok(session);
+            }
+        }
+
+        if !self.rehydrate_enabled {
+            return Err(RehydrateRejection::NoArchive);
+        }
+        let Some(wal_dir) = self.wal_dir.as_ref() else {
+            return Err(RehydrateRejection::NoArchive);
+        };
+
+        // 锁外：读归档 + 全链哈希校验（fail-closed，先于任何复活动作）
+        let records = match read_archive_records(wal_dir, session_id) {
+            Ok(records) => records,
+            Err(ArchiveForkRejection::NoArchive) => return Err(RehydrateRejection::NoArchive),
+            Err(ArchiveForkRejection::Io(e)) => {
+                tracing::error!(session_id, error = %e, "复活前置：归档 WAL 读取失败");
+                return Err(RehydrateRejection::Io(e));
+            }
+            Err(other) => {
+                tracing::error!(session_id, rejection = %other, "复活前置：非预期拒绝形态");
+                return Err(RehydrateRejection::Corrupted(other.to_string()));
+            }
+        };
+        if let Err(rej) = replay_archive_state(session_id, &records, None) {
+            match rej {
+                ArchiveForkRejection::Corrupted(reason) => {
+                    tracing::error!(
+                        session_id,
+                        %reason,
+                        "复活拒绝：归档链完整性校验失败（fail-closed，不造会话）"
+                    );
+                    return Err(RehydrateRejection::Corrupted(reason));
+                }
+                ArchiveForkRejection::Io(e) => {
+                    tracing::error!(session_id, error = %e, "复活拒绝：归档重放 I/O 失败");
+                    return Err(RehydrateRejection::Io(e));
+                }
+                other => {
+                    tracing::error!(session_id, rejection = %other, "复活拒绝：归档重放非预期失败");
+                    return Err(RehydrateRejection::Corrupted(other.to_string()));
+                }
+            }
+        }
+
+        // API 层命令 ID 计数器按归档最大 Command ID 续起（高位区续起）
+        let mut max_api_id: u64 = 0;
+        for record in &records {
+            if let evorule_reactor::Fact::Command { id, .. } = &record.fact {
+                max_api_id = max_api_id.max(id.0);
+            }
+        }
+        if max_api_id > 0 {
+            self.next_id
+                .fetch_max(max_api_id + 1, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // 锁内复活（SessionManager 内部含并发复活双查与名额预留）
+        let session = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .rehydrate_session_from_wal(session_id)
+                .map_err(|e| match e {
+                    session::SessionError::LimitExceeded { current, max } => {
+                        RehydrateRejection::LimitExceeded { current, max }
+                    }
+                    session::SessionError::WalUnavailable { session_id, source } => {
+                        RehydrateRejection::WalUnavailable {
+                            session_id,
+                            source: source.to_string(),
+                        }
+                    }
+                    other => {
+                        tracing::error!(session_id, error = %other, "复活拒绝：会话重建失败");
+                        RehydrateRejection::Corrupted(other.to_string())
+                    }
+                })?
+        };
+
+        tracing::info!(session_id, "会话已从 WAL 归档按原 ID 复活");
+
+        // 锁外补装配随行任务（同 create_session 成功路径三件套，防漂移）
+        let metrics = self
+            .metrics
+            .clone()
+            .unwrap_or_else(evorule_governance::metrics::noop_metrics);
+        metrics.inc_sessions();
+        self.spawn_hit_stats_recorder(session_id);
+        self.spawn_writeback_forwarder(session_id);
+        self.spawn_io_subscriber_for_session(session_id, metrics, None)
+            .await;
+
+        Ok(session)
     }
 
     /// 读取会话的 caller_role 声明（未声明 = None）
@@ -3622,12 +3770,18 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         let instruction = serde_to_tcb(command);
 
-        let sessions = self.sessions.lock().await;
-
-        sessions.touch_session(session_id);
-
-        let session = sessions.get_session(session_id).ok_or_else(|| {
-            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+        // 获取或惰性复活（内存表未命中且开关开时从 WAL 归档按原 sid 复活）
+        let session = self.session_or_rehydrate(session_id).await.map_err(|rej| {
+            tracing::warn!(session_id, rejection = %rej, "会话获取失败（含复活尝试）");
+            if matches!(
+                rej,
+                RehydrateRejection::LimitExceeded { .. }
+                    | RehydrateRejection::WalUnavailable { .. }
+            ) {
+                evorule_workspace::WorkspaceError::internal(rej.to_string())
+            } else {
+                evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+            }
         })?;
 
         session
@@ -3655,12 +3809,18 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         session_id: u64,
     ) -> evorule_workspace::WorkspaceResult<serde_json::Value> {
-        let sessions = self.sessions.lock().await;
-
-        sessions.touch_session(session_id);
-
-        let session = sessions.get_session(session_id).ok_or_else(|| {
-            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+        // 获取或惰性复活（内存表未命中且开关开时从 WAL 归档按原 sid 复活）
+        let session = self.session_or_rehydrate(session_id).await.map_err(|rej| {
+            tracing::warn!(session_id, rejection = %rej, "会话获取失败（含复活尝试）");
+            if matches!(
+                rej,
+                RehydrateRejection::LimitExceeded { .. }
+                    | RehydrateRejection::WalUnavailable { .. }
+            ) {
+                evorule_workspace::WorkspaceError::internal(rej.to_string())
+            } else {
+                evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+            }
         })?;
 
         let (payload, queue, version) = session.facts_log.snapshot();
@@ -6630,6 +6790,47 @@ async fn create_session_fork(
     }
 }
 
+/// 惰性同 sid 复活失败原因（由调用方映射为 HTTP 状态码/工作区错误）
+#[derive(Debug)]
+enum RehydrateRejection {
+    /// 无归档可用（wal_dir 未启用 / 无该会话档案 / 复活开关关闭）→ 404（既有语义）
+    NoArchive,
+    /// 归档链完整性校验失败（fail-closed，疑似篡改/损坏）→ 404
+    ///
+    /// 按裁定与「无归档」同码：调用方契约（死会话=404）不变，error! 留痕保证可见。
+    Corrupted(String),
+    /// 归档 WAL 读取 I/O 失败 → 404（同上裁定口径）
+    Io(String),
+    /// 会话数超限 → 429
+    LimitExceeded { current: usize, max: usize },
+    /// WAL 不可用（复活会话审计链无法续链，确定性引擎拒启）→ 503
+    WalUnavailable { session_id: u64, source: String },
+}
+
+impl std::fmt::Display for RehydrateRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoArchive => write!(f, "无归档可用（wal_dir 未启用或无该会话档案）"),
+            Self::Corrupted(reason) => write!(f, "归档链完整性校验失败: {reason}"),
+            Self::Io(e) => write!(f, "归档 WAL 读取失败: {e}"),
+            Self::LimitExceeded { current, max } => write!(f, "会话数超限: {current}/{max}"),
+            Self::WalUnavailable { session_id, source } => {
+                write!(f, "会话 {session_id} 复活 WAL 不可用: {source}")
+            }
+        }
+    }
+}
+
+impl RehydrateRejection {
+    fn to_status(&self) -> StatusCode {
+        match self {
+            Self::NoArchive | Self::Corrupted(_) | Self::Io(_) => StatusCode::NOT_FOUND,
+            Self::LimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::WalUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+}
+
 /// fork-from-archive 失败原因（由调用方映射为 HTTP 状态码）
 #[derive(Debug)]
 enum ArchiveForkRejection {
@@ -6914,7 +7115,7 @@ async fn wait_for_command_verdict(
 
         (status = 200, description = "命令已提交/已处理，返回 fact_id（wait=true 时含受理结论）", body = CommandSubmitResponse),
 
-        (status = 404, description = "会话不存在")
+        (status = 404, description = "会话不存在（存在有效归档时按原 sid 复活；归档缺失或链校验失败仍 404）")
 
     )
 
@@ -7007,13 +7208,13 @@ async fn session_command(
 
     let instruction = serde_to_tcb(instruction_value);
 
-    let sessions = api.sessions.lock().await;
-
-    sessions.touch_session(session_id);
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    // 获取或惰性复活（内存表未命中且开关开时从 WAL 归档按原 sid 复活）。
+    // 会话锁不跨 send 持有：session 为句柄克隆，command_tx 生命周期独立于
+    // 活跃表（TTL 回收只移表不杀反应器），通道语义与既有失败分支一致。
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     match session.command_tx.send(Fact::Command { id, instruction }) {
         Ok(()) => {
@@ -7039,7 +7240,6 @@ async fn session_command(
             // 账面/可回放语义不变，仅应答时序从「轮询感知」变「同步感知」。
             let facts_log = session.facts_log.clone();
             let auditor = session.auditor.clone();
-            drop(sessions);
 
             let verdict = wait_for_command_verdict(&facts_log, id.0, COMMAND_WAIT_TIMEOUT).await;
 
@@ -7108,7 +7308,7 @@ async fn session_command(
 
         (status = 200, description = "会话状态快照", body = SessionStateResponse),
 
-        (status = 404, description = "会话不存在")
+        (status = 404, description = "会话不存在（存在有效归档时按原 sid 复活；归档缺失或链校验失败仍 404）")
 
     )
 
@@ -7121,13 +7321,11 @@ async fn session_state(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    sessions.touch_session(session_id);
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    // 获取或惰性复活（内存表未命中且开关开时从 WAL 归档按原 sid 复活）
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let (payload, queue, version) = session.facts_log.snapshot();
 

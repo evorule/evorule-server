@@ -25,6 +25,23 @@
 
 ---
 
+## [Unreleased]
+
+### 🆕 新增
+
+- 🆕 **会话归档惰性复活（同 sid 重建续写）**：请求撞上已被 TTL 回收或进程重启失效的会话时，若其 `session_{sid}.wal` 归档存在且链校验通过（fail-closed），按原 sid 重建会话并续写同一 WAL 审计链——TTL 回收与重启双死因下历史不再丢失；反应器 FactId 与 API 层命令 ID 双计数器各自按类续起，杜绝恢复历史与新事实的 ID 碰撞。归档缺失或校验失败仍返回 404 不造会话；超会话限额返回 429，WAL 不可用返回 503
+- 🆕 部署面配置 `--session-rehydrate` / `EVORULE_SESSION_REHYDRATE`（缺省 `true`；关闭即恢复旧行为）；补登 `--session-ttl-secs` / `EVORULE_SESSION_TTL_SECS` 配置条目
+
+### ✅ 向后兼容
+
+- ✅ 开关缺省开启仅改变「原本 404 的死会话」路径；活跃会话路径与 TTL 语义（缺省 1800s 不变）零变化。生产需旧口径时设 `EVORULE_SESSION_REHYDRATE=false` 一键回退
+
+### 🧪 测试
+
+- 🧪 governance 单测 4 件（TTL 回收后复活状态还原 / FactId 计数器续起无碰撞 / 归档缺失拒复活 / 限额约束）+ HTTP 集成测试 4 件（重启后同 sid 复活且 payload 连续 / 无归档 404 / 归档损坏 fail-closed 404 / 开关关闭保持 404）
+
+---
+
 ## [0.9.2] - 2026-10-10
 
 ### 🆕 新增

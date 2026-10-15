@@ -430,6 +430,8 @@ Config loading priority: **CLI args > env vars (prefix `EVORULE_`) > JSON config
 | `EVORULE_MAX_ROUNDS` | `--max-rounds` | `1000` | Reactor max instruction execution steps |
 | `EVORULE_IO_WARN_TIMEOUT_SECS` | `--io-warn-timeout-secs` | `30` | Pending I/O warn threshold in seconds (per-session reactor; a warning fact is emitted when a pending `io_request` exceeds it) |
 | `EVORULE_IO_ERROR_TIMEOUT_SECS` | `--io-error-timeout-secs` | `60` | Pending I/O error threshold in seconds (per-session reactor; an exceeding pending `io_request` fails with an explicit timeout error — raise for long-running multi-round application loops) |
+| `EVORULE_SESSION_TTL_SECS` | `--session-ttl-secs` | `1800` | Session idle TTL in seconds (reaped when exceeded; must stay ≥ io-error-timeout + 60s margin) |
+| `EVORULE_SESSION_REHYDRATE` | `--session-rehydrate` | `true` | Lazy same-id session resurrection: when a request hits an expired/restarted session and its WAL archive exists and passes chain validation, the session is rebuilt under the original id and history is preserved; archive-missing or corrupted still returns 404 |
 | `EVORULE_LOG_LEVEL` | `--log-level` | `info` | Tracing level |
 | `EVORULE_LOG_FORMAT` | `--log-format` | `plain` | Log format (`plain` / `json`) |
 | `EVORULE_LOG_FILE` | `--log-file` | (empty) | Log file path (unset = stderr only) |
@@ -1065,6 +1067,8 @@ evorule_rules_zero_hits
 | `EVORULE_MAX_ROUNDS`      | `--max-rounds`      | `1000`                       | 反应器最大指令执行步数                  |
 | `EVORULE_IO_WARN_TIMEOUT_SECS` | `--io-warn-timeout-secs` | `30`              | pending I/O 警告阈值(秒,逐会话反应器;pending `io_request` 超过即发警告事实) |
 | `EVORULE_IO_ERROR_TIMEOUT_SECS` | `--io-error-timeout-secs` | `60`             | pending I/O 超时阈值(秒,逐会话反应器;超时的 pending `io_request` 以显式超时错误失败——应用层多轮长循环部署应调大) |
+| `EVORULE_SESSION_TTL_SECS` | `--session-ttl-secs` | `1800`                       | 会话闲置 TTL(秒,超时回收;必须 ≥ io-error-timeout + 60s 余量) |
+| `EVORULE_SESSION_REHYDRATE` | `--session-rehydrate` | `true`                     | 会话归档惰性复活开关:请求撞上已被回收/重启失效的会话时,若其 WAL 归档存在且链校验通过,按原 sid 重建会话续写同一审计链(历史不丢);归档缺失或校验失败仍 404 |
 | `EVORULE_LOG_LEVEL`       | `--log-level`       | `info`                       | tracing 级别                            |
 | `EVORULE_LOG_FORMAT`      | `--log-format`      | `plain`                      | 日志格式(`plain` / `json`)            |
 | `EVORULE_LOG_FILE`        | `--log-file`        | (空)                         | 日志文件路径(不设则仅输出 stderr)     |

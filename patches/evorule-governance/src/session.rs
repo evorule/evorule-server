@@ -643,7 +643,11 @@ impl SessionManager {
     }
 
     /// 从锚点配置派生单会话审计器（私钥种子注入 signer，session_id 入锚点载荷）
-    fn auditor_from_config(&self, facts_log: FactsLog) -> Auditor {
+    ///
+    /// 锚点载荷中的会话标识取显式传入的 `session_id`（该会话的真实 ID），
+    /// 而非全局 ID 计数器——计数器在并发创建下可能已越过本会话 ID，
+    /// 复活路径下更与计数器无关，显式传参保证锚点归因精确。
+    fn auditor_from_config(&self, facts_log: FactsLog, session_id: SessionId) -> Auditor {
         let auditor = Auditor::new_with_auto_verify(
             facts_log,
             self.auto_verify,
@@ -655,7 +659,7 @@ impl SessionManager {
                 crate::signing::AuditSigner::from_bytes(cfg.signer_seed),
                 cfg.key_id.clone(),
                 cfg.engine_id.clone(),
-                format!("session-{}", self.next_session_id.load(Ordering::Relaxed)),
+                format!("session-{}", session_id),
                 cfg.interval,
             ),
             None => auditor,
@@ -822,7 +826,7 @@ impl SessionManager {
         );
 
         let auditor = Arc::new(std::sync::Mutex::new(
-            self.auditor_from_config(facts_log.clone()),
+            self.auditor_from_config(facts_log.clone(), session_id),
         ));
 
         shard_guard.insert(
@@ -1026,7 +1030,7 @@ impl SessionManager {
         );
 
         let auditor = Arc::new(std::sync::Mutex::new(
-            self.auditor_from_config(facts_log.clone()),
+            self.auditor_from_config(facts_log.clone(), session_id),
         ));
 
         shard_guard.insert(
@@ -1046,6 +1050,137 @@ impl SessionManager {
         );
 
         Ok(session_id)
+    }
+
+    /// 按原会话 ID 从 WAL 归档复活会话（惰性同 sid 复活）
+    ///
+    /// TTL 回收与进程重启都会将会话从内存表中移除，但其 WAL（`session_{sid}.wal`）
+    /// 仍在磁盘上。本方法以**原 sid** 重建会话：全量重放 WAL 恢复状态
+    /// （`FactsLog::recover_with_options`，append 模式挂载，续写同一文件），
+    /// 反应器 FactId 计数器 resume 到归档最大 FactId+1（防与恢复历史在
+    /// fact_id_index 内碰撞），注册后同步抬高全局会话 ID 计数器
+    /// （防新会话分配与归档 sid 碰撞）。
+    ///
+    /// # 返回
+    /// - `Ok(Session)`：复活成功（含已注册的会话句柄）；会话已在内存表时幂等返回既有会话
+    /// - `Err(SessionError::NotFound)`：纯内存模式（无 WAL）或归档文件不存在
+    /// - `Err(SessionError::LimitExceeded)`：超过最大会话数限制
+    /// - `Err(SessionError::WalUnavailable)`：WAL 重放/挂载失败（fail-closed，绝不静默降级）
+    pub fn rehydrate_session_from_wal(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Session, SessionError> {
+        // 幂等：会话仍在内存表（未被回收/已被并发复活）直接返回
+        if let Some(session) = self.get_session(session_id) {
+            return Ok(session);
+        }
+
+        // B4：先原子预留名额，再做慢操作（WAL 重放/spawn）；失败路径必须归还
+        self.reserve_session_slot()?;
+
+        let wal_dir = match &self.wal_dir {
+            Some(d) => d.clone(),
+            None => {
+                self.release_session_slot();
+                return Err(SessionError::NotFound { id: session_id });
+            }
+        };
+        let wal_path = wal_dir.join(format!("session_{}.wal", session_id));
+        if !wal_path.exists() {
+            self.release_session_slot();
+            return Err(SessionError::NotFound { id: session_id });
+        }
+
+        let facts_log = match FactsLog::recover_with_options(
+            &wal_path,
+            self.max_wal_size_bytes,
+            self.wal_fsync,
+        ) {
+            Ok(fl) => fl,
+            Err(source) => {
+                self.release_session_slot();
+                tracing::error!(
+                    session_id,
+                    error = %source,
+                    "拒绝复活会话：WAL 归档重放失败（确定性引擎不允许无审计链的会话）"
+                );
+                return Err(SessionError::WalUnavailable { session_id, source });
+            }
+        };
+
+        // 扫描归档最大反应器 FactId，反应器计数器从此续起。
+        // Fact::Command 的 ID 由 API 层计数器分配（高位区，缺省自 30000 起），
+        // 与反应器自身 ID（低位区）分属两个独立计数器共享的同一 ID 空间——
+        // 复活时两类计数器必须各自按类续起（跳过 Command），防新事实 ID
+        // 与恢复历史在 fact_id_index 内碰撞。
+        let mut max_fact_id: u64 = 0;
+        facts_log.for_each_fact_from(0, |_, fact| {
+            if !matches!(fact, Fact::Command { .. }) {
+                max_fact_id = max_fact_id.max(fact.id().0);
+            }
+        });
+
+        let reactor = Reactor::builder(self.core_eval.clone())
+            .max_rounds(self.max_rounds)
+            .io_warn_timeout(self.io_warn_timeout)
+            .io_error_timeout(self.io_error_timeout)
+            .io_timeout_check_interval(self.io_timeout_check_interval)
+            .fact_id_start(max_fact_id + 1)
+            .facts_log(facts_log)
+            .build();
+        let (command_tx, _event_rx, event_tx, handle, facts_log) = reactor.spawn();
+
+        let shard = self.get_shard(session_id);
+        let mut shard_guard = match lock_mutex(shard) {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!("SessionManager shard mutex poisoned, recovering");
+                e.into_inner()
+            }
+        };
+
+        // 并发复活防线：他方实例已注册则弃置本实例（丢弃 command_tx 触发反应器优雅退出）
+        if shard_guard.contains_key(&session_id) {
+            drop(command_tx);
+            self.release_session_slot();
+            tracing::info!(session_id, "会话已被并发请求复活，弃置重复重建实例");
+            return shard_guard
+                .get(&session_id)
+                .cloned()
+                .ok_or(SessionError::NotFound { id: session_id });
+        }
+
+        self.next_session_id
+            .fetch_max(session_id + 1, Ordering::Relaxed);
+
+        let active = self.count.load(Ordering::Relaxed);
+        tracing::info!(
+            session_id,
+            replayed_facts = max_fact_id,
+            active,
+            max = self.max_sessions,
+            "Session rehydrated from WAL archive (same-id resurrection)"
+        );
+
+        let auditor = Arc::new(std::sync::Mutex::new(
+            self.auditor_from_config(facts_log.clone(), session_id),
+        ));
+
+        let session = Session {
+            command_tx,
+            facts_log,
+            event_tx,
+            handle: Arc::new(handle),
+            auditor,
+            parent_session_id: None,
+            initial_content_hash: None,
+            content_hash_scheme: ContentHashScheme::default(),
+            created_at: Arc::new(Instant::now()),
+            last_activity_ms: Arc::new(AtomicU64::new(0)),
+        };
+        shard_guard.insert(session_id, session.clone());
+
+        Ok(session)
     }
 
     /// 返回当前已加载的 transform 规则列表（只读）
@@ -2333,5 +2468,242 @@ mod tests {
         assert_eq!(mgr3.io_warn_timeout, Duration::from_secs(30));
         assert_eq!(mgr3.io_error_timeout, Duration::from_secs(3600));
         assert_eq!(mgr3.io_timeout_check_interval, Duration::from_secs(5));
+    }
+
+    // ===== 同 sid 复活（WAL 归档惰性重建） =====
+
+    /// 构造一条无副作用触发命令（tick 先例：仅触发规则求值）
+    fn tick_instruction() -> JsonValue {
+        let mut instr = BTreeMap::new();
+        instr.insert("type".to_string(), JsonValue::string("tick"));
+        JsonValue::Object(instr)
+    }
+
+    /// 向会话提交一条命令（API 层 Command ID 高位区先例：自 30000 起）
+    fn submit_tick(session: &Session, command_id: u64) {
+        session
+            .command_tx
+            .send(Fact::Command {
+                id: evorule_reactor::FactId(command_id),
+                instruction: tick_instruction(),
+            })
+            .unwrap();
+    }
+
+    /// 轮询会话版本号直至越过 baseline 且连续 2 次稳定（集成测试同口径）
+    async fn wait_version_stable(session: &Session, baseline: u64) -> u64 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let mut last = baseline;
+        let mut stable = 0u32;
+        loop {
+            let version = session.facts_log.snapshot().2;
+            if version > last {
+                last = version;
+                stable = 0;
+            } else {
+                stable += 1;
+                if stable >= 2 && version > baseline {
+                    return version;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "等待会话版本越过 {baseline} 超时"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    fn rehydrate_test_mgr(
+        max_sessions: usize,
+        ttl: Duration,
+        wal_dir: Option<PathBuf>,
+    ) -> SessionManager {
+        // core_eval 必须是合法 meta 指令树：set x += 1（increment 不是合法 meta 指令，
+        // 先例见 test_create_session_from_initial_state）；tick 命令触发一次规则求值
+        let mut set_params = BTreeMap::new();
+        set_params.insert("attr".to_string(), JsonValue::string("x"));
+        set_params.insert("operation".to_string(), JsonValue::string("add"));
+        set_params.insert("value".to_string(), JsonValue::Integer(1));
+        let mut set_instr = BTreeMap::new();
+        set_instr.insert("type".to_string(), JsonValue::string("set"));
+        set_instr.insert("params".to_string(), JsonValue::Object(set_params));
+        SessionManager::with_limits_and_wal_and_auto_verify(
+            vec![JsonValue::Object(set_instr)],
+            100,
+            max_sessions,
+            ttl,
+            wal_dir,
+            4,
+            false,
+            0,
+            false,
+            1000,
+            1,
+        )
+    }
+
+    /// TTL 回收后同 sid 复活：内存表清空、WAL 归档仍在，复活后
+    /// 版本与 payload 必须从归档重放恢复（历史不丢）。
+    #[tokio::test]
+    async fn test_rehydrate_session_from_wal_after_ttl_reap() {
+        let dir =
+            std::env::temp_dir().join(format!("evorule_rehydrate_ttl_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = rehydrate_test_mgr(100, Duration::from_millis(100), Some(dir.clone()));
+
+        let sid = mgr.create_session().unwrap();
+        let session = mgr.get_session(sid).unwrap();
+        submit_tick(&session, 30000);
+        let v_archived = wait_version_stable(&session, 0).await;
+        assert!(v_archived >= 1, "命令处理后版本必须推进");
+        drop(session);
+
+        // TTL 过期回收：内存表清空，WAL 归档文件仍在
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(mgr.reap_expired(), 1);
+        assert!(mgr.get_session(sid).is_none());
+
+        // 同 sid 复活：状态从 WAL 归档重放恢复
+        let revived = mgr.rehydrate_session_from_wal(sid).unwrap();
+        let (payload, _, version) = revived.facts_log.snapshot();
+        assert_eq!(version, v_archived, "复活后版本必须与归档一致");
+        assert_eq!(
+            crate::permission::tcb_to_serde(&payload)["x"],
+            serde_json::json!(1),
+            "复活后 payload 必须保留归档前的规则写入"
+        );
+        assert_eq!(mgr.len(), 1, "复活必须占用会话名额");
+        assert!(dir.join(format!("session_{sid}.wal")).exists());
+
+        let _ = mgr.close_session(sid);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 复活后反应器 FactId 计数器必须从归档最大值续起：
+    /// 新事实 ID 严格大于归档最大非 Command FactId，且全链无 ID 碰撞
+    /// （双计数器分区——Command ID 归 API 层计数器，复活时各自按类续起）。
+    #[tokio::test]
+    async fn test_rehydrate_resumes_fact_ids_above_archive_max() {
+        let dir =
+            std::env::temp_dir().join(format!("evorule_rehydrate_factid_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = rehydrate_test_mgr(100, Duration::from_millis(100), Some(dir.clone()));
+
+        let sid = mgr.create_session().unwrap();
+        let session = mgr.get_session(sid).unwrap();
+        submit_tick(&session, 30000);
+        let v_archived = wait_version_stable(&session, 0).await;
+
+        // 归档段非 Command FactId 清单（复活前从原会话读取）
+        let mut archived_ids: Vec<u64> = Vec::new();
+        session.facts_log.for_each_fact_from(0, |_, fact| {
+            if !matches!(fact, Fact::Command { .. }) {
+                archived_ids.push(fact.id().0);
+            }
+        });
+        assert!(!archived_ids.is_empty(), "归档段必须含非 Command 事实");
+        drop(session);
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(mgr.reap_expired(), 1);
+
+        let revived = mgr.rehydrate_session_from_wal(sid).unwrap();
+        submit_tick(&revived, 30001);
+        wait_version_stable(&revived, v_archived).await;
+
+        let mut after_ids: Vec<u64> = Vec::new();
+        revived.facts_log.for_each_fact_from(0, |_, fact| {
+            if !matches!(fact, Fact::Command { .. }) {
+                after_ids.push(fact.id().0);
+            }
+        });
+        assert!(
+            after_ids.len() > archived_ids.len(),
+            "复活后新命令必须产生新的反应器事实"
+        );
+        let max_archived = archived_ids.iter().copied().max().unwrap();
+        for id in &after_ids[archived_ids.len()..] {
+            assert!(
+                *id > max_archived,
+                "复活后新事实 FactId ({id}) 必须严格大于归档最大值 ({max_archived})，\
+                 计数器必须续起而非归零碰撞"
+            );
+        }
+        // 全链 FactId 无碰撞（fact_id_index 唯一性不变量）
+        let mut sorted = after_ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            after_ids.len(),
+            "复活续写后非 Command FactId 不得重复"
+        );
+
+        let _ = mgr.close_session(sid);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 归档缺失必须拒绝复活（fail-closed）：纯内存模式与 WAL 模式
+    /// 归档文件不存在两条路径均返回 NotFound，绝不凭空造会话。
+    #[tokio::test]
+    async fn test_rehydrate_rejects_missing_wal() {
+        // 纯内存模式（无 wal_dir）：无归档可复活
+        let mgr_mem = rehydrate_test_mgr(100, Duration::from_millis(100), None);
+        let sid_mem = mgr_mem.create_session().unwrap();
+        drop(mgr_mem.get_session(sid_mem));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(mgr_mem.reap_expired(), 1);
+        match mgr_mem.rehydrate_session_from_wal(sid_mem) {
+            Err(SessionError::NotFound { .. }) => {}
+            Err(e) => panic!("纯内存模式复活应返回 NotFound，实际: {e}"),
+            Ok(_) => panic!("纯内存模式复活不应成功"),
+        }
+
+        // WAL 模式但指定 sid 的归档文件不存在
+        let dir =
+            std::env::temp_dir().join(format!("evorule_rehydrate_missing_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = rehydrate_test_mgr(100, Duration::from_secs(3600), Some(dir.clone()));
+        match mgr.rehydrate_session_from_wal(999) {
+            Err(SessionError::NotFound { .. }) => {}
+            Err(e) => panic!("归档缺失复活应返回 NotFound，实际: {e}"),
+            Ok(_) => panic!("归档缺失时复活不应成功"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 复活必须尊重 max_sessions 限额（B4 名额预留先于 WAL 重放）：
+    /// 名额占满时复活被拒；归档本身不受影响，释放名额后仍可复活。
+    #[tokio::test]
+    async fn test_rehydrate_respects_max_sessions() {
+        let dir =
+            std::env::temp_dir().join(format!("evorule_rehydrate_limit_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = rehydrate_test_mgr(1, Duration::from_millis(100), Some(dir.clone()));
+
+        let sid = mgr.create_session().unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(mgr.reap_expired(), 1);
+
+        // 占满唯一名额
+        let sid2 = mgr.create_session().unwrap();
+        assert_eq!(mgr.len(), 1);
+        match mgr.rehydrate_session_from_wal(sid) {
+            Err(SessionError::LimitExceeded { .. }) => {}
+            Err(e) => panic!("名额占满时复活应返回 LimitExceeded，实际: {e}"),
+            Ok(_) => panic!("名额占满时复活不应成功"),
+        }
+
+        // 归档未被破坏：弃置本实例（模拟重启）后新实例可复活
+        drop(mgr);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mgr2 = rehydrate_test_mgr(1, Duration::from_secs(3600), Some(dir.clone()));
+        let revived = mgr2.rehydrate_session_from_wal(sid).unwrap();
+        assert!(mgr2.get_session(sid).is_some(), "释放名额后必须可复活");
+        let _ = mgr2.close_session(sid);
+        drop(revived);
+        let _ = sid2;
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

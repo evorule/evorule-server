@@ -1172,3 +1172,243 @@ async fn bundle_export_workspace_current_rules_end_to_end() {
         "{view}"
     );
 }
+
+// ===== 同 sid 复活（WAL 归档惰性重建，两段式重启夹具） =====
+
+/// 两段式夹具产物：phase-1 会话落盘后的现场（WAL 归档留存，内存表已随
+/// phase-1 实例整体 drop 清零——模拟进程重启）
+struct RehydrateFixture {
+    _tmp: tempfile::TempDir,
+    wal_dir: PathBuf,
+    core_eval_path: PathBuf,
+    rules_dir: PathBuf,
+    session_id: u64,
+}
+
+/// phase-1：建会话 + 写入一条可从归档验证的 set，随后整体 drop 模拟重启
+async fn boot_session_then_restart_simulated(attr: &str, value: i64) -> RehydrateFixture {
+    let tmp = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let wal_dir = tmp.path().join("wal");
+    std::fs::create_dir(&wal_dir).expect("Failed to create wal dir");
+    // 宪法复制到临时目录（与 hot_reload/audit-archive 测试同口径）
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let core_eval_source = manifest_dir.join("../resources/server_eval.json");
+    let core_eval_content = std::fs::read_to_string(&core_eval_source).unwrap();
+    let core_eval_path = tmp.path().join("core_eval.json");
+    std::fs::write(&core_eval_path, &core_eval_content).unwrap();
+    let rules_dir = tmp.path().join("rules");
+    std::fs::create_dir(&rules_dir).unwrap();
+
+    let session_id = {
+        let core_eval = load_core_eval();
+        let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
+        let (tx, _rx, _etx, _handle, facts_log) = reactor.spawn();
+        let governance = GovernanceApi::new(tx, facts_log.clone(), Auditor::new(facts_log));
+        let sessions = SessionApi::new_with_full_config(
+            core_eval.clone(),
+            100,
+            Some(wal_dir.clone()),
+            false,
+            100 * 1024 * 1024,
+            false,
+            1000,
+            1,
+            core_eval_path.clone(),
+            rules_dir.clone(),
+            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            0,
+            None, // anchor_config: 默认关闭
+        );
+        let state = AppState::new(
+            governance,
+            sessions.clone(),
+            shared_prometheus_metrics().unwrap(),
+            Arc::new(AtomicBool::new(true)),
+            SharedFactsLog::new(),
+            make_workspace_state(&sessions),
+            Arc::new(InputSanitizer::with_default_rules()),
+        );
+
+        let (_, json) = send(&state, "POST", "/api/sessions", None).await;
+        let sid = json["session_id"].as_u64().unwrap();
+        let v0 = get_version(&state, sid).await;
+        submit_set_and_wait(&state, sid, attr, value, v0).await;
+        sid
+    }; // state/sessions/reactor 整体 drop → 内存表清零，WAL 归档留存
+
+    tokio::time::sleep(Duration::from_millis(300)).await; // 反应器退出窗口
+    RehydrateFixture {
+        _tmp: tmp,
+        wal_dir,
+        core_eval_path,
+        rules_dir,
+        session_id,
+    }
+}
+
+/// phase-2：以同 wal_dir 构造全新 SessionApi（内存空）+ AppState
+///
+/// `rehydrate` 为 None 时用缺省开关（true）；Some(false) 显式关闸。
+fn boot_second_state(fx: &RehydrateFixture, rehydrate: Option<bool>) -> AppState {
+    let core_eval = load_core_eval();
+    let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
+    let (tx, _rx, _etx, _handle, facts_log) = reactor.spawn();
+    let governance = GovernanceApi::new(tx, facts_log.clone(), Auditor::new(facts_log));
+    let mut sessions = SessionApi::new_with_full_config(
+        core_eval,
+        100,
+        Some(fx.wal_dir.clone()),
+        false,
+        100 * 1024 * 1024,
+        false,
+        1000,
+        1,
+        fx.core_eval_path.clone(),
+        fx.rules_dir.clone(),
+        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        0,
+        None, // anchor_config: 默认关闭
+    );
+    if let Some(on) = rehydrate {
+        sessions = sessions.with_session_rehydrate(on);
+    }
+    AppState::new(
+        governance,
+        sessions.clone(),
+        shared_prometheus_metrics().unwrap(),
+        Arc::new(AtomicBool::new(true)),
+        SharedFactsLog::new(),
+        make_workspace_state(&sessions),
+        Arc::new(InputSanitizer::with_default_rules()),
+    )
+}
+
+/// 轮询 state 端点直到 payload 指定键出现目标值（命令处理完成判据）
+async fn wait_payload_value(
+    state: &AppState,
+    session_id: u64,
+    attr: &str,
+    expected: i64,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let uri = format!("/api/sessions/{session_id}/state");
+    loop {
+        let (_, st) = send(state, "GET", &uri, None).await;
+        if st["payload"][attr].as_i64() == Some(expected) {
+            return st;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "等待 payload[{attr}]={expected} 超时，最后状态: {st}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+const REHYDRATE_CMD_BODY: &str = r#"{"instruction":{"type":"set","params":{"attr":"after_revive","operation":"set","value":8}}}"#;
+
+/// 重启后撞旧 sid 的命令：内存表未命中但 WAL 归档有效 → 按原 sid 复活
+/// 并受理；归档期写入与复活续写并存（历史不丢）。
+#[tokio::test]
+async fn test_session_rehydrate_same_id_after_restart() {
+    let fx = boot_session_then_restart_simulated("persisted_key", 7).await;
+    let sid = fx.session_id;
+    let state2 = boot_second_state(&fx, None);
+
+    let (status, resp) = send(
+        &state2,
+        "POST",
+        &format!("/api/sessions/{sid}/command"),
+        Some(REHYDRATE_CMD_BODY),
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "存在有效归档时应复活受理而非 404: {resp}"
+    );
+
+    let st = wait_payload_value(&state2, sid, "after_revive", 8).await;
+    assert!(
+        st["version"].as_u64().unwrap_or(0) > 0,
+        "复活后版本必须含归档历史: {st}"
+    );
+    assert_eq!(
+        st["payload"]["persisted_key"].as_i64(),
+        Some(7),
+        "归档期写入必须经复活保留: {st}"
+    );
+}
+
+/// 无归档的 sid：state 与 command 双入口保持 404，绝不凭空造会话。
+#[tokio::test]
+async fn test_session_state_404_when_no_archive() {
+    let fx = boot_session_then_restart_simulated("persisted_key", 7).await;
+    let state2 = boot_second_state(&fx, None);
+
+    let (st, _) = send(&state2, "GET", "/api/sessions/999/state", None).await;
+    assert_eq!(st, axum::http::StatusCode::NOT_FOUND);
+
+    let (st, body) = send(
+        &state2,
+        "POST",
+        "/api/sessions/999/command",
+        Some(REHYDRATE_CMD_BODY),
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::NOT_FOUND,
+        "无归档不得复活: {body}"
+    );
+}
+
+/// 归档链校验失败（字节被破坏）：fail-closed 返回 404 并留痕，不造无审计链会话。
+#[tokio::test]
+async fn test_session_rehydrate_corrupted_archive_404() {
+    let fx = boot_session_then_restart_simulated("persisted_key", 7).await;
+    let sid = fx.session_id;
+
+    let wal_path = fx.wal_dir.join(format!("session_{sid}.wal"));
+    assert!(wal_path.exists(), "phase-1 必须留下 WAL 归档");
+    std::fs::write(&wal_path, b"corrupted-wal-bytes").unwrap();
+
+    let state2 = boot_second_state(&fx, None);
+    let (st, resp) = send(
+        &state2,
+        "POST",
+        &format!("/api/sessions/{sid}/command"),
+        Some(REHYDRATE_CMD_BODY),
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::NOT_FOUND,
+        "链校验失败必须 404 fail-closed: {resp}"
+    );
+    let (st, _) = send(&state2, "GET", &format!("/api/sessions/{sid}/state"), None).await;
+    assert_eq!(st, axum::http::StatusCode::NOT_FOUND);
+}
+
+/// 复活开关关闭：即使归档在位也保持 404（一键降级回退口）。
+#[tokio::test]
+async fn test_rehydrate_disabled_keeps_404() {
+    let fx = boot_session_then_restart_simulated("persisted_key", 7).await;
+    let sid = fx.session_id;
+    let state2 = boot_second_state(&fx, Some(false));
+
+    let (st, resp) = send(
+        &state2,
+        "POST",
+        &format!("/api/sessions/{sid}/command"),
+        Some(REHYDRATE_CMD_BODY),
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::NOT_FOUND,
+        "开关关闭时归档在位也必须保持 404: {resp}"
+    );
+}

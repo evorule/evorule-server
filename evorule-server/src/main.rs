@@ -122,6 +122,8 @@ struct FileServerConfig {
     io_error_timeout_secs: Option<u64>,
     /// 会话无活动超时（秒，缺省 1800=引擎缺省；TTL 配置面）
     session_ttl_secs: Option<u64>,
+    /// 会话归档复活开关（缺省 true；撞 404 时同 sid 从 WAL 归档重建）
+    session_rehydrate: Option<bool>,
     /// :演示登录入口开关（缺省 true；生产部署建议 false）
     demo_auth: Option<bool>,
     /// 批次C：pack 编译服务 base_url 端口白名单（空/缺省 = 仅黑名单 18080/18081）
@@ -290,6 +292,10 @@ struct Cli {
     /// TTL 必须 ≥ io_error_timeout+余量——长工具期不 touch 时 io_response 落空风险）
     #[arg(long, env = "EVORULE_SESSION_TTL_SECS")]
     session_ttl_secs: Option<u64>,
+
+    /// 会话归档复活开关（缺省 true；撞 404 时若存在有效归档按原 sid 从 WAL 重建）
+    #[arg(long, env = "EVORULE_SESSION_REHYDRATE")]
+    session_rehydrate: Option<bool>,
 
     /// 日志级别（error/warn/info/debug/trace）
     #[arg(long, env = "EVORULE_LOG_LEVEL")]
@@ -465,6 +471,8 @@ struct ResolvedConfig {
     io_error_timeout_secs: u64,
     /// 会话无活动超时（秒，CLI > env > file > default 1800；TTL 配置面）
     session_ttl_secs: u64,
+    /// 会话归档复活开关（CLI > env > file > default true）
+    session_rehydrate: bool,
     log_level: String,
     log_format: String,
     log_file: Option<PathBuf>,
@@ -565,6 +573,10 @@ impl ResolvedConfig {
                 .session_ttl_secs
                 .or(file.server.session_ttl_secs)
                 .unwrap_or(1800),
+            session_rehydrate: cli
+                .session_rehydrate
+                .or(file.server.session_rehydrate)
+                .unwrap_or(true),
             log_level: cli
                 .log_level
                 .or(file.log.level)
@@ -2242,6 +2254,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_bound_services(registry_names)
     // 注入命中统计聚合器（注册了 Prometheus 指标、含权威初始 layout）
     .with_hit_stats(hit_stats)
+    // 会话归档复活开关（缺省 true；撞 404 时同 sid 从 WAL 归档重建续写）
+    .with_session_rehydrate(cfg.session_rehydrate)
+    // Prometheus 指标注入（复活/spawn 路径 inc_sessions 等计数落到真表）
+    .with_shared_metrics(metrics.clone())
     // C5/C6：注册表显式绑定元数据（version/description）注入，供 /api/services 能力对账
     // 与 sensitive 服务绑定核对使用（02 方案服务契约三层闭环 层3）。
     .with_registry_services(registry.service_metadata())
