@@ -50,13 +50,13 @@ use evorule_io_handlers::{
     StatementWhitelist, WhitelistedDbHandler,
 };
 // Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
+use evorule_browser_services::NATIVE_SERVICES as BROWSER_NATIVE_SERVICES;
 use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
+use evorule_geometry_services::NATIVE_SERVICES as GEOMETRY_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
+use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
 use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
 use evorule_template_services::NATIVE_SERVICES as TEMPLATE_NATIVE_SERVICES;
-use evorule_browser_services::NATIVE_SERVICES as BROWSER_NATIVE_SERVICES;
-use evorule_geometry_services::NATIVE_SERVICES as GEOMETRY_NATIVE_SERVICES;
-use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
@@ -2095,9 +2095,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_permission_gate(main_gate);
     // SG-3：会话级熔断装配（可选收紧层；阈值 0 = 熔断面关闭 = 误伤回退开关；
     // 未装配时行为与 SG-2 一致。主干单反应器一份独立 CircuitState）
-    if let Some(circuit_cfg) =
-        evorule_server::api::route_policy_loader::circuit_config_from_env()
-    {
+    if let Some(circuit_cfg) = evorule_server::api::route_policy_loader::circuit_config_from_env() {
         subscriber = subscriber.with_circuit_breaker(
             evorule_governance::circuit_breaker::CircuitState::new(circuit_cfg),
         );

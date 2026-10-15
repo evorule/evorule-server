@@ -1589,8 +1589,8 @@ impl SessionApi {
                 ));
             }
         };
-        let tcb_json: serde_json::Value = serde_json::from_str(&tcb_raw)
-            .map_err(|e| format!("解析宪法文件失败: {}", e))?;
+        let tcb_json: serde_json::Value =
+            serde_json::from_str(&tcb_raw).map_err(|e| format!("解析宪法文件失败: {}", e))?;
         let ctx = LoadContext::constitution(&core_eval_path.display().to_string());
 
         // ── 装载门合并（R5/[CON-S-005] 定稿：两层分工之「装载门合并」层）──
@@ -1643,7 +1643,10 @@ impl SessionApi {
         // 来源标签展开（[CON-S-005] 拼装在 loader 内完成，标签按部件 rule_count
         // 对齐引擎合并序——layout 下标一致性不变式保持）
         let mut sources = Vec::with_capacity(merged.engine_rules.len());
-        sources.extend(std::iter::repeat_n("core_eval".to_string(), constitution_len));
+        sources.extend(std::iter::repeat_n(
+            "core_eval".to_string(),
+            constitution_len,
+        ));
         for (i, label) in dir_labels.iter().enumerate() {
             sources.extend(std::iter::repeat_n(
                 label.clone(),
@@ -2205,9 +2208,7 @@ impl SessionApi {
     /// 来源标签 = 相对 rules_dir 的文件路径（`/` 归一化），与部件清单等长；
     /// 规则条数展开由调用方按合并结果的 parts[i].rule_count 完成。
     /// 目录不存在返回空（纯宪法规则集）。
-    fn load_rules_dir_with_sources(
-        rules_dir: &std::path::Path,
-    ) -> (Vec<MergedPart>, Vec<String>) {
+    fn load_rules_dir_with_sources(rules_dir: &std::path::Path) -> (Vec<MergedPart>, Vec<String>) {
         if !rules_dir.exists() {
             return (Vec::new(), Vec::new());
         }
@@ -2544,11 +2545,7 @@ impl SessionApi {
             // 门禁拒绝=治理纪律执行（B2 类旁路在此消解）；保留生产 loader 的
             // fail-soft 语义（warn+跳过该文件，其余文件照常装载）+ fail-visible
             //（拒载明细上浮至合并层，与旧 schema gate 同可查面）
-            tracing::warn!(
-                "规则文件 {} 装载门禁未过，已拒载: {}",
-                p.display(),
-                e
-            );
+            tracing::warn!("规则文件 {} 装载门禁未过，已拒载: {}", p.display(), e);
             return None;
         }
         Some((json, ctx))
@@ -14343,7 +14340,11 @@ mod tests {
                 .position(|s| s == name)
                 .unwrap_or_else(|| panic!("来源标签 {name} 缺失"))
         };
-        assert_eq!(parts.len(), sources.len(), "部件与来源标签等长不变式（R5 per-part）");
+        assert_eq!(
+            parts.len(),
+            sources.len(),
+            "部件与来源标签等长不变式（R5 per-part）"
+        );
         assert!(
             idx("00_constraint_promoted_new.json") < idx("00_constraint_promoted_old.json"),
             "新晋升先于旧晋升（promoted_at 降序）"
@@ -15618,12 +15619,9 @@ mod tests {
             .fork_session_with_rules(parent, &[draft_ok], &prov("test-draft-0"))
             .await
             .unwrap();
-        api.send_command(
-            sandbox,
-            serde_json::json!({"type": "noop", "params": {}}),
-        )
-        .await
-        .unwrap();
+        api.send_command(sandbox, serde_json::json!({"type": "noop", "params": {}}))
+            .await
+            .unwrap();
         // 反应器异步处理，轮询 state 至多 ~2s（state 结构={payload,queue,version}）
         let mut payload = serde_json::Value::Null;
         for _ in 0..40 {
@@ -19734,7 +19732,11 @@ mod tests {
                         .unwrap_or(false);
                 let list_face = SessionApi::tier_gate_reason(&p, rules_dir, &doc).is_ok();
                 // 装载面：等价 L2 治理事实
-                let l2 = if is_root_meta { L2Class::Constraint } else { L2Class::None };
+                let l2 = if is_root_meta {
+                    L2Class::Constraint
+                } else {
+                    L2Class::None
+                };
                 let arr: Vec<serde_json::Value> = doc
                     .get("transform")
                     .and_then(|t| t.as_array())
