@@ -2123,6 +2123,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_rounds(cfg.max_rounds)
         .io_warn_timeout(Duration::from_secs(cfg.io_warn_timeout_secs))
         .io_error_timeout(Duration::from_secs(cfg.io_error_timeout_secs));
+    // 归档最大 Command id 扫描结果（wal_dir 未启用时保持 0，计数器抬升为无操作）
+    let mut archived_max_command_id: u64 = 0;
     if let Some(wal_dir) = &cfg.wal_dir {
         let single_wal = wal_dir.join("governance_single_reactor.wal");
         let wal_exists = single_wal.exists();
@@ -2135,9 +2137,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         match opened {
             Ok(fl) => {
-                reactor_builder = reactor_builder.facts_log(fl);
+                // 归档续链的 FactId 续起（存量核查 O-478）：TCB 状态经 spawn 种子化
+                // 续跑，但反应器 FactId 分配器缺省自 1 重起，新产出事实将与历史 WAL
+                // 在 fact_id_index 内撞号（or_insert 静默吞并，因果链/去重面污染）。
+                // 反应器自身事实自归档最大值+1 续起；Command 的 ID 由 API 层独立
+                // 计数器分配、按类跳过（与 SessionManager 复活原语同口径）。
+                // 空链 max=0，fact_id_start(1) 与缺省 new() 行为等价。
+                let mut max_reactor_fact_id: u64 = 0;
+                fl.for_each_fact_from(0, |_, fact| match fact {
+                    evorule_reactor::Fact::Command { id, .. } => {
+                        archived_max_command_id = archived_max_command_id.max(id.0);
+                    }
+                    _ => max_reactor_fact_id = max_reactor_fact_id.max(fact.id().0),
+                });
+                reactor_builder = reactor_builder
+                    .facts_log(fl)
+                    .fact_id_start(max_reactor_fact_id + 1);
                 info!(
-                    "单反应器 WAL 已启用：{}（fsync={}, max_wal_size_bytes={}, 模式={}）",
+                    "单反应器 WAL 已启用：{}（fsync={}, max_wal_size_bytes={}, 模式={}, 反应器 fact_id 续起自 {}）",
                     single_wal.display(),
                     cfg.wal_fsync,
                     cfg.max_wal_size_bytes,
@@ -2146,6 +2163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         "create"
                     },
+                    max_reactor_fact_id + 1,
                 );
             }
             Err(e) => {
@@ -2210,6 +2228,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let step_start = Instant::now();
     let auditor = Auditor::new(facts_log.clone());
     let api = GovernanceApi::new(tx.clone(), facts_log, auditor);
+    // Command id 计数器同为进程内存态（固定自 20000 起），重启续链后若归档内
+    // 已有历史 Command，不抬升则新 Command 与历史 Command 撞号（O-478 同批
+    // 收口）。fetch_max 语义：低于现值不回退、归档无 Command（传 0）无影响。
+    api.ensure_command_ids_above(archived_max_command_id);
     // TTL ≥ io_error_timeout+余量 启动断言。
     // 界约「最大步间隙<TTL」原为隐式无校验——io_error_timeout 放宽(生产 live 已见
     // 3600s>TTL 1800s)或长工具期不 touch 时,会话可能先于 pending io_response 被 reap,

@@ -243,6 +243,19 @@ impl GovernanceApi {
         )
     }
 
+    /// Command id 计数器抬升（单反应器 WAL 续链用）
+    ///
+    /// 计数器为进程内存态（缺省自 20000 起），重启续链后归档内已有历史
+    /// Command id——不抬升则新 Command 与历史 Command 在 fact_id_index 内
+    /// 撞号（or_insert 静默吞并，因果链查询污染）。`exclusive_max` 传归档
+    /// 最大 Command id（无则 0）；fetch_max 语义保证低于现值不回退。
+    pub fn ensure_command_ids_above(&self, exclusive_max: u64) {
+        self.next_id.fetch_max(
+            exclusive_max.saturating_add(1),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
     /// 提交命令到反应器
     pub fn send_command(&self, instruction: JsonValue) -> Result<FactId, String> {
         let id = self.next_id();
@@ -17458,6 +17471,20 @@ mod tests {
             .as_str()
             .unwrap_or("")
             .contains("__io_result__"));
+    }
+
+    #[test]
+    fn test_ensure_command_ids_above_lifts_counter() {
+        // 单反应器 WAL 续链计数器抬升语义：缺省起点锁定（改动须评审连带面）
+        // → 抬升生效 → fetch_max 低于现值不回退
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let facts_log = FactsLog::new();
+        let api = GovernanceApi::new(tx, facts_log.clone(), Auditor::new(facts_log));
+        assert_eq!(api.next_id().0, 20000, "缺省起点锁定：改动须评审连带面");
+        api.ensure_command_ids_above(25000);
+        assert_eq!(api.next_id().0, 25001);
+        api.ensure_command_ids_above(100);
+        assert!(api.next_id().0 > 25001, "fetch_max 低于现值不回退");
     }
 
     #[tokio::test]
