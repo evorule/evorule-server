@@ -401,6 +401,7 @@ fn native_service_names_derived_from_table() {
             "inference_counterfactual_analyze",
             "inference_equivalence_probe",
             "inference_differential_diff",
+            "inference_counterfactual_sweep",
         ]
     );
 }
@@ -1488,4 +1489,68 @@ async fn differential_diff_e2e_buckets() {
         .and_then(|v| v.as_str())
         .unwrap()
         .contains("不做任何等价断言"));
+}
+
+// ===== sweep 服务 e2e（参数路径逐值双仿真，复用反事实语义） =====
+
+#[tokio::test]
+async fn counterfactual_sweep_e2e_per_point_and_summary() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    // 扫 payload.flag（布尔）：true=基准零差异；false 点差异 = flag 自身
+    // （exists 域查键存在性非真值，r0 照常触发 → x 照写，仅 flag 变更 1 条）
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(stage3_rules())),
+        ("sources", JsonValue::Array(stage3_sources())),
+        ("document", stage3_doc()),
+        ("param_path", str_val("payload.flag")),
+        (
+            "values",
+            JsonValue::Array(vec![JsonValue::Bool(true), JsonValue::Bool(false)]),
+        ),
+        ("max_steps", JsonValue::Integer(16)),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_counterfactual_sweep", args))
+        .await
+        .unwrap();
+    assert_eq!(out.get("points_total").and_then(|v| v.as_i64()), Some(2));
+    assert_eq!(
+        out.get("points_with_diffs").and_then(|v| v.as_i64()),
+        Some(1),
+        "true 点与基准全同,false 点有差异"
+    );
+    assert_eq!(out.get("max_diff_count").and_then(|v| v.as_i64()), Some(1));
+    let points = out.get("points").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(
+        points[0].get("diff_count").and_then(|v| v.as_i64()),
+        Some(0)
+    );
+    let paths: Vec<&str> = points[1]
+        .get("paths")
+        .and_then(|v| v.as_array())
+        .unwrap()
+        .iter()
+        .filter_map(|p| p.as_str())
+        .collect();
+    assert_eq!(paths, vec!["payload.flag"]);
+    assert!(out
+        .get("note")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("不做插值或趋势推断"));
+}
+
+#[tokio::test]
+async fn counterfactual_sweep_e2e_missing_param_path_fails_fast() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(stage3_rules())),
+        ("sources", JsonValue::Array(stage3_sources())),
+        ("document", stage3_doc()),
+        ("values", JsonValue::Array(vec![JsonValue::Bool(true)])),
+    ]);
+    let r = router
+        .execute(&svc_params("inference_counterfactual_sweep", args))
+        .await;
+    assert!(r.is_err(), "缺 param_path 必须 fail-fast");
 }

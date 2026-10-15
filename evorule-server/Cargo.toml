@@ -73,6 +73,7 @@ evorule-template-services = { path = "../plugins/template-services" }
 #   evo-agent P0.5 操作能力面,ALE 解题用）
 evorule-browser-services = { path = "../plugins/browser-services" }
 evorule-inference-services = { path = "../plugins/inference-services" }
+evorule-geometry-services = { path = "../plugins/geometry-services" }
 
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，

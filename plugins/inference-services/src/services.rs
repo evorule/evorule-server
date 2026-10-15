@@ -1105,3 +1105,94 @@ pub fn mk_equivalence_probe() -> std::sync::Arc<dyn NativeService> {
 pub fn mk_differential_diff() -> std::sync::Arc<dyn NativeService> {
     std::sync::Arc::new(RuleDifferentialDiff)
 }
+
+/// 反事实参数扫描服务：参数路径逐值双仿真，每点差异面 + 汇总
+/// （counterfactual_analyze 的批量形态，语义完全复用）
+pub struct RuleCounterfactualSweep;
+
+impl NativeService for RuleCounterfactualSweep {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let max_steps = parse_max_steps(args)?;
+        let base_document = doc_arg(args, "document")?;
+        let param_path = args
+            .get("param_path")
+            .and_then(JsonValue::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "缺少必填参数 param_path — 自诊断指引: 扫描的参数点路径,形如 \
+                 \"payload.threshold\"（点分隔）"
+                    .to_string()
+            })?;
+        let values: &[JsonValue] = args
+            .get("values")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                "缺少必填参数 values — 自诊断指引: 值序列由调用方显式给出（数字/字符串皆可，\
+                 原样拼入文档，零类型强转），如 [1, 5, 10]"
+                    .to_string()
+            })?;
+        let report = crate::sweep::sweep(
+            parsed.rules,
+            &parsed.sources,
+            base_document,
+            param_path,
+            values,
+            max_steps,
+        )?;
+        let points: Vec<JsonValue> = report
+            .points
+            .iter()
+            .map(|p| {
+                JsonValue::object_from_pairs(&[
+                    ("value", p.value.clone()),
+                    (
+                        "diff_count",
+                        JsonValue::Integer(i64::try_from(p.diff_count).unwrap_or(-1)),
+                    ),
+                    (
+                        "paths",
+                        JsonValue::Array(
+                            p.paths
+                                .iter()
+                                .map(|s| JsonValue::string(s.clone()))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "base_stopped_reason",
+                        JsonValue::string(p.base_stopped_reason),
+                    ),
+                    ("truncated", JsonValue::Bool(p.truncated)),
+                ])
+            })
+            .collect();
+        Ok(JsonValue::object_from_pairs(&[
+            ("param_path", JsonValue::string(report.param_path)),
+            ("points", JsonValue::Array(points)),
+            (
+                "points_total",
+                JsonValue::Integer(i64::try_from(report.points.len()).unwrap_or(-1)),
+            ),
+            (
+                "points_with_diffs",
+                JsonValue::Integer(i64::try_from(report.points_with_diffs).unwrap_or(-1)),
+            ),
+            (
+                "max_diff_count",
+                JsonValue::Integer(i64::try_from(report.max_diff_count).unwrap_or(-1)),
+            ),
+            (
+                "note",
+                JsonValue::string(
+                    "逐点双仿真diff,结果按输入序独立输出,不做插值或趋势推断;值序列由调用方显式给出",
+                ),
+            ),
+        ]))
+    }
+}
+
+/// 声明表构造子：反事实参数扫描服务
+pub fn mk_counterfactual_sweep() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleCounterfactualSweep)
+}

@@ -6,7 +6,7 @@
 #
 # 插件登记：
 #   ① demo-services      ② physics-services      ③ indicator-services
-#   ④ template-services  ⑤ inference-services
+#   ④ template-services  ⑤ inference-services  ⑥ geometry-services
 #
 # 流程 = 节奏强制（逐插件）：复制 → 字节核验 → 双侧守卫测试
 #   执行侧守卫：各插件声明文件 vs 其 NATIVE_SERVICES（三字段+序）
@@ -43,7 +43,8 @@ $plugins = @(
     @{ Id = "physics-services";   Crate = "evorule-physics-services" },
     @{ Id = "indicator-services"; Crate = "evorule-indicator-services" },
     @{ Id = "template-services";  Crate = "evorule-template-services" },
-    @{ Id = "inference-services"; Crate = "evorule-inference-services" }
+    @{ Id = "inference-services"; Crate = "evorule-inference-services" },
+    @{ Id = "geometry-services"; Crate = "evorule-geometry-services" }
 )
 
 if (-not (Test-Path (Join-Path $RepoRule "Cargo.toml"))) { Write-Host "[FAIL] 治理仓不存在: $RepoRule" -ForegroundColor Red; exit 1 }

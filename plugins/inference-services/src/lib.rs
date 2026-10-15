@@ -55,6 +55,7 @@ pub mod equivalence;
 pub mod forward_sim;
 pub mod rw_extract;
 pub mod services;
+pub mod sweep;
 
 use std::sync::Arc;
 
@@ -67,8 +68,9 @@ pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 
 use crate::services::{
     mk_backward_plan, mk_compare, mk_conflict_detect, mk_convergence_check,
-    mk_counterfactual_analyze, mk_cycle_detect, mk_differential_diff, mk_effect_predict,
-    mk_equivalence_probe, mk_forward_simulate, mk_from_unit, mk_rw_extract, mk_verify_formula,
+    mk_counterfactual_analyze, mk_counterfactual_sweep, mk_cycle_detect, mk_differential_diff,
+    mk_effect_predict, mk_equivalence_probe, mk_forward_simulate, mk_from_unit, mk_rw_extract,
+    mk_verify_formula,
 };
 
 // ============================================================================
@@ -158,6 +160,12 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "规则集差分(读写集结构化diff,写异必不同/读异可能不同的保守方向,确定性)",
         make: mk_differential_diff,
+    },
+    NativeServiceDef {
+        name: "inference_counterfactual_sweep",
+        sensitive: false,
+        description: "反事实参数扫描(参数路径逐值双仿真,每点差异面+汇总,复用反事实语义,确定性)",
+        make: mk_counterfactual_sweep,
     },
 ];
 

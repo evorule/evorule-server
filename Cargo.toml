@@ -21,6 +21,7 @@ members = [
     "plugins/template-services",
     "plugins/browser-services",
     "plugins/inference-services",
+    "plugins/geometry-services",
 ]
 
 [workspace.package]
