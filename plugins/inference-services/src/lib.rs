@@ -26,12 +26,23 @@
 //! 6. `inference_conflict_detect` — 规则集内冲突检测（六类型学）
 //!    （4-6 = 阶段 2 规则静态分析；设计文档 112-阶段2-规则模型映射设计.md，
 //!    裁定 R-1~R-4；v4 仅算法底稿+测试预言，模型层零照搬）
+//!
+//! 阶段 3（推理服务；设计文档 112-阶段3-推理服务映射设计.md，裁定 R-1~R-5；
+//! sensitivity/causal/information 按裁定不移植）：`inference_forward_simulate`
+//! （前向链仿真，合成文档迭代到不动点，enforce 前置门对齐，io 诚实断流）、
+//! `inference_backward_plan`（后向链规划，目标反推生产者链，复用 rw_extract）、
+//! `inference_effect_predict`（效果预测，rw_extract 之上影响分级薄层）、
+//! `inference_convergence_check`（收敛检测，环复用 cycle_detect）。
 
 #![forbid(unsafe_code)]
 
+pub mod backward;
 pub mod conflict;
+pub mod convergence;
 pub mod cycle;
 pub mod dimension;
+pub mod effect;
+pub mod forward_sim;
 pub mod rw_extract;
 pub mod services;
 
@@ -45,7 +56,8 @@ use evorule_tcb::JsonValue;
 pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 
 use crate::services::{
-    mk_compare, mk_conflict_detect, mk_cycle_detect, mk_from_unit, mk_rw_extract, mk_verify_formula,
+    mk_backward_plan, mk_compare, mk_conflict_detect, mk_convergence_check, mk_cycle_detect,
+    mk_effect_predict, mk_forward_simulate, mk_from_unit, mk_rw_extract, mk_verify_formula,
 };
 
 // ============================================================================
@@ -92,6 +104,30 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         description:
             "规则集内冲突检测(六类型学:常量矛盾/顺序遮蔽/写竞争/互补域/循环写/IO串台,只报告不拦截)",
         make: mk_conflict_detect,
+    },
+    NativeServiceDef {
+        name: "inference_forward_simulate",
+        sensitive: false,
+        description: "前向链仿真(合成__exec__文档迭代到不动点,enforce前置门对齐,io诚实断流,确定性)",
+        make: mk_forward_simulate,
+    },
+    NativeServiceDef {
+        name: "inference_backward_plan",
+        sensitive: false,
+        description: "后向链规划(目标路径反推生产者规则链,复用读写集提取,静态可达性,确定性)",
+        make: mk_backward_plan,
+    },
+    NativeServiceDef {
+        name: "inference_effect_predict",
+        sensitive: false,
+        description: "规则效果预测(影响分级+动态/IO诚实警告,基于读写集提取薄层,确定性)",
+        make: mk_effect_predict,
+    },
+    NativeServiceDef {
+        name: "inference_convergence_check",
+        sensitive: false,
+        description: "收敛检测(自修改/环复用/步数上界,静态可判定子集,undetermined显式,确定性)",
+        make: mk_convergence_check,
     },
 ];
 

@@ -286,11 +286,9 @@ fn walk_domain(domain: &JsonValue, depth: usize, acc: &mut Acc) -> Result<(), St
                         acc.reads.insert(normalize_path(path));
                         acc.saw_constraining_domain = true;
                     }
-                    if let Some(value) = domain.get("value") {
-                        if let JsonValue::String(s) = value {
-                            if is_path_ref(s) {
-                                acc.reads.insert(normalize_path(s));
-                            }
+                    if let Some(JsonValue::String(s)) = domain.get("value") {
+                        if is_path_ref(s) {
+                            acc.reads.insert(normalize_path(s));
                         }
                     }
                     acc.pos_domains.insert(domain.to_string());
@@ -707,7 +705,12 @@ mod tests {
     #[test]
     fn length_mismatch_and_overlimit_fail_fast() {
         let rule = obj(&[("type", JsonValue::string("set"))]);
-        let err = extract(&[rule.clone()], &["a".into(), "b".into()], false).unwrap_err();
+        let err = extract(
+            std::slice::from_ref(&rule),
+            &["a".into(), "b".into()],
+            false,
+        )
+        .unwrap_err();
         assert!(err.contains("长度不一致"));
         let rules: Vec<JsonValue> = (0..=MAX_RULES).map(|_| rule.clone()).collect();
         let sources: Vec<String> = (0..=MAX_RULES).map(|_| "rules/x.json".into()).collect();

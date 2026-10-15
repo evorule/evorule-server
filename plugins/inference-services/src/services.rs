@@ -268,9 +268,15 @@ pub fn mk_verify_formula() -> std::sync::Arc<dyn NativeService> {
 
 use std::collections::BTreeSet;
 
+use crate::backward::plan as backward_plan;
+use crate::backward::{DEFAULT_MAX_DEPTH, MAX_DEPTH_CAP};
 use crate::conflict::{detect_conflicts, ConflictReport};
+use crate::convergence::check as convergence_check;
 use crate::cycle::{detect_cycles, CycleReport};
+use crate::effect::predict as effect_predict;
+use crate::forward_sim::{simulate as forward_simulate, DEFAULT_MAX_STEPS, MAX_STEPS_CAP};
 use crate::rw_extract::{extract, RuleRw};
+type AvailSet = std::collections::BTreeSet<String>;
 
 /// 公共入参：`{"rules": [...], "sources": [...], "include_constitution"?: bool}`
 struct RulesetArgs<'a> {
@@ -544,4 +550,313 @@ pub fn mk_cycle_detect() -> std::sync::Arc<dyn NativeService> {
 /// 声明表构造子：冲突检测服务
 pub fn mk_conflict_detect() -> std::sync::Arc<dyn NativeService> {
     std::sync::Arc::new(RuleConflictDetect)
+}
+
+// ============================================================================
+// 规则推理四服务（112 阶段 3，设计文档 §二，R-1~R-3 裁定口径）
+// ============================================================================
+
+/// 前向链仿真服务：合成 `__exec__` 文档上迭代到不动点（R-1 语义）
+pub struct RuleForwardSimulate;
+
+impl NativeService for RuleForwardSimulate {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let max_steps = match args.get("max_steps") {
+            Some(JsonValue::Integer(n)) if *n >= 0 => {
+                let n = usize::try_from(*n).unwrap_or(MAX_STEPS_CAP);
+                if n > MAX_STEPS_CAP {
+                    return Err(format!(
+                        "max_steps={n} 超过硬上限 {MAX_STEPS_CAP} — 自诊断指引: \
+                         仿真是分析工具不是执行器"
+                    ));
+                }
+                n
+            }
+            Some(JsonValue::Integer(_)) => return Err("参数 max_steps 须为非负整数".to_string()),
+            Some(_) => return Err("参数 max_steps 须为整数".to_string()),
+            None => DEFAULT_MAX_STEPS,
+        };
+        let document = match args.get("initial_document") {
+            Some(d @ JsonValue::Object(_)) => d,
+            Some(_) => {
+                return Err("参数 initial_document 须为对象 — 自诊断指引: 形如 \
+                     {\"instruction\": {...}, \"payload\": {...}, \"queue\": [...]}"
+                    .to_string())
+            }
+            None => {
+                return Err(
+                    "缺少必填参数 initial_document — 自诊断指引: 合成 __exec__ 文档，\
+                     形如 {\"instruction\": {...}, \"payload\": {...}, \"queue\": [...]}"
+                        .to_string(),
+                )
+            }
+        };
+        let report = forward_simulate(parsed.rules, &parsed.sources, document, max_steps)?;
+        Ok(JsonValue::object_from_pairs(&[
+            ("stopped_reason", JsonValue::string(report.stopped_reason)),
+            (
+                "steps",
+                JsonValue::Integer(i64::try_from(report.steps).unwrap_or(-1)),
+            ),
+            (
+                "applied",
+                JsonValue::Array(
+                    report
+                        .applied
+                        .iter()
+                        .map(|id| JsonValue::string(id.clone()))
+                        .collect(),
+                ),
+            ),
+            ("final_document", report.final_document.clone()),
+            (
+                "reached_fixed_point",
+                JsonValue::Bool(report.reached_fixed_point),
+            ),
+            (
+                "blocked_on_io",
+                match &report.blocked_on_io {
+                    Some((id, io)) => JsonValue::object_from_pairs(&[
+                        ("rule_id", JsonValue::string(id.clone())),
+                        ("io_type", JsonValue::string(io.clone())),
+                    ]),
+                    None => JsonValue::Null,
+                },
+            ),
+            (
+                "halted",
+                match &report.halted {
+                    Some((id, reason)) => JsonValue::object_from_pairs(&[
+                        ("rule_id", JsonValue::string(id.clone())),
+                        ("reason", JsonValue::string(reason.clone())),
+                    ]),
+                    None => JsonValue::Null,
+                },
+            ),
+            (
+                "excluded",
+                JsonValue::Array(
+                    report
+                        .excluded
+                        .iter()
+                        .map(|id| JsonValue::string(id.clone()))
+                        .collect(),
+                ),
+            ),
+            (
+                "simulation_scope",
+                JsonValue::string(
+                    "合成文档仿真:无 I/O 响应/无并发/无治理面干预,不动点≠真实系统行为",
+                ),
+            ),
+        ]))
+    }
+}
+
+/// 后向链规划服务：目标路径反推生产者链（复用 rw_extract）
+pub struct RuleBackwardPlan;
+
+impl NativeService for RuleBackwardPlan {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let target = match args.get("target_path") {
+            Some(JsonValue::String(s)) => s.to_string(),
+            Some(_) => {
+                return Err("参数 target_path 须为字符串 — 自诊断指引: 如 \"payload.x\"".to_string())
+            }
+            None => {
+                return Err(
+                    "缺少必填参数 target_path — 自诊断指引: 目标写路径(规范化形态,如 payload.x)"
+                        .to_string(),
+                )
+            }
+        };
+        let max_depth = match args.get("max_depth") {
+            Some(JsonValue::Integer(n)) if *n >= 0 => {
+                let n = usize::try_from(*n).unwrap_or(MAX_DEPTH_CAP);
+                if n > MAX_DEPTH_CAP {
+                    return Err(format!("max_depth={n} 超过硬上限 {MAX_DEPTH_CAP}"));
+                }
+                n
+            }
+            Some(JsonValue::Integer(_)) => return Err("参数 max_depth 须为非负整数".to_string()),
+            Some(_) => return Err("参数 max_depth 须为整数".to_string()),
+            None => DEFAULT_MAX_DEPTH,
+        };
+        let mut available: AvailSet = AvailSet::new();
+        if let Some(JsonValue::Array(items)) = args.get("available_paths") {
+            for item in items {
+                match item {
+                    JsonValue::String(s) => {
+                        available.insert(s.to_string());
+                    }
+                    _ => {
+                        return Err(
+                            "参数 available_paths 须为字符串数组 — 自诊断指引: 初始可用路径集"
+                                .to_string(),
+                        )
+                    }
+                }
+            }
+        }
+        let rws = extract(parsed.rules, &parsed.sources, parsed.include_constitution)?;
+        let report = backward_plan(&rws, &target, &available, max_depth);
+        Ok(JsonValue::object_from_pairs(&[
+            ("achievable", JsonValue::Bool(report.achievable)),
+            (
+                "rule_sequence",
+                JsonValue::Array(
+                    report
+                        .rule_sequence
+                        .iter()
+                        .map(|id| JsonValue::string(id.clone()))
+                        .collect(),
+                ),
+            ),
+            (
+                "required_inputs",
+                JsonValue::Array(
+                    report
+                        .required_inputs
+                        .iter()
+                        .map(|p| JsonValue::string(p.clone()))
+                        .collect(),
+                ),
+            ),
+            (
+                "depth",
+                JsonValue::Integer(i64::try_from(report.depth).unwrap_or(-1)),
+            ),
+            ("target_path", JsonValue::string(report.target_path.clone())),
+            ("conservative", JsonValue::Bool(report.conservative)),
+            (
+                "excluded",
+                JsonValue::Array(
+                    report
+                        .excluded
+                        .iter()
+                        .map(|id| JsonValue::string(id.clone()))
+                        .collect(),
+                ),
+            ),
+            ("reason", JsonValue::string(report.reason.clone())),
+        ]))
+    }
+}
+
+/// 效果预测服务：rw_extract 之上的影响分级薄层（R-3）
+pub struct RuleEffectPredict;
+
+impl NativeService for RuleEffectPredict {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let rws = extract(parsed.rules, &parsed.sources, parsed.include_constitution)?;
+        let effects = effect_predict(&rws);
+        let items: Vec<JsonValue> = effects
+            .iter()
+            .map(|e| {
+                JsonValue::object_from_pairs(&[
+                    ("id", JsonValue::string(e.id.clone())),
+                    ("impact", JsonValue::string(e.impact.as_str())),
+                    (
+                        "reads",
+                        JsonValue::Array(
+                            e.reads
+                                .iter()
+                                .map(|p| JsonValue::string(p.clone()))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "writes",
+                        JsonValue::Array(
+                            e.writes
+                                .iter()
+                                .map(|p| JsonValue::string(p.clone()))
+                                .collect(),
+                        ),
+                    ),
+                    (
+                        "warnings",
+                        JsonValue::Array(
+                            e.warnings
+                                .iter()
+                                .map(|w| JsonValue::string(w.clone()))
+                                .collect(),
+                        ),
+                    ),
+                ])
+            })
+            .collect();
+        Ok(JsonValue::object_from_pairs(&[(
+            "results",
+            JsonValue::Array(items),
+        )]))
+    }
+}
+
+/// 收敛检测服务：去重后口径（环复用 cycle_detect，饥饿交由 shadow_risk）
+pub struct RuleConvergenceCheck;
+
+impl NativeService for RuleConvergenceCheck {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let parsed = ruleset_args(args)?;
+        let rws = extract(parsed.rules, &parsed.sources, parsed.include_constitution)?;
+        let report = convergence_check(&rws)?;
+        let items: Vec<JsonValue> = report
+            .issues
+            .iter()
+            .map(|i| {
+                JsonValue::object_from_pairs(&[
+                    ("issue_type", JsonValue::string(i.issue_type)),
+                    ("rule_id", JsonValue::string(i.rule_id.clone())),
+                    ("description", JsonValue::string(i.description.clone())),
+                    ("conservative", JsonValue::Bool(i.conservative)),
+                ])
+            })
+            .collect();
+        Ok(JsonValue::object_from_pairs(&[
+            ("converges", JsonValue::Bool(report.converges)),
+            ("undetermined", JsonValue::Bool(report.undetermined)),
+            (
+                "estimated_passes",
+                match report.estimated_passes {
+                    Some(n) => JsonValue::Integer(i64::try_from(n).unwrap_or(-1)),
+                    None => JsonValue::Null,
+                },
+            ),
+            ("issues", JsonValue::Array(items)),
+            (
+                "excluded",
+                JsonValue::Array(
+                    report
+                        .excluded
+                        .iter()
+                        .map(|id| JsonValue::string(id.clone()))
+                        .collect(),
+                ),
+            ),
+        ]))
+    }
+}
+
+/// 声明表构造子：前向链仿真服务
+pub fn mk_forward_simulate() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleForwardSimulate)
+}
+
+/// 声明表构造子：后向链规划服务
+pub fn mk_backward_plan() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleBackwardPlan)
+}
+
+/// 声明表构造子：效果预测服务
+pub fn mk_effect_predict() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleEffectPredict)
+}
+
+/// 声明表构造子：收敛检测服务
+pub fn mk_convergence_check() -> std::sync::Arc<dyn NativeService> {
+    std::sync::Arc::new(RuleConvergenceCheck)
 }

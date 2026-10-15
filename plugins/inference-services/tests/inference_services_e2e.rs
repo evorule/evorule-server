@@ -394,6 +394,10 @@ fn native_service_names_derived_from_table() {
             "inference_rw_extract",
             "inference_cycle_detect",
             "inference_conflict_detect",
+            "inference_forward_simulate",
+            "inference_backward_plan",
+            "inference_effect_predict",
+            "inference_convergence_check",
         ]
     );
 }
@@ -903,6 +907,8 @@ async fn real_corpus_smoke_three_sources() {
         "inference_rw_extract",
         "inference_cycle_detect",
         "inference_conflict_detect",
+        "inference_effect_predict",
+        "inference_convergence_check",
     ] {
         let params = svc_params(svc, args.clone());
         let r1 = router.execute(&params).await;
@@ -914,6 +920,70 @@ async fn real_corpus_smoke_three_sources() {
             "{svc} 真实语料双跑必须位元一致"
         );
     }
+    // backward（阶段 3）：带目标路径做部署面可达性查询
+    let bw_args = JsonValue::object_from_pairs(&[
+        (
+            "rules",
+            args.get("rules").cloned().unwrap_or(JsonValue::Null),
+        ),
+        (
+            "sources",
+            args.get("sources").cloned().unwrap_or(JsonValue::Null),
+        ),
+        ("target_path", str_val("payload.x")),
+    ]);
+    let b1 = router
+        .execute(&svc_params("inference_backward_plan", bw_args.clone()))
+        .await;
+    assert!(b1.is_ok(), "backward 真实语料不得 Err: {:?}", b1.err());
+    let b2 = router
+        .execute(&svc_params("inference_backward_plan", bw_args))
+        .await
+        .unwrap();
+    assert_eq!(
+        b1.unwrap().to_string(),
+        b2.to_string(),
+        "backward 真实语料双跑必须位元一致"
+    );
+    // forward（阶段 3）：最小合成文档仿真 3 步
+    let fwd_args = JsonValue::object_from_pairs(&[
+        (
+            "rules",
+            args.get("rules").cloned().unwrap_or(JsonValue::Null),
+        ),
+        (
+            "sources",
+            args.get("sources").cloned().unwrap_or(JsonValue::Null),
+        ),
+        (
+            "initial_document",
+            JsonValue::object_from_pairs(&[
+                (
+                    "instruction",
+                    JsonValue::object_from_pairs(&[("type", str_val("probe"))]),
+                ),
+                (
+                    "payload",
+                    JsonValue::object_from_pairs(&[("x", JsonValue::Integer(0))]),
+                ),
+                ("queue", JsonValue::Array(vec![])),
+            ]),
+        ),
+        ("max_steps", JsonValue::Integer(3)),
+    ]);
+    let f1 = router
+        .execute(&svc_params("inference_forward_simulate", fwd_args.clone()))
+        .await;
+    assert!(f1.is_ok(), "forward 真实语料不得 Err: {:?}", f1.err());
+    let f2 = router
+        .execute(&svc_params("inference_forward_simulate", fwd_args))
+        .await
+        .unwrap();
+    assert_eq!(
+        f1.unwrap().to_string(),
+        f2.to_string(),
+        "forward 真实语料双跑必须位元一致"
+    );
     // 宪法豁免桶显式标注
     let out = router
         .execute(&svc_params("inference_cycle_detect", args))
@@ -927,4 +997,183 @@ async fn real_corpus_smoke_three_sources() {
         excluded.iter().any(|v| v.as_str() == Some("core_eval#0")),
         "宪法段须显式出现在豁免清单"
     );
+}
+
+// ============================================================================
+// 阶段 3 四服务 e2e（112 阶段 3，R-1~R-3 裁定口径）
+// ============================================================================
+
+fn stage3_rules() -> Vec<JsonValue> {
+    let set_x = |v: i64| {
+        JsonValue::object_from_pairs(&[
+            ("type", str_val("set")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    ("attr", str_val("x")),
+                    ("operation", str_val("set")),
+                    ("value", JsonValue::Integer(v)),
+                ]),
+            ),
+        ])
+    };
+    vec![
+        // r0: payload.flag 存在 → set x=1
+        JsonValue::object_from_pairs(&[
+            ("type", str_val("branch")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    (
+                        "domain",
+                        JsonValue::object_from_pairs(&[
+                            ("type", str_val("exists")),
+                            ("path", str_val("__exec__.payload.flag")),
+                        ]),
+                    ),
+                    ("on_true", JsonValue::Array(vec![set_x(1)])),
+                ]),
+            ),
+        ]),
+        // r1: io_request（仿真断流材料）
+        JsonValue::object_from_pairs(&[
+            ("type", str_val("io_request")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    ("io_type", str_val("call_service")),
+                    (
+                        "params",
+                        JsonValue::object_from_pairs(&[("service_name", str_val("svc"))]),
+                    ),
+                ]),
+            ),
+        ]),
+    ]
+}
+
+fn stage3_sources() -> Vec<JsonValue> {
+    vec![str_val("rules/a.json"), str_val("rules/b.json")]
+}
+
+fn stage3_doc() -> JsonValue {
+    JsonValue::object_from_pairs(&[
+        (
+            "instruction",
+            JsonValue::object_from_pairs(&[("type", str_val("probe"))]),
+        ),
+        (
+            "payload",
+            JsonValue::object_from_pairs(&[("flag", JsonValue::Bool(true))]),
+        ),
+        ("queue", JsonValue::Array(vec![])),
+    ])
+}
+
+#[tokio::test]
+async fn forward_simulate_e2e_fixpoint_then_io_block() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(stage3_rules())),
+        ("sources", JsonValue::Array(stage3_sources())),
+        ("initial_document", stage3_doc()),
+        ("max_steps", JsonValue::Integer(16)),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_forward_simulate", args))
+        .await
+        .unwrap();
+    // r0 命中（flag 存在）→ x=1；下一轮扫描 r1 io_request → 诚实断流
+    assert_eq!(
+        out.get("stopped_reason").and_then(|v| v.as_str()),
+        Some("blocked_on_io")
+    );
+    assert_eq!(out.get("steps").and_then(|v| v.as_i64()), Some(1));
+    let io = out.get("blocked_on_io").unwrap();
+    assert_eq!(
+        io.get("rule_id").and_then(|v| v.as_str()),
+        Some("rules/b.json#1")
+    );
+    assert_eq!(
+        io.get("io_type").and_then(|v| v.as_str()),
+        Some("call_service")
+    );
+    let payload = out.get("final_document").unwrap().get("payload").unwrap();
+    assert_eq!(payload.get("x").and_then(|v| v.as_i64()), Some(1));
+    assert!(out
+        .get("simulation_scope")
+        .and_then(|v| v.as_str())
+        .is_some());
+}
+
+#[tokio::test]
+async fn backward_plan_e2e_producer_chain() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(stage3_rules())),
+        ("sources", JsonValue::Array(stage3_sources())),
+        ("target_path", str_val("payload.x")),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_backward_plan", args))
+        .await
+        .unwrap();
+    assert_eq!(out.get("achievable").and_then(|v| v.as_bool()), Some(true));
+    let seq = out.get("rule_sequence").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(seq.len(), 1, "唯一生产者 r0");
+    assert_eq!(seq[0].as_str(), Some("rules/a.json#0"));
+}
+
+#[tokio::test]
+async fn effect_predict_e2e_impact_grading() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(stage3_rules())),
+        ("sources", JsonValue::Array(stage3_sources())),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_effect_predict", args))
+        .await
+        .unwrap();
+    let results = out.get("results").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(
+        results[0].get("impact").and_then(|v| v.as_str()),
+        Some("write_few")
+    );
+    assert_eq!(
+        results[1].get("impact").and_then(|v| v.as_str()),
+        Some("io_touching")
+    );
+}
+
+#[tokio::test]
+async fn convergence_check_e2e_structure() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(stage3_rules())),
+        ("sources", JsonValue::Array(stage3_sources())),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_convergence_check", args))
+        .await
+        .unwrap();
+    // 结构完备断言（具体判定归 lib 单测；此处验证路由 + 字段面）
+    assert!(out.get("converges").and_then(|v| v.as_bool()).is_some());
+    assert!(out.get("undetermined").and_then(|v| v.as_bool()).is_some());
+    assert!(out.get("issues").and_then(|v| v.as_array()).is_some());
+    assert!(out.get("excluded").and_then(|v| v.as_array()).is_some());
+}
+
+#[tokio::test]
+async fn forward_simulate_e2e_missing_doc_fails_fast() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(stage3_rules())),
+        ("sources", JsonValue::Array(stage3_sources())),
+    ]);
+    let r = router
+        .execute(&svc_params("inference_forward_simulate", args))
+        .await;
+    assert!(r.is_err(), "缺 initial_document 必须 fail-fast");
 }
