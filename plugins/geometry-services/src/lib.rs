@@ -22,6 +22,13 @@
 //! - 浮点输出采用 Rust `{:?}`（最短往返表示，对齐 Python `repr`）；
 //!   NaN/Inf 在输入解析期即拒绝，不进入运算。
 //!
+//! # 统一信封 v1
+//!
+//! 成功出参含保留键 `status`（恒 `"determined"`：容差方向声明即契约，
+//! 每个可解析输入均得到唯一确定判定，本族无 undetermined 路径）与
+//! `determinism`（`"corpus_locked"`：双跑位元一致 + 语料回归锁定）。
+//! 既有字段原位保留；error 维持框架 `Err(String)` 通道，不入成功信封。
+//!
 //! # 装配
 //!
 //! - `GeometryServiceRouter` 实现 [`IoHandler`]，按 `params.service_name` 分发；

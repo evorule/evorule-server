@@ -170,7 +170,16 @@ fn pairwise(args: &JsonValue, mode: Mode) -> Result<JsonValue, String> {
         }
     }
     let checked_pairs = n * (n - 1) / 2;
+    // 统一信封规范 v1（加性保留键）：既有字段全部原位保留，
+    // 仅新增 status / determinism 两个保留键。
+    // status 恒为 "determined"：容差方向是声明即契约（碰撞触即算、间隙内缩
+    // EPS），每个可解析输入都得到唯一确定判定，本族无 undetermined 路径
+    // （S2 登记实测修正）。
+    // determinism = "corpus_locked"：f64 域，双跑位元一致 + 语料回归锁定。
+    // error 路径维持框架 Err(String) 通道（IoResult 契约），不入成功信封。
     let mut out = vec![
+        ("status", JsonValue::string("determined")),
+        ("determinism", JsonValue::string("corpus_locked")),
         ("parts", JsonValue::Integer(n as i64)),
         ("checked_pairs", JsonValue::Integer(checked_pairs as i64)),
         ("violations", JsonValue::Array(violations.clone())),
@@ -233,4 +242,261 @@ pub fn mk_clearance_check() -> Arc<dyn NativeService> {
 /// 声明表构造子：遮挡序检查
 pub fn mk_occlusion_check() -> Arc<dyn NativeService> {
     Arc::new(GeometryOcclusionCheck)
+}
+
+// ============================================================================
+// 测试（S3-g1：信封保留键 + 双跑位元一致 + 逐现状固化）
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    /// bbox 零件构造（Integer 坐标，规避字符串解析面）
+    fn bbox(id: &str, x: i64, y: i64, w: i64, h: i64, z: Option<i64>) -> JsonValue {
+        let mut fields = vec![
+            ("id", JsonValue::string(id)),
+            (
+                "shape",
+                JsonValue::object_from_pairs(&[
+                    ("type", JsonValue::string("bbox")),
+                    ("x", JsonValue::Integer(x)),
+                    ("y", JsonValue::Integer(y)),
+                    ("w", JsonValue::Integer(w)),
+                    ("h", JsonValue::Integer(h)),
+                ]),
+            ),
+        ];
+        if let Some(zv) = z {
+            fields.push(("z", JsonValue::Integer(zv)));
+        }
+        JsonValue::object_from_pairs(&fields)
+    }
+
+    fn parts_arg(parts: Vec<JsonValue>) -> JsonValue {
+        JsonValue::object_from_pairs(&[("parts", JsonValue::Array(parts))])
+    }
+
+    /// 触碰对：a=[0,0,10,5]，b=[10,0,10,5]（x=10 边贴合，gap=0）
+    fn touching_args() -> JsonValue {
+        parts_arg(vec![
+            bbox("a", 0, 0, 10, 5, None),
+            bbox("b", 10, 0, 10, 5, None),
+        ])
+    }
+
+    /// 分离对：gap=10
+    fn apart_args() -> JsonValue {
+        parts_arg(vec![
+            bbox("a", 0, 0, 10, 5, None),
+            bbox("b", 20, 0, 10, 5, None),
+        ])
+    }
+
+    // ---- 信封保留键（统一信封规范 v1）----
+
+    #[test]
+    fn envelope_reserved_keys_present_all_modes() {
+        for (name, svc, args) in [
+            (
+                "geometry_collision_check",
+                &GeometryCollisionCheck as &dyn NativeService,
+                touching_args(),
+            ),
+            (
+                "geometry_clearance_check",
+                &GeometryClearanceCheck as &dyn NativeService,
+                parts_arg(vec![
+                    bbox("a", 0, 0, 10, 5, None),
+                    bbox("b", 20, 0, 10, 5, None),
+                ]),
+            ),
+            (
+                "geometry_occlusion_check",
+                &GeometryOcclusionCheck as &dyn NativeService,
+                parts_arg(vec![
+                    bbox("a", 0, 0, 10, 5, Some(1)),
+                    bbox("b", 0, 0, 10, 5, Some(1)),
+                ]),
+            ),
+        ] {
+            let mut args = args;
+            if name == "geometry_clearance_check" {
+                args = JsonValue::object_from_pairs(&[
+                    ("parts", args.get("parts").unwrap().clone()),
+                    ("min_clearance", JsonValue::Integer(5)),
+                ]);
+            }
+            let out = svc.execute(&args).unwrap();
+            assert_eq!(
+                out.get("status").and_then(JsonValue::as_str),
+                Some("determined"),
+                "{name}: status 保留键缺失或值错"
+            );
+            assert_eq!(
+                out.get("determinism").and_then(JsonValue::as_str),
+                Some("corpus_locked"),
+                "{name}: determinism 保留键缺失或值错"
+            );
+        }
+    }
+
+    /// 加性义务：既有字段一个不少、一个不改名；保留键恰好 2 个新增
+    #[test]
+    fn envelope_is_strictly_additive() {
+        let out = GeometryCollisionCheck.execute(&touching_args()).unwrap();
+        let obj = out.as_object().unwrap();
+        for legacy in [
+            "parts",
+            "checked_pairs",
+            "violations",
+            "all_clean",
+            "min_gap",
+        ] {
+            assert!(obj.get(legacy).is_some(), "既有字段 {legacy} 丢失");
+        }
+        let mut keys: Vec<&String> = obj.keys().collect();
+        keys.sort();
+        let expected: Vec<&str> = vec![
+            "all_clean",
+            "checked_pairs",
+            "determinism",
+            "min_gap",
+            "parts",
+            "status",
+            "violations",
+        ];
+        let actual: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            actual, expected,
+            "信封键集必须 = 既有字段 ∪ status/determinism"
+        );
+    }
+
+    /// 双跑位元一致（corpus_locked 验收义务的最小可执行形态）
+    #[test]
+    fn double_run_bit_identical_all_modes() {
+        let cases: Vec<(&dyn NativeService, JsonValue)> = vec![
+            (&GeometryCollisionCheck, touching_args()),
+            (&GeometryCollisionCheck, apart_args()),
+            (
+                &GeometryClearanceCheck,
+                JsonValue::object_from_pairs(&[
+                    ("parts", apart_args().get("parts").unwrap().clone()),
+                    ("min_clearance", JsonValue::Integer(5)),
+                ]),
+            ),
+            (
+                &GeometryOcclusionCheck,
+                parts_arg(vec![
+                    bbox("a", 0, 0, 10, 5, Some(2)),
+                    bbox("b", 0, 0, 10, 5, Some(1)),
+                ]),
+            ),
+        ];
+        for (svc, args) in cases {
+            // Display = TCB 规范 JSON 渲染（确定性键序），逐字节比对
+            let r1 = svc.execute(&args).unwrap().to_string();
+            let r2 = svc.execute(&args).unwrap().to_string();
+            assert_eq!(r1, r2, "双跑输出不一致（位元级）");
+        }
+    }
+
+    /// undetermined 契约声明（S2 登记实测修正）：本族无 undetermined 路径，
+    /// status 恒 determined——对触碰边界 case 也成立（容差方向声明即契约）
+    #[test]
+    fn status_always_determined_including_boundary_cases() {
+        for args in [touching_args(), apart_args()] {
+            let out = GeometryCollisionCheck.execute(&args).unwrap();
+            assert_eq!(
+                out.get("status").and_then(JsonValue::as_str),
+                Some("determined")
+            );
+        }
+    }
+
+    // ---- 逐现状固化（行为锁定，禁止后续批顺手改语义）----
+
+    #[test]
+    fn collision_touch_counts_and_apart_clean() {
+        let out = GeometryCollisionCheck.execute(&touching_args()).unwrap();
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].get("a").and_then(JsonValue::as_str), Some("a"));
+        assert_eq!(v[0].get("b").and_then(JsonValue::as_str), Some("b"));
+        assert_eq!(
+            v[0].get("gap").and_then(JsonValue::as_str),
+            Some("0.0"),
+            "触碰 gap 序列化形态锁定（float_str 最短往返）"
+        );
+
+        let out = GeometryCollisionCheck.execute(&apart_args()).unwrap();
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("min_gap").and_then(JsonValue::as_str),
+            Some("10.0"),
+            "分离 min_gap 形态锁定"
+        );
+    }
+
+    #[test]
+    fn clearance_requires_min_clearance_and_rejects_negative() {
+        let args = parts_arg(vec![
+            bbox("a", 0, 0, 10, 5, None),
+            bbox("b", 20, 0, 10, 5, None),
+        ]);
+        let err = GeometryClearanceCheck.execute(&args).unwrap_err();
+        assert!(err.contains("min_clearance"), "缺参错误信息锁定: {err}");
+
+        let args = JsonValue::object_from_pairs(&[
+            ("parts", args.get("parts").unwrap().clone()),
+            ("min_clearance", JsonValue::Integer(-1)),
+        ]);
+        let err = GeometryClearanceCheck.execute(&args).unwrap_err();
+        assert!(err.contains("非负"), "负值拒绝信息锁定: {err}");
+    }
+
+    #[test]
+    fn occlusion_requires_all_z_and_detects_wrong_order() {
+        // 缺 z
+        let err = GeometryOcclusionCheck
+            .execute(&touching_args())
+            .unwrap_err();
+        assert!(err.contains("z"), "缺 z 错误信息锁定: {err}");
+
+        // 后绘者 z 更低 → 违规，含绘制序下标
+        let out = GeometryOcclusionCheck
+            .execute(&parts_arg(vec![
+                bbox("base", 0, 0, 10, 5, Some(2)),
+                bbox("top", 0, 0, 10, 5, Some(1)),
+            ]))
+            .unwrap();
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(v.len(), 1, "后绘 z 低必须判违规");
+        assert_eq!(
+            v[0].get("order_earlier").and_then(JsonValue::as_array),
+            None
+        );
+        assert!(v[0].get("order_earlier").is_some() && v[0].get("order_later").is_some());
+
+        // 同层不算违规
+        let out = GeometryOcclusionCheck
+            .execute(&parts_arg(vec![
+                bbox("a", 0, 0, 10, 5, Some(1)),
+                bbox("b", 0, 0, 10, 5, Some(1)),
+            ]))
+            .unwrap();
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+    }
 }

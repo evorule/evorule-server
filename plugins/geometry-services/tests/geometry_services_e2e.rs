@@ -3,6 +3,9 @@
 //! 覆盖：三服务的判定命中/全净、fail-fast 面（缺参/非法形状/重复 id/空表）、
 //! 数值语义（容差方向、浮点输出形态）。
 
+// 测试代码豁免：unwrap/expect/panic 在测试中断言失败即测试失败，语义等价
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use evorule_geometry_services::GeometryServiceRouter;
 use evorule_reactor::IoHandler;
 use evorule_tcb::JsonValue;
