@@ -1,0 +1,156 @@
+{
+  "id": "codegraph-bridge",
+  "contract_version": "1.2",
+  "version": "0.1.0",
+  "description": "CodeGraph 代码知识图谱 sidecar：封装 @colbymchenry/codegraph，按 projectPath 服务任意本机已初始化仓库。全部只读查询（sensitive=false），projectPath 为绝对路径。首次使用某仓库前先调 codegraph_ensure_index。",
+  "base_url": "http://127.0.0.1:9150",
+  "services": [
+    {
+      "name": "codegraph_search",
+      "sensitive": false,
+      "description": "按符号名快速搜索。入参 {projectPath, query, kind?, limit?}。kind 可选: function/method/class/interface/struct/trait 等。返回匹配符号列表（无源码）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string", "description": "目标仓库绝对路径（须已 codegraph init）"},
+          "query": {"type": "string", "description": "符号名或片段，如 'loginUser'"},
+          "kind": {"type": "string", "description": "可选，按节点类型过滤"},
+          "limit": {"type": "integer", "description": "最大返回数，默认 10，上限 100"}
+        },
+        "required": ["projectPath", "query"]
+      },
+      "timeout_ms": 15000
+    },
+    {
+      "name": "codegraph_context",
+      "sensitive": false,
+      "description": "PRIMARY：为某个任务/问题构建相关代码上下文（search+callers+callees+源码片段合一）。入参 {projectPath, task, maxNodes?, includeCode?}。返回 markdown。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string"},
+          "task": {"type": "string", "description": "任务描述或问题，如 'how does login flow work'"},
+          "maxNodes": {"type": "integer", "description": "最大符号数，默认 20"},
+          "includeCode": {"type": "boolean", "description": "是否含源码片段，默认 true"}
+        },
+        "required": ["projectPath", "task"]
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "name": "codegraph_callers",
+      "sensitive": false,
+      "description": "查谁调用了某符号。入参 {projectPath, symbol, limit?}。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string"},
+          "symbol": {"type": "string", "description": "函数/方法/类名"},
+          "limit": {"type": "integer", "default": 20}
+        },
+        "required": ["projectPath", "symbol"]
+      },
+      "timeout_ms": 15000
+    },
+    {
+      "name": "codegraph_callees",
+      "sensitive": false,
+      "description": "查某符号调用了谁。入参 {projectPath, symbol, limit?}。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string"},
+          "symbol": {"type": "string"},
+          "limit": {"type": "integer", "default": 20}
+        },
+        "required": ["projectPath", "symbol"]
+      },
+      "timeout_ms": 15000
+    },
+    {
+      "name": "codegraph_impact",
+      "sensitive": false,
+      "description": "改某符号会影响哪些代码。入参 {projectPath, symbol, depth?}。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string"},
+          "symbol": {"type": "string"},
+          "depth": {"type": "integer", "description": "遍历深度，默认 2，上限 10"}
+        },
+        "required": ["projectPath", "symbol"]
+      },
+      "timeout_ms": 15000
+    },
+    {
+      "name": "codegraph_node",
+      "sensitive": false,
+      "description": "查单个符号详情（位置/签名/文档/可选源码）。入参 {projectPath, symbol, includeCode?}。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string"},
+          "symbol": {"type": "string"},
+          "includeCode": {"type": "boolean", "default": false}
+        },
+        "required": ["projectPath", "symbol"]
+      },
+      "timeout_ms": 15000
+    },
+    {
+      "name": "codegraph_explore",
+      "sensitive": false,
+      "description": "一次返回多个相关符号的源码分组。入参 {projectPath, query, maxFiles?}。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string"},
+          "query": {"type": "string", "description": "符号名/文件名/代码片段，空格分隔"},
+          "maxFiles": {"type": "integer", "default": 12}
+        },
+        "required": ["projectPath", "query"]
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "name": "codegraph_files",
+      "sensitive": false,
+      "description": "列出已索引的文件。入参 {projectPath}。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string"}
+        },
+        "required": ["projectPath"]
+      },
+      "timeout_ms": 15000
+    },
+    {
+      "name": "codegraph_status",
+      "sensitive": false,
+      "description": "查索引健康与统计。入参 {projectPath}。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string"}
+        },
+        "required": ["projectPath"]
+      },
+      "timeout_ms": 10000
+    },
+    {
+      "name": "codegraph_ensure_index",
+      "sensitive": false,
+      "description": "确保某仓库已索引：未初始化则 init+全量 index，已初始化则增量 sync。force=true 强制重建。大仓库首次可能耗时数十秒。入参 {projectPath, force?}。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "projectPath": {"type": "string", "description": "要索引的仓库绝对路径"},
+          "force": {"type": "boolean", "default": false}
+        },
+        "required": ["projectPath"]
+      },
+      "timeout_ms": 120000
+    }
+  ]
+}

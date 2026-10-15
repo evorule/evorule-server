@@ -62,6 +62,8 @@ logs/
 # === Windows 构建产物 ===
 *.exe
 *.pdb
+# 例外：codegraph-bridge 随附的 nssm 服务管理器运行件（有意入库的第三方二进制）
+!plugins/codegraph-bridge/nssm/**/*.exe
 
 # === 构建/安装日志 ===
 install_log.txt

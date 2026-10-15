@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-browser-services"
+version.workspace = true
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "browser-service：zendriver-rs 驱动的浏览器操作能力 NativeService 插件（evo-agent P0.5）"
+repository = "https://gitee.com/evorule/evorule-server"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+evorule-tcb = { version = "0.8" }
+evorule-reactor = { version = "0.8" }
+evorule-plugin-kit = { path = "../../core/plugin-kit" }
+
+serde_json = "1"
+tracing = "0.1"
+async-trait = "0.1"
+base64 = "0.22"
+futures = "0.3"
+
+# 浏览器自动化底层：纯 Rust async CDP（MIT OR Apache-2.0，与 AGPL 兼容）
+# expect=dialog/download/file_chooser, monitor=被动网络事件, interception=Fetch 改写
+zendriver = { version = "0.5", features = ["expect", "monitor", "interception"] }
+
+# 桥接：插件自持独立 tokio runtime + 同步阻塞等异步结果
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

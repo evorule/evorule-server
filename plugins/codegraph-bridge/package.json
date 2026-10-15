@@ -1,0 +1,16 @@
+{
+  "name": "evorule-codegraph-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeGraph HTTP bridge: exposes @colbymchenry/codegraph as an evorule-server external plugin (POST /services/{name})",
+  "type": "module",
+  "bin": {
+    "codegraph-bridge": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@colbymchenry/codegraph": "file:../../../evorule-project/codegraph"
+  }
+}
