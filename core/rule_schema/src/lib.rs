@@ -84,6 +84,13 @@ fn matches_eval_pattern(s: &str) -> bool {
 }
 
 /// 解析锚：返回 (type_pattern, marker_bool)
+///
+/// [deny 豁免注记] 本函数三处 fail-fast（from_str 失败 / $def 缺失 / pattern 缺失）
+/// 为宪法锚有意设计（[CON-X-003]：锚缺失属宪法回退，宁可炸不可静默双写）；
+/// 调用侧为 OnceLock get_or_init 链，错误无更优传播去处，且内嵌件由
+/// include_str! 编译期锁定 + sandbox_case_anchor_tests 锁定一致性，失败路径
+/// 实际不可达。按 clippy 正当豁免机制放行（与 crate 头部测试豁免同理由）。
+#[allow(clippy::expect_used, clippy::panic)]
 fn parse_sandbox_case_anchor() -> (String, bool) {
     let shared: Value = serde_json::from_str(SHARED_JSON).expect("内嵌 _shared schema 必须可解析");
     let def = shared
