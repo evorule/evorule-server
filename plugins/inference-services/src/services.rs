@@ -248,10 +248,11 @@ impl NativeService for DimensionFromUnit {
                 ]),
             })
             .collect();
-        Ok(JsonValue::object_from_pairs(&[(
-            "results",
-            JsonValue::Array(results),
-        )]))
+        Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
+            ("results", JsonValue::Array(results)),
+        ]))
     }
 }
 
@@ -284,10 +285,11 @@ impl NativeService for DimensionCompareUnits {
                 ])
             })
             .collect();
-        Ok(JsonValue::object_from_pairs(&[(
-            "results",
-            JsonValue::Array(results),
-        )]))
+        Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
+            ("results", JsonValue::Array(results)),
+        ]))
     }
 }
 
@@ -327,10 +329,11 @@ impl NativeService for DimensionVerifyFormula {
                 ])
             })
             .collect();
-        Ok(JsonValue::object_from_pairs(&[(
-            "results",
-            JsonValue::Array(results),
-        )]))
+        Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
+            ("results", JsonValue::Array(results)),
+        ]))
     }
 }
 
@@ -456,6 +459,9 @@ fn cycles_to_json(report: &CycleReport) -> JsonValue {
         )
     };
     JsonValue::object_from_pairs(&[
+        // 统一信封 v1:静态/保守分层均有确定结论,无 undetermined 路径
+        ("status", JsonValue::string("determined")),
+        ("determinism", JsonValue::string("bitwise_replayable")),
         ("has_cycles", JsonValue::Bool(report.has_cycles)),
         (
             "cycle_count",
@@ -524,6 +530,9 @@ fn conflicts_to_json(report: &ConflictReport) -> JsonValue {
         })
         .collect();
     JsonValue::object_from_pairs(&[
+        // 统一信封 v1:六类型学冲突判定均有确定结论,无 undetermined 路径
+        ("status", JsonValue::string("determined")),
+        ("determinism", JsonValue::string("bitwise_replayable")),
         ("has_conflicts", JsonValue::Bool(report.has_conflicts)),
         (
             "conflict_count",
@@ -553,10 +562,11 @@ impl NativeService for RuleRwExtract {
         let parsed = ruleset_args(args)?;
         let rws = extract(parsed.rules, &parsed.sources, parsed.include_constitution)?;
         let items: Vec<JsonValue> = rws.iter().map(rw_to_json).collect();
-        Ok(JsonValue::object_from_pairs(&[(
-            "results",
-            JsonValue::Array(items),
-        )]))
+        Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
+            ("results", JsonValue::Array(items)),
+        ]))
     }
 }
 
@@ -617,6 +627,8 @@ impl NativeService for RuleForwardSimulate {
         let document = doc_arg(args, "initial_document")?;
         let report = forward_simulate(parsed.rules, &parsed.sources, document, max_steps)?;
         Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
             ("stopped_reason", JsonValue::string(report.stopped_reason)),
             (
                 "steps",
@@ -726,6 +738,8 @@ impl NativeService for RuleBackwardPlan {
         let rws = extract(parsed.rules, &parsed.sources, parsed.include_constitution)?;
         let report = backward_plan(&rws, &target, &available, max_depth);
         Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
             ("achievable", JsonValue::Bool(report.achievable)),
             (
                 "rule_sequence",
@@ -812,10 +826,11 @@ impl NativeService for RuleEffectPredict {
                 ])
             })
             .collect();
-        Ok(JsonValue::object_from_pairs(&[(
-            "results",
-            JsonValue::Array(items),
-        )]))
+        Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
+            ("results", JsonValue::Array(items)),
+        ]))
     }
 }
 
@@ -839,7 +854,27 @@ impl NativeService for RuleConvergenceCheck {
                 ])
             })
             .collect();
-        Ok(JsonValue::object_from_pairs(&[
+        // 统一信封 v1:status 与既有 undetermined 字段恒等约束
+        // (undetermined=true ⇔ status="undetermined"),既有字段原位保留;
+        // reason 仅 undetermined 时携带(静态分析不可判定子集)
+        let mut out = vec![
+            (
+                "status",
+                if report.undetermined {
+                    JsonValue::string("undetermined")
+                } else {
+                    JsonValue::string("determined")
+                },
+            ),
+            ("determinism", JsonValue::string("bitwise_replayable")),
+        ];
+        if report.undetermined {
+            out.push((
+                "reason",
+                JsonValue::string("unresolvable_by_static_analysis"),
+            ));
+        }
+        out.extend([
             ("converges", JsonValue::Bool(report.converges)),
             ("undetermined", JsonValue::Bool(report.undetermined)),
             (
@@ -860,7 +895,8 @@ impl NativeService for RuleConvergenceCheck {
                         .collect(),
                 ),
             ),
-        ]))
+        ]);
+        Ok(JsonValue::object_from_pairs(&out))
     }
 }
 
@@ -950,6 +986,8 @@ impl NativeService for RuleCounterfactualAnalyze {
             })
             .collect();
         Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
             ("original", sim_brief(&report.original)),
             ("hypothetical", sim_brief(&report.hypothetical)),
             ("diffs", JsonValue::Array(diffs)),
@@ -1007,6 +1045,8 @@ impl NativeService for RuleEquivalenceProbe {
             None => JsonValue::Null,
         };
         Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
             ("verdict", JsonValue::string(report.verdict)),
             (
                 "structural_identical",
@@ -1062,6 +1102,8 @@ impl NativeService for RuleDifferentialDiff {
             })
             .collect();
         Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
             ("added_writes", str_set(&report.set_diff.added_writes)),
             ("removed_writes", str_set(&report.set_diff.removed_writes)),
             ("added_reads", str_set(&report.set_diff.added_reads)),
@@ -1168,6 +1210,8 @@ impl NativeService for RuleCounterfactualSweep {
             })
             .collect();
         Ok(JsonValue::object_from_pairs(&[
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
             ("param_path", JsonValue::string(report.param_path)),
             ("points", JsonValue::Array(points)),
             (
@@ -1195,4 +1239,131 @@ impl NativeService for RuleCounterfactualSweep {
 /// 声明表构造子：反事实参数扫描服务
 pub fn mk_counterfactual_sweep() -> std::sync::Arc<dyn NativeService> {
     std::sync::Arc::new(RuleCounterfactualSweep)
+}
+
+// ============================================================================
+// 测试：统一信封保留键（科学计算服务面规范 v1，对齐批守卫）
+// ============================================================================
+
+#[cfg(test)]
+mod envelope_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use evorule_tcb::JsonValue;
+
+    fn set_rule(attr: &str, value: i64) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            ("type", JsonValue::string("set")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    ("attr", JsonValue::string(attr)),
+                    ("value", JsonValue::Integer(value)),
+                ]),
+            ),
+        ])
+    }
+
+    fn dynamic_write_rule() -> JsonValue {
+        // 动态写:静态分析不可判定 → convergence undetermined=true
+        JsonValue::object_from_pairs(&[
+            ("type", JsonValue::string("set")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    (
+                        "attr",
+                        JsonValue::string("__exec__.instruction.params.attr"),
+                    ),
+                    ("value", JsonValue::Integer(1)),
+                ]),
+            ),
+        ])
+    }
+
+    fn ruleset(rules: Vec<JsonValue>) -> JsonValue {
+        let n = rules.len();
+        JsonValue::object_from_pairs(&[
+            ("rules", JsonValue::Array(rules)),
+            (
+                "sources",
+                JsonValue::Array(
+                    (0..n)
+                        .map(|i| JsonValue::string(format!("rules/r{i}.json")))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+        ])
+    }
+
+    #[test]
+    fn envelope_convergence_status_identity_with_undetermined_field() {
+        // 干净规则集:status=determined,无 reason,既有字段原位
+        let out = RuleConvergenceCheck
+            .execute(&ruleset(vec![set_rule("x", 1)]))
+            .unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+        assert_eq!(
+            out.get("undetermined").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            out.get("determinism").and_then(JsonValue::as_str),
+            Some("bitwise_replayable")
+        );
+        assert!(out.get("reason").is_none(), "determined 时不得携带 reason");
+        assert!(out.get("converges").is_some() && out.get("issues").is_some());
+
+        // 动态写:undetermined=true ⇔ status=undetermined + reason(恒等约束守卫)
+        let out = RuleConvergenceCheck
+            .execute(&ruleset(vec![dynamic_write_rule()]))
+            .unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("undetermined")
+        );
+        assert_eq!(
+            out.get("undetermined").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("reason").and_then(JsonValue::as_str),
+            Some("unresolvable_by_static_analysis")
+        );
+    }
+
+    #[test]
+    fn envelope_plain_services_have_reserved_keys() {
+        // 量纲族(纯逻辑域):status 恒 determined + determinism 保留键
+        let args = JsonValue::object_from_pairs(&[(
+            "units",
+            JsonValue::Array(vec![JsonValue::string("m"), JsonValue::string("m/s")]),
+        )]);
+        let out = DimensionFromUnit.execute(&args).unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+        assert_eq!(
+            out.get("determinism").and_then(JsonValue::as_str),
+            Some("bitwise_replayable")
+        );
+        assert!(out.get("reason").is_none());
+
+        // 环检测(规则静态分析域):同上
+        let out = RuleCycleDetect
+            .execute(&ruleset(vec![set_rule("x", 1)]))
+            .unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+        assert_eq!(
+            out.get("determinism").and_then(JsonValue::as_str),
+            Some("bitwise_replayable")
+        );
+    }
 }

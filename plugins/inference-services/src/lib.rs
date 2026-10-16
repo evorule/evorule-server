@@ -16,6 +16,14 @@
 //!   - 未命中 → 回落 `ServiceRegistryHandler`（HTTP，兼容其他外部服务）
 //! - 原生实现接收的入参 = `params.args`。
 //!
+//! # 统一信封 v1（科学计算服务面规范）
+//! - 全部 14 服务成功出参含保留键 `status` + `determinism`（bitwise_replayable：
+//!   纯整数/逻辑域，同二进制同输入双跑位元一致）；`status` 恒 `determined`，
+//!   唯一例外 = 收敛检测（既有 `undetermined` 字段与 `status` 恒等约束，
+//!   undetermined=true 时携带 `reason`="unresolvable_by_static_analysis"）；
+//! - 既有字段（verdict/note/reason/converges/undetermined 等）全部原位保留；
+//!   error 维持框架 `Err(String)` 通道。
+//!
 //! # 服务清单（SSOT = official_native_services.json，双侧守卫锁定）
 //! 1. `inference_dimension_from_unit` — SI 单位字符串 → 七分量量纲向量
 //! 2. `inference_dimension_compare_units` — 两单位量纲等价性比较
