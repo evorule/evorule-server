@@ -29,6 +29,15 @@
 //!     保留 `.0` 后缀,如 `100.0`);超出日常量级(>1e16)的科学计数法格式差异不在承诺范围;
 //!   - `-0.0` 按 IEEE 语义参与比较(`-0.0 == 0` 为真)与字符串化(`"-0.0"`,同 Python)。
 //! - NaN/Inf 输入显式拒绝;空序列/窗口非法 fail-fast 如实报错。
+//!
+//! # 统一信封 v1(科学计算服务面规范)
+//!
+//! 成功出参保留键:`status`(determined / undetermined;原值 "ok" 已对齐迁移,
+//! 无外部消费者窗口期完成)、`determinism`(corpus_locked:pandas 黄金值语料
+//! 逐位锁定)、`reason`(仅 undetermined 时携带,当前取值 insufficient_window)。
+//! 既有字段(window/span/period/min_periods/count/values/macd/signal/hist)
+//! 全部原位保留;error 维持框架 `Err(String)` 通道。全 null 输出(窗口 > 数据长)
+//! = undetermined 显式化,values 数组语义不变。
 
 #![forbid(unsafe_code)]
 
@@ -302,7 +311,11 @@ mod tests {
             ),
         ]);
         let r = rt.block_on(router.execute(&params)).unwrap();
-        assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("ok"));
+        // 3 点序列 < 窗口 5 → 全 null = undetermined/insufficient_window(信封 v1)
+        assert_eq!(
+            r.get("status").and_then(|v| v.as_str()),
+            Some("undetermined")
+        );
         // 未启用的服务 → 回落
         let params = JsonValue::object_from_pairs(&[
             ("service_name", JsonValue::string("indicator_ema")),

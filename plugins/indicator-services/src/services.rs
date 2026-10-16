@@ -100,6 +100,32 @@ fn values_out(values: &[Option<f64>]) -> JsonValue {
     )
 }
 
+/// 统一信封保留键前缀(科学计算服务面规范 v1,加性保留键):
+/// - `status` 值域对齐为 determined/undetermined(本族原值 "ok" 迁移,
+///   迁移记录:规范落地批,无外部消费者窗口期对齐;error 走 Err 通道不入成功信封);
+/// - 全 null 输出 = 输入信息不足以产出任何指标值 → undetermined + reason
+///   "insufficient_window"。values 数组**原样保留**(warmup null 语义不变),
+///   既有消费 values 的路径零变更,仅 status 从确定值变为显式不可判定;
+/// - `determinism` = corpus_locked(f64 域,pandas 黄金值语料逐位锁定)。
+fn envelope_prefix(values: &[Option<f64>]) -> Vec<(&'static str, JsonValue)> {
+    let all_null = values.iter().all(Option::is_none);
+    let mut v = vec![
+        (
+            "status",
+            JsonValue::string(if all_null {
+                "undetermined"
+            } else {
+                "determined"
+            }),
+        ),
+        ("determinism", JsonValue::string("corpus_locked")),
+    ];
+    if all_null {
+        v.push(("reason", JsonValue::string("insufficient_window")));
+    }
+    v
+}
+
 // ============================================================================
 // 指标核心(纯函数,与 IoResult 解耦,便于直接单测逐位黄金值)
 // ============================================================================
@@ -278,12 +304,11 @@ impl NativeService for IndicatorSma {
         let series = parse_series(args)?;
         let window = parse_usize(args, "window", 5, 1)?;
         let values = sma_core(&series, window);
-        Ok(obj(vec![
-            ("status", JsonValue::string("ok")),
-            ("window", JsonValue::Integer(window as i64)),
-            ("count", JsonValue::Integer(series.len() as i64)),
-            ("values", values_out(&values)),
-        ]))
+        let mut fields = envelope_prefix(&values);
+        fields.push(("window", JsonValue::Integer(window as i64)));
+        fields.push(("count", JsonValue::Integer(series.len() as i64)));
+        fields.push(("values", values_out(&values)));
+        Ok(obj(fields))
     }
 }
 
@@ -295,12 +320,11 @@ impl NativeService for IndicatorEma {
         let series = parse_series(args)?;
         let span = parse_usize(args, "span", 5, 1)?;
         let values: Vec<Option<f64>> = ewm_span(&series, span).into_iter().map(Some).collect();
-        Ok(obj(vec![
-            ("status", JsonValue::string("ok")),
-            ("span", JsonValue::Integer(span as i64)),
-            ("count", JsonValue::Integer(series.len() as i64)),
-            ("values", values_out(&values)),
-        ]))
+        let mut fields = envelope_prefix(&values);
+        fields.push(("span", JsonValue::Integer(span as i64)));
+        fields.push(("count", JsonValue::Integer(series.len() as i64)));
+        fields.push(("values", values_out(&values)));
+        Ok(obj(fields))
     }
 }
 
@@ -330,16 +354,15 @@ impl NativeService for IndicatorMacd {
             .zip(&signal_series)
             .map(|(m, s)| Some(m - s))
             .collect();
-        Ok(obj(vec![
-            ("status", JsonValue::string("ok")),
-            ("fast", JsonValue::Integer(fast as i64)),
-            ("slow", JsonValue::Integer(slow as i64)),
-            ("signal_period", JsonValue::Integer(signal_period as i64)),
-            ("count", JsonValue::Integer(series.len() as i64)),
-            ("macd", values_out(&macd_out)),
-            ("signal", values_out(&signal_out)),
-            ("hist", values_out(&hist)),
-        ]))
+        let mut fields = envelope_prefix(&macd_out);
+        fields.push(("fast", JsonValue::Integer(fast as i64)));
+        fields.push(("slow", JsonValue::Integer(slow as i64)));
+        fields.push(("signal_period", JsonValue::Integer(signal_period as i64)));
+        fields.push(("count", JsonValue::Integer(series.len() as i64)));
+        fields.push(("macd", values_out(&macd_out)));
+        fields.push(("signal", values_out(&signal_out)));
+        fields.push(("hist", values_out(&hist)));
+        Ok(obj(fields))
     }
 }
 
@@ -351,16 +374,15 @@ impl NativeService for IndicatorRsi {
         let series = parse_series(args)?;
         let period = parse_usize(args, "period", 14, 2)?;
         let values = rsi_core(&series, period);
-        Ok(obj(vec![
-            ("status", JsonValue::string("ok")),
-            ("period", JsonValue::Integer(period as i64)),
-            (
-                "min_periods",
-                JsonValue::Integer((period / 2).max(1) as i64),
-            ),
-            ("count", JsonValue::Integer(series.len() as i64)),
-            ("values", values_out(&values)),
-        ]))
+        let mut fields = envelope_prefix(&values);
+        fields.push(("period", JsonValue::Integer(period as i64)));
+        fields.push((
+            "min_periods",
+            JsonValue::Integer((period / 2).max(1) as i64),
+        ));
+        fields.push(("count", JsonValue::Integer(series.len() as i64)));
+        fields.push(("values", values_out(&values)));
+        Ok(obj(fields))
     }
 }
 
@@ -686,7 +708,7 @@ mod tests {
             ),
         ]);
         let r = router.execute(&params).await.unwrap();
-        assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("determined"));
         assert_eq!(r.get("window").and_then(|v| v.as_i64()), Some(5));
         assert_eq!(r.get("count").and_then(|v| v.as_i64()), Some(20));
         assert!(r.get("values").and_then(|v| v.as_array()).is_some());
@@ -715,5 +737,93 @@ mod tests {
         ]);
         let err = router.execute(&params).await.unwrap_err();
         assert!(err.contains("fast(26) 必须 < slow(12)"), "{err}");
+    }
+
+    // ===== 统一信封保留键(科学计算服务面规范 v1) =====
+
+    fn svc_args(extra: &[(&str, JsonValue)]) -> JsonValue {
+        let mut fields = vec![("series", arr(&SERIES))];
+        fields.extend_from_slice(extra);
+        JsonValue::object_from_pairs(&fields)
+    }
+
+    #[test]
+    fn envelope_determined_case_keys_and_values() {
+        // 常规输出(部分 warmup null)→ determined;既有键全在,新增 determinism
+        let out = IndicatorSma
+            .execute(&svc_args(&[("window", JsonValue::Integer(5))]))
+            .unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+        assert_eq!(
+            out.get("determinism").and_then(JsonValue::as_str),
+            Some("corpus_locked")
+        );
+        assert!(out.get("reason").is_none(), "determined 时不得携带 reason");
+        for legacy in ["window", "count", "values"] {
+            assert!(out.get(legacy).is_some(), "既有字段 {legacy} 丢失");
+        }
+    }
+
+    #[test]
+    fn envelope_all_null_is_undetermined_with_reason() {
+        // window(50) > 数据长(20) → 全 null = 输入信息不足 → undetermined 显式化
+        // (values 数组仍为全 null,既有消费路径零变更)
+        let out = IndicatorSma
+            .execute(&svc_args(&[("window", JsonValue::Integer(50))]))
+            .unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("undetermined")
+        );
+        assert_eq!(
+            out.get("reason").and_then(JsonValue::as_str),
+            Some("insufficient_window")
+        );
+        let vals = out.get("values").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(vals.len(), 20, "values 数组语义不变");
+        assert!(vals.iter().all(|v| matches!(v, JsonValue::Null)));
+    }
+
+    #[test]
+    fn envelope_rsi_short_series_undetermined() {
+        // 单点序列:RSI 无差分可用 → 全 null → undetermined
+        let args = JsonValue::object_from_pairs(&[(
+            "series",
+            JsonValue::Array(vec![JsonValue::Integer(10)]),
+        )]);
+        let out = IndicatorRsi.execute(&args).unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("undetermined")
+        );
+        assert_eq!(
+            out.get("reason").and_then(JsonValue::as_str),
+            Some("insufficient_window")
+        );
+    }
+
+    #[test]
+    fn envelope_ema_macd_always_determined() {
+        // EMA/MACD 无 warmup(adjust=False) → 无 null 路径 → 恒 determined
+        let out = IndicatorEma
+            .execute(&svc_args(&[("span", JsonValue::Integer(5))]))
+            .unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+        assert!(out.get("reason").is_none());
+        let out = IndicatorMacd.execute(&svc_args(&[])).unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+        assert!(out.get("reason").is_none());
+        for key in ["macd", "signal", "hist"] {
+            assert!(out.get(key).is_some(), "MACD 既有字段 {key} 丢失");
+        }
     }
 }
