@@ -323,8 +323,7 @@ impl SandboxService {
             // 无法被用例报告正确归组（is_case_group 同锚判定），启动期拦截而非
             // 留到报告里变成 startup_noise 假阴。
             // name/expected 等元数据字段随指令一并发送（TCB 对根部额外键零消费）。
-            let valid = case.is_object()
-                && evorule_rule_schema::is_sandbox_case_instruction(case);
+            let valid = case.is_object() && evorule_rule_schema::is_sandbox_case_instruction(case);
             if !valid {
                 return Err(WorkspaceError::invalid_input(format!(
                     "test_dataset {} 用例 #{} 必须是宪法锚定的用例指令对象（type 命中 {} $def，如 eval_hello）",

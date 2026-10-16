@@ -2137,7 +2137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         match opened {
             Ok(fl) => {
-                // 归档续链的 FactId 续起（存量核查 O-478）：TCB 状态经 spawn 种子化
+                // 归档续链的 FactId 续起（存量核查收口）：TCB 状态经 spawn 种子化
                 // 续跑，但反应器 FactId 分配器缺省自 1 重起，新产出事实将与历史 WAL
                 // 在 fact_id_index 内撞号（or_insert 静默吞并，因果链/去重面污染）。
                 // 反应器自身事实自归档最大值+1 续起；Command 的 ID 由 API 层独立
@@ -2229,7 +2229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auditor = Auditor::new(facts_log.clone());
     let api = GovernanceApi::new(tx.clone(), facts_log, auditor);
     // Command id 计数器同为进程内存态（固定自 20000 起），重启续链后若归档内
-    // 已有历史 Command，不抬升则新 Command 与历史 Command 撞号（O-478 同批
+    // 已有历史 Command，不抬升则新 Command 与历史 Command 撞号（存量核查同批
     // 收口）。fetch_max 语义：低于现值不回退、归档无 Command（传 0）无影响。
     api.ensure_command_ids_above(archived_max_command_id);
     // TTL ≥ io_error_timeout+余量 启动断言。

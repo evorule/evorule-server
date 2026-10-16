@@ -165,15 +165,16 @@ fn run_validate(
 ) -> Result<Outcome, String> {
     let mut had_violation = false;
     if let Some(f) = file {
-        let content =
-            std::fs::read_to_string(&f).map_err(|e| format!("读取文件失败 {}: {e}", f.display()))?;
+        let content = std::fs::read_to_string(&f)
+            .map_err(|e| format!("读取文件失败 {}: {e}", f.display()))?;
         let report = evorule_rule_tools::validate_rule_json(&content);
         print_report(&report, &f, &content);
         if !report.valid || (strict && report.warning_count > 0) {
             had_violation = true;
         }
     } else if let Some(d) = dir {
-        let files = collect_rule_files(&d).map_err(|e| format!("无法读取目录 {}: {e}", d.display()))?;
+        let files =
+            collect_rule_files(&d).map_err(|e| format!("无法读取目录 {}: {e}", d.display()))?;
         if files.is_empty() {
             return Err(format!("目录中未找到 .json 文件: {}", d.display()));
         }
@@ -211,15 +212,16 @@ fn run_new(kind: Kind, out: PathBuf) -> Result<Outcome, String> {
 fn run_safety(file: Option<PathBuf>, dir: Option<PathBuf>) -> Result<Outcome, String> {
     let mut had_violation = false;
     if let Some(f) = file {
-        let content =
-            std::fs::read_to_string(&f).map_err(|e| format!("读取文件失败 {}: {e}", f.display()))?;
+        let content = std::fs::read_to_string(&f)
+            .map_err(|e| format!("读取文件失败 {}: {e}", f.display()))?;
         let report = evorule_rule_tools::analyze_rule_safety(&content);
         print_safety(&report, &f);
         if !report.safe {
             had_violation = true;
         }
     } else if let Some(d) = dir {
-        let files = collect_rule_files(&d).map_err(|e| format!("无法读取目录 {}: {e}", d.display()))?;
+        let files =
+            collect_rule_files(&d).map_err(|e| format!("无法读取目录 {}: {e}", d.display()))?;
         if files.is_empty() {
             return Err(format!("目录中未找到 .json 文件: {}", d.display()));
         }
@@ -382,11 +384,7 @@ const SKELETON_WORKFLOW_DAG: &str = r#"{
 // 输出
 // ============================================================================
 
-fn print_report(
-    report: &evorule_rule_tools::ValidationReport,
-    file: &Path,
-    content: &str,
-) {
+fn print_report(report: &evorule_rule_tools::ValidationReport, file: &Path, content: &str) {
     let status = if report.valid {
         "✓ 通过"
     } else {
@@ -404,14 +402,26 @@ fn print_report(
             evorule_rule_tools::ValidationSeverity::Error => {
                 println!(
                     "{}",
-                    evorule_rule_tools::four_segment::render_issue(r, content, "CLI validate 结构门禁")
+                    evorule_rule_tools::four_segment::render_issue(
+                        r,
+                        content,
+                        "CLI validate 结构门禁"
+                    )
                 );
             }
             evorule_rule_tools::ValidationSeverity::Warning => {
-                println!("  ⚠ WARN  [{}] {}", r.path.as_deref().unwrap_or("-"), r.message);
+                println!(
+                    "  ⚠ WARN  [{}] {}",
+                    r.path.as_deref().unwrap_or("-"),
+                    r.message
+                );
             }
             evorule_rule_tools::ValidationSeverity::Info => {
-                println!("  ℹ INFO  [{}] {}", r.path.as_deref().unwrap_or("-"), r.message);
+                println!(
+                    "  ℹ INFO  [{}] {}",
+                    r.path.as_deref().unwrap_or("-"),
+                    r.message
+                );
             }
         }
     }
@@ -499,7 +509,10 @@ mod tests {
     fn run_new_creates_and_rejects_existing() {
         let dir = temp_dir("new");
         let out = dir.join("skeleton.json");
-        assert!(matches!(run_new(Kind::RuleSet, out.clone()), Ok(Outcome::Clean)));
+        assert!(matches!(
+            run_new(Kind::RuleSet, out.clone()),
+            Ok(Outcome::Clean)
+        ));
         assert!(out.exists());
         let content = std::fs::read_to_string(&out).unwrap();
         assert!(content.contains("\"$schema\""));

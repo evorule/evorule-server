@@ -124,7 +124,7 @@ def main():
     hits = []
     scanned = 0
     for dirpath, dirnames, filenames in os.walk(root):
-        # 目录枚举层剪枝（O-459）：SKIP_DIRS 在遍历时整目录剔除，不深入
+        # 目录枚举层剪枝（存量核查收口）：SKIP_DIRS 在遍历时整目录剔除，不深入
         # target/ 等大规模构建目录（原 rglob 语义=全枚举后逐文件过滤，
         # cargo 构建期间枚举本身即达分钟级）
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]

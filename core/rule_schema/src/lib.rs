@@ -80,7 +80,8 @@ fn matches_eval_pattern(s: &str) -> bool {
         Some(r) if !r.is_empty() => r,
         _ => return false,
     };
-    rest.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    rest.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// 解析锚：返回 (type_pattern, marker_bool)
@@ -122,10 +123,25 @@ mod sandbox_case_anchor_tests {
     #[test]
     fn case_forms_match_and_noise_rejected() {
         for ty in ["eval_hello", "eval_service_call", "eval_a1_b2"] {
-            assert!(is_sandbox_case_instruction(&serde_json::json!({"type": ty})), "{ty}");
+            assert!(
+                is_sandbox_case_instruction(&serde_json::json!({"type": ty})),
+                "{ty}"
+            );
         }
-        for ty in ["command", "transform", "set", "", "call_service", "Eval_X", "eval_", "eval_aB"] {
-            assert!(!is_sandbox_case_instruction(&serde_json::json!({"type": ty})), "{ty}");
+        for ty in [
+            "command",
+            "transform",
+            "set",
+            "",
+            "call_service",
+            "Eval_X",
+            "eval_",
+            "eval_aB",
+        ] {
+            assert!(
+                !is_sandbox_case_instruction(&serde_json::json!({"type": ty})),
+                "{ty}"
+            );
         }
     }
 
@@ -134,12 +150,17 @@ mod sandbox_case_anchor_tests {
     #[test]
     fn matcher_locked_to_constitution_pattern() {
         let (pat, _) = parse_sandbox_case_anchor();
-        assert_eq!(pat, "^eval_[a-z0-9_]+$", "宪法 pattern 演进须同步 matches_eval_pattern");
+        assert_eq!(
+            pat, "^eval_[a-z0-9_]+$",
+            "宪法 pattern 演进须同步 matches_eval_pattern"
+        );
         // 代表性样本双向验证
         for s in ["eval_ok_1", "eval_x"] {
             let re_semantic = s.starts_with("eval_")
                 && s.len() > 5
-                && s[5..].bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                && s[5..]
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
             assert_eq!(matches_eval_pattern(s), re_semantic, "{s}");
         }
     }

@@ -65,7 +65,9 @@ jobs:
         run: pwsh -NoProfile -File scripts/validate-version.ps1
       - name: validate-changelog.ps1
         shell: pwsh
-        run: pwsh -NoProfile -File scripts/validate-changelog.ps1
+        # -AllowUnreleased: CI 上下文是开发期 push，CHANGELOG 必然累积
+        # Unreleased 区块；发版级禁令只在发版机 validate-release 链生效。
+        run: pwsh -NoProfile -File scripts/validate-changelog.ps1 -AllowUnreleased
       - name: validate-license.ps1（SPDX 头 + LICENSE 文件）
         shell: pwsh
         run: pwsh -NoProfile -File scripts/validate-license.ps1

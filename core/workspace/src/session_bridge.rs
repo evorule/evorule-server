@@ -41,8 +41,9 @@ use crate::error::{WorkspaceError, WorkspaceResult};
 ///
 /// 由编排侧（start_sandbox）从 DB 治理事实构造：rule_versions 真实版本 ID
 /// + compute_ruleset_hash 草稿集哈希——fork 实现侧逐条装载 ctx 据此携带，
-/// 禁止再出现 `draft#i` 伪造标签+空 hash（provenance 必须与治理链对齐，
-/// 沙盒裁决铸 `sandbox:` 背书=治理行为，铸造信任者必须留真指纹）。
+///   禁止再出现 `draft#i` 伪造标签+空 hash（provenance 必须与治理链对齐，
+///   沙盒裁决铸 `sandbox:` 背书=治理行为，铸造信任者必须留真指纹）。
+
 #[derive(Debug, Clone)]
 pub struct DraftRulesProvenance {
     /// 与 `extra_rules` 等长按序对应：每条草稿规则的治理版本 ID（rule_versions.id）

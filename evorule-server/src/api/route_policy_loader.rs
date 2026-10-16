@@ -38,8 +38,13 @@ pub fn shared_route_policy(rules_dir: &Path) -> Option<Arc<RoutePolicy>> {
 /// 单次加载（公开以便测试；生产装配走 [`shared_route_policy`]）
 pub fn load_route_policy(rules_dir: &Path) -> Option<Arc<RoutePolicy>> {
     let path = rules_dir.join(ROUTE_POLICY_FILE);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(r) => r,
+    read_policy_file(&path).and_then(|raw| parse_policy_file(&path, &raw))
+}
+
+/// 读盘（缺资产仅告警一次；每进程第一现场为准）
+fn read_policy_file(path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(r) => Some(r),
         Err(_) => {
             if MISSING_WARNED.set(()).is_ok() {
                 tracing::warn!(
@@ -48,10 +53,14 @@ pub fn load_route_policy(rules_dir: &Path) -> Option<Arc<RoutePolicy>> {
                     "路由策略资产未部署，SG-2 静态收紧层不装配（动态权限表权威不变）"
                 );
             }
-            return None;
+            None
         }
-    };
-    match RoutePolicy::from_json_str(&raw) {
+    }
+}
+
+/// 解析（失败仅告警一次；每进程第一现场为准）
+fn parse_policy_file(path: &Path, raw: &str) -> Option<Arc<RoutePolicy>> {
+    match RoutePolicy::from_json_str(raw) {
         Ok(p) => {
             tracing::info!(
                 target: "route_policy",
@@ -166,14 +175,20 @@ mod tests {
         .unwrap();
         let policy = load_route_policy(&dir).expect("合法资产必须加载成功");
         assert_eq!(policy.rules.len(), 1);
-        assert_eq!(policy.rules[0].decision, evorule_governance::permission::RouteDecision::Deny);
+        assert_eq!(
+            policy.rules[0].decision,
+            evorule_governance::permission::RouteDecision::Deny
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn missing_asset_returns_none() {
         let dir = tmp_rules_dir("missing");
-        assert!(load_route_policy(&dir).is_none(), "未部署必须返回 None（不装配）");
+        assert!(
+            load_route_policy(&dir).is_none(),
+            "未部署必须返回 None（不装配）"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -181,7 +196,10 @@ mod tests {
     fn corrupt_asset_returns_none() {
         let dir = tmp_rules_dir("corrupt");
         fs::write(dir.join(ROUTE_POLICY_FILE), "not json").unwrap();
-        assert!(load_route_policy(&dir).is_none(), "解析失败必须返回 None（fail-closed 拒绝坏资产）");
+        assert!(
+            load_route_policy(&dir).is_none(),
+            "解析失败必须返回 None（fail-closed 拒绝坏资产）"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -209,7 +227,10 @@ mod tests {
 
     #[test]
     fn circuit_zero_threshold_disables() {
-        assert!(circuit_config_from_raw(Some("0"), None).is_none(), "阈值 0 = 误伤回退开关（不装配）");
+        assert!(
+            circuit_config_from_raw(Some("0"), None).is_none(),
+            "阈值 0 = 误伤回退开关（不装配）"
+        );
     }
 
     #[test]

@@ -575,9 +575,9 @@ pub fn append_platform_event(shared: &SharedFactsLog, kind: &str, detail: serde_
     append_auth_event(shared, kind, detail)
 }
 
-/// serde_json::Value → evorule_tcb::JsonValue
-/// 唯一实现在 evorule_rule_loader::serde_to_tcb（[CON-S-006] 禁止再手写第二份；
-/// R2 收编 2026-10-14，本地手写份已删——B 族哈希口径一致由 loader 键序测试保证）。
+// serde_json::Value → evorule_tcb::JsonValue
+// 唯一实现在 evorule_rule_loader::serde_to_tcb（[CON-S-006] 禁止再手写第二份；
+// R2 收编 2026-10-14，本地手写份已删——B 族哈希口径一致由 loader 键序测试保证）。
 
 /// 首启 seed:内置 4 角色无任何 role 事实时写入(幂等:按事实回放判定)。
 /// 在每个平台端点入口调用;并发首次调用可能重复追加同值事实,

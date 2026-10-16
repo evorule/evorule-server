@@ -6,7 +6,7 @@
 //! # 设计依据
 //!
 //! 本模块为 evorule 核心对外暴露的规则校验接口，供：
-//! - **evorule-application/panels/rule-editor**：可视化编辑器在保存前实时校验
+//! - **应用侧可视化规则编辑器**：在保存前实时校验
 //! - **evorule-cli**：`evorule validate` 子命令（未来可桥接到此 API）
 //! - **嵌入式场景**：设备通过 HTTP API 校验规则，无需集成 CLI
 //!

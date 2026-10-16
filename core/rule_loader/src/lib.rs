@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! evorule 宪法装载唯一通道（25 号档 [CON-L2-001]～[CON-L2-006]、[CON-S-001]～[CON-S-006]）
+//! evorule 宪法装载唯一通道（[CON-L2-001]～[CON-L2-006]、[CON-S-001]～[CON-S-006]）
 //!
-//! # 定位（records/77 线1 防御层收口；22 号档尽调 → 25 号档条文正本）
+//! # 定位（防御层收口；尽调结论已沉淀为宪法条文正本）
 //!
 //! 本 crate 是「规则集进入引擎」的**唯一装载函数** `load_rule_set`：
 //! 宪法 schema 校验 → 剥壳 → 三门 → provenance，四步固定顺序、不可拆、不可跳。
@@ -54,7 +54,10 @@ pub enum LoadSource {
     /// 文件系统（生产 rules_dir / 宪法 core_eval.json）
     File { path: String },
     /// DB 草稿（沙盒 rule_versions）
-    DbDraft { rule_version_ids: Vec<String>, ruleset_hash: String },
+    DbDraft {
+        rule_version_ids: Vec<String>,
+        ruleset_hash: String,
+    },
     /// API 提交
     Api { caller: String },
 }
@@ -62,12 +65,18 @@ pub enum LoadSource {
 /// 装载场地（[CON-L2-003]：三门不减——沙盒同守生产纪律）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Venue { Production, Sandbox }
+pub enum Venue {
+    Production,
+    Sandbox,
+}
 
 /// 规则集组成语义（Q-1 定型：[CON-L2-006]，P-1 批文=合并）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Composition { Merged, Standalone }
+pub enum Composition {
+    Merged,
+    Standalone,
+}
 
 /// L2 身份类别（tier 门与 domain 门豁免的判定依据，对齐生产 server.rs tier_gate_reason
 /// + reject_undeclared_domain_rules 双向纪律）
@@ -80,13 +89,17 @@ pub enum Composition { Merged, Standalone }
 ///   （现宪法实无 enforce 条目）、eq/lt domain 声明门豁免（宪法内部组合由维护者负责）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum L2Class { None, Constraint, Constitution }
+pub enum L2Class {
+    None,
+    Constraint,
+    Constitution,
+}
 
 /// discipline 门 enforce 位的 env 值判定（单一事实源，server 测试桥同调本函数）。
 /// R7/[CON-L2-004] fail-closed 收口：合法值域 = {缺省/空串, "warn", "enforce"}
 /// （大小写不敏感）——**缺省/空串/"enforce" = `true`**（违规拒载；W1 观测期豁免
 /// 已于 2026-10-14 收口：复审观测数据干净，统帅裁定提前切 enforce 缺省，见
-/// 25 号档 [CON-L2-004] W1 收口注记与 SR-16）；显式 `"warn"` = `false`
+/// [CON-L2-004] W1 收口注记与 SR-16）；显式 `"warn"` = `false`
 /// （观测期回退口保留：一键降级 env 切 warn，无需发版）；**非法值 = panic 拒载**：
 /// 门禁配置错误属部署事故，fail-closed 快速失败优于静默降级为观测态，
 /// 报错携带修正指引。
@@ -128,7 +141,9 @@ impl LoadContext {
     /// 宪法本体装载（core_eval.json / server_eval.json）
     pub fn constitution(path: &str) -> Self {
         LoadContext {
-            source: LoadSource::File { path: path.to_string() },
+            source: LoadSource::File {
+                path: path.to_string(),
+            },
             venue: Venue::Production,
             composition: Composition::Standalone,
             l2_class: L2Class::Constitution,
@@ -139,7 +154,9 @@ impl LoadContext {
     /// rules_dir 约束文件装载（`00_constraint_*`/`00_meta_*` 前缀，调用方判定）
     pub fn constraint_file(path: &str) -> Self {
         LoadContext {
-            source: LoadSource::File { path: path.to_string() },
+            source: LoadSource::File {
+                path: path.to_string(),
+            },
             venue: Venue::Production,
             composition: Composition::Standalone,
             l2_class: L2Class::Constraint,
@@ -150,7 +167,9 @@ impl LoadContext {
     /// 普通业务规则文件装载
     pub fn business_file(path: &str) -> Self {
         LoadContext {
-            source: LoadSource::File { path: path.to_string() },
+            source: LoadSource::File {
+                path: path.to_string(),
+            },
             venue: Venue::Production,
             composition: Composition::Standalone,
             l2_class: L2Class::None,
@@ -172,7 +191,9 @@ impl LoadContext {
     /// API 提交装载（在线提交规则）
     pub fn api(caller: &str) -> Self {
         LoadContext {
-            source: LoadSource::Api { caller: caller.to_string() },
+            source: LoadSource::Api {
+                caller: caller.to_string(),
+            },
             venue: Venue::Production,
             composition: Composition::Standalone,
             l2_class: L2Class::None,
@@ -285,7 +306,7 @@ impl std::error::Error for ConstitutionError {}
 ///
 /// # venue 不减免（[CON-L2-003]）
 ///
-/// O-431 后沙盒裁决铸 `sandbox:` 背书=治理行为；铸造信任者必须自守治理纪律，
+/// 存量核查收口后沙盒裁决铸 `sandbox:` 背书=治理行为；铸造信任者必须自守治理纪律，
 /// 沙盒草稿与生产规则同守三门。
 pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, ConstitutionError> {
     let (engine_rules, provenance) = load_one(doc, ctx, ctx.composition)?;
@@ -479,9 +500,8 @@ fn load_one(
     // ── 步骤 4：provenance ──
     // 内容指纹（R4/[CON-S-003]）：对输入文档字节算 blake3（evorule-hash SSOT）。
     // serde_json::Value 键序=BTreeMap（无 preserve_order），紧凑序列化确定性。
-    let content_bytes = serde_json::to_vec(doc).map_err(|e| {
-        ConstitutionError::ProvenanceIncomplete(format!("输入文档序列化失败: {e}"))
-    })?;
+    let content_bytes = serde_json::to_vec(doc)
+        .map_err(|e| ConstitutionError::ProvenanceIncomplete(format!("输入文档序列化失败: {e}")))?;
     let engine_rules: Vec<JsonValue> = transform_arr.into_iter().map(serde_to_tcb).collect();
     let provenance = Provenance {
         source_kind: source_kind(&ctx.source),
@@ -490,7 +510,11 @@ fn load_one(
         composition,
         l2_class: ctx.l2_class,
         content_hash: evorule_hash::prefixed(&evorule_hash::digest(&content_bytes)),
-        gates: GatesPassed { tier_gate: true, discipline_gate: true, domain_on_missing_gate: true },
+        gates: GatesPassed {
+            tier_gate: true,
+            discipline_gate: true,
+            domain_on_missing_gate: true,
+        },
         constitution_version: CONSTITUTION_SCHEMA_VERSION,
         loaded_at_unix: now_unix(),
     };
@@ -512,9 +536,15 @@ fn source_kind(src: &LoadSource) -> &'static str {
 
 const RULE_SET_URL: &str = "https://evorule.org/schemas/rule_set/v1.0.json";
 const MINIMAL_RULE_SET: &str = r#"{"$schema":"https://evorule.org/schemas/rule_set/v1.0.json","kind":"rule_set","id":"org.scope.name","version":"0.1.0","metadata":{"title":"…"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#;
-const MINIMAL_TRANSFORM_RULE: &str = r#"{"type":"set","params":{"attr":"x","operation":"set","value":1}}"#;
+const MINIMAL_TRANSFORM_RULE: &str =
+    r#"{"type":"set","params":{"attr":"x","operation":"set","value":1}}"#;
 
-fn four_part(violation: &str, location: &str, reference: &str, minimal_example: &str) -> FourPartError {
+fn four_part(
+    violation: &str,
+    location: &str,
+    reference: &str,
+    minimal_example: &str,
+) -> FourPartError {
     FourPartError {
         violation: violation.to_string(),
         location: location.to_string(),
@@ -544,10 +574,12 @@ fn now_unix() -> u64 {
 /// - `L2Class::None`（业务/草稿/API）：禁止 enforce；禁止声明 `metadata.tier ∈ {constraint, meta}`
 /// - `L2Class::Constraint`：**必须**声明 `metadata.tier ∈ {constraint, meta}`（防裸文件冒充）
 /// - `L2Class::Constitution`：通过（宪法维护者自查）
-fn tier_gate(transform_arr: &[Value], doc: &Value, ctx: &LoadContext) -> Result<(), ConstitutionError> {
-    let tier = doc
-        .pointer("/metadata/tier")
-        .and_then(|t| t.as_str());
+fn tier_gate(
+    transform_arr: &[Value],
+    doc: &Value,
+    ctx: &LoadContext,
+) -> Result<(), ConstitutionError> {
+    let tier = doc.pointer("/metadata/tier").and_then(|t| t.as_str());
     match ctx.l2_class {
         L2Class::Constitution => Ok(()),
         L2Class::Constraint => match tier {
@@ -591,13 +623,14 @@ fn tier_gate(transform_arr: &[Value], doc: &Value, ctx: &LoadContext) -> Result<
 /// enforce 位随 LoadContext（生产=env EVORULE_DISCIPLINE_GATE 单一事实源；
 /// warn 期=W1 纯观测放行+违规面日志留痕，enforce 期=拒载）
 fn discipline_gate(transform_arr: &[Value], ctx: &LoadContext) -> Result<(), ConstitutionError> {
-    let tcb_rules: Vec<JsonValue> =
-        transform_arr.iter().map(|r| serde_to_tcb(r.clone())).collect();
+    let tcb_rules: Vec<JsonValue> = transform_arr
+        .iter()
+        .map(|r| serde_to_tcb(r.clone()))
+        .collect();
     match evorule_discipline::check(&tcb_rules) {
         Ok(report) if report.violations.is_empty() => Ok(()),
         Ok(report) => {
-            let codes: Vec<String> =
-                report.violations.iter().map(|v| v.code.clone()).collect();
+            let codes: Vec<String> = report.violations.iter().map(|v| v.code.clone()).collect();
             if !ctx.discipline_enforce {
                 // 显式 warn（回退口）：放行+结构化留痕（缺省已收口为 enforce，SR-16）
                 tracing::warn!(
@@ -637,7 +670,10 @@ fn discipline_gate(transform_arr: &[Value], ctx: &LoadContext) -> Result<(), Con
 /// （L2Class::None）不在此拒——业务条目 domain 纪律由合并层条目级门
 /// （`reject_undeclared_domain_rules`，宪法前缀豁免+fail-visible 明细）与
 /// bundle 导入预判执行；文件级再拒会双门不同步+吞明细面。
-fn domain_on_missing_gate(transform_arr: &[Value], l2_class: L2Class) -> Result<(), ConstitutionError> {
+fn domain_on_missing_gate(
+    transform_arr: &[Value],
+    l2_class: L2Class,
+) -> Result<(), ConstitutionError> {
     if l2_class == L2Class::None {
         return Ok(()); // 业务面归合并层条目级门（明细可查），文件级不重复拒
     }
@@ -1005,7 +1041,10 @@ mod tests {
         let loaded = load_rule_set(&valid_rule_set(), &ctx).unwrap();
         let round = sj::to_value(&loaded.provenance).unwrap();
         assert!(
-            round["content_hash"].as_str().unwrap_or("").starts_with("blake3:"),
+            round["content_hash"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("blake3:"),
             "content_hash 应带 blake3: 前缀: {}",
             round["content_hash"]
         );
@@ -1076,8 +1115,8 @@ mod tests {
             ]),
             ctx: LoadContext::business_file("rules/biz.json"),
         };
-        let merged = load_rule_set_merged(&[constitution_part, business_part])
-            .expect("合法部件合并应通过");
+        let merged =
+            load_rule_set_merged(&[constitution_part, business_part]).expect("合法部件合并应通过");
         // 拼合序 = 传入序（宪法在前）
         assert_eq!(merged.engine_rules.len(), 3, "宪法 1 条+业务 2 条");
         assert_eq!(merged.parts.len(), 2);
@@ -1089,7 +1128,10 @@ mod tests {
         assert_eq!(merged.parts[0].provenance.l2_class, L2Class::Constitution);
         assert_eq!(merged.parts[1].provenance.l2_class, L2Class::None);
         // 内容指纹逐部件可序列化（[CON-S-003]）
-        assert!(merged.parts[0].provenance.content_hash.starts_with("blake3:"));
+        assert!(merged.parts[0]
+            .provenance
+            .content_hash
+            .starts_with("blake3:"));
         assert_ne!(
             merged.parts[0].provenance.content_hash, merged.parts[1].provenance.content_hash,
             "不同部件文档 → 不同内容指纹"

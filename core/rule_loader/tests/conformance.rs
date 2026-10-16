@@ -110,10 +110,9 @@ fn conformance_golden_loader_docs() {
                     );
                     illegal_rejected += 1;
                 }
-                (false, Err(e)) => panic!(
-                    "非法金样例被拒但拒绝面非 schema 门 {}: {e}",
-                    path.display()
-                ),
+                (false, Err(e)) => {
+                    panic!("非法金样例被拒但拒绝面非 schema 门 {}: {e}", path.display())
+                }
             }
         }
     }

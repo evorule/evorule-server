@@ -5,11 +5,11 @@
 //! I/O 指标收集接口（机制层 trait 定义）
 //!
 //! 本模块仅定义 `IoMetrics` trait 和默认的 `NoOpMetrics` 实现。
-//! 具体的 Prometheus 实现由应用层提供（evorule-server 独立仓 evorule-server/src/metrics_impl.rs + core/metrics/）。
+//! 具体的 Prometheus 实现由应用层提供（server 独立仓 src/metrics_impl.rs + core/metrics/）。
 //!
 //! # 设计理由
 //! 指标收集是可观测性能力，属于应用层（AGENTS.md 边界判断表：
-//! "加个 Prometheus 指标 → 放 evorule-application / evorule-server（可观测性是应用层）"）。
+//! "加个 Prometheus 指标 → 放应用层/server 仓（可观测性是应用层）"）。
 //! 核心层通过 trait 抽象暴露指标收集点，应用层通过依赖注入注入具体实现
 //!（如 Prometheus、OpenTelemetry 等）。
 //!

@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! 四段式报错 formatter（[CON-K2-001]/[CON-K2-002]/[CON-K1-002]，SR-15 件5）
 //!
-//! 报文形态（25 号档 §3.2 规格）：
+//! 报文形态（规格 §3.2）：
 //!
 //! ```text
 //! [宪法校验失败 / <门标签>]
@@ -38,8 +38,7 @@ const SHARED_DEFS_URL: &str = "https://evorule.org/schemas/_shared/v1.0.json";
 const MINIMAL_SET: &str = r#"{"type":"set","params":{"attr":"x","operation":"set","value":1}}"#;
 const MINIMAL_BRANCH: &str =
     r#"{"type":"branch","params":{"domain":{"type":"all","inner":[]},"on_true":[]}}"#;
-const MINIMAL_PUSH: &str =
-    r#"{"type":"push","params":{"instructions":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}}"#;
+const MINIMAL_PUSH: &str = r#"{"type":"push","params":{"instructions":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}}"#;
 const MINIMAL_IO: &str = r#"{"type":"io_request","params":{"io_type":"http_get"}}"#;
 
 /// 渲染整份报告的四段式报文（取首条 Error；报告合法时返回 None）
@@ -125,7 +124,10 @@ fn approx_line(content: &str, message: &str, path: Option<&str>) -> Option<usize
         .or_else(|| backtick_field(message))
         .or_else(|| last_alpha_segment(path))?;
     let needle = format!("\"{token}\"");
-    content.lines().position(|l| l.contains(&needle)).map(|i| i + 1)
+    content
+        .lines()
+        .position(|l| l.contains(&needle))
+        .map(|i| i + 1)
 }
 
 /// required 措辞字段名（`"attr" is a required property` → "attr"）
@@ -224,13 +226,22 @@ mod tests {
         let report = crate::validator::validate_rule_json(content);
         assert!(!report.valid);
         let text = render_issue(&report.results[0], content, GATE);
-        assert!(text.contains("[宪法校验失败 / CON-L1-001 持久层写入门]"), "{text}");
+        assert!(
+            text.contains("[宪法校验失败 / CON-L1-001 持久层写入门]"),
+            "{text}"
+        );
         assert!(text.contains("① 违什么："), "{text}");
         assert!(text.contains("② 在哪："), "{text}");
-        assert!(text.contains("③ 正本：https://evorule.org/schemas/"), "{text}");
+        assert!(
+            text.contains("③ 正本：https://evorule.org/schemas/"),
+            "{text}"
+        );
         assert!(text.contains("④ 正确形态（最小可过）："), "{text}");
         assert!(text.contains("→ 导览：docs/guide.md"), "{text}");
-        assert!(text.contains("https://gitee.com/evorule/evorule-system-rules"), "{text}");
+        assert!(
+            text.contains("https://gitee.com/evorule/evorule-system-rules"),
+            "{text}"
+        );
         // missing field `attr` → required 关键字 + set 最小样例
         assert!(text.contains("schema: required"), "{text}");
         assert!(text.contains(MINIMAL_SET), "{text}");
@@ -252,14 +263,18 @@ mod tests {
         let content = r#"{"transform":[{"type":"branch","params":{"on_true":[]}}]}"#;
         let report = crate::validator::validate_rule_json(content);
         let text = render_gate(&report, content, GATE).expect("invalid report must render");
-        assert!(text.contains("③ 正本：https://evorule.org/schemas/_shared/v1.0.json#/$defs/domain"), "{text}");
+        assert!(
+            text.contains("③ 正本：https://evorule.org/schemas/_shared/v1.0.json#/$defs/domain"),
+            "{text}"
+        );
         assert!(text.contains(MINIMAL_BRANCH), "{text}");
     }
 
     /// render_gate：合法报告返回 None；invalid 报告取首条 Error
     #[test]
     fn render_gate_none_when_valid() {
-        let content = r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#;
+        let content =
+            r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#;
         let report = crate::validator::validate_rule_json(content);
         assert!(report.valid);
         assert!(render_gate(&report, content, GATE).is_none());
@@ -268,7 +283,10 @@ mod tests {
     /// Pointer → JSONPath 转换（数组段与字段段混合）
     #[test]
     fn pointer_to_jsonpath_mixed() {
-        assert_eq!(pointer_to_jsonpath("/transform/0/params"), "$.transform[0].params");
+        assert_eq!(
+            pointer_to_jsonpath("/transform/0/params"),
+            "$.transform[0].params"
+        );
         assert_eq!(pointer_to_jsonpath("/transform/12"), "$.transform[12]");
         assert_eq!(pointer_to_jsonpath("/"), "$");
     }

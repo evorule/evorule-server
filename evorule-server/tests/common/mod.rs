@@ -89,7 +89,10 @@ pub(crate) fn load_constitution_transforms(
     let ctx = evorule_rule_loader::LoadContext::constitution(&core_eval_path.display().to_string());
     match evorule_rule_loader::load_rule_set(&json, &ctx) {
         Ok(loaded) => loaded.engine_rules,
-        Err(e) => panic!("core_eval 夹具装载门禁未过（{}）: {e}", core_eval_path.display()),
+        Err(e) => panic!(
+            "core_eval 夹具装载门禁未过（{}）: {e}",
+            core_eval_path.display()
+        ),
     }
 }
 

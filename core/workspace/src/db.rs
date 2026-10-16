@@ -944,12 +944,8 @@ fn rule_content_schema_violation(content: &str) -> Option<String> {
         return None;
     }
     Some(
-        evorule_rule_tools::four_segment::render_gate(
-            &report,
-            content,
-            "CON-L1-001 持久层写入门",
-        )
-        .unwrap_or_else(|| "schema validation failed without itemized errors".to_string()),
+        evorule_rule_tools::four_segment::render_gate(&report, content, "CON-L1-001 持久层写入门")
+            .unwrap_or_else(|| "schema validation failed without itemized errors".to_string()),
     )
 }
 
@@ -977,13 +973,11 @@ impl WorkspaceDb {
         if let Some(detail) = rule_content_schema_violation(&rv.content) {
             // [CON-L1-003] 拒收留痕（SR-15 件6）：报文 ID=四段式报文内容哈希前
             // 12 位（evorule-hash SSOT）；留痕失败仅告警不阻断拒收主流程。
-            let message_id: String =
-                evorule_hash::digest(detail.as_bytes()).chars().take(12).collect();
-            let summary = detail
-                .lines()
-                .nth(1)
-                .unwrap_or(detail.as_str())
-                .to_string();
+            let message_id: String = evorule_hash::digest(detail.as_bytes())
+                .chars()
+                .take(12)
+                .collect();
+            let summary = detail.lines().nth(1).unwrap_or(detail.as_str()).to_string();
             if let Err(e) = self.insert_rejection("persistence_gate", "L1", &summary, &message_id) {
                 tracing::warn!(error = %e, "rejection_log 写入失败（留痕失败不阻断拒收）");
             }

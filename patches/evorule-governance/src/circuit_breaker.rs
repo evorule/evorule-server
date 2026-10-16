@@ -50,7 +50,7 @@
 //!    `POST /api/sessions` body `{"caller_role":"llm"}` 声明角色；
 //! 3. **改资产后必须重启**：`rules_dir` 合并装载发生在**启动/重载时**，
 //!    非每会话读盘（路由策略另有 OnceLock 进程缓存，同样不热更）；
-//!    启动须带工作目录 `D:\evorule-server`（宪法相对路径
+//!    启动须带本仓根目录为工作目录（宪法相对路径
 //!    `./resources/server_eval.json`）；
 //! 4. **连发与观察**：连发 call_service 至阈值（缺省 5），deny 不中断会话
 //!    （version 照常推进，IoResponse error 回写）；取证经

@@ -992,6 +992,9 @@ impl SessionApi {
     /// API 层命令 ID 计数器按归档最大 Command ID 续起——命令 ID（高位区）
     /// 与反应器 FactId（低位区）分属两个独立计数器，复活时各自按类续起
     /// 保持两区不相交，防新事实与恢复历史在 fact_id_index 内碰撞。
+    // 复杂度豁免：快路径/复活/装配三段本就是文档化的一条链，拆分会割裂
+    // 哈希校验 fail-closed 语义的局部性；重构属独立批次，暂以 allow 保 CI 纪律。
+    #[allow(clippy::cognitive_complexity)]
     async fn session_or_rehydrate(
         &self,
         session_id: u64,
@@ -2797,9 +2800,9 @@ impl SessionApi {
         }
     }
 
-    /// 非 _with 桥（passes_discipline_gate / check_discipline_for_core_eval）已删：
-    /// 零星面（tier_inventory / 宪法 reload）直接调 _with 并显式传模式
-    /// （模式单一事实源 = `discipline_gate_enforce()`）。
+    // 非 _with 桥（passes_discipline_gate / check_discipline_for_core_eval）已删：
+    // 零星面（tier_inventory / 宪法 reload）直接调 _with 并显式传模式
+    // （模式单一事实源 = `discipline_gate_enforce()`）。
 
     /// 宪法文件的纪律门禁（接线点②，宪法 loader）：
     /// 宪法走独立 loader、此前零门禁，补 L2 纪律门禁。enforce 期违规 = Err 拒启

@@ -56,7 +56,9 @@ impl Bridge {
 
     /// 在自有 runtime 上 detach 一个后台 task（monitor 常驻消费用）。
     pub fn spawn<F: std::future::Future + Send + 'static>(&self, fut: F)
-    where F::Output: Send + 'static {
+    where
+        F::Output: Send + 'static,
+    {
         self.rt.spawn(fut);
     }
 
