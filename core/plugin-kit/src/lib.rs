@@ -16,6 +16,8 @@
 //! # 使用方式(插件侧)
 //! - 插件导出 `&'static [NativeServiceDef]` 声明表(SSOT 模式同 ):
 //!   新增原生能力 = 表追加一项 + 清单启用,宿主与插件机制零改动;
+//! - 有确定参数面的服务在声明项 `parameters` 填 JSON Schema 字符串
+//!   (OpenAI function parameters 子集),经能力对账清单透传给 LLM 消费方;
 //! - 插件以薄壳具名结构体委托本 crate 路由器(保持既有具名 API 与测试不变),
 //!   或直接使用 [`NativeServiceRouter`] / [`mount_router`]。
 
@@ -44,6 +46,11 @@ pub struct NativeServiceDef {
     pub sensitive: bool,
     /// 一句话描述(供能力对账/文档派生)
     pub description: &'static str,
+    /// 参数契约(OpenAI function parameters 子集形态的 JSON Schema 字符串):
+    /// `None` = 无契约声明,能力对账清单不带 parameters,LLM 消费方降级空 schema
+    /// (与既有行为逐字节一致,无静默语义变化)。新增服务 = 本表追加一项;
+    /// 有确定参数面的服务应同时声明 parameters,供 LLM 侧生成工具 schema。
+    pub parameters: Option<&'static str>,
     /// 实例构造子(带状态服务在此注入默认状态)
     pub make: fn() -> Arc<dyn NativeService>,
 }
@@ -207,12 +214,14 @@ mod tests {
             name: "kit_echo",
             sensitive: false,
             description: "echo 桩",
+            parameters: None,
             make: || Arc::new(Echo),
         },
         NativeServiceDef {
             name: "kit_other",
             sensitive: false,
             description: "other 桩",
+            parameters: None,
             make: || Arc::new(Other),
         },
     ];

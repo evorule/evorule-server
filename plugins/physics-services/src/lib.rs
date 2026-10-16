@@ -101,18 +101,21 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "physics_simulate",
         sensitive: false,
         description: "确定性物理仿真推进(刚体+辛积分器,vendored rpsm-core 内核)",
+        parameters: None,
         make: mk_simulate,
     },
     NativeServiceDef {
         name: "physics_energy",
         sensitive: false,
         description: "物理系统总机械能计算(确定性)",
+        parameters: None,
         make: mk_energy,
     },
     NativeServiceDef {
         name: "physics_grav_band",
         sensitive: false,
         description: "有界重力带(分层势场)仿真推进与逃逸判定(确定性)",
+        parameters: None,
         make: mk_grav_band,
     },
 ];

@@ -61,18 +61,21 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "geometry_collision_check",
         sensitive: false,
         description: "几何碰撞检测(零件两两相交判定,bbox/圆/多边形,触即算,确定性)",
+        parameters: None,
         make: mk_collision_check,
     },
     NativeServiceDef {
         name: "geometry_clearance_check",
         sensitive: false,
         description: "几何间隙检查(零件两两最小距离vs阈值,违规清单+全局最小,宽容方向容差,确定性)",
+        parameters: None,
         make: mk_clearance_check,
     },
     NativeServiceDef {
         name: "geometry_occlusion_check",
         sensitive: false,
         description: "几何遮挡序检查(重叠零件绘制序vs声明z层,画家算法语义,确定性)",
+        parameters: None,
         make: mk_occlusion_check,
     },
 ];

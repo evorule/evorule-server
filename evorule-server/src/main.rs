@@ -703,9 +703,74 @@ fn plugin_service_infos(def: &PluginDef) -> Vec<evorule_server::api::server::Bou
             description: Some(s.description.to_string()),
             plugin: Some(def.id.to_string()),
             sensitive: s.sensitive,
-            parameters: None,
+            parameters: s.parameters.and_then(|p| serde_json::from_str(p).ok()),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod parameters_contract_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    /// O-494 门禁：inference 14 项声明须带 parameters 契约，且经
+    /// [`plugin_service_infos`] 解析为 JSON 对象（/api/services 同源数据）；
+    /// 非 inference 插件机制就绪但本批数据为 None（清单不带 parameters，行为同既有）。
+    #[test]
+    fn inference_services_carry_parsed_parameters_contract() {
+        let def = PLUGIN_DEFS
+            .iter()
+            .find(|p| p.id == "inference-services")
+            .expect("PLUGIN_DEFS 应含 inference-services");
+        let infos = plugin_service_infos(def);
+        assert_eq!(infos.len(), 14, "inference 声明表应为 14 项");
+        for info in &infos {
+            let params = info
+                .parameters
+                .as_ref()
+                .unwrap_or_else(|| panic!("服务 {} 缺 parameters 契约", info.name));
+            assert_eq!(
+                params.get("type").and_then(|v| v.as_str()),
+                Some("object"),
+                "服务 {} 契约顶层须为 object",
+                info.name
+            );
+            assert!(
+                params
+                    .get("properties")
+                    .map(|v| v.is_object())
+                    .unwrap_or(false),
+                "服务 {} 契约缺 properties",
+                info.name
+            );
+        }
+        // 抽样断言（设计稿 §1.4 验收线）：units 为字符串数组且必填
+        let from_unit = infos
+            .iter()
+            .find(|s| s.name == "inference_dimension_from_unit")
+            .expect("应有 inference_dimension_from_unit");
+        let params = from_unit.parameters.as_ref().unwrap();
+        assert_eq!(
+            params
+                .pointer("/properties/units/items/type")
+                .and_then(|v| v.as_str()),
+            Some("string")
+        );
+        assert_eq!(
+            params.pointer("/required/0").and_then(|v| v.as_str()),
+            Some("units")
+        );
+        let demo = PLUGIN_DEFS
+            .iter()
+            .find(|p| p.id == "demo-services")
+            .expect("PLUGIN_DEFS 应含 demo-services");
+        assert!(
+            plugin_service_infos(demo)
+                .iter()
+                .all(|s| s.parameters.is_none()),
+            "demo 插件本批 parameters 应为 None"
+        );
+    }
 }
 
 /// 进程内插件登记表(声明序即挂载序与回落链序)。

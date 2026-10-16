@@ -109,18 +109,21 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "indicator_sma",
         sensitive: false,
         description: "简单移动平均 SMA(窗口 N,pandas rolling(N).mean() 语义,warmup 期 null)",
+        parameters: None,
         make: mk_sma,
     },
     NativeServiceDef {
         name: "indicator_ema",
         sensitive: false,
         description: "指数移动平均 EMA(span N,pandas ewm(span=N, adjust=False) 语义,递推逐位对齐)",
+        parameters: None,
         make: mk_ema,
     },
     NativeServiceDef {
         name: "indicator_macd",
         sensitive: false,
         description: "MACD 快慢线与柱(默认 12/26/9,三组 ewm(span, adjust=False) 组合)",
+        parameters: None,
         make: mk_macd,
     },
     NativeServiceDef {
@@ -128,6 +131,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description:
             "RSI(默认 14,Wilder 平滑 ewm(alpha=1/N, adjust=False),分类语义与参考实现逐分支对齐)",
+        parameters: None,
         make: mk_rsi,
     },
 ];

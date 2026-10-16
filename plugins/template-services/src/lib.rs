@@ -57,6 +57,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
     sensitive: false,
     description:
         "模板渲染(上下文+模板→JSON/Markdown/纯文本,{{}} 家族语法,if/for 最小集,确定性纯函数)",
+    parameters: None,
     make: mk_template_render,
 }];
 
