@@ -656,14 +656,16 @@ fn discipline_gate(transform_arr: &[Value], ctx: &LoadContext) -> Result<(), Con
     }
 }
 
-/// domain on_missing 门：**eq/lt 域**三道子门（对齐生产实码 server.rs:1590-1802）
+/// domain on_missing 门：**eq/lt/in 域**三道子门 + in 域第 4 道 values 门（对齐生产实码 server.rs domain_gate_violations）
 ///
-/// 仅对字面 eq/lt 域对象生效（对齐 2026-10-01 静默 false 根修方案 2' v4）：
+/// 仅对字面 eq/lt/in 域对象生效（对齐 2026-10-01 静默 false 根修方案 2' v4；
+/// in 域为 design-19 vendored 增补）：
 /// ① missing_declaration：缺 on_missing 显式声明
 /// ② invalid_declaration：on_missing 非 error/unsat
-/// ③ value_literal_ambiguous：value 字符串像根段点路径（历史写作错误形态）
+/// ③ value_literal_ambiguous：value（eq/lt）或 values 字符串元素（in）像根段点路径
+/// ④ values_declaration（仅 in）：values 缺失/非数组/空数组（design-19 R-3 fail-fast）
 ///
-/// 动态域（`__` 字符串引用）静态不可判定，天然不命中；all/has_fields 等非 eq/lt
+/// 动态域（`__` 字符串引用）静态不可判定，天然不命中；all/has_fields 等非 eq/lt/in
 /// 域无 on_missing 语义，不检查——**不是**「全部 domain 都要 on_missing」。
 ///
 /// **管辖面=L2 面**：宪法/约束文件条目行走此门（文件级）。业务文件
@@ -682,7 +684,7 @@ fn domain_on_missing_gate(
         walk_eq_lt_domain(rule, &mut violations);
         if !violations.is_empty() {
             return Err(ConstitutionError::DomainOnMissingGate(four_part(
-                &format!("eq/lt 域声明门禁未过（{}）", violations.join("; ")),
+                &format!("eq/lt/in 域声明门禁未过（{}）", violations.join("; ")),
                 &format!("$.transform[{i}]"),
                 "https://evorule.org/schemas/_shared/v1.0.json#/$defs/domain",
                 r#"{"type":"eq","path":"__exec__.instruction.params.x","value":1,"on_missing":"error"}"#,
@@ -701,8 +703,8 @@ fn walk_eq_lt_domain(v: &Value, out: &mut Vec<String>) {
             }
         }
         Value::Object(m) => {
-            let ty = m.get("type").and_then(|t| t.as_str());
-            if matches!(ty, Some("eq") | Some("lt")) {
+            let ty = m.get("type").and_then(Value::as_str);
+            if matches!(ty, Some("eq") | Some("lt") | Some("in")) {
                 let ty = ty.unwrap_or("");
                 let path_desc = m
                     .get("path")
@@ -727,6 +729,34 @@ fn walk_eq_lt_domain(v: &Value, out: &mut Vec<String>) {
                         out.push(format!(
                             "{ty} 域 {path_desc} value 字面量歧义（\"{val}\" 像路径引用但缺 __ 前缀——若引用路径请写全，若字面量请重命名）"
                         ));
+                    }
+                }
+                // ④ values_declaration（仅 in，design-19 R-3）：values 缺失/非数组/空数组
+                if ty == "in" {
+                    let values_arr = m.get("values").and_then(|v| v.as_array());
+                    if m.get("values").is_none() {
+                        out.push(format!(
+                            "in 域 {path_desc} 缺 values 显式声明（集合成员判定必备）"
+                        ));
+                    } else if values_arr.is_none() {
+                        out.push(format!(
+                            "in 域 {path_desc} values 非数组（集合成员判定要求字面量数组）"
+                        ));
+                    } else if values_arr.is_some_and(|a| a.is_empty()) {
+                        out.push(format!(
+                            "in 域 {path_desc} values 为空数组（空集恒假，大概率写作错误——fail-fast 拒载）"
+                        ));
+                    }
+                    if let Some(arr) = values_arr {
+                        for el in arr.iter() {
+                            if let Some(s) = el.as_str() {
+                                if is_root_segment_dot_path_like(s) {
+                                    out.push(format!(
+                                        "in 域 {path_desc} values 元素 \"{s}\" 字面量歧义（像路径引用但缺 __ 前缀——若引用路径请写全，若字面量请重命名）"
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -956,6 +986,115 @@ mod tests {
         let ctx = LoadContext::business_file("x.json");
         let loaded = load_rule_set(&doc, &ctx).expect("业务面文件级应放行（归合并层）");
         assert_eq!(loaded.engine_rules.len(), 1);
+    }
+
+    // ===== design-19：in 域声明门禁（第 4 道 values 门 + 元素歧义）=====
+
+    #[test]
+    fn in_domain_legal_form_passes() {
+        // 合法形态：path + values 字面量数组 + on_missing 显式声明 → 四步全过
+        let doc = json!({
+            "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+            "kind": "rule_set", "id": "x.y.in1", "version": "0.1.0",
+            "metadata": { "title": "in 域合法形态", "tier": "constraint" },
+            "transform": [
+                { "type": "branch", "params": {
+                    "domain": { "type": "in", "path": "__exec__.payload.model",
+                                "values": ["M2.5", "M3"], "on_missing": "unsat" },
+                    "on_true": [], "on_false": []
+                }}
+            ]
+        });
+        let ctx = LoadContext::constraint_file("00_constraint_in.json");
+        let loaded = load_rule_set(&doc, &ctx).expect("in 域合法形态应过四步");
+        assert!(loaded.provenance.gates.domain_on_missing_gate);
+    }
+
+    #[test]
+    fn in_domain_values_element_ambiguous_rejected() {
+        // values 字符串元素像根段点路径 → 字面量歧义拒载（门禁层，schema 不查元素语义）
+        let doc = json!({
+            "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+            "kind": "rule_set", "id": "x.y.in2", "version": "0.1.0",
+            "metadata": { "title": "in 域元素歧义", "tier": "constraint" },
+            "transform": [
+                { "type": "branch", "params": {
+                    "domain": { "type": "in", "path": "__exec__.payload.model",
+                                "values": ["M2.5", "payload.x"], "on_missing": "unsat" },
+                    "on_true": [], "on_false": []
+                }}
+            ]
+        });
+        let ctx = LoadContext::constraint_file("00_constraint_in.json");
+        let err = load_rule_set(&doc, &ctx).expect_err("values 元素歧义应拒");
+        assert!(matches!(err, ConstitutionError::DomainOnMissingGate(_)));
+        let msg = format!("{err}");
+        assert!(msg.contains("字面量歧义"));
+        assert!(msg.contains("正确形态"));
+    }
+
+    #[test]
+    fn in_domain_missing_values_rejected_by_schema() {
+        // values 缺失：schema 层（allOf in 分支 required）先拒——walk 门禁为纵深防御
+        let doc = json!({
+            "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+            "kind": "rule_set", "id": "x.y.in3", "version": "0.1.0",
+            "metadata": { "title": "in 域缺 values", "tier": "constraint" },
+            "transform": [
+                { "type": "branch", "params": {
+                    "domain": { "type": "in", "path": "__exec__.payload.model",
+                                "on_missing": "unsat" },
+                    "on_true": [], "on_false": []
+                }}
+            ]
+        });
+        let ctx = LoadContext::constraint_file("00_constraint_in.json");
+        let err = load_rule_set(&doc, &ctx).expect_err("values 缺失应拒");
+        assert!(matches!(err, ConstitutionError::SchemaViolation(_)));
+    }
+
+    #[test]
+    fn in_domain_business_file_deferred_like_eq_lt() {
+        // 业务面管辖裁定与 eq/lt 一致：业务文件不在文件级拒（归合并层条目级门）。
+        // 注：schema 对业务文件同样生效（values 必备），故这里用「有 values 但
+        // 元素歧义」形态验证——schema 过、walk 门禁业务面放行。
+        let doc = json!({
+            "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+            "kind": "rule_set", "id": "x.y.in4", "version": "0.1.0",
+            "metadata": { "title": "in 域业务面归并" },
+            "transform": [
+                { "type": "branch", "params": {
+                    "domain": { "type": "in", "path": "payload.model",
+                                "values": ["M3", "payload.x"], "on_missing": "unsat" },
+                    "on_true": [], "on_false": []
+                }}
+            ]
+        });
+        let ctx = LoadContext::business_file("x.json");
+        let loaded = load_rule_set(&doc, &ctx).expect("业务面文件级应放行（归合并层）");
+        assert_eq!(loaded.engine_rules.len(), 1);
+    }
+
+    #[test]
+    fn in_walk_test_hook_covers_values_gate_details() {
+        // V4 对齐测试钩子：in 域第 4 道门三形态 + 元素歧义逐条明细
+        let mk = |domain: Value| {
+            json!({ "type": "branch", "params": {
+                "domain": domain, "on_true": [], "on_false": []
+            }})
+        };
+        let violations = walk_eq_lt_domain_for_test(&json!([
+            mk(json!({ "type": "in", "path": "p", "on_missing": "unsat" })),
+            mk(json!({ "type": "in", "path": "p", "values": "M3", "on_missing": "unsat" })),
+            mk(json!({ "type": "in", "path": "p", "values": [], "on_missing": "unsat" })),
+            mk(json!({ "type": "in", "path": "p", "values": ["payload.x"], "on_missing": "unsat" })),
+            mk(json!({ "type": "in", "path": "p", "values": ["M3", "M2.5"], "on_missing": "unsat" })),
+        ]));
+        assert_eq!(violations.len(), 4, "四违规一合法: {violations:?}");
+        assert!(violations[0].contains("缺 values 显式声明"));
+        assert!(violations[1].contains("values 非数组"));
+        assert!(violations[2].contains("values 为空数组"));
+        assert!(violations[3].contains("字面量歧义"));
     }
 
     #[test]

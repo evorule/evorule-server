@@ -905,15 +905,25 @@ pub async fn call_llm(
 /// 推导允许的模型集合。
 ///
 /// 判定：收集物料中所有 `{"type":"eq","path":"instruction.params.model",
-/// "value":"<model>"}` 节点的 value（与 server 侧引擎同构的约束表达）。
-/// 物料可读但推不出任何条目 → Err（fail-closed：宁可显式拒绝服务，
-/// 绝不静默空集放行）。
+/// "value":"<model>"}` 节点的 value（与 server 侧引擎同构的约束表达），以及
+/// `{"type":"in","path":"instruction.params.model","values":[...]}` 节点的
+/// values 字符串元素（design-19 集合形态；eq/in 双形态并存过渡）。
+/// in 节点 values 缺失/非数组/含非字符串元素 → Err（fail-closed：物料形状错，
+/// 绝不静默跳过）。物料可读但推不出任何条目 → Err（fail-closed：宁可显式
+/// 拒绝服务，绝不静默空集放行）。
 pub fn parse_model_allowlist(v: &Value) -> Result<BTreeSet<String>, PluginError> {
     let mut set = BTreeSet::new();
-    collect_model_eq_values(v, &mut set);
+    let mut shape_errors: Vec<String> = Vec::new();
+    collect_model_allowlist_values(v, &mut set, &mut shape_errors);
+    if !shape_errors.is_empty() {
+        return Err(PluginError::Config(format!(
+            "模型白名单物料形状非法：{}——fail-closed 不放行",
+            shape_errors.join("; ")
+        )));
+    }
     if set.is_empty() {
         return Err(PluginError::Config(
-            "模型白名单物料解析为空集（未找到 path=\"instruction.params.model\" 的 eq 约束节点）\
+            "模型白名单物料解析为空集（未找到 path=\"instruction.params.model\" 的 eq/in 约束节点）\
              ——fail-closed 不放行，请核对物料版本形状"
                 .to_string(),
         ));
@@ -930,26 +940,53 @@ pub fn load_model_allowlist_file(path: &str) -> Result<BTreeSet<String>, PluginE
     parse_model_allowlist(&v)
 }
 
-fn collect_model_eq_values(v: &Value, out: &mut BTreeSet<String>) {
+fn collect_model_allowlist_values(
+    v: &Value,
+    out: &mut BTreeSet<String>,
+    shape_errors: &mut Vec<String>,
+) {
     match v {
         Value::Object(m) => {
-            if m.get("type").and_then(Value::as_str) == Some("eq")
-                && m.get("path").and_then(Value::as_str) == Some("instruction.params.model")
-            {
-                if let Some(model) = m.get("value").and_then(Value::as_str) {
-                    let model = model.trim();
-                    if !model.is_empty() {
-                        out.insert(model.to_string());
+            if m.get("path").and_then(Value::as_str) == Some("instruction.params.model") {
+                match m.get("type").and_then(Value::as_str) {
+                    Some("eq") => {
+                        if let Some(model) = m.get("value").and_then(Value::as_str) {
+                            let model = model.trim();
+                            if !model.is_empty() {
+                                out.insert(model.to_string());
+                            }
+                        }
                     }
+                    Some("in") => match m.get("values").and_then(Value::as_array) {
+                        Some(arr) => {
+                            for el in arr {
+                                match el.as_str() {
+                                    Some(s) => {
+                                        let s = s.trim();
+                                        if !s.is_empty() {
+                                            out.insert(s.to_string());
+                                        }
+                                    }
+                                    None => shape_errors.push(format!(
+                                        "in 域 values 含非字符串元素（{el}）——白名单物料仅支持字符串成员"
+                                    )),
+                                }
+                            }
+                        }
+                        None => shape_errors.push(
+                            "in 域缺 values 数组——物料形状错".to_string(),
+                        ),
+                    },
+                    _ => {}
                 }
             }
             for child in m.values() {
-                collect_model_eq_values(child, out);
+                collect_model_allowlist_values(child, out, shape_errors);
             }
         }
         Value::Array(a) => {
             for child in a {
-                collect_model_eq_values(child, out);
+                collect_model_allowlist_values(child, out, shape_errors);
             }
         }
         _ => {}
@@ -1938,6 +1975,62 @@ mod tests {
         // 空物料 fail-closed（绝不静默空集放行）
         let err = parse_model_allowlist(&json!({"kind": "rule_set", "transform": []})).unwrap_err();
         assert!(err.to_string().contains("空集"));
+    }
+
+    #[test]
+    fn model_allowlist_parses_in_set_form_and_mixed_forms() {
+        // in 集合形态（design-19 改写后物料形状）
+        let in_material = json!({
+            "kind": "rule_set",
+            "transform": [{
+                "type": "enforce",
+                "params": {
+                    "domain": { "type": "all", "inner": [
+                        { "type": "instruction", "instruction_type": "call_external" },
+                        { "type": "not", "inner": { "type": "in",
+                            "path": "instruction.params.model",
+                            "values": ["MiniMax-M2.5", "MiniMax-M3"],
+                            "on_missing": "error" } }
+                    ]}
+                }
+            }]
+        });
+        let set = parse_model_allowlist(&in_material).unwrap();
+        assert_eq!(set.len(), 2);
+        assert!(set.contains("MiniMax-M2.5"));
+        assert!(set.contains("MiniMax-M3"));
+        // 混合形态（eq + in 双节点）并集
+        let mixed = json!({
+            "transform": [{
+                "type": "branch",
+                "params": { "domain": { "type": "all", "inner": [
+                    { "type": "not", "inner": { "type": "eq",
+                        "path": "instruction.params.model", "value": "MiniMax-M2.5" } },
+                    { "type": "not", "inner": { "type": "in",
+                        "path": "instruction.params.model", "values": ["MiniMax-M3"] } }
+                ]}}
+            }]
+        });
+        let set = parse_model_allowlist(&mixed).unwrap();
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn model_allowlist_in_shape_errors_fail_closed() {
+        // in 节点 values 含非字符串元素 → Err（绝不静默跳过）
+        let bad = json!({
+            "transform": [{ "type": "branch", "params": { "domain": { "type": "in",
+                "path": "instruction.params.model", "values": ["a", 42] } } }]
+        });
+        let err = parse_model_allowlist(&bad).unwrap_err();
+        assert!(err.to_string().contains("非字符串元素"));
+        // in 节点缺 values → Err
+        let missing = json!({
+            "transform": [{ "type": "branch", "params": { "domain": { "type": "in",
+                "path": "instruction.params.model" } } }]
+        });
+        let err = parse_model_allowlist(&missing).unwrap_err();
+        assert!(err.to_string().contains("缺 values"));
     }
 
     #[tokio::test]

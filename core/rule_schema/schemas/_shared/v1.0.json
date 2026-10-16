@@ -52,17 +52,18 @@
               "enum": [
                 "eq",
                 "lt",
+                "in",
                 "exists",
                 "instruction",
                 "all",
                 "not",
                 "has_fields"
               ],
-              "description": "7 基础域类型（权威源 evorule-tcb/src/domain.rs L128-139）。派生域（gt/or/le/ge/ne）是 core_eval 用 all/not/lt/eq 组合出来的，不在枚举内。嵌套一律用 inner，禁止 domain/domains 字段（P0-03）。"
+              "description": "8 基础域类型（权威源 evorule-tcb/src/domain.rs；in 为 design-19 vendored 增补——集合成员判定，多模型准入白名单表达面）。派生域（gt/or/le/ge/ne）是 core_eval 用 all/not/lt/eq 组合出来的，不在枚举内。嵌套一律用 inner，禁止 domain/domains 字段（P0-03）。"
             },
             "path": {
               "$ref": "#/$defs/path",
-              "description": "eq/lt/exists/has_fields 的求值路径（必填，纯路径语义，同 resolve_exec_path）"
+              "description": "eq/lt/in/exists/has_fields 的求值路径（必填，纯路径语义，同 resolve_exec_path）"
             },
             "value": {
               "$ref": "#/$defs/path_or_literal",
@@ -98,6 +99,28 @@
                   "path",
                   "value"
                 ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "in"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "path",
+                  "values"
+                ],
+                "properties": {
+                  "values": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "in 域成员字面量数组（design-19：纯字面量，不做 __ 引用解析；空数组被装载门禁拒载——运行时数学语义为 Unsat，写作错误早暴露）"
+                  }
+                }
               }
             },
             {

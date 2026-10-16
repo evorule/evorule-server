@@ -1,0 +1,191 @@
+{
+  "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+  "kind": "rule_set",
+  "id": "org.evorule.core.eval",
+  "rule_id": "core.eval",
+  "version": "0.6.0",
+  "description": "TCB 宪法原则集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（T8,2026-08-27），应用可参照 app.evoagent.agent v0.4.0 范式；tool_trace 工具轨迹规则已于 v0.6.0 迁出至部署面规则集（server_eval.json 自持）——本宪法回归纯计算原则集，应用层策略规则不再进入",
+  "metadata": {
+    "author": "evorule-core",
+    "license": "CC0-1.0 Universal (Public Domain)",
+    "public_domain_notice": "本文件(core_eval.json,即 EvoRule 宪法)以 CC0 1.0 公共领域奉献。任何人都可以自由使用、修改、再分发,无需保留版权声明。EvoRule 代码本身采用 AGPL-3.0-or-later,但本解释器规范是公共领域 —— 任何人都可以实现兼容的 EvoRule 引擎。",
+    "spdx_license_id": "CC0-1.0",
+    "provenance": {
+      "note": "v0.3.1 及此前版本含 ReAct 循环规则(call_external/call_service 剧本),2026-08-27 经 T8 专项迁出至消费方;机制层(6 元指令/9 指令类型/has_fields 等域函数)始终属于语言规范,不受本次迁出影响;v0.5.0 经立项批复(2026-09-28)新增 tool_trace 规则——策略级增补(仅组合既有 set 动作/branch 控制流/instruction 域函数,未添加任何物理原语);v0.6.0(2026-09-29):经项目方改判,v0.5.0 的 tool_trace 增补属越界批准——应用层策略规则按双文件职责模型应落部署面规则集(server_eval.json 已自持,2026-09-28 同步),本宪法迁出该规则回归纯计算原则集;同日起部署面规则集拆分独立 id(org.evorule.server.eval),同 id 双版本线混淆消除"
+    },
+    "sections": [
+      "1. 原子计算指令: increment, decrement, set",
+      "2. 控制流指令: sequence, conditional, while_loop",
+      "3. 默认处理: all([]) 兜底规则"
+    ],
+    "constraints": [
+      "每条 transform 规则中最多包含一个 io_request 元指令",
+      "原因: __io_results__ 是按 io_type 隔离的字段，多个 io_request 会冲突",
+      "io_request 必须是 branch 的叶子节点（on_false 分支），之前不能有 set/push 操作",
+      "v0.3.0 新增: has_fields 域类型（语言层能力，本最小集未使用；collect/merge 元指令已随 2026-09-14 规则清理专项退役——LLM 循环机制下沉 TCB 属架构事故，多轮编排回归应用层）",
+      "设计决策: fork-join 批处理聚合已整体移除——批处理策略违反 TCB 最小顺序语义，多工具的 token 聚合优化由 governance 层负责",
+      "I/O 结果按类型隔离: __io_results__.{io_type}；消费后以 JSON null 清除（exists 将 null 视为不存在）",
+      "v0.3.1: set 的 attr 引用 payload 内以 __ 开头的字段时必须写显式前缀（如 __exec__.payload.__io_results__.call_external），否则会被误判为状态根路径",
+      "本版撤销兼容说明: query_db/http_get/save_memory 不再是内置指令类型（宪法未定义对应 transform 规则，提交会触发显式警告——TCB 层检测到 noop 效果返回 TransitionResult::Ignored，反应器产生 Error 事实）；需要这些能力的应用在其自有 rule_set 中定义 call_service 类规则",
+      "本版 call_external 参数: 仅使用 messages（LLM 消息历史数组）与 tools（可选工具描述）；prompt/system 不再作为指令参数（live handler 可直接从 messages 透传）。注意: 本最小评估集不定义 call_external 规则,需 LLM 循环的应用自带剧本（范式见 app.evoagent.agent）",
+      "语义澄清: 业务 set 指令为纯覆盖语义——宪法规则硬编码元指令 operation=set，指令 params 中的 operation 字段（如 add/sub）被忽略；算术更新必须使用 increment（add）/decrement（sub）指令。误用 set+add 做循环体累加会导致计数器每轮被覆盖回常量、while_loop 条件永真（差分测试回归教训）",
+      "本版撤销兼容说明: tool_trace 自 v0.6.0 迁出本宪法（应用层策略规则落部署面规则集；部署面已自持对应 transform 规则，轨迹指令在部署面照常执行）——在本宪法单独使用时提交 tool_trace 将触发显式警告（TCB 检测到 noop 效果返回 TransitionResult::Ignored，反应器产生 Error 事实）"
+    ]
+  },
+  "transform": [
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "increment"
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "__exec__.instruction.params.attr",
+              "operation": "add",
+              "value": "__exec__.instruction.params.delta"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "decrement"
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "__exec__.instruction.params.attr",
+              "operation": "sub",
+              "value": "__exec__.instruction.params.delta"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "set"
+        },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "__exec__.instruction.params.attr",
+              "operation": "set",
+              "value": "__exec__.instruction.params.value"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "sequence"
+        },
+        "on_true": [
+          {
+            "type": "push",
+            "params": {
+              "instructions": "__exec__.instruction.params.instructions"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "conditional"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": "__exec__.instruction.params.domain",
+              "on_true": [
+                {
+                  "type": "push",
+                  "params": {
+                    "instructions": [
+                      "__exec__.instruction.params.then"
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "push",
+                  "params": {
+                    "instructions": [
+                      "__exec__.instruction.params.else"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "while_loop"
+        },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": "__exec__.instruction.params.condition",
+              "on_true": [
+                {
+                  "type": "push",
+                  "params": {
+                    "instructions": [
+                      "__exec__.instruction.params.body",
+                      "__exec__.instruction"
+                    ]
+                  }
+                }
+              ],
+              "on_false": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "noop" },
+        "on_true": []
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "all", "inner": [] },
+        "on_true": []
+      }
+    }
+  ]
+}

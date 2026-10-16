@@ -1881,9 +1881,11 @@ impl SessionApi {
     // 存量不追溯：已装载规则不受影响；重新装载/更新/导入时触发校验（渐进收敛）。
     // =========================================================================
 
-    /// 单规则 domain 门禁违规提取（纯函数）：walk 整棵指令树，收集全部 eq/lt
-    /// 域对象的三道门违规。eq/lt 类型键仅域对象持有（transform_rule 5 元指令与
-    /// 指令层类型均不含 eq/lt），对象形态判定无误伤面。
+    /// 单规则 domain 门禁违规提取（纯函数）：walk 整棵指令树，收集全部 eq/lt/in
+    /// 域对象的门违规。eq/lt/in 类型键仅域对象持有（transform_rule 5 元指令与
+    /// 指令层类型均不含 eq/lt/in），对象形态判定无误伤面。
+    /// 三道门（missing_declaration/invalid_declaration/value_literal_ambiguous）
+    /// 为 eq/lt/in 共用；in 域另有第 4 道 values_declaration 门（design-19 R-3）。
     fn domain_gate_violations(rule: &JsonValue) -> Vec<DomainViolation> {
         const ON_MISSING_VALUES: [&str; 2] = ["error", "unsat"];
 
@@ -1896,7 +1898,7 @@ impl SessionApi {
                 }
                 JsonValue::Object(map) => {
                     let ty = map.get("type").and_then(|t| t.as_str());
-                    if matches!(ty, Some("eq") | Some("lt")) {
+                    if matches!(ty, Some("eq") | Some("lt") | Some("in")) {
                         let ty = ty.unwrap_or("");
                         let path_desc = map
                             .get("path")
@@ -1930,6 +1932,48 @@ impl SessionApi {
                                         "{ty} 域 {path_desc} value=\"{val}\" 呈 exec 根段点路径形态但缺 __ 前缀（ValueLiteralAmbiguous 写作错误，运行时将被字面量化静默比对）"
                                     ),
                                 });
+                            }
+                        }
+                        if ty == "in" {
+                            // 第 4 道 values_declaration 门（design-19 R-3）：
+                            // values 缺失/非数组/空数组 → 拒载（fail-fast，空集大概率写作错误）
+                            let values_arr = map.get("values").and_then(|v| v.as_array());
+                            if map.get("values").is_none() {
+                                out.push(DomainViolation {
+                                    door: "values_declaration".to_string(),
+                                    detail: format!(
+                                        "in 域 {path_desc} 缺 values 显式声明（集合成员判定必备）"
+                                    ),
+                                });
+                            } else if values_arr.is_none() {
+                                out.push(DomainViolation {
+                                    door: "values_declaration".to_string(),
+                                    detail: format!(
+                                        "in 域 {path_desc} values 非数组（集合成员判定要求字面量数组）"
+                                    ),
+                                });
+                            } else if values_arr.is_some_and(|a| a.is_empty()) {
+                                out.push(DomainViolation {
+                                    door: "values_declaration".to_string(),
+                                    detail: format!(
+                                        "in 域 {path_desc} values 为空数组（空集恒假，大概率写作错误——fail-fast 拒载）"
+                                    ),
+                                });
+                            }
+                            // value_literal_ambiguous 门扩 values 字符串元素逐个检查
+                            if let Some(arr) = values_arr {
+                                for el in arr.iter() {
+                                    if let Some(s) = el.as_str() {
+                                        if evorule_tcb::domain::is_root_segment_dot_path(s) {
+                                            out.push(DomainViolation {
+                                                door: "value_literal_ambiguous".to_string(),
+                                                detail: format!(
+                                                    "in 域 {path_desc} values 元素 \"{s}\" 呈 exec 根段点路径形态但缺 __ 前缀（ValueLiteralAmbiguous 写作错误，运行时将被字面量化静默比对）"
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -14243,6 +14287,93 @@ mod tests {
         );
         assert!(rejected2.is_empty(), "宪法前缀段豁免");
         assert_eq!(kept2.len(), 1);
+    }
+
+    /// in 域门（design-19）：三道共用门覆盖 in + 第 4 道 values_declaration 门 +
+    /// values 元素字面量歧义 + 合法形态（含带点字面量元素）零误伤。
+    #[test]
+    fn t4b_domain_gate_in_domain_values_door_and_ambiguity() {
+        // 合法 in（声明齐全 + 非空集合 + 无根段点元素）→ 零违规
+        let in_ok = o135_tcb(
+            r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"in","path":"payload.model",
+             "values":["MiniMax-M2.5","MiniMax-M3"],"on_missing":"unsat"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#,
+        );
+        assert!(
+            SessionApi::domain_gate_violations(&in_ok[0]).is_empty(),
+            "合法 in 形态零误伤"
+        );
+
+        // 共用门 ①②：in 缺 on_missing / 声明值非法同检
+        let in_no_decl = o135_tcb(
+            r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"in","path":"payload.model",
+             "values":["a"]},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#,
+        );
+        let vi = SessionApi::domain_gate_violations(&in_no_decl[0]);
+        assert_eq!(vi.len(), 1, "in 缺 on_missing 同检");
+        assert_eq!(vi[0].door, "missing_declaration");
+
+        let in_bad_decl = o135_tcb(
+            r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"in","path":"payload.model",
+             "values":["a"],"on_missing":"warn"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#,
+        );
+        let vi = SessionApi::domain_gate_violations(&in_bad_decl[0]);
+        assert_eq!(vi.len(), 1, "in 声明值非法同检");
+        assert_eq!(vi[0].door, "invalid_declaration");
+
+        // 第 4 道 values_declaration：缺失 / 非数组 / 空数组逐形态拒
+        for (shape, desc) in [
+            (r#"{"type":"in","path":"payload.model","on_missing":"unsat"}"#, "values 缺失"),
+            (
+                r#"{"type":"in","path":"payload.model","values":"a","on_missing":"unsat"}"#,
+                "values 非数组",
+            ),
+            (
+                r#"{"type":"in","path":"payload.model","values":[],"on_missing":"unsat"}"#,
+                "values 空数组",
+            ),
+        ] {
+            let rule = o135_tcb(&format!(
+                r#"{{"transform":[
+                {{"type":"branch","params":{{"domain":{shape},
+                 "on_true":[{{"type":"set","params":{{"attr":"meta_guard.ok","operation":"set","value":1}}}}],"on_false":[]}}}}
+            ]}}"#
+            ));
+            let vi = SessionApi::domain_gate_violations(&rule[0]);
+            assert_eq!(vi.len(), 1, "{desc} 必须可判");
+            assert_eq!(vi[0].door, "values_declaration", "{desc}");
+        }
+
+        // 共用门 ③ 扩 values 字符串元素：根段点形态元素逐个拒
+        let in_ambiguous = o135_tcb(
+            r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"in","path":"payload.model",
+             "values":["MiniMax-M3","instruction.params.model"],"on_missing":"unsat"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#,
+        );
+        let vi = SessionApi::domain_gate_violations(&in_ambiguous[0]);
+        assert_eq!(vi.len(), 1, "values 根段点元素必须可判");
+        assert_eq!(vi[0].door, "value_literal_ambiguous");
+        assert!(vi[0].detail.contains("instruction.params.model"));
+
+        // 合法带点字面量元素（MiniMax-* 形态）零误伤
+        let in_dotted = o135_tcb(
+            r#"{"transform":[
+            {"type":"branch","params":{"domain":{"type":"in","path":"payload.model",
+             "values":["MiniMax-M2.5","MiniMax-M3"],"on_missing":"unsat"},
+             "on_true":[{"type":"set","params":{"attr":"meta_guard.ok","operation":"set","value":1}}],"on_false":[]}}
+        ]}"#,
+        );
+        assert!(SessionApi::domain_gate_violations(&in_dotted[0]).is_empty());
     }
 
     /// 导入前置预判（导入面）：缺声明 bundle 条目在落盘前被预判拒收，

@@ -47,6 +47,7 @@ const VALID_META_INSTRUCTIONS: &[&str] = &["set", "push", "branch", "io_request"
 const VALID_DOMAIN_TYPES: &[&str] = &[
     "eq",
     "lt",
+    "in",
     "exists",
     "instruction",
     "all",
