@@ -174,8 +174,8 @@ async fn dual_plugin_physics_native_hit() {
         .unwrap();
     assert_eq!(
         r.get("status").and_then(|v| v.as_str()),
-        Some("ok"),
-        "physics_energy 应原生命中并返回 status=ok: {r}"
+        Some("determined"),
+        "physics_energy 应原生命中并返回 status=determined: {r}"
     );
     assert!(
         r.get("total_mechanical_energy").is_some(),
@@ -262,8 +262,8 @@ async fn triple_plugin_indicator_native_hit_with_warmup_nulls() {
         .unwrap();
     assert_eq!(
         r.get("status").and_then(|v| v.as_str()),
-        Some("ok"),
-        "indicator_sma 应原生命中并返回 status=ok: {r}"
+        Some("determined"),
+        "indicator_sma 应原生命中并返回 status=determined: {r}"
     );
     let values = r
         .get("values")
