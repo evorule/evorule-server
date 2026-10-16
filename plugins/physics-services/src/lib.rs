@@ -23,6 +23,13 @@
 //! - 浮点(TCB 无 Float 变体)入参接受 Integer/数字字符串,出参一律字符串化
 //!   (与 demo-services `float_str` 约定一致);
 //! - 跨平台浮点差异不在承诺范围;内核确定性模型详见 `kernel::mod` 头注。
+//!
+//! # 统一信封 v1(科学计算服务面规范)
+//!
+//! 成功出参保留键:`status`(恒 determined——本族无 undetermined 路径:
+//! NaN/Inf 解析期显式拒绝,发散/逃逸由既有 `escaped` 字段确定性表达)、
+//! `determinism`(corpus_locked:双跑位元一致 + 黄金语料锁定)。
+//! 既有字段全部原位保留;error 维持框架 `Err(String)` 通道。
 
 #![forbid(unsafe_code)]
 

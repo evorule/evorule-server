@@ -284,7 +284,8 @@ impl NativeService for PhysicsSimulate {
             kernel.tick(dt);
         }
         Ok(obj(vec![
-            ("status", JsonValue::string("ok")),
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("corpus_locked")),
             ("steps", JsonValue::Integer(steps)),
             (
                 "integrator_order",
@@ -321,7 +322,8 @@ impl NativeService for PhysicsEnergy {
             kernel.set_gravity_band(lo, hi);
         }
         Ok(obj(vec![
-            ("status", JsonValue::string("ok")),
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("corpus_locked")),
             (
                 "total_mechanical_energy",
                 float_str(kernel.total_mechanical_energy()),
@@ -363,7 +365,8 @@ impl NativeService for PhysicsGravBand {
             kernel.tick(dt);
         }
         Ok(obj(vec![
-            ("status", JsonValue::string("ok")),
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("corpus_locked")),
             ("steps", JsonValue::Integer(steps)),
             (
                 "band",
@@ -422,7 +425,11 @@ mod tests {
             10,
         );
         let r = PhysicsSimulate.execute(&args).unwrap();
-        assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("determined"));
+        assert_eq!(
+            r.get("determinism").and_then(|v| v.as_str()),
+            Some("corpus_locked")
+        );
         let bodies = r.get("bodies").and_then(|v| v.as_array()).unwrap();
         let pos = bodies[0].get("pos").and_then(|v| v.as_array()).unwrap();
         let y: f64 = pos[1].as_str().unwrap().parse().unwrap();
@@ -600,5 +607,89 @@ mod tests {
             err.contains("grav_band") && err.contains("自诊断指引"),
             "{err}"
         );
+    }
+
+    // ===== 统一信封保留键(科学计算服务面规范 v1) =====
+
+    #[test]
+    fn envelope_keys_present_all_three_services() {
+        // physics 族无 null/undetermined 路径(NaN/Inf 解析期拒绝,发散由
+        // escaped 显式字段表达)→ 恒 determined,无 reason
+        let sim_args = simulate_args(
+            vec![body_json("1.0", [0.0, 10.0, 0.0], [0.0, 0.0, 0.0], None)],
+            "0.1",
+            5,
+        );
+        let energy_args = JsonValue::object_from_pairs(&[(
+            "bodies",
+            JsonValue::Array(vec![body_json(
+                "1.0",
+                [0.0, 5.0, 0.0],
+                [0.0, 0.0, 0.0],
+                None,
+            )]),
+        )]);
+        let band_args = JsonValue::object_from_pairs(&[
+            (
+                "bodies",
+                JsonValue::Array(vec![body_json(
+                    "1.0",
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                    None,
+                )]),
+            ),
+            ("dt", float_str(0.1)),
+            ("steps", JsonValue::Integer(5)),
+            (
+                "grav_band",
+                obj(vec![("lo", float_str(0.0)), ("hi", float_str(5.0))]),
+            ),
+        ]);
+        for (svc, args, legacy_keys) in [
+            (
+                &PhysicsSimulate as &dyn NativeService,
+                sim_args,
+                vec!["steps", "bodies", "total_mechanical_energy"],
+            ),
+            (&PhysicsEnergy, energy_args, vec!["total_mechanical_energy"]),
+            (
+                &PhysicsGravBand,
+                band_args,
+                vec!["steps", "band", "bodies", "total_mechanical_energy"],
+            ),
+        ] {
+            let out = svc.execute(&args).unwrap();
+            assert_eq!(
+                out.get("status").and_then(JsonValue::as_str),
+                Some("determined")
+            );
+            assert_eq!(
+                out.get("determinism").and_then(JsonValue::as_str),
+                Some("corpus_locked")
+            );
+            assert!(out.get("reason").is_none());
+            for legacy in legacy_keys {
+                assert!(out.get(legacy).is_some(), "既有字段 {legacy} 丢失");
+            }
+        }
+    }
+
+    #[test]
+    fn envelope_double_run_bit_identical() {
+        // corpus_locked 验收义务最小形态:同输入双跑逐字节一致
+        let args = simulate_args(
+            vec![body_json(
+                "1.0",
+                [0.0, 10.0, 0.0],
+                [0.0, 1.0, 0.0],
+                Some(0.5),
+            )],
+            "0.01",
+            100,
+        );
+        let r1 = PhysicsSimulate.execute(&args).unwrap().to_string();
+        let r2 = PhysicsSimulate.execute(&args).unwrap().to_string();
+        assert_eq!(r1, r2, "双跑输出不一致(位元级)");
     }
 }
