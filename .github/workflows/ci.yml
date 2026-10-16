@@ -203,7 +203,25 @@ jobs:
         # 测试依赖兄弟仓 evorule-rule（git rev dev-dep），CI 默认布局不启用该
         # feature（required-features 未满足不编译）；本地联测见 Cargo.toml 注释
         # --exclude evorule-setup: 同 clippy job 注释（payload 门禁, CI 无法编译 installer）
-        run: cargo test --workspace --exclude evorule-setup
+        run: |
+          set -o pipefail
+          cargo test --workspace --exclude evorule-setup 2>&1 | tee /tmp/test-output.log
+
+      # 失败指纹上报：run logs 需 admin 权限无法匿名读取，把日志尾部
+      # post 成 commit comment（公开 API 匿名可读），供离线诊断。
+      - name: 上报测试失败指纹
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BODY=$(tail -c 6000 /tmp/test-output.log 2>/dev/null || echo "no test output captured")
+          jq -n --arg b "$BODY" '{body: $b}' > /tmp/comment-payload.json
+          curl -sf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+            -d @/tmp/comment-payload.json \
+            || echo "comment post failed (non-blocking)"
 
   # ===== Release build =====
   build:
@@ -266,6 +284,7 @@ jobs:
           # /api/health 在 public_routes 无需认证,探测不必携带。
           # 不覆盖 EVORULE_ADDR(镜像默认 0.0.0.0:18080,容器内绑 loopback
           # 会使端口映射确定性失败)。
+          {
           docker run --rm -d -p 18080:18080 \
             -e EVORULE_AUTH_TOKEN=smoke-only-token \
             --name evorule-smoke \
@@ -296,6 +315,21 @@ jobs:
             exit 1
           fi
           docker stop evorule-smoke || true
+          } 2>&1 | tee /tmp/smoke-output.log
+          SMOKE_PIPE=${PIPESTATUS[0]}
+          # smoke 诊断输出整段随日志打stdout；run logs 匿名不可读，
+          # 失败时上报指纹为 commit comment（公开 API 可读）。
+          if [ "$SMOKE_PIPE" != "0" ]; then
+            BODY=$(tail -c 6000 /tmp/smoke-output.log 2>/dev/null || echo "no smoke output captured")
+            jq -n --arg b "$BODY" '{body: $b}' > /tmp/smoke-payload.json
+            curl -sf -X POST \
+              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+              -d @/tmp/smoke-payload.json \
+              || echo "comment post failed (non-blocking)"
+          fi
+          exit $SMOKE_PIPE
 
   # ==========================================================================
   # public-face-scan：公开面矩阵扫描 (与主仓 CI 同型)。
