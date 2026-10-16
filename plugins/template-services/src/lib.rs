@@ -25,6 +25,12 @@
 //!   命中原生服务名 → 原生执行（进程内，确定性）；未命中 → 回落
 //!   `ServiceRegistryHandler`（HTTP，兼容其他外部服务）；
 //! - 原生实现接收的入参 = `params.args`。
+//!
+//! # 统一信封 v1（科学计算服务面规范）
+//! - 成功出参保留键：`status`（恒 determined——渲染是纯字符串变换，本族零 f64、
+//!   无 undetermined 路径，所有失败走框架 `Err(String)` 通道）、`determinism`
+//!   （bitwise_replayable：同输入逐字节同输出）；
+//! - 既有字段（format/content）原位保留。
 
 #![forbid(unsafe_code)]
 
@@ -69,7 +75,7 @@ fn mk_template_render() -> Arc<dyn NativeService> {
 /// - `context`：可选对象（缺省空对象），模板变量的取值来源；
 /// - `format`：可选字符串 `text | markdown | json`（缺省 `text`）；`json` 时
 ///   渲染产物额外做合法性校验（不是合法 JSON 即报错）；
-/// - 返回：`{"status":"ok","format":<声明值>,"content":<渲染文本>}`。
+/// - 返回：`{"status":"determined","determinism":"bitwise_replayable","format":<声明值>,"content":<渲染文本>}`。
 struct TemplateRender;
 
 impl NativeService for TemplateRender {
@@ -113,8 +119,11 @@ impl NativeService for TemplateRender {
             }
         };
         let rendered = render_checked(template, &context, format)?;
+        // 统一信封 v1(科学计算服务面规范):本族零 f64、纯字符串确定性变换,
+        // 无 undetermined 路径(所有失败走 Err 通道),status 恒 determined。
         Ok(JsonValue::object_from_pairs(&[
-            ("status", JsonValue::string("ok")),
+            ("status", JsonValue::string("determined")),
+            ("determinism", JsonValue::string("bitwise_replayable")),
             ("format", JsonValue::string(rendered.format.as_str())),
             ("content", JsonValue::string(rendered.content)),
         ]))
@@ -371,7 +380,11 @@ mod tests {
             ),
         ]);
         let r = router.execute(&params).await.unwrap();
-        assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("determined"));
+        assert_eq!(
+            r.get("determinism").and_then(|v| v.as_str()),
+            Some("bitwise_replayable")
+        );
         assert_eq!(r.get("format").and_then(|v| v.as_str()), Some("text"));
         assert_eq!(
             r.get("content").and_then(|v| v.as_str()),
