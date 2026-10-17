@@ -12461,7 +12461,7 @@ pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<Bo
             description: meta.description.clone(),
             plugin: None,
             sensitive: false,
-            parameters: None,
+            parameters: meta.parameters.clone(),
         });
     }
     Json(out)
@@ -15586,7 +15586,11 @@ mod tests {
                     name: "registry_only_service".to_string(),
                     version: Some("1.0.0".to_string()),
                     description: Some("仅 registry 绑定的服务".to_string()),
-                    parameters: None,
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": { "msg": { "type": "string" } },
+                        "required": ["msg"]
+                    })),
                 },
             ]);
 
@@ -15615,6 +15619,15 @@ mod tests {
         assert_eq!(
             only.source, "registry",
             "仅 registry 绑定的服务不被去重误伤"
+        );
+        assert!(
+            only.parameters.is_some(),
+            "O-505：registry 条目的 parameters 必须透传到对账清单（缺 schema 即 M3 侧降级为无参工具）"
+        );
+        assert_eq!(
+            only.parameters.as_ref().unwrap()["required"][0],
+            "msg",
+            "registry 条目参数契约内容保真"
         );
     }
 
