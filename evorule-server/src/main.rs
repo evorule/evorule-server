@@ -713,7 +713,7 @@ mod parameters_contract_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
-    /// O-494 门禁：inference 14 项声明须带 parameters 契约，且经
+    /// 契约门禁：inference 14 项声明须带 parameters 契约，且经
     /// [`plugin_service_infos`] 解析为 JSON 对象（/api/services 同源数据）；
     /// 非 inference 插件机制就绪但本批数据为 None（清单不带 parameters，行为同既有）。
     #[test]

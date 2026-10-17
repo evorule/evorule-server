@@ -174,7 +174,7 @@
 
 **必须**: TCB 生产代码中不得使用 `.unwrap(` / `.expect(` / `debug_assert!` / `panic!(` / `assert!(` / `unreachable!(` / `todo!(`。路径解析必须返回 `Option` / `Result`。
 
-**别名**: G1 = T9 (`unwrap`/`expect`) + T11 (`debug_assert!`) + F11 (`panic!(`，TCB-2026-35 补入 L1——旧清单缺 `panic!(`，GitHub 侧又无 clippy job，直写 `panic!(` 此前零门禁覆盖；2026-09-24 收紧补入 `assert!(` / `unreachable!(` / `todo!(`——panic! 之外的 panic 路径宏同属生产代码 panic 面。注: `assert!(` 与 T11 `debug_assert!(` 子串重叠，命中行双报两标签，均为真实违规)。
+**别名**: G1 = T9 (`unwrap`/`expect`) + T11 (`debug_assert!`) + F11 (`panic!(` 补入 L1——旧清单缺 `panic!(`，GitHub 侧又无 clippy job，直写 `panic!(` 此前零门禁覆盖；2026-09-24 收紧补入 `assert!(` / `unreachable!(` / `todo!(`——panic! 之外的 panic 路径宏同属生产代码 panic 面。注: `assert!(` 与 T11 `debug_assert!(` 子串重叠，命中行双报两标签，均为真实违规)。
 
 **L1 字面量门禁**: 禁止模式 `.unwrap(` / `.expect(` / `debug_assert!` / `panic!(` / `assert!(` / `unreachable!(` / `todo!(`（7 条）。
 
@@ -349,12 +349,12 @@ branch:
 
 ### 5.3 扫描范围与测试模块剥离
 
-**扫描范围** (TCB-2026-33 如实化): 递归扫描 `src/` 全部 `.rs`
+**扫描范围** (如实化): 递归扫描 `src/` 全部 `.rs`
 (`collect_rs_files_for_strategy`)。`tests/` / `benches/` / `examples/`
 **不在** L1 字面量门禁扫描范围内——集成测试的纪律由 `cargo test` 与
 `cargo clippy --all-targets` 承接, 不经 build.rs 字面量门禁。
 
-**测试模块剥离** (`#[cfg(test)] mod <ident>` 任意命名, TCB-2026-35):
+**测试模块剥离** (`#[cfg(test)] mod <ident>` 任意命名):
 - T8/T9/F11-panic (test-tolerant 标签) → 剥离后不扫描 (L1 放行——测试断言机制本体)
 - T10/T11 等其余标签全域强制 → 不剥离, `src/` 文件内**所有位置** (含测试模块体) 都扫描
 

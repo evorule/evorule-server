@@ -1087,8 +1087,12 @@ mod tests {
             mk(json!({ "type": "in", "path": "p", "on_missing": "unsat" })),
             mk(json!({ "type": "in", "path": "p", "values": "M3", "on_missing": "unsat" })),
             mk(json!({ "type": "in", "path": "p", "values": [], "on_missing": "unsat" })),
-            mk(json!({ "type": "in", "path": "p", "values": ["payload.x"], "on_missing": "unsat" })),
-            mk(json!({ "type": "in", "path": "p", "values": ["M3", "M2.5"], "on_missing": "unsat" })),
+            mk(
+                json!({ "type": "in", "path": "p", "values": ["payload.x"], "on_missing": "unsat" })
+            ),
+            mk(
+                json!({ "type": "in", "path": "p", "values": ["M3", "M2.5"], "on_missing": "unsat" })
+            ),
         ]));
         assert_eq!(violations.len(), 4, "四违规一合法: {violations:?}");
         assert!(violations[0].contains("缺 values 显式声明"));

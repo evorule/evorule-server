@@ -14331,7 +14331,10 @@ mod tests {
 
         // 第 4 道 values_declaration：缺失 / 非数组 / 空数组逐形态拒
         for (shape, desc) in [
-            (r#"{"type":"in","path":"payload.model","on_missing":"unsat"}"#, "values 缺失"),
+            (
+                r#"{"type":"in","path":"payload.model","on_missing":"unsat"}"#,
+                "values 缺失",
+            ),
             (
                 r#"{"type":"in","path":"payload.model","values":"a","on_missing":"unsat"}"#,
                 "values 非数组",

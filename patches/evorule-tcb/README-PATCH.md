@@ -30,6 +30,9 @@ GLM-5.3-Flash）。现有 DSL 域类型仅 eq/lt，多条 enforce 为 AND 语义
 - 基线为 registry normalized Cargo.toml（字段已字面量化，无需去 workspace 继承）
 - 尾部空 `[workspace]` 表（脱离 server 工作区，先例同）
 - 移除打包工件（.cargo-ok / .cargo_vcs_info.json / Cargo.toml.orig / Cargo.lock）
+- 注释/文档内内部批次编号标记清除（公开面扫描 B 类阻断项；删编号留正文，
+  零语义，主仓同类清洗先例）；CHANGE_REQUEST.md 同口径不入公开仓（主仓惯例，
+  本地留档，build.rs CR 门禁已移出公开仓无编译依赖）
 
 ## 测试边界
 

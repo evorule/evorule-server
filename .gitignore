@@ -93,6 +93,10 @@ kani-results/
 wendang/
 wendang/**
 
+# === 治理内部文档（主仓惯例：CHANGE_REQUEST 本地留档不入公开仓） ===
+# vendored patch 附带的 CR 文档同口径（build.rs CR 门禁已移出公开仓，无编译依赖）
+**/CHANGE_REQUEST.md
+
 # === 2026-08-10 v0.2.0 发布前盘点 ===
 # 临时测试脚本和输出（联调时产生，不应进版本控制）
 test_api.ps1

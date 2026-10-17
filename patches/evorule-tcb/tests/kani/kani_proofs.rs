@@ -29,7 +29,7 @@ use evorule_tcb::{
 
 use super::model;
 
-// ==================== W3-1: harness 结构自检断言（S3 硬前置，CR-20260913-004 / ADR-0002） ====================
+// ==================== W3-1: harness 结构自检断言（S3 硬前置 / ADR-0002） ====================
 // 目的：把 F1 类构造层静默退化（cfg 载体下嵌套复合值被清空而 proof 不自知）转成响亮失败——
 // 全部 B 档 harness 在验证目标属性前，先断言构造产物形状符合预期（键存在 / 类型正确 /
 // 嵌套复合完整）。构造层若再次静默退化，proof 以断言失败报错，而非可疑超时/假 PASS。
@@ -580,7 +580,7 @@ fn verify_evaluate_domain_deterministic() {
     let _ = evaluate_domain(&domain, &exec_state);
 }
 
-/// P10: 深度限制生效（kani 构建下 MAX_DOMAIN_DEPTH=4，CR-20260913-002；生产构建为 64）
+/// P10: 深度限制生效（kani 构建下 MAX_DOMAIN_DEPTH=4；生产构建为 64）
 /// 用具体深嵌套输入（嵌套 MAX_DOMAIN_DEPTH+1 层 not）验证不 panic 且深度分支可达。
 /// 注：evaluate_domain_inner 与 MAX_DOMAIN_DEPTH 均为私有，只能经 evaluate_domain 间接验证。
 /// unwind 需 > 5（evaluate_domain_inner 递归 5 层后到达深度保护分支）。

@@ -620,7 +620,7 @@ pub enum TcbError {
 | T4 (I/O)      | `std::fs::`, `std::net::`, `std::io::`, `File::open`, `std::process::` | 依赖外部环境 |
 | T14 (线程异步)| `std::thread`, `tokio::`, `async`, `await`, `spawn(`  | 并发非确定                   |
 
-- **测试模块剥离**：T8/T9/F11-panic 是 test-tolerant（`#[cfg(test)] mod <ident>` 任意命名测试模块内允许，TCB-2026-35）；T10/T11 等其余标签在所有位置强制。
+- **测试模块剥离**：T8/T9/F11-panic 是 test-tolerant（`#[cfg(test)] mod <ident>` 任意命名测试模块内允许）；T10/T11 等其余标签在所有位置强制。
 - **注释跳过**：`//` 行注释内的模式被跳过；行内注释（代码部分含模式）仍被拦截。
 
 ### 9.2 BOM 检测

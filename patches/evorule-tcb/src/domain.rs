@@ -33,7 +33,7 @@ use alloc::string::ToString;
 /// 与 `executor::MAX_BRANCH_DEPTH`、`transition::MAX_TRANSFORM_RULES`
 /// 共同构成单次状态转换的终止性防线。
 ///
-/// # Kani 验证模型（CR-20260913-002）
+/// # Kani 验证模型
 ///
 /// Kani 构建下取 4：`evaluate_domain_outcome_inner` 的 `all`/`not` 分支递归调用
 /// 自身，CBMC 无条件编码整棵递归调用树（每层扇出 2），64 层 = 2^64 节点
@@ -44,7 +44,7 @@ use alloc::string::ToString;
 /// 为 4 的域评估器」never-panic 的完备性；生产构建保持 64 零改动。
 #[cfg(not(kani))]
 pub const MAX_DOMAIN_DEPTH: usize = 64;
-/// Kani 验证模型值：见上方主文档（CR-20260913-002，递归树有界化）。
+/// Kani 验证模型值：见上方主文档（递归树有界化）。
 #[cfg(kani)]
 pub const MAX_DOMAIN_DEPTH: usize = 1;
 
