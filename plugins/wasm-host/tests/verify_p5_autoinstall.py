@@ -136,6 +136,9 @@ def main() -> int:
             "--rules-dir", str(tmp / "gov" / "rules"),
             "--addr", f"127.0.0.1:{SERVER_PORT}",
             "--insecure-serve",
+            # 缺省 production 档位强制门(2026-10-17 起):裸 dev 启动须显式声明
+            # 开发档,否则 auth/insecure-serve 三查拒绝(exit 1)
+            "--profile", "development",
         ]
         server_log = open(tmp / "server.log", "w", encoding="utf-8", errors="replace")
         procs.append(subprocess.Popen([str(SERVER_EXE), *server_args], env=server_env,

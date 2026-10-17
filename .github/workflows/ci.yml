@@ -287,6 +287,7 @@ jobs:
           {
           docker run --rm -d -p 18080:18080 \
             -e EVORULE_AUTH_TOKEN=smoke-only-token \
+            -e EVORULE_PROFILE=development \
             --name evorule-smoke \
             evorule-server:ci-${{ github.sha }}
           # 显式循环探测(不用 curl --retry:其重试语义不覆盖全部瞬时错误,
