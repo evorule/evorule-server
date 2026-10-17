@@ -2492,11 +2492,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化不构成发布:ruleset_version 保持 0,hash 置空串,operator 标记
     // system:bootstrap 可追溯。已有生产会话的实例不受影响(幂等跳过)。
     //
-    // 补强(重启失忆替换):SessionManager 为内存态,重启后既有
-    // current_session_id 指向已失忆会话 → 沙盒 fork 404。启动期以
-    // session_exists 校验,失忆视同未初始化:重建会话并替换引用,
+    // 补强(重启失忆替换):重启后 SessionManager 内存表为空——会话不随进程
+    // 自动加载,同 sid 仅在首次触碰时经 rehydrate_session_from_wal 惰性复活
+    // (2026-10-15 起,commit 765bd4a),引导面不触发触碰 → 既有
+    // current_session_id 指向的会话 session_exists=false,沙盒 fork 404。
+    // 启动期以 session_exists 校验,内存表不可见视同未初始化:重建会话并替换引用,
     // 但保留既有 ruleset_version/ruleset_hash(会话是进程内对象,
     // 规则集状态经 rules_dir/production_state 持久,重建不改版本语义)。
+    // 注:此处未尝试复活原会话——引导面主动复活(优先 rehydrate)由生产就绪批
+    // P0-3 承接(登记册 O-501),落地后本注释与 warn 文本需同步更新。
     let prod_state = workspace_db
         .get_production_state()
         .map_err(|e| format!("启动期读取 production_state 失败: {e}"))?;
@@ -2507,7 +2511,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !alive {
                 warn!(
                     stale_session_id = sid,
-                    ": 生产会话已失忆(server 重启后 SessionManager 为内存态),将重建"
+                    ": 生产会话不在内存表(重启后引导面不触发同 sid 惰性复活),按未初始化重建"
                 );
             }
             !alive
