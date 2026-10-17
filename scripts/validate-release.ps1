@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 # validate-release.ps1
 # VERSION_STRATEGY.md 4.5, 10.1
 # Release-time check: git tag matches + pre-release identifier + tag format
@@ -98,20 +98,45 @@ try {
         }
     }
 
-    # 4. [patch.crates-io] 段检测 —— path 形态覆盖不得进入发布包（RELEASE_PROCESS.md §1.2 第 5 项）
-    # 本地开发 path 覆盖（evorule-tcb/reactor/governance/bundle）不得进入发布包；
-    # 用户 clone 后 path 不存在会静默回退到 crates.io 版本，但 evorule-bundle 等从未发布，
-    # 会导致构建失败——path 形态存在即 FAIL。
+    # 4. [patch.crates-io] 段检测 —— 覆盖形态核查（RELEASE_PROCESS.md §1.2 第 5 项）
     # git 形态覆盖（git = "https://..."）指向公开仓，任何人可拉取、clone 后可构建，
     # 属上游新 API 尚未发上 crates.io 期间的合法过渡形态，允许存在；发版联动时应删除。
+    # path 形态覆盖仅允许**仓内 vendored patch**（patches/* 且带 README-PATCH.md
+    # 差异留痕与删除条件）：clone 即含补丁源，不存在「path 不存在静默回退」断裂面，
+    # 留痕即显式溯源；指向仓外本地目录的 path 覆盖仍不得入版（clone 后 path 断裂，
+    # 静默回退 crates.io 或构建失败——evorule-bundle 类从未发布包的原始风险面）。
     $cargoToml = Get-Content "Cargo.toml" -Raw
     $patchSeg = [regex]::Match($cargoToml, '(?ms)\[patch\.crates-io\](.*?)(?=\r?\n\[|\z)')
     if ($patchSeg.Success) {
-        if ($patchSeg.Groups[1].Value -match '\bpath\s*=') {
-            Write-Host "[FAIL] Cargo.toml [patch.crates-io] 含 path 形态覆盖 — 本地开发 path 覆盖不得进入发布包, 发布前必须移除" -ForegroundColor Red
-            $failed = $true
-        } else {
+        $seg = $patchSeg.Groups[1].Value
+        if ($seg -notmatch '\bpath\s*=') {
             Write-Host "[OK]   Cargo.toml [patch.crates-io] 仅含 git 形态覆盖（公开仓过渡形态; 发版联动时应删除）" -ForegroundColor Green
+        } else {
+            $repoRoot = (Get-Location).Path
+            $pathMatches = [regex]::Matches($seg, '(?m)^\s*([\w-]+)\s*=\s*\{[^}]*?path\s*=\s*"([^"]+)"')
+            $badPaths = @()
+            foreach ($m in $pathMatches) {
+                $crate = $m.Groups[1].Value
+                $p = $m.Groups[2].Value.TrimStart('./')
+                $resolved = $null
+                try { $resolved = (Resolve-Path $p -ErrorAction Stop).Path } catch { }
+                $inRepo = $resolved -and ($resolved -eq $repoRoot -or $resolved.StartsWith($repoRoot + [IO.Path]::DirectorySeparatorChar))
+                if ($inRepo -and (Test-Path (Join-Path $resolved 'README-PATCH.md'))) {
+                    Write-Host "[OK]   [patch.crates-io] '$crate' = 仓内 vendored patch（$p, README-PATCH.md 留痕在位）" -ForegroundColor Green
+                } else {
+                    $badPaths += "$crate -> $p"
+                }
+            }
+            if ($pathMatches.Count -eq 0) {
+                # path= 出现但非单行表形态（多行表/内联注释干扰解析）——保守按 FAIL
+                Write-Host "[FAIL] [patch.crates-io] 含无法解析的 path 覆盖形态 — 请改单行表写法或人工核查" -ForegroundColor Red
+                $failed = $true
+            } elseif ($badPaths.Count -gt 0) {
+                Write-Host "[FAIL] [patch.crates-io] 含非留痕 path 覆盖（仓外目录或缺 README-PATCH.md）: $($badPaths -join '; ') — vendored patch 须带 README-PATCH.md 差异留痕, 仓外 path 覆盖不得进入发布包" -ForegroundColor Red
+                $failed = $true
+            } else {
+                Write-Host "[OK]   [patch.crates-io] path 覆盖全部为仓内 vendored patch（留痕在位, clone 可构建）" -ForegroundColor Green
+            }
         }
     } else {
         Write-Host "[OK]   Cargo.toml 无 [patch.crates-io] 段（发布依赖全部来自 crates.io）" -ForegroundColor Green

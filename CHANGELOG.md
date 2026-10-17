@@ -25,20 +25,57 @@
 
 ---
 
-## [Unreleased]
+## [0.10.0] - 2026-10-17
 
 ### 🆕 新增
 
+- 🆕 **原生服务 parameters 契约透传**：77 项原生服务声明补齐 OpenAI function parameters 子集（inference 14 项带完整真实 schema），`/api/services` 与 LLM 工具面同源携带——LLM 侧不再无参盲区，首调即按契约传参
+- 🆕 **白名单 `in` 域类型**：eq 域升维为显式集合白名单（values 显式声明门禁 + 缺失/非数组/空集逐形态拒），vendored evorule-tcb 0.8.4 路径补丁先行，装载门禁与 sidecar 收集双通道同扩
+- 🆕 **统一宪法装载路径（rule_loader crate）**：tier gate 完整语义 + L2 类上下文 + schema 版本协商 + provenance 指纹 + merged-entry 四步装载门；生产装载面全量迁移收口，V3/V4 parity 测试锁同语义，宪法 parity 扫描器入 CI
+- 🆕 **插件市场（marketplace）**：官方审核制三端点（submit/approve/delete）+ WASM 类目端点与官方示例 + 安装前兼容性预检（/health 版本握手 host_version/host_abi）+ 安装自动化（三端点 + registry_services 运行时热更 + 未安装服务回落直转 wasm-host）
+- 🆕 **wasm-host 插件分发完整性**：分发清单 + BLAKE3 摘要 + ed25519 分离签名 + 信任锚 + 三档验签策略 + 纯度声明对账 + 签发验证 CLI；wasm-host 安装自动化（热加载 registry + /admin 三端点 + 管理 token + 阶段计时回显）
+- 🆕 **会话级干预端点族**：pause 准入闸 / 恢复 / 心跳限频注入 / 事实链压缩；配对 vendored evorule-reactor 补丁三干预原语（invariants 扫描、io/cancel_all、wal/rotate）
+- 🆕 **沙盒编排收口**：草稿规则 fork 时原子注入沙盒规则集；试验会话晋级生产（窄场景）——生产引用换防保版本哈希 + U7 广播 + 双落账；审批模式开关 + 发布域身份绑定三级角色
+- 🆕 **inference-services 原生插件**：14 项推理服务（静态 rw_extract/cycle_detect/conflict_detect；动态 forward/backward/effect/convergence；反事实 counterfactual/equivalence/differential + counterfactual_sweep）+ SI 量纲分析
+- 🆕 **统一信封 v1 对齐批**：geometry/physics/indicator/template/inference 五插件族 status 值域迁移 + determinism/bitwise_replayable 保留键全量覆盖
+- 🆕 **新插件入库**：geometry-services 三服务（科学计算规范 v1 首批）、browser-services、codegraph-bridge
 - 🆕 **会话归档惰性复活（同 sid 重建续写）**：请求撞上已被 TTL 回收或进程重启失效的会话时，若其 `session_{sid}.wal` 归档存在且链校验通过（fail-closed），按原 sid 重建会话并续写同一 WAL 审计链——TTL 回收与重启双死因下历史不再丢失；反应器 FactId 与 API 层命令 ID 双计数器各自按类续起，杜绝恢复历史与新事实的 ID 碰撞。归档缺失或校验失败仍返回 404 不造会话；超会话限额返回 429，WAL 不可用返回 503
 - 🆕 部署面配置 `--session-rehydrate` / `EVORULE_SESSION_REHYDRATE`（缺省 `true`；关闭即恢复旧行为）；补登 `--session-ttl-secs` / `EVORULE_SESSION_TTL_SECS` 配置条目
+- 🆕 **安全路由与网关（SG-1~SG-4）**：ai-plugin 扩展型执行体 `/llm/execute`（key 归边 + 模型白名单执法）；熔断器装配与配置接缝；部署基线文档与 Caddy 反代配方
+- 🆕 rule-tools CLI 骨架（严格模式 + 三态退出码 + 四段式错误格式化器）；workspace 拒载留痕 rejection_log 表（CON-L1-003）
+- 🆕 锚点 JSON 补 `anchor_format` 字段；API 规范补登 `/api/io-contract`
+- 🆕 vendored patch 发版口径制度化：[patch.crates-io] path 覆盖允许**仓内 vendored patch**（patches/* 带 README-PATCH.md 差异留痕与删除条件）入版——clone 即含补丁源无断裂面，留痕即溯源；仓外 path 覆盖仍不得入版（validate-release.ps1 + RELEASE_PROCESS.md 同步）
+
+### 🔒 安全
+
+- 🔒 wasmtime 48.0.4→48.0.6：RUSTSEC-2026-0350~0364 十一项漏洞收口
+- 🔒 W1 环境变量非法值 fail-closed 单源判定；纪律门禁缺省转 enforce（W1 豁免关闭）
+- 🔒 ai-plugin 凭据文件永不入包；分发包内 plugin_manifest.json 预登记缺省禁用
 
 ### ✅ 向后兼容
 
-- ✅ 开关缺省开启仅改变「原本 404 的死会话」路径；活跃会话路径与 TTL 语义（缺省 1800s 不变）零变化。生产需旧口径时设 `EVORULE_SESSION_REHYDRATE=false` 一键回退
+- ✅ rehydrate 开关缺省开启仅改变「原本 404 的死会话」路径；活跃会话路径与 TTL 语义（缺省 1800s 不变）零变化。生产需旧口径时设 `EVORULE_SESSION_REHYDRATE=false` 一键回退
+- ✅ parameters 契约缺省为 None 的插件行为同既有（仅 inference 14 项携带）；`in` 域为新增域类型，既有 eq/lt 规则装载行为零变化
+- ✅ 干预端点族为纯新增面；沙盒/晋级语义仅作用于显式走新通路的会话
+
+### 🐛 修复
+
+- 🐛 沙盒编排断链：草稿规则在 fork 时注入沙盒规则集（此前断链）
+- 🐛 插件 uninstall/disable 路由重复注册去重（axum 重叠路由 panic）
+- 🐛 REST invoke 请求体契约对齐——裸 args 形态（{args:...} 包装为调用方误用）
+- 🐛 市场预检探活语义修正——对账 503 的 body 同样携带版本握手
+- 🐛 CI 门禁慢性红清零系列：lint/docs-check/public-face/parity 四门 + 豁免行锚三次重对齐 + vendored 注释编号中性化（公开面 B 类阻断归零）
 
 ### 🧪 测试
 
 - 🧪 governance 单测 4 件（TTL 回收后复活状态还原 / FactId 计数器续起无碰撞 / 归档缺失拒复活 / 限额约束）+ HTTP 集成测试 4 件（重启后同 sid 复活且 payload 连续 / 无归档 404 / 归档损坏 fail-closed 404 / 开关关闭保持 404）
+- 🧪 CI 失败指纹上报：run logs 匿名不可读时，失败尾部日志 post 为 commit comment 供离线诊断；P5 组合回归 workflow（server × wasm-host 双组件矩阵）
+- 🧪 conformance 环测（golden loader 文档）/ K6 metrics 门禁 / binding e2e / parameters 契约单测 / in 域门禁与收集单测
+- 🧪 vendored evorule-tcb 独立编译复验：字面量门禁 PASSED（8 文件 × 27 模式 0 违规）
+
+### 📚 文档
+
+- 📚 插件分发完整性专章（PLUGIN_GUIDE 8.1）+ 信任锚示例；市场安装通路入三指南 + UDF 调用开销基准；SG-3 熔断实测方法论 + SG-4 部署基线
 
 ---
 

@@ -71,7 +71,7 @@ pwsh scripts/validate-all.ps1 -PreRelease
 | 2   | `validate-changelog.ps1`  | CHANGELOG 首段版本号 == Cargo.toml + 当前版本段存在 + 中文 `## [未发布]` 匹配                                  |
 | 3   | `validate-license.ps1`    | LICENSE 含 AGPL + 所有 .rs 文件 SPDX 头                                                                        |
 | 4   | `validate-cargolock.ps1`  | Cargo.lock 策略（binary workspace 必须提交仓根 Cargo.lock）                                                    |
-| 5   | `validate-release.ps1`    | tag 格式校验（`-SkipTagCheck` 跳过 tag 存在性，发布前用）+ **`[patch.crates-io]` 段检测**（发布前必须移除）  |
+| 5   | `validate-release.ps1`    | tag 格式校验（`-SkipTagCheck` 跳过 tag 存在性，发布前用）+ **`[patch.crates-io]` 段检测**（git 形态=公开仓过渡形态允许；path 形态仅允许**仓内 vendored patch** 且带 README-PATCH.md 差异留痕——clone 即含补丁源无断裂面，留痕即溯源；仓外 path 覆盖不得入版）  |
 | 6   | **`check_doc_safety.py`** | 文档安全 + 交叉引用完整性 + 基调合规（6 类规则，见下）                                                         |
 | 7   | **`check_schema_sync.py`** | 跨仓 Schema 同步检查（`core/rule_schema/schemas/` 与 `evorule-system-rules` 仓一致性）                        |
 
