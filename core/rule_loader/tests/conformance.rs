@@ -36,8 +36,11 @@ const LOADER_DEFS: [&str; 6] = [
     "transform_rule",
 ];
 
-/// 宪法仓定位：`EVORULE_RULES_SRC` → 兄弟目录
-/// （本 crate 位于 <检出根>/evorule-server/core/rule_loader，三级 parent 即检出根）
+/// 宪法仓定位：`EVORULE_RULES_SRC` → 兄弟目录（两级/三级 parent 布局都试）。
+///
+/// 两级 parent = 独立仓检出根（`<检出根>/core/rule_loader`，CI 与独立仓布局）；
+/// 三级 parent = 单仓嵌套历史布局（`<检出根>/evorule-server/core/rule_loader`）。
+/// 只认锚文件存在者——目录布局猜测不作数。
 fn locate_rules_repo() -> Option<PathBuf> {
     let anchor = Path::new("schemas").join("rule_set").join("v1.0.json");
     if let Ok(src) = std::env::var("EVORULE_RULES_SRC") {
@@ -47,13 +50,16 @@ fn locate_rules_repo() -> Option<PathBuf> {
         }
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let checkout_root = manifest
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)?;
-    let sibling = checkout_root.join("evorule-system-rules");
-    if sibling.join(&anchor).is_file() {
-        return Some(sibling);
+    let parent = manifest.parent()?;
+    let core_parent = parent.parent()?;
+    let candidates = [
+        Some(core_parent.join("evorule-system-rules")),
+        core_parent.parent().map(|p| p.join("evorule-system-rules")),
+    ];
+    for sibling in candidates.into_iter().flatten() {
+        if sibling.join(&anchor).is_file() {
+            return Some(sibling);
+        }
     }
     None
 }
