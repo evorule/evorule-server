@@ -56,12 +56,10 @@ fn locate_rules_repo() -> Option<PathBuf> {
         Some(core_parent.join("evorule-system-rules")),
         core_parent.parent().map(|p| p.join("evorule-system-rules")),
     ];
-    for sibling in candidates.into_iter().flatten() {
-        if sibling.join(&anchor).is_file() {
-            return Some(sibling);
-        }
-    }
-    None
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|sibling| sibling.join(&anchor).is_file())
 }
 
 #[test]
