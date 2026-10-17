@@ -384,7 +384,7 @@ pub struct SessionApi {
 
     /// API 层 FactId 计数器（从 30000 起，避免与反应器自身 ID 冲突）
     ///
-    /// ID 空间语义（O-502 文档化，P0-2 生产就绪批）：本计数器是 **API 层全局
+    /// ID 空间语义：本计数器是 **API 层全局
     /// 命令面**——Command 的 ID 从 30000 高位区起分配，跨会话单调递增；与会话内
     /// 反应器自身 FactId（低位区，从 1 起）、共享账本 fact_id（独立空间）分属
     /// 三个不同 ID 空间，响应中的 `fact_id` 字段按来源分别取自其一（payload
@@ -1108,7 +1108,7 @@ impl SessionApi {
         Ok(session)
     }
 
-    /// 引导面复活入口（P0-3 生产就绪批，O-501）：启动期优先复活原生产会话。
+    /// 引导面复活入口：启动期优先复活原生产会话。
     ///
     /// 复用 [`Self::session_or_rehydrate`] 全链语义（归档哈希校验 fail-closed /
     /// API 命令计数器续起 / 随行任务三件套装配），拒绝原因转字符串供启动期
@@ -7331,7 +7331,7 @@ async fn session_command(
     // 获取或惰性复活（内存表未命中且开关开时从 WAL 归档按原 sid 复活）。
     // 会话锁不跨 send 持有：session 为句柄克隆，command_tx 生命周期独立于
     // 活跃表（TTL 回收只移表不杀反应器），通道语义与既有失败分支一致。
-    // O-502（P0-2 生产就绪批）：命令 ID 分配必须在本步之后——复活路径经
+    // 命令 ID 分配必须在本步之后——复活路径经
     // fetch_max(max_api_id + 1) 按归档抬升 API 层计数器；若先分配后复活，
     // 重启后首命令将复用缺省起点与归档最大 Command id 撞号（集成测试
     // test_rehydrate_lifts_api_command_id_space 锁定此时序）。

@@ -74,6 +74,7 @@ evorule-template-services = { path = "../plugins/template-services" }
 evorule-browser-services = { path = "../plugins/browser-services" }
 evorule-inference-services = { path = "../plugins/inference-services" }
 evorule-geometry-services = { path = "../plugins/geometry-services" }
+evorule-numeric-services = { path = "../plugins/numeric-services" }
 
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，

@@ -1183,7 +1183,7 @@ struct RehydrateFixture {
     core_eval_path: PathBuf,
     rules_dir: PathBuf,
     session_id: u64,
-    /// phase-1 归档内最大 Command ID（O-502 跨重启 ID 空间核验用）
+    /// phase-1 归档内最大 Command ID（跨重启 ID 空间核验用）
     archived_command_fact_id: u64,
 }
 
@@ -1345,7 +1345,7 @@ async fn test_session_rehydrate_same_id_after_restart() {
     );
 }
 
-/// O-502（P0-2 生产就绪批）：跨重启 API 层全局 Command ID 空间续起。
+/// 跨重启 API 层全局 Command ID 空间续起。
 ///
 /// 复活受理后新命令的 fact_id 必须严格高于归档内最大 Command ID
 /// （`session_or_rehydrate` 经 `fetch_max(max_api_id + 1)` 按归档续起）——

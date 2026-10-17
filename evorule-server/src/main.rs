@@ -55,6 +55,7 @@ use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
 use evorule_geometry_services::NATIVE_SERVICES as GEOMETRY_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
+use evorule_numeric_services::NATIVE_SERVICES as NUMERIC_NATIVE_SERVICES;
 use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
 use evorule_template_services::NATIVE_SERVICES as TEMPLATE_NATIVE_SERVICES;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
@@ -866,6 +867,10 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "geometry-services",
         defs: GEOMETRY_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "numeric-services",
+        defs: NUMERIC_NATIVE_SERVICES,
     },
 ];
 
@@ -1766,9 +1771,8 @@ fn validate_production_profile(
         );
     }
     if !input.rate_limit_enabled {
-        violations.push(
-            "速率限制已禁用（--no-rate-limit）：与生产档互斥，请移除该参数。".to_string(),
-        );
+        violations
+            .push("速率限制已禁用（--no-rate-limit）：与生产档互斥，请移除该参数。".to_string());
     }
     if !input.session_rehydrate {
         violations.push(
@@ -1813,10 +1817,7 @@ fn probe_wal_dir(wal_dir: &std::path::Path) -> Result<(), String> {
     }
     if let Err(e) = std::fs::remove_file(&probe_path) {
         // 清理失败不影响判定（读写验证已通过），仅留痕避免残留积累
-        warn!(
-            "WAL 目录探针文件清理失败（{}）: {e}",
-            probe_path.display()
-        );
+        warn!("WAL 目录探针文件清理失败（{}）: {e}", probe_path.display());
     }
     Ok(())
 }
@@ -1920,9 +1921,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // P0-2：生产档位显式关闭 fsync 的降档留痕（缺省反转 true，显式 false 属有权降档，
     // 但断电窗口风险必须在日志侧可见）。
     if cfg.profile == StartupProfile::Production && !cfg.wal_fsync {
-        warn!(
-            "生产档位下显式关闭 wal_fsync：断电时可能丢失最近写入窗口（显式降档，留痕）"
-        );
+        warn!("生产档位下显式关闭 wal_fsync：断电时可能丢失最近写入窗口（显式降档，留痕）");
     }
     // 域守卫裁定落档（跨仓挂账三-b，2026-10-03 项目方批准结清）：无认证启动
     // （loopback + --insecure-serve）时受保护域准入（stable.llm / stable.system
@@ -2747,12 +2746,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化不构成发布:ruleset_version 保持 0,hash 置空串,operator 标记
     // system:bootstrap 可追溯。已有生产会话的实例不受影响(幂等跳过)。
     //
-    // P0-3（O-501，生产就绪批 2026-10-17 已批）：重启后 SessionManager 内存表为空
+    // 重启后 SessionManager 内存表为空
     // （会话不随进程自动加载，同 sid 仅在首次触碰时经 rehydrate_session_from_wal
     // 惰性复活，2026-10-15 起 commit 765bd4a）。引导面不再「重建空会话替换引用」，
     // 而是**优先复活原 sid**：复用 session_or_rehydrate 全链语义（锁外归档全链
     // 哈希校验 fail-closed + API 命令计数器按归档续起 + 随行任务三件套装配）——
-    // 会话连续性保持，原 WAL 文件复用（O-499 空 session_1.wal 积累随之消解）。
+    // 会话连续性保持，原 WAL 文件复用（空 session_1.wal 积累随之消解）。
     // 仅复活不可行（WAL 归档缺失/损坏/复活开关关闭）才回落「重建空会话」分支并
     // ERROR 留痕；ruleset_version/ruleset_hash 保留逻辑不动（会话是进程内对象，
     // 规则集状态经 rules_dir/production_state 持久，重建不改版本语义）。
@@ -4117,7 +4116,10 @@ mod tests {
         let cfg = ResolvedConfig::resolve(cli, FileConfig::default());
         assert_eq!(cfg.profile, StartupProfile::Development);
         assert!(!cfg.profile_defaulted, "显式声明时 profile_defaulted=false");
-        assert!(!cfg.wal_fsync, "development 档 fsync 缺省维持 false（现行为）");
+        assert!(
+            !cfg.wal_fsync,
+            "development 档 fsync 缺省维持 false（现行为）"
+        );
     }
 
     #[test]
@@ -4137,12 +4139,7 @@ mod tests {
         assert!(cfg.profile == StartupProfile::Production);
         assert!(!cfg.wal_fsync, "显式 false 必须优先于生产缺省 true");
         // 显式升档
-        let cli = Cli::parse_from([
-            "evorule-server",
-            "--profile",
-            "development",
-            "--wal-fsync",
-        ]);
+        let cli = Cli::parse_from(["evorule-server", "--profile", "development", "--wal-fsync"]);
         let cfg = ResolvedConfig::resolve(cli, FileConfig::default());
         assert!(cfg.wal_fsync, "development 下显式 --wal-fsync 应生效");
     }
@@ -4427,8 +4424,11 @@ mod tests {
     #[test]
     fn test_production_gate_all_satisfied_passes() {
         let dir = TempDir::new().expect("创建临时目录失败");
-        validate_production_profile(StartupProfile::Production, &prod_gate_input(Some(dir.path())))
-            .expect("五条件全满足应放行");
+        validate_production_profile(
+            StartupProfile::Production,
+            &prod_gate_input(Some(dir.path())),
+        )
+        .expect("五条件全满足应放行");
     }
 
     #[test]
@@ -4469,7 +4469,10 @@ mod tests {
         input.insecure_serve = true;
         let err = validate_production_profile(StartupProfile::Production, &input)
             .expect_err("insecure-serve 与生产档互斥");
-        assert!(err.contains("--insecure-serve"), "错误应含 insecure-serve 项: {err}");
+        assert!(
+            err.contains("--insecure-serve"),
+            "错误应含 insecure-serve 项: {err}"
+        );
     }
 
     #[test]

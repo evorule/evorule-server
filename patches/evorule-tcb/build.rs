@@ -1088,7 +1088,7 @@ fn detect_strategy_patterns(crate_name: &str) -> Result<(), String> {
             "==== {} 策略层检测 FAILED ====\n\
              \n\
              检测到 {} 处策略层反模式。evorule 仓是机制层，不允许包含策略层代码。\n\
-             策略层逻辑必须在应用层仓（evorule-server/evorule-application 等）实现。\n\
+             策略层逻辑必须在应用层仓实现。\n\
              \n\
              违规详情:\n\
              {}\n\

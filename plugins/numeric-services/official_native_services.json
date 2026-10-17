@@ -1,0 +1,46 @@
+{
+    "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/numeric-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 numeric-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+    "version": 1,
+    "services": [
+        {
+            "name": "numeric_rational_eval",
+            "sensitive": false,
+            "description": "有理数表达式精确求值(整数与四则/整数幂,既约分数输出,确定性)"
+        },
+        {
+            "name": "numeric_decimal_eval",
+            "sensitive": false,
+            "description": "定点十进制表达式求值(全程精确有理运算,输出端按 scale+rounding 单次舍入,确定性)"
+        },
+        {
+            "name": "numeric_decimal_convert",
+            "sensitive": false,
+            "description": "分数与十进制互转(终止性如实标注,无限小数须显式舍入,确定性)"
+        },
+        {
+            "name": "numeric_number_theory",
+            "sensitive": false,
+            "description": "数论原子(gcd/lcm/factorial/nCr/nPr,大整数精确,确定性)"
+        },
+        {
+            "name": "numeric_fin_interest",
+            "sensitive": false,
+            "description": "单利/复利精确计算(中间量全程有理数精确,末端显式舍入,确定性)"
+        },
+        {
+            "name": "numeric_fin_amortize",
+            "sensitive": false,
+            "description": "等额本息/等额本金摊销表(逐期显式舍入,尾差并入末期,确定性)"
+        },
+        {
+            "name": "numeric_unit_convert",
+            "sensitive": false,
+            "description": "单位换算(换算率由调用方显式提供,服务不内置任何率,有理数中转末端舍入,确定性)"
+        },
+        {
+            "name": "numeric_dim_eval",
+            "sensitive": false,
+            "description": "量纲感知表达式求值(单位字面量解析+量纲检查+精确求值,复用量纲原语,确定性)"
+        }
+    ]
+}
