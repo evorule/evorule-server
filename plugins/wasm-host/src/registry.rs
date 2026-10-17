@@ -283,12 +283,10 @@ impl UdfRegistry {
             })
             .flatten();
         if let (Some(old), Some(new)) = (&old_version, &version_of(&manifest_bytes)) {
-            if !allow_downgrade && crate::integrity::version_at_least(old, new) == Some(false) {
+            install_version_gate(old, new, allow_downgrade).map_err(|e| {
                 cleanup_dir(&staging);
-                return Err(format!(
-                    "版本降级需显式放行: 当前 {old} < 目标 {new}（X-Allow-Downgrade: true）"
-                ));
-            }
+                e
+            })?;
         }
 
         // ③ 编译（staging 路径；import 枚举+纯度融合与加载期一致）
@@ -426,10 +424,51 @@ fn version_of(manifest_bytes: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// 安装版本门禁（O-509 收口）：仅**降级**（目标 < 当前）需 `allow_downgrade` 显式放行；
+/// 升级（目标 > 当前）与同版本重装（目标 == 当前）直接放行；版本解析失败（None）
+/// 维持既定口径=放行由调用方降级为 WARN（与 integrity::version_at_least 契约一致）。
+fn install_version_gate(old: &str, new: &str, allow_downgrade: bool) -> Result<(), String> {
+    if !allow_downgrade && crate::integrity::version_at_least(new, old) == Some(false) {
+        return Err(format!(
+            "版本降级需显式放行: 目标 {new} < 当前 {old}（X-Allow-Downgrade: true）"
+        ));
+    }
+    Ok(())
+}
+
 fn integrity_tag(v: &Integrity) -> &'static str {
     match v {
         Integrity::Verified { .. } => "签名已验证",
         Integrity::AcceptedUnverified { .. } => "未验证放行(warn)",
         Integrity::Unchecked => "完整性检查关闭(off)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_version_gate;
+
+    /// O-509 回归守门：升级必须放行（0.1.0 → 0.1.1 曾被反向误拦）
+    #[test]
+    fn test_gate_upgrade_allowed() {
+        assert!(install_version_gate("0.1.0", "0.1.1", false).is_ok());
+        assert!(install_version_gate("1.2.3", "2.0.0", false).is_ok());
+    }
+
+    /// 降级需显式放行；错误文案含两个版本号且方向正确（目标 < 当前）
+    #[test]
+    fn test_gate_downgrade_requires_allowance() {
+        let err = install_version_gate("0.1.1", "0.1.0", false).unwrap_err();
+        assert!(err.contains("0.1.0") && err.contains("0.1.1"));
+        assert!(err.contains("目标 0.1.0 < 当前 0.1.1"));
+        assert!(install_version_gate("0.1.1", "0.1.0", true).is_ok());
+    }
+
+    /// 同版本重装放行；版本解析失败维持放行口径（调用方降级 WARN）
+    #[test]
+    fn test_gate_same_version_and_unparsable() {
+        assert!(install_version_gate("0.1.1", "0.1.1", false).is_ok());
+        assert!(install_version_gate("not-semver", "0.1.1", false).is_ok());
+        assert!(install_version_gate("0.1.1", "", false).is_ok());
     }
 }
