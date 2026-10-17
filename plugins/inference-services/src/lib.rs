@@ -121,7 +121,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "规则读写集静态提取(规范化路径+I/O出边+动态标注,纯函数确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
         ),
         make: mk_rw_extract,
     },
@@ -130,7 +130,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "规则集内环路检测(Kahn拓扑+环路径提取,静态/保守分层,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
         ),
         make: mk_cycle_detect,
     },
@@ -140,7 +140,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         description:
             "规则集内冲突检测(六类型学:常量矛盾/顺序遮蔽/写竞争/互补域/循环写/IO串台,只报告不拦截)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
         ),
         make: mk_conflict_detect,
     },
@@ -149,7 +149,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "前向链仿真(合成__exec__文档迭代到不动点,enforce前置门对齐,io诚实断流,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"},"initial_document":{"type":"object","description":"合成 __exec__ 初始文档,形如 {instruction:{...},payload:{...},queue:[...]}"},"max_steps":{"type":"integer","description":"可选,仿真最大步数,非负整数,超硬上限报错"}},"required":["rules","sources","initial_document"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"},"initial_document":{"type":"object","description":"合成 __exec__ 初始文档,形如 {instruction:{...},payload:{...},queue:[...]}"},"max_steps":{"type":"integer","description":"可选,仿真最大步数,非负整数,超硬上限报错"}},"required":["rules","sources","initial_document"]}"#,
         ),
         make: mk_forward_simulate,
     },
@@ -158,7 +158,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "后向链规划(目标路径反推生产者规则链,复用读写集提取,静态可达性,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"},"target_path":{"type":"string","description":"目标写路径,规范化点分形态,如 payload.x"},"max_depth":{"type":"integer","description":"可选,最大反推深度,非负整数"},"available_paths":{"type":"array","items":{"type":"string"},"description":"可选,初始可用路径集字符串数组"}},"required":["rules","sources","target_path"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"},"target_path":{"type":"string","description":"目标写路径,规范化点分形态,如 payload.x"},"max_depth":{"type":"integer","description":"可选,最大反推深度,非负整数"},"available_paths":{"type":"array","items":{"type":"string"},"description":"可选,初始可用路径集字符串数组"}},"required":["rules","sources","target_path"]}"#,
         ),
         make: mk_backward_plan,
     },
@@ -167,7 +167,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "规则效果预测(影响分级+动态/IO诚实警告,基于读写集提取薄层,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
         ),
         make: mk_effect_predict,
     },
@@ -176,7 +176,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "收敛检测(自修改/环复用/步数上界,静态可判定子集,undetermined显式,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐,如 core_eval、server_eval、rules/x.json"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"}},"required":["rules","sources"]}"#,
         ),
         make: mk_convergence_check,
     },
@@ -185,7 +185,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "反事实差异分析(双前向仿真+终态可观测面diff,控制面单列,确定性解释,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"},"original_document":{"type":"object","description":"原场景合成 __exec__ 文档"},"hypothetical_document":{"type":"object","description":"假设场景合成 __exec__ 文档"},"max_steps":{"type":"integer","description":"可选,仿真最大步数,非负整数"}},"required":["rules","sources","original_document","hypothetical_document"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"},"original_document":{"type":"object","description":"原场景合成 __exec__ 文档"},"hypothetical_document":{"type":"object","description":"假设场景合成 __exec__ 文档"},"max_steps":{"type":"integer","description":"可选,仿真最大步数,非负整数"}},"required":["rules","sources","original_document","hypothetical_document"]}"#,
         ),
         make: mk_counterfactual_analyze,
     },
@@ -213,7 +213,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "反事实参数扫描(参数路径逐值双仿真,每点差异面+汇总,复用反事实语义,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,与 rules 等长且按序对齐"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"},"document":{"type":"object","description":"合成 __exec__ 基线文档"},"param_path":{"type":"string","description":"扫描的参数点路径,点分形态,如 payload.threshold"},"values":{"type":"array","description":"扫描值序列,由调用方显式给出(数字/字符串皆可,原样拼入文档零类型强转),如 [1, 5, 10]"},"max_steps":{"type":"integer","description":"可选,每点仿真最大步数,非负整数"}},"required":["rules","sources","document","param_path","values"]}"#,
+            r#"{"type":"object","properties":{"rules":{"type":"array","items":{"type":"object"},"description":"规则对象合并列表,每个元素=单条规则的 transform 指令树条目(branch 子树,非整个 rule_set 文档),按合并序排列(core_eval 在前 + rules_dir 字典序)"},"sources":{"type":"array","items":{"type":"string"},"description":"来源标签数组,须与 rules 等长(不一致会被 fail-fast 拒绝)且按序对齐"},"include_constitution":{"type":"boolean","description":"可选,缺省 false,宪法段豁免"},"document":{"type":"object","description":"合成 __exec__ 基线文档"},"param_path":{"type":"string","description":"扫描的参数点路径,点分形态,如 payload.threshold"},"values":{"type":"array","description":"扫描值序列,由调用方显式给出(数字/字符串皆可,原样拼入文档零类型强转),如 [1, 5, 10]"},"max_steps":{"type":"integer","description":"可选,每点仿真最大步数,非负整数"}},"required":["rules","sources","document","param_path","values"]}"#,
         ),
         make: mk_counterfactual_sweep,
     },

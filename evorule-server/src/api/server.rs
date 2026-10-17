@@ -12487,7 +12487,8 @@ pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<Bo
         (status = 200, description = "服务执行结果", body = serde_json::Value),
         (status = 403, description = "敏感服务禁止直调（走会话审计链）"),
         (status = 404, description = "服务不在对账清单"),
-        (status = 502, description = "服务执行失败（错误透传）"),
+        (status = 422, description = "native 服务执行失败（fail-fast 错误原文下传，含自诊断指引）"),
+        (status = 502, description = "registry/HTTP 回落服务执行失败（脱敏分类文案，详情见服务端日志）"),
         (status = 503, description = "服务链未装配")
     )
 )]
@@ -12599,6 +12600,19 @@ pub async fn invoke_service_handler(
                         })),
                     )),
                 };
+            }
+            // O-510 分级透明分流：native 插件服务为进程内执行，错误文本是本地
+            // 可信代码产出的 fail-fast 消息（含自诊断指引），不在 P1-11 脱敏
+            // 风险面（该面=registry/HTTP 回落路径的 reqwest Display/上游报文
+            // 携带内网 URL/端口/报文细节）——直调失败按 422 原文下传，agent 侧
+            // 可直接读指引自纠。registry/HTTP/wasm 回落维持脱敏口径；会话内
+            // call_service 路径不经此处，错误串零改动（与 P1-11 同口径）。
+            if sensitive_native.is_some() {
+                tracing::warn!("REST invoke 服务直调失败: service={name} detail={e}");
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({ "error": e.to_string() })),
+                ));
             }
             let class = classify_upstream_error(&e);
             tracing::warn!("REST invoke 服务直调失败: service={name} detail={e}");
@@ -13543,6 +13557,86 @@ mod tests {
             assert!(
                 !evorule_rule_schema::validate_command_instruction(&meta_instr).valid,
                 "根部 __meta__ 的元指令原文应被门禁拒绝（守护注入时机在门禁之后）"
+            );
+        }
+    }
+
+    // ===== O-510 分级透明分流：native 422 原文下传 / registry 维持脱敏 =====
+
+    mod o510 {
+        use super::*;
+
+        /// 恒败链：模拟服务执行 fail-fast（错误文本含自诊断指引，同
+        /// inference-services parse_named_ruleset 长度校验形态）
+        struct FailingChain;
+
+        #[async_trait::async_trait]
+        impl evorule_reactor::IoHandler for FailingChain {
+            async fn execute(&self, _params: &JsonValue) -> evorule_reactor::IoResult {
+                Err(
+                    "rules(2) 与 sources(1) 长度不一致 — 自诊断指引: 来源标签须与规则列表等长且按合并序对齐"
+                        .to_string(),
+                )
+            }
+        }
+
+        fn api_with_failing_chain() -> SessionApi {
+            SessionApi::new(vec![], 64)
+                .with_service_chain(Arc::new(FailingChain))
+                .with_native_services(vec![BoundServiceInfo {
+                    name: "inference_rw_extract".to_string(),
+                    source: "plugin".to_string(),
+                    version: None,
+                    description: None,
+                    plugin: Some("inference-services".to_string()),
+                    sensitive: false,
+                    parameters: None,
+                }])
+        }
+
+        #[tokio::test]
+        async fn o510_native_invoke_failure_returns_422_with_raw_detail() {
+            let api = api_with_failing_chain();
+            let err = invoke_service_handler(
+                State(api),
+                Path("inference_rw_extract".to_string()),
+                None,
+                Json(serde_json::json!({"rules": [{}, {}], "sources": ["a"]})),
+            )
+            .await
+            .expect_err("恒败链应返回 Err");
+            let (status, Json(body)) = err;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            let detail = body["error"].as_str().expect("error 应为字符串");
+            assert!(
+                detail.contains("长度不一致") && detail.contains("自诊断指引"),
+                "native 失败应原文下传自诊断指引: {detail}"
+            );
+        }
+
+        #[tokio::test]
+        async fn o510_registry_invoke_failure_stays_masked_502() {
+            let api = api_with_failing_chain().with_registry_services(vec![ServiceMeta {
+                name: "echo_svc".to_string(),
+                version: None,
+                description: None,
+                parameters: None,
+            }]);
+            let err = invoke_service_handler(
+                State(api),
+                Path("echo_svc".to_string()),
+                None,
+                Json(serde_json::json!({"msg": "x"})),
+            )
+            .await
+            .expect_err("恒败链应返回 Err");
+            let (status, Json(body)) = err;
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            let msg = body["error"].as_str().expect("error 应为字符串");
+            assert!(msg.contains("服务调用失败"), "脱敏分类文案: {msg}");
+            assert!(
+                !msg.contains("长度不一致"),
+                "registry/HTTP 失败维持 P1-11 脱敏，原文不得下传: {msg}"
             );
         }
     }
