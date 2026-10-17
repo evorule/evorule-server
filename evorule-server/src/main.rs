@@ -1236,6 +1236,7 @@ fn load_external_plugins(
                     timeout_ms: Some(timeout_ms),
                     version: Some(m.version.clone()),
                     description: s.description.clone(),
+                    parameters: s.parameters.clone(),
                 },
             );
             declared.push(s.name.clone());
@@ -1292,6 +1293,8 @@ fn load_external_plugins(
                                     timeout_ms: Some(EXTERNAL_SERVICE_TIMEOUT_DEFAULT_MS),
                                     version: Some(m.version.clone()),
                                     description: None,
+                                    // 外部插件包 auto_discover 无参数契约信息，缺省 None（向前兼容）
+                                    parameters: None,
                                 },
                             );
                             infos.push(evorule_server::api::server::BoundServiceInfo {

@@ -645,10 +645,14 @@
           "type": "integer",
           "minimum": 0,
           "description": "可选；未设置时 HttpHandler 回退默认 10s"
+        },
+        "parameters": {
+          "type": ["object", "null"],
+          "description": "可选；JSON Schema 形状对象（显式 null 等价缺省=无契约），随 /api/services 对账透传供 evo-agent 注册带 schema 的 LLM 代理工具；缺省=无参工具（向前兼容）"
         }
       },
       "additionalProperties": true,
-      "description": "服务注册条目（权威源 service_registry.rs ServiceEntry）。解析器只读取 url/method/headers/timeout_ms，未知字段静默忽略——因此 additionalProperties 开放以向前兼容。body_template 在文档中宣称但解析器未读取，慎用。"
+      "description": "服务注册条目（权威源 service_registry.rs ServiceEntry）。解析器只读取 url/method/headers/timeout_ms/parameters，未知字段静默忽略——因此 additionalProperties 开放以向前兼容。body_template 在文档中宣称但解析器未读取，慎用。"
     },
     "llm_verdict": {
       "type": "object",

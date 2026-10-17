@@ -15580,11 +15580,13 @@ mod tests {
                     name: "finance_config_get".to_string(),
                     version: None,
                     description: Some("registry 同名回落绑定".to_string()),
+                    parameters: None,
                 },
                 ServiceMeta {
                     name: "registry_only_service".to_string(),
                     version: Some("1.0.0".to_string()),
                     description: Some("仅 registry 绑定的服务".to_string()),
+                    parameters: None,
                 },
             ]);
 

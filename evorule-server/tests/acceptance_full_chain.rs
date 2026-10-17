@@ -215,6 +215,7 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi 
         name: SVC.to_string(),
         version: None,
         description: Some("本地 echo 服务（测试后端）".into()),
+        parameters: None,
     }])
 }
 

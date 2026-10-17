@@ -1810,7 +1810,10 @@ async fn install_plugin_handler(
     let (body, boundary) = build_admin_multipart(&wasm, &manifest, signature.as_deref(), false);
     let result = forward_admin("/admin/install", Some((body, boundary))).await?;
 
-    // registry 运行时合入（装完即用）：敏感/超时缺省同 auto_discover 口径
+    // registry 运行时合入（装完即用）：敏感/超时缺省同 auto_discover 口径。
+    // 参数契约随 manifest 可选字段 `parameters` 一并合入（ServiceMeta 同源透传，
+    // wasm 插件与外部 registry 服务获得同等 LLM 契约能力）；manifest 未声明则
+    // 缺省 None（现行为不变）。
     sessions.merge_registry_service(ServiceMeta {
         name: id.clone(),
         version: manifest_meta
@@ -1818,6 +1821,11 @@ async fn install_plugin_handler(
             .and_then(|v| v.as_str())
             .map(str::to_string),
         description: Some("wasm 插件（市场安装）".into()),
+        parameters: manifest_meta
+            .get("parameters")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .map(serde_json::Value::Object),
     });
     append_platform_event(
         &facts,

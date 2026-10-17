@@ -1102,6 +1102,7 @@ dependencies = [
 [[package]]
 name = "evorule-rule"
 version = "0.5.0"
+source = "git+https://gitee.com/evorule/evorule-rule.git?rev=9f85314fbf1609fb19e959a24b2ebd844251d118#9f85314fbf1609fb19e959a24b2ebd844251d118"
 dependencies = [
  "argon2",
  "axum",

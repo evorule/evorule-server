@@ -31,6 +31,8 @@
 //! - `method`：可选，默认 `POST`（白名单同 `HttpHandler`）
 //! - `headers`：可选，对象；值会覆盖同名 params 里的 headers（以服务注册表为准，避免规则私自加鉴权头）
 //! - `timeout_ms`：可选，整数；未设置时由 `HttpHandler` 回退默认 10s
+//! - `parameters`：可选，JSON Schema 形状对象；随 /api/services 对账透传，供
+//!   evo-agent 注册带 schema 的 LLM 代理工具（缺省无参工具，向前兼容）
 //! - ~~`body_template`~~：**历史字段，解析器不读取**（登记册存量项处置：文档修正）。
 //!   实际行为：service params 里的 `args` 对象会被序列化作为 HTTP body 发出；
 //!   调用方也可在 params 中显式传 `body` 覆盖。
@@ -56,6 +58,10 @@ pub struct ServiceEntry {
     pub version: Option<String>,
     /// 服务描述（可选；能力对账展示用）
     pub description: Option<String>,
+    /// 参数契约（可选；JSON Schema 形状对象，随 /api/services 对账透传，
+    /// 供 evo-agent 注册带 schema 的 LLM 代理工具——LLM 侧参数化调用面）。
+    /// 缺省 None = 无参工具（现行为不变，向前兼容）。
+    pub parameters: Option<serde_json::Value>,
 }
 
 /// 服务元数据（C5：/api/services 能力对账只读视图；name 保序确定性）
@@ -66,6 +72,8 @@ pub struct ServiceMeta {
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
 }
 
 /// 服务注册中心
@@ -154,6 +162,7 @@ impl ServiceRegistry {
                 name: name.clone(),
                 version: e.version.clone(),
                 description: e.description.clone(),
+                parameters: e.parameters.clone(),
             })
             .collect()
     }
@@ -222,6 +231,20 @@ fn parse_service_entry(name: &str, val: &serde_json::Value) -> Result<ServiceEnt
 
     let timeout_ms = obj.get("timeout_ms").and_then(|v| v.as_i64());
 
+    // 参数契约（可选）：必须为 JSON object 形状（fail-fast——标量/数组显式报错，
+    // 防止误配静默降级为无参工具）。形状内容不在此校验（JSON Schema 语义由
+    // 消费方 evo-agent 侧解释；此处只做装载期结构门禁）。
+    let parameters = match obj.get("parameters") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v @ serde_json::Value::Object(_)) => Some(v.clone()),
+        Some(other) => {
+            return Err(format!(
+                "service '{}' field 'parameters' must be a JSON object (JSON Schema shape), got: {}",
+                name, other
+            ));
+        }
+    };
+
     Ok(ServiceEntry {
         url,
         method,
@@ -235,6 +258,7 @@ fn parse_service_entry(name: &str, val: &serde_json::Value) -> Result<ServiceEnt
             .get("description")
             .and_then(|v| v.as_str())
             .map(String::from),
+        parameters,
     })
 }
 
@@ -664,5 +688,84 @@ mod tests {
         let params = JsonValue::object_from_pairs(&[("foo", JsonValue::Integer(1))]);
         let err = handler.resolve(&params).unwrap_err();
         assert!(err.contains("missing required param: service_name"));
+    }
+
+    /// parameters 可选契约：带 object → 透传 ServiceMeta；不带 → None（现行为）
+    #[test]
+    fn test_service_metadata_parameters_passthrough() {
+        let json = r#"{
+            "with_schema": {
+                "url": "http://x/svc",
+                "description": "带契约",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"msg": {"type": "string"}},
+                    "required": ["msg"]
+                }
+            },
+            "no_schema": {"url": "http://x/plain"}
+        }"#;
+        let r = ServiceRegistry::load_from_str(json).unwrap();
+        let metas: BTreeMap<String, ServiceMeta> = r
+            .service_metadata()
+            .into_iter()
+            .map(|m| (m.name.clone(), m))
+            .collect();
+        let with = metas.get("with_schema").unwrap();
+        let params = with
+            .parameters
+            .as_ref()
+            .expect("带契约服务应透传 parameters");
+        assert_eq!(
+            params
+                .get("properties")
+                .and_then(|p| p.get("msg"))
+                .and_then(|t| t.get("type"))
+                .and_then(|v| v.as_str()),
+            Some("string")
+        );
+        let without = metas.get("no_schema").unwrap();
+        assert!(
+            without.parameters.is_none(),
+            "不带 parameters 的服务应保持 None（现行为）"
+        );
+        // 序列化视角：None 字段不出现（对账清单向前兼容）
+        let no_schema_json = serde_json::to_string(without).unwrap();
+        assert!(
+            !no_schema_json.contains("parameters"),
+            "None parameters 不应序列化进对账清单, got: {no_schema_json}"
+        );
+        let with_schema_json = serde_json::to_string(with).unwrap();
+        assert!(with_schema_json.contains("parameters"));
+    }
+
+    /// parameters 形状门禁：标量/数组显式拒绝（fail-fast，防误配静默降级为无参工具）。
+    /// 双层防御：C9 schema 门禁先行（$defs parameters: object），parse 层兜底
+    /// （防 schema 权威源漂移时静默放行）。
+    #[test]
+    fn test_parameters_scalar_rejected() {
+        let err = ServiceRegistry::load_from_str(
+            r#"{"bad": {"url": "http://x/y", "parameters": "msg:string"}}"#,
+        )
+        .unwrap_err();
+        let schema_gate = err.contains("not of type");
+        let parse_gate = err.contains("must be a JSON object");
+        assert!(
+            schema_gate || parse_gate,
+            "标量 parameters 应被 schema 门禁或 parse 层拦截, got: {err}"
+        );
+        let err = ServiceRegistry::load_from_str(
+            r#"{"bad": {"url": "http://x/y", "parameters": ["msg"]}}"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("not of type") || err.contains("must be a JSON object"),
+            "数组 parameters 应被拦截, got: {err}"
+        );
+        // null 等价缺省（宽松容错：显式 null 语义=无契约）
+        let r =
+            ServiceRegistry::load_from_str(r#"{"ok": {"url": "http://x/y", "parameters": null}}"#)
+                .unwrap();
+        assert!(r.get("ok").unwrap().parameters.is_none());
     }
 }

@@ -1082,6 +1082,7 @@ mod tests {
             name: "payroll_svc".into(),
             version: Some("1.2.0".into()),
             description: Some("payroll service".into()),
+            parameters: None,
         }];
         let api = test_api_with_pass_sandbox(&tmp).with_registry_services(metas);
         let mut bundle = valid_bundle(schema_valid_body());
@@ -1107,6 +1108,7 @@ mod tests {
             name: "payroll_svc".into(),
             version: Some("1.2.0".into()),
             description: Some("payroll service".into()),
+            parameters: None,
         }];
         let api = test_api_with_pass_sandbox(&tmp).with_registry_services(metas);
         let out = crate::api::server::list_services_handler(axum::extract::State(api)).await;
@@ -1174,6 +1176,7 @@ mod tests {
             name: "payroll_svc".into(),
             version: None,
             description: None,
+            parameters: None,
         }];
         let api = test_api_with_pass_sandbox(&tmp)
             .with_native_services(infos)
