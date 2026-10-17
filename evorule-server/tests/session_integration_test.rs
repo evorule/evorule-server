@@ -1183,6 +1183,8 @@ struct RehydrateFixture {
     core_eval_path: PathBuf,
     rules_dir: PathBuf,
     session_id: u64,
+    /// phase-1 归档内最大 Command ID（O-502 跨重启 ID 空间核验用）
+    archived_command_fact_id: u64,
 }
 
 /// phase-1：建会话 + 写入一条可从归档验证的 set，随后整体 drop 模拟重启
@@ -1199,7 +1201,7 @@ async fn boot_session_then_restart_simulated(attr: &str, value: i64) -> Rehydrat
     let rules_dir = tmp.path().join("rules");
     std::fs::create_dir(&rules_dir).unwrap();
 
-    let session_id = {
+    let (session_id, fact_id) = {
         let core_eval = load_core_eval();
         let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
         let (tx, _rx, _etx, _handle, facts_log) = reactor.spawn();
@@ -1233,8 +1235,8 @@ async fn boot_session_then_restart_simulated(attr: &str, value: i64) -> Rehydrat
         let (_, json) = send(&state, "POST", "/api/sessions", None).await;
         let sid = json["session_id"].as_u64().unwrap();
         let v0 = get_version(&state, sid).await;
-        submit_set_and_wait(&state, sid, attr, value, v0).await;
-        sid
+        let (_, fact_id) = submit_set_get_fact_id(&state, sid, attr, value, v0).await;
+        (sid, fact_id)
     }; // state/sessions/reactor 整体 drop → 内存表清零，WAL 归档留存
 
     tokio::time::sleep(Duration::from_millis(300)).await; // 反应器退出窗口
@@ -1244,6 +1246,7 @@ async fn boot_session_then_restart_simulated(attr: &str, value: i64) -> Rehydrat
         core_eval_path,
         rules_dir,
         session_id,
+        archived_command_fact_id: fact_id,
     }
 }
 
@@ -1339,6 +1342,35 @@ async fn test_session_rehydrate_same_id_after_restart() {
         st["payload"]["persisted_key"].as_i64(),
         Some(7),
         "归档期写入必须经复活保留: {st}"
+    );
+}
+
+/// O-502（P0-2 生产就绪批）：跨重启 API 层全局 Command ID 空间续起。
+///
+/// 复活受理后新命令的 fact_id 必须严格高于归档内最大 Command ID
+/// （`session_or_rehydrate` 经 `fetch_max(max_api_id + 1)` 按归档续起）——
+/// 若计数器未抬升，新命令将复用缺省起点（30000）与 phase-1 首命令撞号
+/// （相等即失败），高位区/低位区不相交的 ID 空间语义由此锁定。
+#[tokio::test]
+async fn test_rehydrate_lifts_api_command_id_space() {
+    let fx = boot_session_then_restart_simulated("persisted_key", 7).await;
+    let sid = fx.session_id;
+    let state2 = boot_second_state(&fx, None);
+
+    let (status, resp) = send(
+        &state2,
+        "POST",
+        &format!("/api/sessions/{sid}/command"),
+        Some(REHYDRATE_CMD_BODY),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "复活受理: {resp}");
+    let revived_fact_id = resp["fact_id"].as_u64().expect("命令响应应含 fact_id");
+    assert!(
+        revived_fact_id > fx.archived_command_fact_id,
+        "复活后命令 ID 必须续起于归档最大值之上（archived={}, revived={}），不得撞号",
+        fx.archived_command_fact_id,
+        revived_fact_id
     );
 }
 

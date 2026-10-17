@@ -383,6 +383,15 @@ pub struct SessionApi {
     wal_dir: Option<std::path::PathBuf>,
 
     /// API 层 FactId 计数器（从 30000 起，避免与反应器自身 ID 冲突）
+    ///
+    /// ID 空间语义（O-502 文档化，P0-2 生产就绪批）：本计数器是 **API 层全局
+    /// 命令面**——Command 的 ID 从 30000 高位区起分配，跨会话单调递增；与会话内
+    /// 反应器自身 FactId（低位区，从 1 起）、共享账本 fact_id（独立空间）分属
+    /// 三个不同 ID 空间，响应中的 `fact_id` 字段按来源分别取自其一（payload
+    /// 观测值如 30331 即本高位区）。跨重启续起语义：单反应器路径经
+    /// `ensure_command_ids_above(归档最大 Command id)` 抬升；会话复活路径经
+    /// `session_or_rehydrate` 的 `fetch_max(max_api_id + 1)` 按归档续起——
+    /// 高位区与低位区各自按类续起、两区不相交，防新事实与恢复历史撞号。
     next_id: Arc<std::sync::atomic::AtomicU64>,
 
     /// 当前活跃 SSE 连接数（全局计数器，限制 MAX_SSE_CONNECTIONS）
@@ -1097,6 +1106,20 @@ impl SessionApi {
             .await;
 
         Ok(session)
+    }
+
+    /// 引导面复活入口（P0-3 生产就绪批，O-501）：启动期优先复活原生产会话。
+    ///
+    /// 复用 [`Self::session_or_rehydrate`] 全链语义（归档哈希校验 fail-closed /
+    /// API 命令计数器续起 / 随行任务三件套装配），拒绝原因转字符串供启动期
+    /// ERROR 留痕。复活开关关闭（--session-rehydrate false）时原语自然回落
+    /// NoArchive 文案——引导面按「复活失败」处理并回落重建分支，与既有
+    /// 开发语义逐位一致；生产档位该开关已被启动门强制为 true。
+    pub async fn revive_for_bootstrap(&self, session_id: u64) -> Result<(), String> {
+        self.session_or_rehydrate(session_id)
+            .await
+            .map(|_| ())
+            .map_err(|rej| rej.to_string())
     }
 
     /// 读取会话的 caller_role 声明（未声明 = None）
@@ -4430,6 +4453,40 @@ pub fn is_guard_assembled() -> bool {
     GUARD_ASSEMBLED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// 部署档位健康快照（P0-1 生产就绪批：main 启动期写入一次，供 `GET /api/health` 呈现）
+///
+/// 扩 guard_assembled 进程级静态先例：部署巡检与告警据此核验「profile / 持久化 /
+/// 认证 / 限速」布尔位与实际配置一致——带病运行（如开发档放行的裸奔配置）可被
+/// 外部发现，而非只在启动日志里可见一次。OnceLock 写一次不可变（启动后配置面
+/// 不变的语义与插件挂载快照同构）。
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+pub struct DeploymentHealth {
+    /// 启动档位：`production`（缺省语义）/ `development`（显式豁免）
+    pub profile: String,
+    /// 档位是否来自缺省（未显式声明 --profile/EVORULE_PROFILE）——
+    /// `true` = 当前 production 语义来自缺省反转（漏配即拒启已武装）；
+    /// `false` = 运维显式声明了档位（含显式 production，配置自证）
+    pub profile_defaulted: bool,
+    /// WAL 持久化是否配置（wal_dir 三通道任一命中）
+    pub wal_dir_configured: bool,
+    /// 认证是否启用（auth_token 或 service_token 任一在场）
+    pub auth_enabled: bool,
+    /// 速率限制是否启用（--no-rate-limit 时为 false）
+    pub rate_limit_enabled: bool,
+}
+
+static DEPLOYMENT_HEALTH: std::sync::OnceLock<DeploymentHealth> = std::sync::OnceLock::new();
+
+/// 写入部署档位健康快照（main 启动期调用一次；重复调用忽略——OnceLock 语义）
+pub fn set_deployment_health(snapshot: DeploymentHealth) {
+    let _ = DEPLOYMENT_HEALTH.set(snapshot);
+}
+
+/// 读取部署档位健康快照（未注入时 None——`/api/health` 该节整体省略，向后兼容）
+pub fn deployment_health() -> Option<DeploymentHealth> {
+    DEPLOYMENT_HEALTH.get().cloned()
+}
+
 /// 插件运行时存活状态快照（探活任务每轮更新；键=external 插件 id）。
 /// 与 PLUGIN_HEALTH（启动期挂载事实,OnceLock 不可变）分离——挂载事实与
 /// 运行时存活是两类语义,health handler 合并呈现于 external 插件节。
@@ -4513,6 +4570,12 @@ pub struct HealthResponse {
     /// `true` = 全部 I/O 分发路径已注入守卫，入口仲裁生效（fail-closed）；
     /// `false` = 服务启动未启用守卫，I/O 走 fail-open（应由运维纠正）。
     pub guard_assembled: bool,
+
+    /// 部署档位快照（P0-1 生产就绪批：profile/持久化/认证/限速布尔位）
+    ///
+    /// main 启动期注入；未注入（理论上仅测试构造路径）时整节省略——响应向后兼容。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<DeploymentHealth>,
 
     /// 回写转发漏发计数（观察面，先记后治）
     ///
@@ -5653,6 +5716,8 @@ async fn health() -> Json<HealthResponse> {
         plugins,
         // C6 装配可观测信号（DEV-5）：外部据此区分守卫已装配 / 未装配
         guard_assembled: is_guard_assembled(),
+        // P0-1 部署档位快照（生产就绪批）：profile/持久化/认证/限速布尔位
+        deployment: deployment_health(),
         // 回写转发漏发计数（未配置回写 → 省略该节，响应逐字节兼容）
         writeback: crate::api::writeback_forward::health_snapshot()
             .map(|(misfires, dropped)| WritebackHealth { misfires, dropped }),
@@ -7257,8 +7322,6 @@ async fn session_command(
         })));
     }
 
-    let id = api.next_id();
-
     // 声明会话注入 __meta__.caller_role（Schema 门禁已过，落账前注入；
     // 随 WAL 落账 = resolver 判定权威源）
     api.inject_caller_role(session_id, &mut instruction_value);
@@ -7268,10 +7331,16 @@ async fn session_command(
     // 获取或惰性复活（内存表未命中且开关开时从 WAL 归档按原 sid 复活）。
     // 会话锁不跨 send 持有：session 为句柄克隆，command_tx 生命周期独立于
     // 活跃表（TTL 回收只移表不杀反应器），通道语义与既有失败分支一致。
+    // O-502（P0-2 生产就绪批）：命令 ID 分配必须在本步之后——复活路径经
+    // fetch_max(max_api_id + 1) 按归档抬升 API 层计数器；若先分配后复活，
+    // 重启后首命令将复用缺省起点与归档最大 Command id 撞号（集成测试
+    // test_rehydrate_lifts_api_command_id_space 锁定此时序）。
     let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
         tracing::warn!(session_id, rejection = %rej, "会话获取失败（含复活尝试）");
         rej.to_status()
     })?;
+
+    let id = api.next_id();
 
     match session.command_tx.send(Fact::Command { id, instruction }) {
         Ok(()) => {

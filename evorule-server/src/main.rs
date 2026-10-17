@@ -214,6 +214,28 @@ fn load_config_file(path: &Option<PathBuf>) -> FileConfig {
     }
 }
 
+/// 启动档位（P0-1 生产就绪批）
+///
+/// **缺省（未显式声明）即 production 语义**——漏配从「裸奔」变为「拒启」（fail-fast）；
+/// development 为显式豁免通道，仅显式声明后恢复既有开放行为（缺省不变式在此反转
+/// 为经用户裁定「直接全开生产环境」的豁免式形态，2026-10-17 已批）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum StartupProfile {
+    /// 生产语义（缺省）：持久化/认证/限速/复活缺省强制，未满足即拒启
+    Production,
+    /// 开发语义：显式 opt-in 后恢复既有开放行为（纯本地开发用）
+    Development,
+}
+
+impl StartupProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            StartupProfile::Production => "production",
+            StartupProfile::Development => "development",
+        }
+    }
+}
+
 /// evorule-server 启动配置
 ///
 /// 所有字段均可通过 CLI 参数、环境变量（前缀 `EVORULE_`）或 JSON 配置文件提供。
@@ -224,6 +246,21 @@ struct Cli {
     /// JSON 配置文件路径（可选，例: ./evorule.json）
     #[arg(long, env = "EVORULE_CONFIG")]
     config: Option<PathBuf>,
+
+    /// 启动档位（P0-1 生产就绪批）：**缺省（未声明）= production 语义，漏配即拒启**。
+    ///
+    /// production 档五项强制条件（一票否决，见 validate_production_profile）：
+    /// wal-dir 必配 / auth-token 与 service-token 至少其一 / 禁用 --insecure-serve /
+    /// 禁用 --no-rate-limit / 会话复活保持开启。
+    /// 本地开发显式传入 `--profile development`（或 EVORULE_PROFILE=development）
+    /// 恢复既有开放行为；未知档位值 clap 层 fail-fast。
+    #[arg(
+        long,
+        env = "EVORULE_PROFILE",
+        value_enum,
+        value_name = "development|production"
+    )]
+    profile: Option<StartupProfile>,
 
     /// 监听地址
     #[arg(long, env = "EVORULE_ADDR")]
@@ -322,8 +359,17 @@ struct Cli {
     wal_dir: Option<PathBuf>,
 
     /// WAL fsync 开关（P02：启用后在每次 WAL 写入后执行 fsync，确保断电时数据不丢失）
-    #[arg(long, env = "EVORULE_WAL_FSYNC")]
-    wal_fsync: bool,
+    ///
+    /// P0-2 生产就绪批：**生产档位缺省 true**（未显式声明时反转）；显式传 false
+    /// 允许降档，启动期留痕 warn。开发档位缺省 false（现行为不变）。
+    #[arg(
+        long,
+        env = "EVORULE_WAL_FSYNC",
+        default_missing_value = "true",
+        num_args = 0..=1,
+        value_parser = clap::value_parser!(bool)
+    )]
+    wal_fsync: Option<bool>,
 
     /// WAL 文件最大大小（MB，P03：达到此大小后自动轮换文件，默认 100MB，0 表示不轮换）
     #[arg(long, env = "EVORULE_WAL_MAX_SIZE_MB")]
@@ -456,6 +502,11 @@ struct Cli {
 
 /// 合并后的最终配置（CLI > env > file > default）
 struct ResolvedConfig {
+    /// 启动档位（P0-1：未显式声明时缺省 production）
+    profile: StartupProfile,
+    /// 档位是否来自缺省（未显式声明 --profile/EVORULE_PROFILE）——
+    /// health 据此标注「default-production」（缺省反转已武装的部署巡检信号）
+    profile_defaulted: bool,
     addr: String,
     auth_token: Option<String>,
     /// B5-server：受信服务管道 token（仅认证启用时生效）
@@ -480,7 +531,8 @@ struct ResolvedConfig {
     log_max_size_mb: u64,
     /// WAL 文件存储目录（可选，指定后启用 WAL 持久化）
     wal_dir: Option<PathBuf>,
-    /// WAL fsync 开关（P02：启用后在每次 WAL 写入后执行 fsync）
+    /// WAL fsync 开关（P02：每次 WAL 写入后 fsync；P0-2：生产档缺省 true，
+    /// 显式 false 降档留痕 warn；开发档缺省 false = 现行为）
     wal_fsync: bool,
     /// WAL 文件最大大小（字节，P03：达到此大小后自动轮换文件）
     max_wal_size_bytes: u64,
@@ -528,6 +580,9 @@ impl ResolvedConfig {
     /// 按 CLI > env > file > default 优先级解析配置
     #[allow(clippy::let_and_return)]
     fn resolve(cli: Cli, file: FileConfig) -> Self {
+        // P0-1：档位先于全量配置解析（wal_fsync 生产缺省反转依赖档位）
+        let profile = cli.profile.unwrap_or(StartupProfile::Production);
+        let profile_defaulted = cli.profile.is_none();
         let max_wal_size_mb = cli.wal_max_size_mb.unwrap_or(100);
         let allowed_origins = if cli.allowed_origins.is_empty() {
             file.auth.allowed_origins.unwrap_or_default()
@@ -535,6 +590,8 @@ impl ResolvedConfig {
             cli.allowed_origins
         };
         let cfg = Self {
+            profile,
+            profile_defaulted,
             addr: cli
                 .addr
                 .or(file.server.addr)
@@ -589,7 +646,11 @@ impl ResolvedConfig {
             log_max_days: cli.log_max_days.or(file.log.max_days).unwrap_or(7),
             log_max_size_mb: cli.log_max_size_mb.or(file.log.max_size_mb).unwrap_or(1024),
             wal_dir: cli.wal_dir.or(file.paths.wal_dir),
-            wal_fsync: cli.wal_fsync,
+            // P0-2：显式声明优先；未声明时生产档缺省 true（断电不丢写入窗口），
+            // 开发档维持 false（现行为不变）。显式降档的 warn 留痕在启动横幅段。
+            wal_fsync: cli
+                .wal_fsync
+                .unwrap_or(matches!(profile, StartupProfile::Production)),
             max_wal_size_bytes: max_wal_size_mb * 1024 * 1024,
             auto_verify: cli.auto_verify,
             auto_verify_threshold: cli.auto_verify_threshold.unwrap_or(1000),
@@ -1660,6 +1721,124 @@ fn validate_auth_policy(
     Ok(())
 }
 
+/// 生产档位拒启矩阵的判定输入（从 ResolvedConfig 提取的相关面，独立结构便于单测）
+struct ProductionGateInput<'a> {
+    wal_dir: Option<&'a std::path::Path>,
+    auth_token: Option<&'a str>,
+    service_token: Option<&'a str>,
+    insecure_serve: bool,
+    /// 速率限制是否启用（--no-rate-limit 时为 false）
+    rate_limit_enabled: bool,
+    /// 会话归档复活开关（P0-1：生产必须有跨重启复活能力）
+    session_rehydrate: bool,
+}
+
+/// 生产档位强制门（P0-1 生产就绪批，2026-10-17 已批）
+///
+/// 缺省（未显式 `--profile development`）即 production 语义：五条件一票否决拒启，
+/// 错误信息含逐项自诊断与 `--profile development` 豁免指引——漏配从「裸奔」变为
+/// 「拒启」。development 档直接放行（现行为零变化，显式豁免通道）。
+fn validate_production_profile(
+    profile: StartupProfile,
+    input: &ProductionGateInput<'_>,
+) -> Result<(), String> {
+    if profile != StartupProfile::Production {
+        return Ok(());
+    }
+    let mut violations: Vec<String> = Vec::new();
+    if input.wal_dir.is_none() {
+        violations.push(
+            "WAL 目录未配置：共享事实（平台用户/角色/认证事件）与会话审计链将纯内存运行，\
+             重启即全部丢失。配置 --wal-dir <目录>（或环境变量 EVORULE_WAL_DIR / 配置文件 paths.wal_dir）"
+                .to_string(),
+        );
+    }
+    if input.auth_token.is_none() && input.service_token.is_none() {
+        violations.push(
+            "认证未配置：auth-token 与 service-token 均缺失，治理面将匿名可达。\
+             配置 --auth-token / EVORULE_AUTH_TOKEN（凭据分层可另配 --service-token / EVORULE_SERVICE_TOKEN）"
+                .to_string(),
+        );
+    }
+    if input.insecure_serve {
+        violations.push(
+            "--insecure-serve 显式豁免认证：与生产档互斥，请移除该参数并配置认证。".to_string(),
+        );
+    }
+    if !input.rate_limit_enabled {
+        violations.push(
+            "速率限制已禁用（--no-rate-limit）：与生产档互斥，请移除该参数。".to_string(),
+        );
+    }
+    if !input.session_rehydrate {
+        violations.push(
+            "会话归档复活已关闭（--session-rehydrate false）：生产档必须有跨重启复活能力，\
+             请移除该参数或恢复缺省 true。"
+                .to_string(),
+        );
+    }
+    if violations.is_empty() {
+        return Ok(());
+    }
+    let mut msg = String::from(
+        "🛑 拒绝启动：当前为生产档位（缺省 profile=production），存在未满足的生产配置：\n",
+    );
+    for v in &violations {
+        msg.push_str(&format!("  - {v}\n"));
+    }
+    msg.push_str(
+        "  生产配置清单与拒启矩阵见部署文档；纯本地开发可显式传入 --profile development\n\
+         （或环境变量 EVORULE_PROFILE=development）恢复开放语义（自行承担数据丢失风险）。",
+    );
+    Err(msg)
+}
+
+/// WAL 目录启动自检（P0-2 生产就绪批）：试写试读一条 probe record 并清理。
+///
+/// 磁盘满/权限降级在启动期即暴露，而非首个写入请求时；试写试读双向核验后清理，
+/// 不污染 WAL 链（probe 文件独立于 FactsLog）。失败原因含目录路径供定位。
+fn probe_wal_dir(wal_dir: &std::path::Path) -> Result<(), String> {
+    let probe_path = wal_dir.join(".wal_probe.tmp");
+    let payload: &[u8] = b"evorule-wal-probe-record";
+    std::fs::write(&probe_path, payload)
+        .map_err(|e| format!("WAL 目录试写失败（{}）: {e}", wal_dir.display()))?;
+    let read_back = std::fs::read(&probe_path)
+        .map_err(|e| format!("WAL 目录试读失败（{}）: {e}", wal_dir.display()))?;
+    if read_back != payload {
+        let _ = std::fs::remove_file(&probe_path);
+        return Err(format!(
+            "WAL 目录试写试读内容不一致（{}）：读写链路异常",
+            wal_dir.display()
+        ));
+    }
+    if let Err(e) = std::fs::remove_file(&probe_path) {
+        // 清理失败不影响判定（读写验证已通过），仅留痕避免残留积累
+        warn!(
+            "WAL 目录探针文件清理失败（{}）: {e}",
+            probe_path.display()
+        );
+    }
+    Ok(())
+}
+
+/// 统计 wal 目录下非空会话 WAL 存档数（P0-2 启动横幅恢复统计）
+fn count_nonempty_session_wals(wal_dir: &std::path::Path) -> usize {
+    std::fs::read_dir(wal_dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| {
+                    let name = e.file_name();
+                    let name = name.to_string_lossy();
+                    name.starts_with("session_") && name.ends_with(".wal")
+                })
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.len() > 0)
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 #[tokio::main]
 // 主函数集成所有子命令 + 启动流程, 268 行是当前架构必要。详见 GATE_REFERENCE.md §六(豁免索引)
 #[allow(clippy::too_many_lines)]
@@ -1686,6 +1865,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_time = Instant::now();
     info!("=== evorule-server 启动中 ===");
+    info!(
+        "启动档位: {}{}（P0-1 生产就绪批：缺省即 production 语义，漏配即拒启）",
+        cfg.profile.as_str(),
+        if cfg.profile_defaulted {
+            "（未显式声明，缺省反转生效）"
+        } else {
+            "（显式声明）"
+        }
+    );
     info!("监听地址: {}", cfg.addr);
     info!("宪法路径: {}", cfg.core_eval.display());
     info!("规则目录: {}", cfg.rules_dir.display());
@@ -1699,6 +1887,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("{reason}");
         error!("{reason}");
         std::process::exit(1);
+    }
+    // 1.6 生产档位强制门（P0-1 生产就绪批）：认证策略预检之后、任何资源初始化
+    // 之前 fail-fast。五条件一票否决（wal-dir/双 token/insecure-serve/no-rate-limit/
+    // rehydrate=false），错误信息含逐项自诊断与 --profile development 豁免指引。
+    if let Err(reason) = validate_production_profile(
+        cfg.profile,
+        &ProductionGateInput {
+            wal_dir: cfg.wal_dir.as_deref(),
+            auth_token: cfg.auth_token.as_deref(),
+            service_token: cfg.service_token.as_deref(),
+            insecure_serve: cfg.insecure_serve,
+            rate_limit_enabled: cfg.rate_limit_per_sec > 0,
+            session_rehydrate: cfg.session_rehydrate,
+        },
+    ) {
+        eprintln!("{reason}");
+        error!("{reason}");
+        std::process::exit(1);
+    }
+    // P0-1：health 部署档位快照注入（扩 guard_assembled 进程级静态先例）——
+    // 部署巡检与告警据此核验 profile/持久化/认证/限速布尔位与实际配置一致（降级可见）。
+    evorule_server::api::server::set_deployment_health(
+        evorule_server::api::server::DeploymentHealth {
+            profile: cfg.profile.as_str().to_string(),
+            profile_defaulted: cfg.profile_defaulted,
+            wal_dir_configured: cfg.wal_dir.is_some(),
+            auth_enabled: cfg.auth_token.is_some() || cfg.service_token.is_some(),
+            rate_limit_enabled: cfg.rate_limit_per_sec > 0,
+        },
+    );
+    // P0-2：生产档位显式关闭 fsync 的降档留痕（缺省反转 true，显式 false 属有权降档，
+    // 但断电窗口风险必须在日志侧可见）。
+    if cfg.profile == StartupProfile::Production && !cfg.wal_fsync {
+        warn!(
+            "生产档位下显式关闭 wal_fsync：断电时可能丢失最近写入窗口（显式降档，留痕）"
+        );
     }
     // 域守卫裁定落档（跨仓挂账三-b，2026-10-03 项目方批准结清）：无认证启动
     // （loopback + --insecure-serve）时受保护域准入（stable.llm / stable.system
@@ -1758,12 +1982,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     // 持久化防呆：未配 WAL 时共享事实（平台用户/角色/认证事件/治理事实）与会话
-    // 审计链均纯内存，重启即全部丢失。必须显著警示（丢数据风险 + 配置方法），
-    // 不允许静默降级——与共享事实恢复失败拒绝启动（AUDIT-A1）同一防呆口径。
+    // 审计链均纯内存，重启即全部丢失。生产档位已在启动门拒启（validate_production_profile），
+    // 本警告仅开发档可达——显式豁免通道自担数据丢失风险，但不允许静默（丢数据风险 +
+    // 配置方法必须显著警示，与共享事实恢复失败拒绝启动（AUDIT-A1）同一防呆口径）。
     if cfg.wal_dir.is_none() {
         warn!(
             "未配置 --wal-dir：平台用户/角色/认证事件等共享事实与会话审计链均为纯内存模式，\
-             服务重启即全部丢失（开发模式语义，正式部署不可接受）。\
+             服务重启即全部丢失（开发档位语义；生产档位将拒绝启动）。\
              启用持久化：--wal-dir <目录>（或环境变量 EVORULE_WAL_DIR / 配置文件 paths.wal_dir）"
         );
     }
@@ -1848,6 +2073,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_dir(&cfg.memory_dir)?;
     if let Some(wal_dir) = &cfg.wal_dir {
         ensure_dir(wal_dir)?;
+        // P0-2 启动自检：试写试读 probe record（磁盘满/权限降级启动期暴露）。
+        // 生产档位失败即拒启；开发档位降级为警告（容错语义不变）。
+        if let Err(reason) = probe_wal_dir(wal_dir) {
+            if cfg.profile == StartupProfile::Production {
+                let msg = format!("🛑 拒绝启动：{reason}");
+                eprintln!("{msg}");
+                error!("{msg}");
+                std::process::exit(1);
+            }
+            warn!("{reason}（开发档位降级为警告，不阻断启动）");
+        }
     }
     // P10: workspace 元数据库父目录
     if let Some(parent) = cfg.workspace_db.parent() {
@@ -2188,8 +2424,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_rounds(cfg.max_rounds)
         .io_warn_timeout(Duration::from_secs(cfg.io_warn_timeout_secs))
         .io_error_timeout(Duration::from_secs(cfg.io_error_timeout_secs));
-    // 归档最大 Command id 扫描结果（wal_dir 未启用时保持 0，计数器抬升为无操作）
+    // 归档最大 Command id / 反应器 FactId 扫描结果（P0-2 启动横幅消费；
+    // wal_dir 未启用时保持 0，计数器抬升为无操作）
     let mut archived_max_command_id: u64 = 0;
+    let mut archived_max_reactor_fact_id: u64 = 0;
     if let Some(wal_dir) = &cfg.wal_dir {
         let single_wal = wal_dir.join("governance_single_reactor.wal");
         let wal_exists = single_wal.exists();
@@ -2208,16 +2446,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 反应器自身事实自归档最大值+1 续起；Command 的 ID 由 API 层独立
                 // 计数器分配、按类跳过（与 SessionManager 复活原语同口径）。
                 // 空链 max=0，fact_id_start(1) 与缺省 new() 行为等价。
-                let mut max_reactor_fact_id: u64 = 0;
                 fl.for_each_fact_from(0, |_, fact| match fact {
                     evorule_reactor::Fact::Command { id, .. } => {
                         archived_max_command_id = archived_max_command_id.max(id.0);
                     }
-                    _ => max_reactor_fact_id = max_reactor_fact_id.max(fact.id().0),
+                    _ => {
+                        archived_max_reactor_fact_id =
+                            archived_max_reactor_fact_id.max(fact.id().0);
+                    }
                 });
                 reactor_builder = reactor_builder
                     .facts_log(fl)
-                    .fact_id_start(max_reactor_fact_id + 1);
+                    .fact_id_start(archived_max_reactor_fact_id + 1);
                 info!(
                     "单反应器 WAL 已启用：{}（fsync={}, max_wal_size_bytes={}, 模式={}, 反应器 fact_id 续起自 {}）",
                     single_wal.display(),
@@ -2228,7 +2468,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         "create"
                     },
-                    max_reactor_fact_id + 1,
+                    archived_max_reactor_fact_id + 1,
                 );
             }
             Err(e) => {
@@ -2245,6 +2485,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 导致反应器任务 panic 或异常退出时无法被检测或取消,成为孤儿任务。
     // 现在保留 handle,在服务器退出时 abort 反应器,防止进程卡死。
     let (tx, _rx, event_tx, reactor_handle, facts_log) = reactor.spawn();
+
+    // P0-2 启动横幅：持久化恢复统计一次性显式视图（此前散落各处 info/debug，
+    // 生产运维需一眼核对恢复面——恢复了多少、计数器续起到哪、共享事实重放到哪）。
+    // 会话为惰性复活语义：此处为存档数（非启动即全量载入，按需同 sid 复活）。
+    if let Some(wal_dir) = &cfg.wal_dir {
+        info!(
+            "persistence-recovery-stats: 会话 WAL 存档 {} 个（非空，按需同 sid 惰性复活） / \
+             单反应器 FactId 续起自 {} / 归档最大 Command id（API 层计数器抬升基线） {} / \
+             共享事实重放至版本 {}",
+            count_nonempty_session_wals(wal_dir),
+            archived_max_reactor_fact_id + 1,
+            archived_max_command_id,
+            shared_facts.version(),
+        );
+    }
 
     // 6. spawn IoSubscriber 任务（订阅 event，执行 I/O，回写 IoResponse）
     // H2 修复: 旧代码 `let _ = subscriber.run(...).await` 吞掉了错误,
@@ -2492,15 +2747,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化不构成发布:ruleset_version 保持 0,hash 置空串,operator 标记
     // system:bootstrap 可追溯。已有生产会话的实例不受影响(幂等跳过)。
     //
-    // 补强(重启失忆替换):重启后 SessionManager 内存表为空——会话不随进程
-    // 自动加载,同 sid 仅在首次触碰时经 rehydrate_session_from_wal 惰性复活
-    // (2026-10-15 起,commit 765bd4a),引导面不触发触碰 → 既有
-    // current_session_id 指向的会话 session_exists=false,沙盒 fork 404。
-    // 启动期以 session_exists 校验,内存表不可见视同未初始化:重建会话并替换引用,
-    // 但保留既有 ruleset_version/ruleset_hash(会话是进程内对象,
-    // 规则集状态经 rules_dir/production_state 持久,重建不改版本语义)。
-    // 注:此处未尝试复活原会话——引导面主动复活(优先 rehydrate)由生产就绪批
-    // P0-3 承接(登记册 O-501),落地后本注释与 warn 文本需同步更新。
+    // P0-3（O-501，生产就绪批 2026-10-17 已批）：重启后 SessionManager 内存表为空
+    // （会话不随进程自动加载，同 sid 仅在首次触碰时经 rehydrate_session_from_wal
+    // 惰性复活，2026-10-15 起 commit 765bd4a）。引导面不再「重建空会话替换引用」，
+    // 而是**优先复活原 sid**：复用 session_or_rehydrate 全链语义（锁外归档全链
+    // 哈希校验 fail-closed + API 命令计数器按归档续起 + 随行任务三件套装配）——
+    // 会话连续性保持，原 WAL 文件复用（O-499 空 session_1.wal 积累随之消解）。
+    // 仅复活不可行（WAL 归档缺失/损坏/复活开关关闭）才回落「重建空会话」分支并
+    // ERROR 留痕；ruleset_version/ruleset_hash 保留逻辑不动（会话是进程内对象，
+    // 规则集状态经 rules_dir/production_state 持久，重建不改版本语义）。
+    // 开发档位行为说明：复活尝试与档位无关，由复活开关（session_rehydrate）与
+    // wal_dir 在场自然决定——未配 wal_dir / 显式关闸时原语回落 NoArchive → 与
+    // 既有开发语义逐位一致；生产档位上述两开关均被启动门强制。
     let prod_state = workspace_db
         .get_production_state()
         .map_err(|e| format!("启动期读取 production_state 失败: {e}"))?;
@@ -2508,13 +2766,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => true,
         Some(sid) => {
             let alive = session_ops.session_exists(sid as u64).await;
-            if !alive {
-                warn!(
-                    stale_session_id = sid,
-                    ": 生产会话不在内存表(重启后引导面不触发同 sid 惰性复活),按未初始化重建"
-                );
+            if alive {
+                false
+            } else {
+                match session_api.revive_for_bootstrap(sid as u64).await {
+                    Ok(()) => {
+                        info!(
+                            current_session_id = sid,
+                            "bootstrap-revive: 原生产会话已从 WAL 归档按原 sid 复活（会话连续性保持）"
+                        );
+                        false
+                    }
+                    Err(reason) => {
+                        error!(
+                            current_session_id = sid,
+                            reason = %reason,
+                            "bootstrap-revive-unavailable: 原生产会话复活不可行（归档缺失/损坏或复活开关关闭），回落重建空会话"
+                        );
+                        true
+                    }
+                }
             }
-            !alive
         }
     };
     if need_bootstrap {
@@ -3816,6 +4088,9 @@ mod tests {
     #[test]
     fn test_resolve_defaults() {
         let cfg = ResolvedConfig::resolve(minimal_cli(), FileConfig::default());
+        // P0-1 生产就绪批：缺省档位 = production（漏配即拒启）
+        assert_eq!(cfg.profile, StartupProfile::Production);
+        assert!(cfg.profile_defaulted, "未显式声明时 profile_defaulted=true");
         assert_eq!(cfg.addr, "0.0.0.0:18080");
         assert_eq!(cfg.core_eval, PathBuf::from("./resources/server_eval.json"));
         assert_eq!(cfg.rules_dir, PathBuf::from("./rules"));
@@ -3826,12 +4101,50 @@ mod tests {
         assert_eq!(cfg.log_format, "plain");
         assert_eq!(cfg.log_max_days, 7);
         assert_eq!(cfg.log_max_size_mb, 1024);
-        assert!(!cfg.wal_fsync);
+        // P0-2：生产档位 wal_fsync 缺省反转 true（显式 false 降档留痕）
+        assert!(cfg.wal_fsync, "production 缺省 fsync 应为 true");
         assert_eq!(cfg.max_wal_size_bytes, 100 * 1024 * 1024);
         assert!(!cfg.auto_verify);
         assert_eq!(cfg.auto_verify_threshold, 1000);
         assert_eq!(cfg.auto_verify_interval, 1);
         assert_eq!(cfg.rate_limit_per_sec, 200, "默认限速应为 200 req/s(修正)");
+    }
+
+    #[test]
+    fn test_resolve_development_profile_restores_legacy_defaults() {
+        // 显式豁免通道：development 档恢复既有开放行为（含 fsync 缺省 false）
+        let cli = Cli::parse_from(["evorule-server", "--profile", "development"]);
+        let cfg = ResolvedConfig::resolve(cli, FileConfig::default());
+        assert_eq!(cfg.profile, StartupProfile::Development);
+        assert!(!cfg.profile_defaulted, "显式声明时 profile_defaulted=false");
+        assert!(!cfg.wal_fsync, "development 档 fsync 缺省维持 false（现行为）");
+    }
+
+    #[test]
+    fn test_resolve_profile_explicit_production() {
+        let cli = Cli::parse_from(["evorule-server", "--profile", "production"]);
+        let cfg = ResolvedConfig::resolve(cli, FileConfig::default());
+        assert_eq!(cfg.profile, StartupProfile::Production);
+        assert!(!cfg.profile_defaulted, "显式 production 时 defaulted=false");
+        assert!(cfg.wal_fsync);
+    }
+
+    #[test]
+    fn test_resolve_wal_fsync_explicit_override() {
+        // 显式降档优先于生产缺省（P0-2：显式 false 允许，启动期留痕 warn）
+        let cli = Cli::parse_from(["evorule-server", "--wal-fsync=false"]);
+        let cfg = ResolvedConfig::resolve(cli, FileConfig::default());
+        assert!(cfg.profile == StartupProfile::Production);
+        assert!(!cfg.wal_fsync, "显式 false 必须优先于生产缺省 true");
+        // 显式升档
+        let cli = Cli::parse_from([
+            "evorule-server",
+            "--profile",
+            "development",
+            "--wal-fsync",
+        ]);
+        let cfg = ResolvedConfig::resolve(cli, FileConfig::default());
+        assert!(cfg.wal_fsync, "development 下显式 --wal-fsync 应生效");
     }
 
     #[test]
@@ -4095,5 +4408,127 @@ mod tests {
     fn test_ensure_dir_existing() {
         let dir = TempDir::new().expect("创建临时目录失败");
         ensure_dir(&PathBuf::from(dir.path())).expect("已存在目录不应报错");
+    }
+
+    // ===== P0-1 生产档位门测试（拒启矩阵） =====
+
+    /// 全满足的生产配置基线（各项测试按需挖缺）
+    fn prod_gate_input(wal_dir: Option<&std::path::Path>) -> ProductionGateInput<'_> {
+        ProductionGateInput {
+            wal_dir,
+            auth_token: Some("tok"),
+            service_token: None,
+            insecure_serve: false,
+            rate_limit_enabled: true,
+            session_rehydrate: true,
+        }
+    }
+
+    #[test]
+    fn test_production_gate_all_satisfied_passes() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        validate_production_profile(StartupProfile::Production, &prod_gate_input(Some(dir.path())))
+            .expect("五条件全满足应放行");
+    }
+
+    #[test]
+    fn test_production_gate_missing_wal_dir_rejects() {
+        let err = validate_production_profile(StartupProfile::Production, &prod_gate_input(None))
+            .expect_err("缺 wal-dir 必须拒启");
+        assert!(err.contains("WAL 目录未配置"), "错误应含 wal-dir 项: {err}");
+        assert!(
+            err.contains("--profile development"),
+            "错误必须指引导向开发豁免通道: {err}"
+        );
+    }
+
+    #[test]
+    fn test_production_gate_missing_both_tokens_rejects() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        let mut input = prod_gate_input(Some(dir.path()));
+        input.auth_token = None;
+        let err = validate_production_profile(StartupProfile::Production, &input)
+            .expect_err("双 token 均缺必须拒启");
+        assert!(err.contains("认证未配置"), "错误应含认证项: {err}");
+    }
+
+    #[test]
+    fn test_production_gate_service_token_alone_satisfies_auth() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        let mut input = prod_gate_input(Some(dir.path()));
+        input.auth_token = None;
+        input.service_token = Some("svc");
+        validate_production_profile(StartupProfile::Production, &input)
+            .expect("service-token 单独在场应满足认证条件");
+    }
+
+    #[test]
+    fn test_production_gate_insecure_serve_rejects() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        let mut input = prod_gate_input(Some(dir.path()));
+        input.insecure_serve = true;
+        let err = validate_production_profile(StartupProfile::Production, &input)
+            .expect_err("insecure-serve 与生产档互斥");
+        assert!(err.contains("--insecure-serve"), "错误应含 insecure-serve 项: {err}");
+    }
+
+    #[test]
+    fn test_production_gate_no_rate_limit_rejects() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        let mut input = prod_gate_input(Some(dir.path()));
+        input.rate_limit_enabled = false;
+        let err = validate_production_profile(StartupProfile::Production, &input)
+            .expect_err("限速禁用与生产档互斥");
+        assert!(err.contains("速率限制已禁用"), "错误应含限速项: {err}");
+    }
+
+    #[test]
+    fn test_production_gate_rehydrate_disabled_rejects() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        let mut input = prod_gate_input(Some(dir.path()));
+        input.session_rehydrate = false;
+        let err = validate_production_profile(StartupProfile::Production, &input)
+            .expect_err("复活关闭与生产档互斥");
+        assert!(err.contains("复活已关闭"), "错误应含复活项: {err}");
+    }
+
+    #[test]
+    fn test_development_gate_bypasses_all_conditions() {
+        // 显式豁免通道：全缺配置一律放行（现行为零变化）
+        let input = ProductionGateInput {
+            wal_dir: None,
+            auth_token: None,
+            service_token: None,
+            insecure_serve: true,
+            rate_limit_enabled: false,
+            session_rehydrate: false,
+        };
+        validate_production_profile(StartupProfile::Development, &input)
+            .expect("development 档为显式豁免通道，不检查任何条件");
+    }
+
+    // ===== P0-2 启动自检/横幅统计测试 =====
+
+    #[test]
+    fn test_probe_wal_dir_roundtrip_and_cleanup() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        probe_wal_dir(dir.path()).expect("可写目录探针应通过");
+        let probe = dir.path().join(".wal_probe.tmp");
+        assert!(!probe.exists(), "探针文件验证后必须清理，不残留");
+    }
+
+    #[test]
+    fn test_count_nonempty_session_wals_filters() {
+        let dir = TempDir::new().expect("创建临时目录失败");
+        std::fs::write(dir.path().join("session_1.wal"), b"nonempty").unwrap();
+        std::fs::write(dir.path().join("session_2.wal"), b"").unwrap(); // 空档不计
+        std::fs::write(dir.path().join("session_3.wal"), b"x").unwrap();
+        std::fs::write(dir.path().join("shared_facts.wal"), b"x").unwrap(); // 非会话档不计
+        std::fs::write(dir.path().join("other.bin"), b"x").unwrap();
+        assert_eq!(
+            count_nonempty_session_wals(dir.path()),
+            2,
+            "只统计非空 session_*.wal"
+        );
     }
 }
