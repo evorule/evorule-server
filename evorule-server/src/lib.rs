@@ -20,3 +20,4 @@ pub mod auth;
 pub mod input_sanitizer;
 pub mod knowledge_store;
 pub mod metrics_impl;
+pub mod wal_observation;

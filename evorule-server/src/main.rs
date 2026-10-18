@@ -2385,6 +2385,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .map_err(|e| format!("hit-stats 指标注册失败: {}", e))?,
     );
+    // WAL 观察面（P1 W-3）：注册指标；wal_dir 配置时后台轻采样（文件大小 +
+    // 分区剩余），未配置时无采样任务（health wal 节随之省略，响应向后兼容）
+    let wal_observation = evorule_server::wal_observation::WalObservation::register(
+        prometheus_metrics.registry(),
+    )
+    .map_err(|e| format!("WAL 观察面指标注册失败: {}", e))?;
+    if let Some(wal_dir) = &cfg.wal_dir {
+        let sample_dir = wal_dir.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(
+                evorule_server::wal_observation::SAMPLE_INTERVAL_SECS,
+            ));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                if let Some(obs) = evorule_server::wal_observation::WalObservation::global() {
+                    obs.sample(&sample_dir);
+                }
+            }
+        });
+        info!(
+            "WAL 观察面已装配：轻采样周期 {}s（wal_dir = {}）",
+            evorule_server::wal_observation::SAMPLE_INTERVAL_SECS,
+            wal_dir.display()
+        );
+    }
+    let _ = wal_observation; // 观察面经全局访问器消费；此处仅确证注册成功
     let mut main_gate = PermissionGate::new(Arc::new(shared_facts.clone()));
     // SG-2：静态路由策略资产装配（可选收紧层；缺失/解析失败不装配 + 显式留痕）
     if let Some(policy) =

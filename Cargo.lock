@@ -946,19 +946,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "evorule-bundle"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "011c267087f45c12f7aa20351386dfa130478bd12ed4265f51ef2e3c98d8daff"
-dependencies = [
- "evorule-hash",
- "jsonschema",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "evorule-debug-control"
 version = "0.10.0"
 dependencies = [
@@ -1049,7 +1036,7 @@ version = "0.10.0"
 dependencies = [
  "axum",
  "clap",
- "evorule-bundle 0.5.2",
+ "evorule-bundle",
  "evorule-rule-schema",
  "http",
  "http-body-util",
@@ -1105,6 +1092,22 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "evorule-mechanics-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-numeric-services",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1181,12 +1184,13 @@ dependencies = [
 [[package]]
 name = "evorule-rule"
 version = "0.5.0"
+source = "git+https://gitee.com/evorule/evorule-rule.git?rev=9f85314fbf1609fb19e959a24b2ebd844251d118#9f85314fbf1609fb19e959a24b2ebd844251d118"
 dependencies = [
  "argon2",
  "axum",
  "base64",
  "clap",
- "evorule-bundle 0.6.0",
+ "evorule-bundle",
  "evorule-hash",
  "http-body-util",
  "rand 0.8.7",
@@ -1276,7 +1280,7 @@ dependencies = [
  "chrono",
  "clap",
  "evorule-browser-services",
- "evorule-bundle 0.5.2",
+ "evorule-bundle",
  "evorule-demo-services",
  "evorule-discipline",
  "evorule-geometry-services",
@@ -1285,6 +1289,7 @@ dependencies = [
  "evorule-indicator-services",
  "evorule-inference-services",
  "evorule-io-handlers",
+ "evorule-mechanics-services",
  "evorule-numeric-services",
  "evorule-physics-services",
  "evorule-plugin-kit",
@@ -1295,6 +1300,7 @@ dependencies = [
  "evorule-tcb",
  "evorule-template-services",
  "evorule-workspace",
+ "fs4",
  "futures-core",
  "governor",
  "pdf-writer",
@@ -1364,7 +1370,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
- "evorule-bundle 0.5.2",
+ "evorule-bundle",
  "evorule-hash",
  "evorule-rule-schema",
  "evorule-rule-tools",
@@ -1517,6 +1523,16 @@ checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
 dependencies = [
  "lazy_static",
  "num",
+]
+
+[[package]]
+name = "fs4"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8640e34b88f7652208ce9e88b1a37a2ae95227d84abec377ccd3c5cfeb141ed4"
+dependencies = [
+ "rustix",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4929,6 +4945,15 @@ dependencies = [
 
 [[package]]
 name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
+dependencies = [
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
 version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
@@ -5348,3 +5373,7 @@ dependencies = [
  "log",
  "simd-adler32",
 ]
+
+[[patch.unused]]
+name = "evorule-bundle"
+version = "0.6.0"

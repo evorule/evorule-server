@@ -4583,6 +4583,10 @@ pub struct HealthResponse {
     /// 未部署回写时逐字节兼容。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub writeback: Option<WritebackHealth>,
+
+    /// WAL 观察面（P1 W-3；wal_dir 未配置 → 整节省略，响应向后兼容）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal: Option<WalHealth>,
 }
 
 /// 回写转发漏发计数快照（进程级累计；多会话转发器共享）
@@ -4593,6 +4597,69 @@ pub struct WritebackHealth {
 
     /// 事件流落后丢帧累计（broadcast Lagged）
     pub dropped: u64,
+}
+
+/// WAL 观察面 health 节（P1 W-3；wal_dir 未配置/观察面未注册 → 整节省略，向后兼容）
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WalHealth {
+    /// checkpoint 累计统计
+    pub checkpoint: WalCheckpointHealth,
+
+    /// 后台轻采样存储快照（尚无采样时省略）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<WalStorageHealth>,
+}
+
+/// checkpoint 累计统计（全通道 checkpoint，含 partial failure 计数）
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WalCheckpointHealth {
+    /// 执行总次数
+    pub total: u64,
+
+    /// 存在通路轮换失败的次数
+    pub failed: u64,
+
+    /// 最近一次全成功 checkpoint 墙钟（Unix 毫秒；从未成功省略）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success_at_ms: Option<u64>,
+}
+
+/// WAL 存储轻采样快照（文件大小有界标签聚合 + 分区剩余空间）
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WalStorageHealth {
+    /// wal_dir 下 WAL 文件总数（*.wal 及分片）
+    pub files: u64,
+
+    /// WAL 文件总字节数
+    pub total_bytes: u64,
+
+    /// 分区剩余字节数（获取失败省略——不猜，不造数）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub free_bytes: Option<u64>,
+
+    /// 本次采样墙钟（Unix 毫秒）
+    pub sampled_at_ms: u64,
+}
+
+impl From<crate::wal_observation::WalCheckpointStats> for WalCheckpointHealth {
+    fn from(s: crate::wal_observation::WalCheckpointStats) -> Self {
+        Self {
+            total: s.total,
+            failed: s.failed,
+            last_success_at_ms: s.last_success_at_ms,
+        }
+    }
+}
+
+impl From<crate::wal_observation::WalStorageSnapshot> for WalStorageHealth {
+    fn from(s: crate::wal_observation::WalStorageSnapshot) -> Self {
+        Self {
+            files: s.files,
+            total_bytes: s.total_bytes,
+            free_bytes: s.free_bytes,
+            sampled_at_ms: s.sampled_at_ms,
+        }
+    }
 }
 
 /// PayloadUpdate 请求体
@@ -5721,6 +5788,21 @@ async fn health() -> Json<HealthResponse> {
         // 回写转发漏发计数（未配置回写 → 省略该节，响应逐字节兼容）
         writeback: crate::api::writeback_forward::health_snapshot()
             .map(|(misfires, dropped)| WritebackHealth { misfires, dropped }),
+        // WAL 观察面（P1 W-3）：wal_dir 配置且观察面已注册才呈现（响应向后兼容）
+        wal: wal_health_snapshot(),
+    })
+}
+
+/// WAL 观察面 health 节组装（纯函数；未配置 wal_dir / 观察面未注册 → None）
+fn wal_health_snapshot() -> Option<WalHealth> {
+    let deployment = deployment_health()?;
+    if !deployment.wal_dir_configured {
+        return None;
+    }
+    let obs = crate::wal_observation::WalObservation::global()?;
+    Some(WalHealth {
+        checkpoint: obs.checkpoint_stats().into(),
+        storage: obs.storage_snapshot().map(Into::into),
     })
 }
 
@@ -8229,10 +8311,12 @@ async fn session_wal_rotate(
     let session = sessions
         .get_session(session_id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let rotated = session
-        .facts_log
-        .rotate_wal()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let rotate_result = session.facts_log.rotate_wal();
+    // WAL 观察面（P1 W-3）：轮换调用计数（未注册观察面 → 零操作）
+    if let Some(obs) = crate::wal_observation::WalObservation::global() {
+        obs.record_rotate("session", rotate_result.is_ok());
+    }
+    let rotated = rotate_result.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     drop(sessions);
     crate::api::platform_auth::append_platform_event(
         &api.shared_facts,
@@ -8295,21 +8379,27 @@ async fn admin_wal_checkpoint(
         let sessions = api.sessions.lock().await;
         for sid in sessions.list_sessions() {
             match sessions.get_session(sid) {
-                Some(s) => match s.facts_log.rotate_wal() {
-                    Ok(true) => {
-                        rotated_count += 1;
-                        items.push(serde_json::json!({ "session_id": sid, "rotated": true }));
+                Some(s) => {
+                    let r = s.facts_log.rotate_wal();
+                    // WAL 观察面（P1 W-3）：逐会话轮换计数（未注册 → 零操作）
+                    if let Some(obs) = crate::wal_observation::WalObservation::global() {
+                        obs.record_rotate("session", r.is_ok());
                     }
-                    Ok(false) => {
-                        in_memory_count += 1;
-                        items.push(serde_json::json!({ "session_id": sid, "rotated": false }));
+                    match r {
+                        Ok(true) => {
+                            rotated_count += 1;
+                            items.push(serde_json::json!({ "session_id": sid, "rotated": true }));
+                        }
+                        Ok(false) => {
+                            in_memory_count += 1;
+                            items.push(serde_json::json!({ "session_id": sid, "rotated": false }));
+                        }
+                        Err(e) => {
+                            failed_count += 1;
+                            items.push(serde_json::json!({ "session_id": sid, "error": e.to_string() }));
+                        }
                     }
-                    Err(e) => {
-                        failed_count += 1;
-                        items
-                            .push(serde_json::json!({ "session_id": sid, "error": e.to_string() }));
-                    }
-                },
+                }
                 None => {
                     // 列举后被回收的会话：跳过并上报，不算失败
                     items.push(serde_json::json!({ "session_id": sid, "skipped": true }));
@@ -8326,14 +8416,27 @@ async fn admin_wal_checkpoint(
     });
 
     // 单反应器通路 / 共享事实通路：单点轮换，错误逐项上报
-    let reactor_result = match gov.facts_log().rotate_wal() {
+    let reactor_rotate = gov.facts_log().rotate_wal();
+    let shared_rotate = api.shared_facts.rotate_wal();
+    // WAL 观察面（P1 W-3）：通路轮换计数 + checkpoint 计数（未注册 → 零操作）
+    if let Some(obs) = crate::wal_observation::WalObservation::global() {
+        obs.record_rotate("reactor", reactor_rotate.is_ok());
+        obs.record_rotate("shared_facts", shared_rotate.is_ok());
+    }
+    let reactor_result = match reactor_rotate {
         Ok(rotated) => serde_json::json!({ "rotated": rotated }),
         Err(e) => serde_json::json!({ "error": e.to_string() }),
     };
-    let shared_result = match api.shared_facts.rotate_wal() {
+    let shared_result = match shared_rotate {
         Ok(rotated) => serde_json::json!({ "rotated": rotated }),
         Err(e) => serde_json::json!({ "error": e.to_string() }),
     };
+    if let Some(obs) = crate::wal_observation::WalObservation::global() {
+        let checkpoint_ok = failed_count == 0
+            && reactor_result.get("error").is_none()
+            && shared_result.get("error").is_none();
+        obs.record_checkpoint(checkpoint_ok);
+    }
 
     // 治理落账：platform.event（操作者 + 三通路摘要）
     crate::api::platform_auth::append_platform_event(
