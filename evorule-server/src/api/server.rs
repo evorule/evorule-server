@@ -16146,7 +16146,8 @@ mod tests {
     /// 缺省 noop 宪法非合法 transform，指令一律落无 cause 的 Error，
     /// StateTransition 永不落链，wait 等待无从谈起）
     fn make_test_state_with_core_eval(core_eval: Vec<JsonValue>) -> (AppState, ReadinessFlag) {
-        let (state, readiness, _ws_db) = make_test_state_full(core_eval);
+        let (state, readiness, _ws_db) =
+            make_test_state_full(core_eval, SharedFactsLog::new());
         (state, readiness)
     }
 
@@ -16154,6 +16155,7 @@ mod tests {
     /// 句柄（发布域治理端点测试用：直接初始化 production_state 等）。
     fn make_test_state_full(
         core_eval: Vec<JsonValue>,
+        shared_facts: SharedFactsLog,
     ) -> (AppState, ReadinessFlag, Arc<evorule_workspace::WorkspaceDb>) {
         let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
 
@@ -16175,9 +16177,9 @@ mod tests {
 
         let readiness: ReadinessFlag = Arc::new(AtomicBool::new(true));
 
-        let shared_facts = SharedFactsLog::new();
         // 生产同构接线（main.rs with_shared_facts）: SessionApi 与 AppState
-        // 共享同一实例——平台会话/平台事件与 SessionApi 侧读写同源
+        // 共享同一实例——平台会话/平台事件与 SessionApi 侧读写同源。
+        // 实例由调用方注入（W-4 磁盘满演练需注入 WAL-backed 实例）。
         let sessions = sessions.with_shared_facts(shared_facts.clone());
 
         let session_ops: Arc<dyn evorule_workspace::SessionOps> = Arc::new(sessions.clone());
@@ -16741,6 +16743,127 @@ mod tests {
         set_wal_verify_shared_facts(WAL_VERIFY_SKIPPED);
     }
 
+    // ===== 磁盘满演练（P1 W-4；方案 A：OS 级目录注入，2026-10-18 报批通过）=====
+
+    /// 磁盘满演练·机制链：磁盘满在写路径的表现=持续写失败（同一错误分支：
+    /// open/write Err → WalError → 连续计数）。目录冒充轮换目标制造持续失败，
+    /// 验证经本工作区依赖解析（vendored patch）后的阈值=3 升级行为链：
+    /// 连续计数递增 → 达阈值错误升级含自助诊断 → 升级回调恰好一次。
+    /// 与 patch 内 W1 回归测试同构，此处锁定 server 侧依赖解析下的行为。
+    #[test]
+    fn wal_disk_full_drill_write_failure_chain_escalates_at_threshold() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // SSOT: evorule_reactor facts_log::WAL_FAIL_TERMINATE_THRESHOLD=3
+        // （模块私有不可达；值经 patch 单测与 W1 回归锁定，漂移时下方
+        // 阈值后断言会失准并在此暴露）
+        const WAL_FAIL_TERMINATE_THRESHOLD: u64 = 3;
+
+        let base = tempfile::tempdir().unwrap();
+        let wal_path = base.path().join("drill.wal");
+
+        // max=1 字节：首条 append 后即触发轮换条件，后续 append 在 rotate 处失败
+        let log = FactsLog::with_wal_options(&wal_path, 1, false).unwrap();
+        log.append(Fact::Command {
+            id: FactId(1),
+            instruction: JsonValue::empty_object(),
+        })
+        .unwrap(); // 基线写入成功（写后触发轮换条件）
+
+        // 预置足够多轮换目标目录：rotate 单次失败后 seq 自增"意外自愈"，
+        // 须覆盖阈值次数的连续失败（与 patch 内 W1 回归同款手法）
+        for seq in 1..=(WAL_FAIL_TERMINATE_THRESHOLD + 3) {
+            std::fs::create_dir(base.path().join(format!("drill.{seq}.wal"))).unwrap();
+        }
+
+        let escalated = std::sync::Arc::new(AtomicUsize::new(0));
+        let cb = escalated.clone();
+        log.set_on_wal_failure_exhausted(move |guidance| {
+            cb.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                guidance.contains("磁盘"),
+                "升级指导应含磁盘自诊 hints: {guidance}"
+            );
+        });
+
+        for i in 1..=WAL_FAIL_TERMINATE_THRESHOLD {
+            let result = log.append(Fact::Command {
+                id: FactId(i + 10),
+                instruction: JsonValue::empty_object(),
+            });
+            let err_msg = format!("{}", result.unwrap_err());
+            if i < WAL_FAIL_TERMINATE_THRESHOLD {
+                assert!(err_msg.contains('#'), "阈值前错误应携带连续计数: {err_msg}");
+            } else {
+                assert!(
+                    err_msg.contains("自助诊断") || err_msg.contains("排查"),
+                    "达阈值错误应升级含自助指导: {err_msg}"
+                );
+            }
+        }
+        assert_eq!(
+            escalated.load(Ordering::SeqCst),
+            1,
+            "升级回调应恰在达阈值时触发一次"
+        );
+    }
+
+    /// 磁盘满演练·治理面：共享事实通路轮换失败（磁盘满同构：轮换目标预置
+    /// 为目录）时，checkpoint 端点 partial failure 逐项上报——shared_facts
+    /// 项携带 error、HTTP 恒 200，其余通路（纯内存 rotated:false，非失败）
+    /// 不受牵连；故障后 append 仍可用（治理落账不丢）。
+    #[tokio::test]
+    async fn wal_disk_full_drill_checkpoint_reports_partial_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        // WAL-backed 共享事实：append 正常（bootstrap/登录/落账事件可写），
+        // 仅轮换目标被注入为目录 → rotate_wal 必败
+        let shared = SharedFactsLog::with_wal(dir.path().join("shared_facts.wal")).unwrap();
+        std::fs::create_dir(dir.path().join("shared_facts.1.wal")).unwrap();
+
+        let core_eval = {
+            let mut instr = std::collections::BTreeMap::new();
+            instr.insert("type".to_string(), JsonValue::string("noop"));
+            vec![JsonValue::Object(instr)]
+        };
+        let (state, _, _) = make_test_state_full(core_eval, shared);
+        let router = make_test_router(&state);
+
+        // bootstrap 管理员 + 登录（事件经 WAL-backed 共享事实落账，正常写路径）
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/bootstrap",
+            Some(r#"{"username":"root","password":"admin-pass-123","display_name":""}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            Some(r#"{"username":"root","password":"admin-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let admin_token = body["token"].as_str().unwrap().to_string();
+
+        let (status, body) = oneshot_json_with_token(
+            router,
+            "POST",
+            "/api/admin/wal/checkpoint",
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        // 演练核心断言：故障通路逐项上报 error，整体不 fail
+        let shared_err = body["shared_facts"]["error"].as_str().unwrap_or("");
+        assert!(!shared_err.is_empty(), "shared_facts 通路应上报 error: {body}");
+        // 其余通路不受牵连：反应器纯内存 rotated:false（非失败）；会话 0 失败
+        assert_eq!(body["reactor"]["rotated"], false, "{body}");
+        assert_eq!(body["sessions"]["failed"], 0, "{body}");
+    }
+
     /// 全通道 WAL checkpoint：未认证 401；管理员可执行（测试态纯内存 →
     /// 三通路 rotated:false 非失败）；非管理员 403。
     #[tokio::test]
@@ -16844,7 +16967,7 @@ mod tests {
             instr.insert("type".to_string(), JsonValue::string("noop"));
             vec![JsonValue::Object(instr)]
         };
-        let (state, _flag, ws_db) = make_test_state_full(noop_core_eval);
+        let (state, _flag, ws_db) = make_test_state_full(noop_core_eval, SharedFactsLog::new());
         let router = make_test_router(&state);
 
         // bootstrap 管理员 + 登录
