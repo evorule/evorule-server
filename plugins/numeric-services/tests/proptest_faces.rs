@@ -17,10 +17,15 @@ fn no_units(_: &str) -> Option<[i32; 7]> {
     None
 }
 
+fn no_vars(_: &str) -> Option<BigRational> {
+    None
+}
+
 fn dialect_dec() -> ExprDialect {
     ExprDialect {
         decimal_literals: true,
         units: false,
+        identifiers: false,
     }
 }
 
@@ -30,7 +35,7 @@ fn small_int() -> impl Strategy<Value = i64> {
 }
 
 fn eval_int(src: &str) -> BigRational {
-    eval_expr(src, dialect_dec(), &no_units)
+    eval_expr(src, dialect_dec(), &no_vars, &no_units)
         .expect("求值应成功")
         .q
 }

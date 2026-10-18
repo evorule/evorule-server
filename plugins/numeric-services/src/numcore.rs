@@ -186,12 +186,15 @@ pub struct ExprDialect {
     pub decimal_literals: bool,
     /// 允许单位字面量（true 时数字后可跟单位 token，经 `unit_lookup` 查量纲）。
     pub units: bool,
+    /// 允许标识符（变量引用，经 `vars_lookup` 查精确值）。
+    pub identifiers: bool,
 }
 
 #[derive(Debug, Clone)]
 enum Tok {
     Int(String),
     Dec(String),
+    Ident(String),
     Unit(String),
     Plus,
     Minu,
@@ -307,6 +310,26 @@ fn tokenize(src: &str, dialect: ExprDialect) -> Result<Vec<Toked>, String> {
                 out.push(Toked { kind, pos: start });
                 continue;
             }
+            c if dialect.identifiers && (c.is_ascii_alphabetic() || c == '_') => {
+                let start = pos;
+                let mut name = String::new();
+                name.push(c);
+                i += 1;
+                while i < chars.len() {
+                    let (_, nc) = chars[i];
+                    if nc.is_ascii_alphanumeric() || nc == '_' {
+                        name.push(nc);
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                out.push(Toked {
+                    kind: Tok::Ident(name),
+                    pos: start,
+                });
+                continue;
+            }
             c if dialect.units && (c.is_alphabetic() || c == '·') => {
                 let start = pos;
                 let mut u = String::new();
@@ -361,6 +384,7 @@ struct Parser<'a> {
     toks: Vec<Toked>,
     i: usize,
     dialect: ExprDialect,
+    vars_lookup: &'a dyn Fn(&str) -> Option<BigRational>,
     unit_lookup: &'a dyn Fn(&str) -> Option<[i32; 7]>,
     depth: usize,
 }
@@ -552,6 +576,17 @@ impl<'a> Parser<'a> {
                 self.attach_unit(q, unit, pos)
             }
             Some(Toked {
+                kind: Tok::Ident(name),
+                pos,
+            }) => {
+                let q = (self.vars_lookup)(&name).ok_or_else(|| {
+                    format!(
+                        "位置 {pos}: 未知变量 '{name}' — 自诊断指引: 在 vars 中提供该变量的数值"
+                    )
+                })?;
+                Ok(Val { q, dim: None })
+            }
+            Some(Toked {
                 kind: Tok::LParen, ..
             }) => {
                 self.depth += 1;
@@ -631,6 +666,7 @@ fn apply(l: &BigRational, r: &BigRational, op: i32) -> BigRational {
 pub fn eval_expr(
     src: &str,
     dialect: ExprDialect,
+    vars_lookup: &dyn Fn(&str) -> Option<BigRational>,
     unit_lookup: &dyn Fn(&str) -> Option<[i32; 7]>,
 ) -> Result<Val, String> {
     let toks = tokenize(src, dialect)?;
@@ -641,6 +677,7 @@ pub fn eval_expr(
         toks,
         i: 0,
         dialect,
+        vars_lookup,
         unit_lookup,
         depth: 0,
     };
@@ -663,13 +700,19 @@ mod tests {
         None
     }
 
+    fn no_vars(_: &str) -> Option<BigRational> {
+        None
+    }
+
     fn eval_int(src: &str) -> BigRational {
         eval_expr(
             src,
             ExprDialect {
                 decimal_literals: false,
                 units: false,
+                identifiers: false,
             },
+            &no_vars,
             &no_units,
         )
         .expect("求值应成功")
@@ -693,7 +736,9 @@ mod tests {
             ExprDialect {
                 decimal_literals: false,
                 units: false,
+                identifiers: false,
             },
+            &no_vars,
             &no_units,
         )
         .expect_err("除零必须报错");
@@ -757,7 +802,9 @@ mod tests {
             ExprDialect {
                 decimal_literals: true,
                 units: false,
+                identifiers: false,
             },
+            &no_vars,
             &no_units,
         )
         .expect("求值应成功")

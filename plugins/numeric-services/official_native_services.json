@@ -5,12 +5,12 @@
         {
             "name": "numeric_rational_eval",
             "sensitive": false,
-            "description": "有理数表达式精确求值(整数与四则/整数幂,既约分数输出,确定性)"
+            "description": "有理数表达式精确求值(整数与四则/整数幂,支持 vars 变量绑定,既约分数输出,确定性)"
         },
         {
             "name": "numeric_decimal_eval",
             "sensitive": false,
-            "description": "定点十进制表达式求值(全程精确有理运算,输出端按 scale+rounding 单次舍入,确定性)"
+            "description": "定点十进制表达式求值(支持 vars 变量绑定,全程精确有理运算,输出端按 scale+rounding 单次舍入,确定性)"
         },
         {
             "name": "numeric_decimal_convert",

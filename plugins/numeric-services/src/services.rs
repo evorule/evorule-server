@@ -68,7 +68,7 @@ fn req_rounding(args: &JsonValue) -> Result<Rounding, String> {
     parse_rounding(req_str(args, "rounding")?)
 }
 
-fn parse_value_as_rational(value: &str) -> Result<BigRational, String> {
+pub fn parse_value_as_rational(value: &str) -> Result<BigRational, String> {
     if let Some((a, b)) = value.split_once('/') {
         let num = BigInt::parse_bytes(a.trim().as_bytes(), 10)
             .ok_or_else(|| format!("分子非法: '{}'", a.trim()))?;
@@ -100,6 +100,39 @@ fn dec_obj(q: &BigRational, scale: i32, mode: Rounding) -> Result<JsonValue, Str
     ]))
 }
 
+/// 从 args 提取可选 `vars` 对象（变量名 → 十进制字面量或 a/b 分数），
+/// 返回变量查找闭包；缺省 = 空集（表达式内出现变量即报未知变量）。
+fn vars_lookup_from_args(
+    args: &JsonValue,
+) -> Result<impl Fn(&str) -> Option<BigRational> + '_, String> {
+    let named: Vec<(String, BigRational)> = match args.get("vars") {
+        Some(JsonValue::Object(m)) => {
+            let mut out = Vec::new();
+            for (k, val) in m.iter() {
+                let s = val
+                    .as_str()
+                    .ok_or_else(|| format!("vars.{k} 须为字符串编码数值"))?;
+                let q =
+                    parse_value_as_rational(s).map_err(|e| format!("vars.{k} 解析失败: {e}"))?;
+                out.push((k.clone(), q));
+            }
+            out
+        }
+        None => Vec::new(),
+        Some(_) => {
+            return Err(
+                "参数 vars 须为对象 — 自诊断指引: 形如 {\"a\":\"2\",\"b\":\"3/4\"}".to_string(),
+            )
+        }
+    };
+    Ok(move |name: &str| -> Option<BigRational> {
+        named
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, q)| q.clone())
+    })
+}
+
 fn envelope(pairs: &[(&str, JsonValue)]) -> JsonValue {
     let mut all: Vec<(&str, JsonValue)> = vec![
         ("status", JsonValue::string("determined")),
@@ -118,12 +151,15 @@ pub struct RationalEvalService;
 impl NativeService for RationalEvalService {
     fn execute(&self, args: &JsonValue) -> IoResult {
         let expr = req_str(args, "expr")?;
+        let vars = vars_lookup_from_args(args)?;
         let val = eval_expr(
             expr,
             ExprDialect {
                 decimal_literals: false,
                 units: false,
+                identifiers: true,
             },
+            &vars,
             &|_| None,
         )
         .map_err(|e| format!("{e} (expr={expr})"))?;
@@ -156,12 +192,15 @@ impl NativeService for DecimalEvalService {
         let expr = req_str(args, "expr")?;
         let scale = req_scale(args)?;
         let rounding = req_rounding(args)?;
+        let vars = vars_lookup_from_args(args)?;
         let val = eval_expr(
             expr,
             ExprDialect {
                 decimal_literals: true,
                 units: false,
+                identifiers: true,
             },
+            &vars,
             &|_| None,
         )
         .map_err(|e| format!("{e} (expr={expr})"))?;
@@ -516,7 +555,9 @@ impl NativeService for DimEvalService {
             ExprDialect {
                 decimal_literals: true,
                 units: true,
+                identifiers: false,
             },
+            &|_| None,
             &|u: &str| {
                 evorule_inference_services::dimension::SIDimension::from_si_unit(u)
                     .map(|d| d.to_vector())
@@ -741,6 +782,50 @@ mod tests {
             result.get("decimal_string").and_then(|v| v.as_str()),
             Some("4.536")
         );
+    }
+
+    #[test]
+    fn rational_eval_with_vars_bindings() {
+        // vars 绑定：规则立法公式(静态)，数据(payload)动态填入
+        let out = RationalEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("a*b + c")),
+                (
+                    "vars",
+                    JsonValue::object_from_pairs(&[
+                        ("a", JsonValue::string("2")),
+                        ("b", JsonValue::string("3")),
+                        ("c", JsonValue::string("1/4")),
+                    ]),
+                ),
+            ]))
+            .expect("应成功");
+        // 2*3 + 1/4 = 25/4
+        assert_eq!(field(&out, "numerator"), "25");
+        assert_eq!(field(&out, "denominator"), "4");
+        let err = RationalEvalService
+            .execute(&args(&[("expr", JsonValue::string("x + 1"))]))
+            .expect_err("未知变量必须 Err");
+        assert!(err.contains("未知变量"), "{err}");
+    }
+
+    #[test]
+    fn decimal_eval_with_vars_and_rounding() {
+        let out = DecimalEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("price * qty")),
+                (
+                    "vars",
+                    JsonValue::object_from_pairs(&[
+                        ("price", JsonValue::string("19.99")),
+                        ("qty", JsonValue::string("3")),
+                    ]),
+                ),
+                ("scale", JsonValue::Integer(2)),
+                ("rounding", JsonValue::string("half_even")),
+            ]))
+            .expect("应成功");
+        assert_eq!(field(&out, "decimal_string"), "59.97");
     }
 
     #[test]

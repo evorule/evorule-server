@@ -75,9 +75,9 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "numeric_decimal_eval",
         sensitive: false,
         description:
-            "定点十进制表达式求值(全程精确有理运算,输出端按 scale+rounding 单次舍入,确定性)",
+            "定点十进制表达式求值(支持 vars 变量绑定,全程精确有理运算,输出端按 scale+rounding 单次舍入,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"expr":{"type":"string","description":"十进制表达式,如 0.1 + 0.2"},"scale":{"type":"integer","description":"结果小数位(0-36)"},"rounding":{"type":"string","enum":["half_even","half_up","floor","trunc"],"description":"舍入模式(必填,无隐式舍入)"}},"required":["expr","scale","rounding"]}"#,
+            r#"{"type":"object","properties":{"expr":{"type":"string","description":"十进制表达式,可引用 vars 中的变量名"},"vars":{"type":"object","description":"可选变量绑定: 变量名 → 十进制字面量或 a/b 分数","additionalProperties":{"type":"string"}},"scale":{"type":"integer","description":"结果小数位(0-36)"},"rounding":{"type":"string","enum":["half_even","half_up","floor","trunc"],"description":"舍入模式(必填,无隐式舍入)"}},"required":["expr","scale","rounding"]}"#,
         ),
         make: mk_decimal_eval,
     },
