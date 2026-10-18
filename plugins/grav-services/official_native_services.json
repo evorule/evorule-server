@@ -1,0 +1,21 @@
+{
+    "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/grav-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 grav-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+    "version": 1,
+    "services": [
+        {
+            "name": "grav_schwarzschild_radius",
+            "sensitive": false,
+            "description": "史瓦西半径 rs=2GM/c(G 显式入参,c 为 SI 精确定义内置,精确有理数,确定性)"
+        },
+        {
+            "name": "grav_perihelion_precession",
+            "sensitive": false,
+            "description": "近日点进动 Delta_phi=3888000GM/(c^2*a*(1-e^2)) 弧秒式精确(水星 43 角秒/世纪经典验证;弧度输出用 pi 的 50 位有理近似带版本戳,确定性)"
+        },
+        {
+            "name": "grav_light_deflection",
+            "sensitive": false,
+            "description": "光线偏折 alpha=4GM/(c^2*b)(太阳掠射 1.75 角秒经典验证;角秒/弧度中 pi 用 50 位有理近似带版本戳,弧度本体精确,确定性)"
+        }
+    ]
+}

@@ -57,6 +57,7 @@ use evorule_browser_services::NATIVE_SERVICES as BROWSER_NATIVE_SERVICES;
 use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
 use evorule_geometry_services::NATIVE_SERVICES as GEOMETRY_NATIVE_SERVICES;
 use evorule_gnss_services::NATIVE_SERVICES as GNSS_NATIVE_SERVICES;
+use evorule_grav_services::NATIVE_SERVICES as GRAV_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
 use evorule_mechanics_services::NATIVE_SERVICES as MECHANICS_NATIVE_SERVICES;
@@ -892,6 +893,10 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "gnss-services",
         defs: GNSS_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "grav-services",
+        defs: GRAV_NATIVE_SERVICES,
     },
 ];
 

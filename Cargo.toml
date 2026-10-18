@@ -25,6 +25,7 @@ members = [
     "plugins/numeric-services",
     "plugins/mechanics-services",
     "plugins/gnss-services",
+    "plugins/grav-services",
 ]
 
 [workspace.package]

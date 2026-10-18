@@ -1036,6 +1036,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-grav-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-numeric-services",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "evorule-hash"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1302,6 +1318,7 @@ dependencies = [
  "evorule-geometry-services",
  "evorule-gnss-services",
  "evorule-governance",
+ "evorule-grav-services",
  "evorule-hash",
  "evorule-indicator-services",
  "evorule-inference-services",
