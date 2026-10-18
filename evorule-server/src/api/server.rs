@@ -4487,6 +4487,48 @@ pub fn deployment_health() -> Option<DeploymentHealth> {
     DEPLOYMENT_HEALTH.get().cloned()
 }
 
+// ===== 启动期 WAL 全链校验健康位（P1 W-5）=====
+/// 校验状态：跳过（flag 未开，或 wal_dir 未配置无可校验对象）
+pub const WAL_VERIFY_SKIPPED: u8 = 0;
+/// 校验状态：通过
+pub const WAL_VERIFY_OK: u8 = 1;
+/// 校验状态：失败（现场保留不拒启，仅经 /api/health 告警——取证保护语义）
+pub const WAL_VERIFY_FAILED: u8 = 2;
+
+static WAL_VERIFY_REACTOR_STATUS: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(WAL_VERIFY_SKIPPED);
+static WAL_VERIFY_SHARED_FACTS_STATUS: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(WAL_VERIFY_SKIPPED);
+
+/// 写入反应器审计链启动校验状态（main 启动期调用）
+pub fn set_wal_verify_reactor(status: u8) {
+    WAL_VERIFY_REACTOR_STATUS.store(status, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 写入共享事实账本启动校验状态（main 启动期调用）
+pub fn set_wal_verify_shared_facts(status: u8) {
+    WAL_VERIFY_SHARED_FACTS_STATUS.store(status, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 校验状态码 → 展示字符串（未知值按 skipped 处理——不猜不造）
+fn wal_verify_status_str(status: u8) -> &'static str {
+    match status {
+        WAL_VERIFY_OK => "ok",
+        WAL_VERIFY_FAILED => "failed",
+        _ => "skipped",
+    }
+}
+
+/// 启动期 WAL 全链校验状态（P1 W-5；两通路各一位）
+#[derive(Debug, Serialize, ToSchema, PartialEq)]
+pub struct WalVerifyHealth {
+    /// 反应器审计链校验：`skipped` / `ok` / `failed`
+    pub reactor: String,
+
+    /// 共享事实账本校验：`skipped` / `ok` / `failed`
+    pub shared_facts: String,
+}
+
 /// 插件运行时存活状态快照（探活任务每轮更新；键=external 插件 id）。
 /// 与 PLUGIN_HEALTH（启动期挂载事实,OnceLock 不可变）分离——挂载事实与
 /// 运行时存活是两类语义,health handler 合并呈现于 external 插件节。
@@ -4608,6 +4650,9 @@ pub struct WalHealth {
     /// 后台轻采样存储快照（尚无采样时省略）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage: Option<WalStorageHealth>,
+
+    /// 启动期全链校验状态（P1 W-5）
+    pub verify: WalVerifyHealth,
 }
 
 /// checkpoint 累计统计（全通道 checkpoint，含 partial failure 计数）
@@ -5803,6 +5848,16 @@ fn wal_health_snapshot() -> Option<WalHealth> {
     Some(WalHealth {
         checkpoint: obs.checkpoint_stats().into(),
         storage: obs.storage_snapshot().map(Into::into),
+        verify: WalVerifyHealth {
+            reactor: wal_verify_status_str(WAL_VERIFY_REACTOR_STATUS.load(
+                std::sync::atomic::Ordering::Relaxed,
+            ))
+            .to_string(),
+            shared_facts: wal_verify_status_str(WAL_VERIFY_SHARED_FACTS_STATUS.load(
+                std::sync::atomic::Ordering::Relaxed,
+            ))
+            .to_string(),
+        },
     })
 }
 
@@ -16640,6 +16695,50 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["approve_mode"], false);
+    }
+
+    // ===== 启动期 WAL 全链校验健康位（P1 W-5）=====
+
+    #[test]
+    fn wal_verify_status_str_mapping() {
+        assert_eq!(wal_verify_status_str(WAL_VERIFY_SKIPPED), "skipped");
+        assert_eq!(wal_verify_status_str(WAL_VERIFY_OK), "ok");
+        assert_eq!(wal_verify_status_str(WAL_VERIFY_FAILED), "failed");
+        // 未知值按 skipped 处理（不猜不造）
+        assert_eq!(wal_verify_status_str(99), "skipped");
+    }
+
+    #[test]
+    fn wal_verify_health_defaults_to_skipped() {
+        // 静态位缺省 skipped： WalVerifyHealth 组装路径逐字段锁定
+        let v = WalVerifyHealth {
+            reactor: wal_verify_status_str(WAL_VERIFY_REACTOR_STATUS.load(
+                std::sync::atomic::Ordering::Relaxed,
+            ))
+            .to_string(),
+            shared_facts: wal_verify_status_str(WAL_VERIFY_SHARED_FACTS_STATUS.load(
+                std::sync::atomic::Ordering::Relaxed,
+            ))
+            .to_string(),
+        };
+        assert_eq!(v, WalVerifyHealth {
+            reactor: "skipped".to_string(),
+            shared_facts: "skipped".to_string(),
+        });
+        // setter 写入后按位呈现
+        set_wal_verify_reactor(WAL_VERIFY_FAILED);
+        set_wal_verify_shared_facts(WAL_VERIFY_OK);
+        assert_eq!(
+            wal_verify_status_str(WAL_VERIFY_REACTOR_STATUS.load(std::sync::atomic::Ordering::Relaxed)),
+            "failed"
+        );
+        assert_eq!(
+            wal_verify_status_str(WAL_VERIFY_SHARED_FACTS_STATUS.load(std::sync::atomic::Ordering::Relaxed)),
+            "ok"
+        );
+        // 还原，避免污染同进程其他用例对缺省值的观察
+        set_wal_verify_reactor(WAL_VERIFY_SKIPPED);
+        set_wal_verify_shared_facts(WAL_VERIFY_SKIPPED);
     }
 
     /// 全通道 WAL checkpoint：未认证 401；管理员可执行（测试态纯内存 →

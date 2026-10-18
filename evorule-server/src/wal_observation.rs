@@ -72,6 +72,18 @@ impl WalObservation {
         if let Some(existing) = WAL_OBSERVATION.get() {
             return Ok(existing.clone());
         }
+        let obs = Self::build(registry)?;
+        let _ = WAL_OBSERVATION.set(obs.clone());
+        Ok(obs)
+    }
+
+    /// 构造实例并注册到给定 registry（不触碰进程级全局）
+    ///
+    /// register 的构建核心。独立暴露（模块内私有）供测试态构建隔离实例——
+    /// WAL_OBSERVATION 是进程级 OnceLock，测试若都走 register，后到者拿到
+    /// 绑定他人 registry 的全局实例，本地断言随并行调度顺序漂移（W-3 存量
+    /// 缺陷修复：测试态一律 build 独立实例，register 语义单独锁定）。
+    fn build(registry: &Registry) -> Result<Arc<Self>, prometheus::Error> {
         let rotate_total = IntCounterVec::new(
             Opts::new(
                 "evorule_wal_rotate_total",
@@ -98,7 +110,7 @@ impl WalObservation {
         registry.register(Box::new(file_bytes.clone()))?;
         registry.register(Box::new(free_bytes.clone()))?;
 
-        let obs = Arc::new(Self {
+        Ok(Arc::new(Self {
             rotate_total,
             checkpoint_last_success,
             file_bytes,
@@ -107,9 +119,7 @@ impl WalObservation {
             checkpoint_total: AtomicU64::new(0),
             checkpoint_failed: AtomicU64::new(0),
             checkpoint_last_success_ms: AtomicU64::new(0),
-        });
-        let _ = WAL_OBSERVATION.set(obs.clone());
-        Ok(obs)
+        }))
     }
 
     /// 进程级观察面访问器（未注册时 None——调用方零操作）
@@ -223,14 +233,15 @@ impl WalObservation {
 mod tests {
     #![allow(clippy::unwrap_used)]
     #![allow(clippy::panic, clippy::expect_used)]
-    use prometheus::Encoder;
 
     use super::*;
 
     #[test]
     fn test_record_rotate_and_checkpoint_counters() {
+        // 测试态用 build 独立实例（WAL_OBSERVATION 是进程级 OnceLock，
+        // 全走 register 会与并行测试互相串扰——W-3 存量缺陷修复）
         let registry = Registry::new();
-        let obs = WalObservation::register(&registry).unwrap();
+        let obs = WalObservation::build(&registry).unwrap();
 
         obs.record_rotate("session", true);
         obs.record_rotate("session", false);
@@ -242,18 +253,17 @@ mod tests {
         assert_eq!(stats.total, 2);
         assert_eq!(stats.failed, 1);
         assert!(stats.last_success_at_ms.is_some());
-        // OnceLock 语义：重复注册返回同一实例
-        let again = WalObservation::register(&registry).unwrap();
-        assert_eq!(
-            Arc::as_ptr(&obs) as usize,
-            Arc::as_ptr(&again) as usize
-        );
+        // register 的 OnceLock 语义（顺序无关断言）：register 返回值与
+        // global() 恒同一——首个调用者创建并落全局，后到者返回既有实例
+        let again = WalObservation::register(&Registry::new()).unwrap();
+        let global = WalObservation::global().unwrap();
+        assert_eq!(Arc::as_ptr(&again), Arc::as_ptr(global));
     }
 
     #[test]
     fn test_checkpoint_never_success_has_no_last_success() {
         let registry = Registry::new();
-        let obs = WalObservation::register(&registry).unwrap();
+        let obs = WalObservation::build(&registry).unwrap();
         obs.record_checkpoint(false);
         let stats = obs.checkpoint_stats();
         assert_eq!(stats.total, 1);
@@ -264,7 +274,7 @@ mod tests {
     #[test]
     fn test_sample_counts_bounded_labels_and_sizes() {
         let registry = Registry::new();
-        let obs = WalObservation::register(&registry).unwrap();
+        let obs = WalObservation::build(&registry).unwrap();
         let dir = tempfile::tempdir().unwrap();
 
         std::fs::write(dir.path().join("shared_facts.wal"), b"abcd").unwrap();

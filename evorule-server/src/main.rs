@@ -39,7 +39,10 @@ use evorule_tcb::JsonValue;
 use std::time::Instant;
 // H6: AuthConfig 和 API server 从 lib 导入（应用层模块已迁至 src/lib.rs）
 use evorule_governance::auditor::Auditor;
-use evorule_server::api::server::{AppState, GovernanceApi, GovernanceServer, SessionApi};
+use evorule_server::api::server::{
+    set_wal_verify_reactor, set_wal_verify_shared_facts, AppState, GovernanceApi,
+    GovernanceServer, SessionApi, WAL_VERIFY_FAILED, WAL_VERIFY_OK,
+};
 use evorule_server::auth::AuthConfig;
 use evorule_server::input_sanitizer::InputSanitizer;
 // H5: IoDispatcher/IoSubscriber 来自 evorule-governance(机制层)
@@ -373,6 +376,11 @@ struct Cli {
     )]
     wal_fsync: Option<bool>,
 
+    /// 启动期 WAL 全链校验（P1 W-5：反应器审计链 + 共享事实账本全量重算；
+    /// 校验失败仅告警并经 /api/health 呈现，不拒绝启动——保护取证现场）
+    #[arg(long, env = "EVORULE_VERIFY_WAL_ON_START")]
+    verify_wal_on_start: bool,
+
     /// WAL 文件最大大小（MB，P03：达到此大小后自动轮换文件，默认 100MB，0 表示不轮换）
     #[arg(long, env = "EVORULE_WAL_MAX_SIZE_MB")]
     wal_max_size_mb: Option<u64>,
@@ -536,6 +544,8 @@ struct ResolvedConfig {
     /// WAL fsync 开关（P02：每次 WAL 写入后 fsync；P0-2：生产档缺省 true，
     /// 显式 false 降档留痕 warn；开发档缺省 false = 现行为）
     wal_fsync: bool,
+    /// 启动期 WAL 全链校验开关（P1 W-5；缺省 false）
+    verify_wal_on_start: bool,
     /// WAL 文件最大大小（字节，P03：达到此大小后自动轮换文件）
     max_wal_size_bytes: u64,
     /// 是否启用审计链实时验证（P06）
@@ -653,6 +663,7 @@ impl ResolvedConfig {
             wal_fsync: cli
                 .wal_fsync
                 .unwrap_or(matches!(profile, StartupProfile::Production)),
+            verify_wal_on_start: cli.verify_wal_on_start,
             max_wal_size_bytes: max_wal_size_mb * 1024 * 1024,
             auto_verify: cli.auto_verify,
             auto_verify_threshold: cli.auto_verify_threshold.unwrap_or(1000),
@@ -1996,6 +2007,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              启用持久化：--wal-dir <目录>（或环境变量 EVORULE_WAL_DIR / 配置文件 paths.wal_dir）"
         );
     }
+    // P1 W-5：flag 开但无 wal_dir——无可校验对象，显式告警跳过（health 位保持 skipped）
+    if cfg.verify_wal_on_start && cfg.wal_dir.is_none() {
+        warn!("已启用 --verify-wal-on-start 但未配置 wal_dir：无 WAL 可校验，跳过启动校验");
+    }
     info!(
         "实时审计验证: {}",
         if cfg.auto_verify {
@@ -2275,6 +2290,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_wal.display(),
                     shared_meta.display()
                 );
+                // P1 W-5：启动期共享事实账本全链校验（flag 开时执行；
+                // 校验失败仅告警 + health 告警位，不拒绝启动——保护取证现场）
+                if cfg.verify_wal_on_start {
+                    match log.verify_causal_consistency() {
+                        Ok(orphans) if orphans.is_empty() => {
+                            info!("共享事实账本启动校验通过：因果一致性完整");
+                            set_wal_verify_shared_facts(WAL_VERIFY_OK);
+                        }
+                        Ok(orphans) => {
+                            warn!(
+                                "共享事实账本启动校验发现不可归因孤立 fact：{:?}（现场保留，不拒绝启动）",
+                                orphans
+                            );
+                            set_wal_verify_shared_facts(WAL_VERIFY_FAILED);
+                        }
+                        Err(e) => {
+                            warn!("共享事实账本启动校验未完成：{e}（现场保留，不拒绝启动）");
+                            set_wal_verify_shared_facts(WAL_VERIFY_FAILED);
+                        }
+                    }
+                }
                 log
             }
             Err(e) => {
@@ -2578,6 +2614,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8. 创建审计器 + GovernanceApi + SessionApi + AppState
     let step_start = Instant::now();
     let auditor = Auditor::new(facts_log.clone());
+    // P1 W-5：启动期反应器审计链全链校验（Auditor::verify 全量重算哈希链；
+    // 仅 flag 开 + wal_dir 配置时执行——纯内存链无校验价值。校验失败仅告警
+    // + health 告警位，不拒绝启动——保护取证现场）
+    if cfg.verify_wal_on_start && cfg.wal_dir.is_some() {
+        if auditor.verify() {
+            info!("反应器审计链启动校验通过：全链重算一致");
+            set_wal_verify_reactor(WAL_VERIFY_OK);
+        } else {
+            warn!("反应器审计链启动校验失败：哈希链断裂或内容被篡改（现场保留，不拒绝启动）");
+            set_wal_verify_reactor(WAL_VERIFY_FAILED);
+        }
+    }
     let api = GovernanceApi::new(tx.clone(), facts_log, auditor);
     // Command id 计数器同为进程内存态（固定自 20000 起），重启续链后若归档内
     // 已有历史 Command，不抬升则新 Command 与历史 Command 撞号（存量核查同批
@@ -4134,6 +4182,8 @@ mod tests {
         assert_eq!(cfg.log_max_size_mb, 1024);
         // P0-2：生产档位 wal_fsync 缺省反转 true（显式 false 降档留痕）
         assert!(cfg.wal_fsync, "production 缺省 fsync 应为 true");
+        // P1 W-5：启动校验缺省关闭（opt-in）
+        assert!(!cfg.verify_wal_on_start, "启动 WAL 校验缺省应为 false");
         assert_eq!(cfg.max_wal_size_bytes, 100 * 1024 * 1024);
         assert!(!cfg.auto_verify);
         assert_eq!(cfg.auto_verify_threshold, 1000);
