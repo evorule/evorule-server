@@ -58,6 +58,7 @@ if ($existing) {
 # ── 权威启动参数（变更须同步更新本注释块与设计档/登记册留痕）──
 $args = @(
     "--addr", "127.0.0.1:18080",
+    "--profile", "development",                                          # P0-1 生产缺省批：常驻开发实例显式声明开发档（漏配即拒启）
     "--insecure-serve",                                                  # 本地回环无认证（开发形态）
     "--rules-dir", (Join-Path $Repo "data\agent-governance\rules"),
     "--db-path", (Join-Path $Repo "data\agent-governance\evorule.db"),
