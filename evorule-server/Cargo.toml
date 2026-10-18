@@ -30,6 +30,9 @@ evorule-governance = { version = "0.8", features = ["persistence"] }
 # 审计档案链哈希重算
 blake3 = "1"
 
+# WAL 观察面分区剩余空间（P1 W-3；std-only 轻依赖，跨平台 free_space）
+fs4 = "0.13"
+
 # rules_dir 装载排序键解析（注入序治理：晋升约束按 metadata.promoted_at 降序排前；
 # 治理面依赖，确定性由显式排序键保证，与 TCB 无涉）
 chrono = "0.4"
@@ -75,6 +78,7 @@ evorule-browser-services = { path = "../plugins/browser-services" }
 evorule-inference-services = { path = "../plugins/inference-services" }
 evorule-geometry-services = { path = "../plugins/geometry-services" }
 evorule-numeric-services = { path = "../plugins/numeric-services" }
+evorule-mechanics-services = { path = "../plugins/mechanics-services" }
 
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，

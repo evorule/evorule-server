@@ -55,6 +55,7 @@ use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
 use evorule_geometry_services::NATIVE_SERVICES as GEOMETRY_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
+use evorule_mechanics_services::NATIVE_SERVICES as MECHANICS_NATIVE_SERVICES;
 use evorule_numeric_services::NATIVE_SERVICES as NUMERIC_NATIVE_SERVICES;
 use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
 use evorule_template_services::NATIVE_SERVICES as TEMPLATE_NATIVE_SERVICES;
@@ -871,6 +872,10 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "numeric-services",
         defs: NUMERIC_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "mechanics-services",
+        defs: MECHANICS_NATIVE_SERVICES,
     },
 ];
 
