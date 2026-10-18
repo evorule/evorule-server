@@ -65,7 +65,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
     NativeServiceDef {
         name: "numeric_rational_eval",
         sensitive: false,
-        description: "有理数表达式精确求值(整数与四则/整数幂,既约分数输出,确定性)",
+        description: "有理数表达式精确求值(整数与四则/整数幂,支持 vars 变量绑定,既约分数输出,确定性)",
         parameters: Some(
             r#"{"type":"object","properties":{"expr":{"type":"string","description":"整数有理表达式,如 1/3 + 1/6、(2+3)*4、2^-2"}},"required":["expr"]}"#,
         ),
