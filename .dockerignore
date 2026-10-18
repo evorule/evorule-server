@@ -7,6 +7,7 @@
 
 # === Rust 构建产物(关键:大幅减小 context 体积) ===
 **/target/
+target-*/
 **/.build/
 
 # === 文档(非运行时依赖) ===
