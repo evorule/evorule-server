@@ -226,22 +226,18 @@ fn solve_ep4(
         + usize::from(g.is_some())
         + usize::from(h.is_some())
         + usize::from(ep.is_some());
-    if known_count == 4 {
-        let expect = &m.clone().unwrap() * &g.clone().unwrap() * &h.clone().unwrap();
-        let ev = ep.clone().unwrap();
-        if ev == expect {
-            return Ok((m.unwrap(), g.unwrap(), h.unwrap(), ev));
-        }
-        return Err(format!("一致性校验失败: m·g·h = {expect}, 而 Ep = {ev}"));
-    }
-    if known_count != 3 {
-        return Err(format!(
-            "已知量数量不符（{known_count}/3） — 自诊断指引: \
-             m/g/h/Ep 四量中恰给三个（求第四个）或四个全给（一致性校验）"
-        ));
-    }
     let prod2 = |x: &Q, y: &Q| x * y;
     match (m, g, h, ep) {
+        // 四量全给 → 一致性校验
+        (Some(mm), Some(gg), Some(hh), Some(ee)) => {
+            let expect = prod2(&prod2(&mm, &gg), &hh);
+            if ee == expect {
+                Ok((mm, gg, hh, ee))
+            } else {
+                Err(format!("一致性校验失败: m·g·h = {expect}, 而 Ep = {ee}"))
+            }
+        }
+        // 恰三量 → 求第四个
         (Some(mm), Some(gg), Some(hh), None) => {
             let ep = prod2(&prod2(&mm, &gg), &hh);
             Ok((mm, gg, hh, ep))
@@ -270,7 +266,10 @@ fn solve_ep4(
             let mm = &ee / &denom;
             Ok((mm, gg, hh, ee))
         }
-        _ => Err("已知量不足".to_string()),
+        _ => Err(format!(
+            "已知量数量不符（{known_count}/3） — 自诊断指引: \
+             m/g/h/Ep 四量中恰给三个（求第四个）或四个全给（一致性校验）"
+        )),
     }
 }
 
@@ -822,7 +821,10 @@ mod tests {
                     ("ki", JsonValue::string("0.5")),
                     ("kd", JsonValue::string("0.1")),
                     ("setpoint", JsonValue::string("10")),
-                    ("measurement", JsonValue::string(&measurement.to_string())),
+                    (
+                        "measurement",
+                        JsonValue::string(measurement.to_string().as_str()),
+                    ),
                     (
                         "state",
                         JsonValue::object_from_pairs(&[

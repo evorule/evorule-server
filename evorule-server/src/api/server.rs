@@ -5849,13 +5849,13 @@ fn wal_health_snapshot() -> Option<WalHealth> {
         checkpoint: obs.checkpoint_stats().into(),
         storage: obs.storage_snapshot().map(Into::into),
         verify: WalVerifyHealth {
-            reactor: wal_verify_status_str(WAL_VERIFY_REACTOR_STATUS.load(
-                std::sync::atomic::Ordering::Relaxed,
-            ))
+            reactor: wal_verify_status_str(
+                WAL_VERIFY_REACTOR_STATUS.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .to_string(),
-            shared_facts: wal_verify_status_str(WAL_VERIFY_SHARED_FACTS_STATUS.load(
-                std::sync::atomic::Ordering::Relaxed,
-            ))
+            shared_facts: wal_verify_status_str(
+                WAL_VERIFY_SHARED_FACTS_STATUS.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .to_string(),
         },
     })
@@ -8451,7 +8451,9 @@ async fn admin_wal_checkpoint(
                         }
                         Err(e) => {
                             failed_count += 1;
-                            items.push(serde_json::json!({ "session_id": sid, "error": e.to_string() }));
+                            items.push(
+                                serde_json::json!({ "session_id": sid, "error": e.to_string() }),
+                            );
                         }
                     }
                 }
@@ -16146,8 +16148,7 @@ mod tests {
     /// 缺省 noop 宪法非合法 transform，指令一律落无 cause 的 Error，
     /// StateTransition 永不落链，wait 等待无从谈起）
     fn make_test_state_with_core_eval(core_eval: Vec<JsonValue>) -> (AppState, ReadinessFlag) {
-        let (state, readiness, _ws_db) =
-            make_test_state_full(core_eval, SharedFactsLog::new());
+        let (state, readiness, _ws_db) = make_test_state_full(core_eval, SharedFactsLog::new());
         (state, readiness)
     }
 
@@ -16714,28 +16715,35 @@ mod tests {
     fn wal_verify_health_defaults_to_skipped() {
         // 静态位缺省 skipped： WalVerifyHealth 组装路径逐字段锁定
         let v = WalVerifyHealth {
-            reactor: wal_verify_status_str(WAL_VERIFY_REACTOR_STATUS.load(
-                std::sync::atomic::Ordering::Relaxed,
-            ))
+            reactor: wal_verify_status_str(
+                WAL_VERIFY_REACTOR_STATUS.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .to_string(),
-            shared_facts: wal_verify_status_str(WAL_VERIFY_SHARED_FACTS_STATUS.load(
-                std::sync::atomic::Ordering::Relaxed,
-            ))
+            shared_facts: wal_verify_status_str(
+                WAL_VERIFY_SHARED_FACTS_STATUS.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .to_string(),
         };
-        assert_eq!(v, WalVerifyHealth {
-            reactor: "skipped".to_string(),
-            shared_facts: "skipped".to_string(),
-        });
+        assert_eq!(
+            v,
+            WalVerifyHealth {
+                reactor: "skipped".to_string(),
+                shared_facts: "skipped".to_string(),
+            }
+        );
         // setter 写入后按位呈现
         set_wal_verify_reactor(WAL_VERIFY_FAILED);
         set_wal_verify_shared_facts(WAL_VERIFY_OK);
         assert_eq!(
-            wal_verify_status_str(WAL_VERIFY_REACTOR_STATUS.load(std::sync::atomic::Ordering::Relaxed)),
+            wal_verify_status_str(
+                WAL_VERIFY_REACTOR_STATUS.load(std::sync::atomic::Ordering::Relaxed)
+            ),
             "failed"
         );
         assert_eq!(
-            wal_verify_status_str(WAL_VERIFY_SHARED_FACTS_STATUS.load(std::sync::atomic::Ordering::Relaxed)),
+            wal_verify_status_str(
+                WAL_VERIFY_SHARED_FACTS_STATUS.load(std::sync::atomic::Ordering::Relaxed)
+            ),
             "ok"
         );
         // 还原，避免污染同进程其他用例对缺省值的观察
@@ -16858,7 +16866,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         // 演练核心断言：故障通路逐项上报 error，整体不 fail
         let shared_err = body["shared_facts"]["error"].as_str().unwrap_or("");
-        assert!(!shared_err.is_empty(), "shared_facts 通路应上报 error: {body}");
+        assert!(
+            !shared_err.is_empty(),
+            "shared_facts 通路应上报 error: {body}"
+        );
         // 其余通路不受牵连：反应器纯内存 rotated:false（非失败）；会话 0 失败
         assert_eq!(body["reactor"]["rotated"], false, "{body}");
         assert_eq!(body["sessions"]["failed"], 0, "{body}");

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 EvoRule Project
+// This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! WAL 观察面（P1 W-3）：三通路 WAL 的 server 侧包装计数与存储轻采样。
 //!
 //! 定位：运维观测，不改机制层——计数在 server 包装点完成（checkpoint /
@@ -102,8 +105,10 @@ impl WalObservation {
             ),
             &["file"],
         )?;
-        let free_bytes =
-            IntGauge::new("evorule_wal_free_bytes", "Free bytes on the wal_dir filesystem")?;
+        let free_bytes = IntGauge::new(
+            "evorule_wal_free_bytes",
+            "Free bytes on the wal_dir filesystem",
+        )?;
 
         registry.register(Box::new(rotate_total.clone()))?;
         registry.register(Box::new(checkpoint_last_success.clone()))?;
@@ -130,7 +135,9 @@ impl WalObservation {
     /// 轮换调用计数（server 包装点调用；rotated=false 纯内存也算 ok）
     pub fn record_rotate(&self, channel: &str, ok: bool) {
         let result = if ok { "ok" } else { "error" };
-        self.rotate_total.with_label_values(&[channel, result]).inc();
+        self.rotate_total
+            .with_label_values(&[channel, result])
+            .inc();
     }
 
     /// checkpoint 计数（ok = 本轮三通路无一 error）
@@ -144,7 +151,8 @@ impl WalObservation {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        self.checkpoint_last_success_ms.store(now_ms, Ordering::Relaxed);
+        self.checkpoint_last_success_ms
+            .store(now_ms, Ordering::Relaxed);
         self.checkpoint_last_success.set((now_ms / 1000) as i64);
     }
 
@@ -200,9 +208,15 @@ impl WalObservation {
             }
         }
 
-        self.file_bytes.with_label_values(&["shared_facts"]).set(shared_bytes as i64);
-        self.file_bytes.with_label_values(&["reactor"]).set(reactor_bytes as i64);
-        self.file_bytes.with_label_values(&["sessions"]).set(sessions_bytes as i64);
+        self.file_bytes
+            .with_label_values(&["shared_facts"])
+            .set(shared_bytes as i64);
+        self.file_bytes
+            .with_label_values(&["reactor"])
+            .set(reactor_bytes as i64);
+        self.file_bytes
+            .with_label_values(&["sessions"])
+            .set(sessions_bytes as i64);
 
         let free = fs4::free_space(wal_dir).ok();
         if let Some(free) = free {
@@ -302,8 +316,6 @@ mod tests {
 
     fn render(registry: &Registry) -> String {
         let encoder = prometheus::TextEncoder::new();
-        encoder
-            .encode_to_string(&registry.gather())
-            .unwrap()
+        encoder.encode_to_string(&registry.gather()).unwrap()
     }
 }

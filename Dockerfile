@@ -23,7 +23,7 @@
 #   EVORULE_ADDR, EVORULE_AUTH_TOKEN, EVORULE_SERVICE_TOKEN, EVORULE_LOG_LEVEL
 
 # ===== 阶段 1: 构建 =====
-FROM rust:1.92-slim AS builder
+FROM rust:1.92-slim-bookworm AS builder
 
 # 安装构建依赖(SQLite 开发库 + OpenSSL + curl(utoipa-swagger-ui 构建时下载) + git(cargo 拉取 git 形态过渡依赖) + pkg-config)
 RUN apt-get update && apt-get install -y --no-install-recommends \

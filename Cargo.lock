@@ -5373,7 +5373,3 @@ dependencies = [
  "log",
  "simd-adler32",
 ]
-
-[[patch.unused]]
-name = "evorule-bundle"
-version = "0.6.0"

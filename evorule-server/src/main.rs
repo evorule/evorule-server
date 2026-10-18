@@ -40,8 +40,8 @@ use std::time::Instant;
 // H6: AuthConfig 和 API server 从 lib 导入（应用层模块已迁至 src/lib.rs）
 use evorule_governance::auditor::Auditor;
 use evorule_server::api::server::{
-    set_wal_verify_reactor, set_wal_verify_shared_facts, AppState, GovernanceApi,
-    GovernanceServer, SessionApi, WAL_VERIFY_FAILED, WAL_VERIFY_OK,
+    set_wal_verify_reactor, set_wal_verify_shared_facts, AppState, GovernanceApi, GovernanceServer,
+    SessionApi, WAL_VERIFY_FAILED, WAL_VERIFY_OK,
 };
 use evorule_server::auth::AuthConfig;
 use evorule_server::input_sanitizer::InputSanitizer;
@@ -2423,10 +2423,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // WAL 观察面（P1 W-3）：注册指标；wal_dir 配置时后台轻采样（文件大小 +
     // 分区剩余），未配置时无采样任务（health wal 节随之省略，响应向后兼容）
-    let wal_observation = evorule_server::wal_observation::WalObservation::register(
-        prometheus_metrics.registry(),
-    )
-    .map_err(|e| format!("WAL 观察面指标注册失败: {}", e))?;
+    let wal_observation =
+        evorule_server::wal_observation::WalObservation::register(prometheus_metrics.registry())
+            .map_err(|e| format!("WAL 观察面指标注册失败: {}", e))?;
     if let Some(wal_dir) = &cfg.wal_dir {
         let sample_dir = wal_dir.clone();
         tokio::spawn(async move {
