@@ -1,0 +1,11 @@
+{
+    "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/cny-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 cny-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+    "version": 1,
+    "services": [
+        {
+            "name": "cny_amount_upper",
+            "sensitive": false,
+            "description": "人民币大写金额转换(票据规范:零合并/整字/角分规则;负数与超 16 位整数如实拒解;规范两可处以省略零为确定性选择并注明,确定性)"
+        }
+    ]
+}

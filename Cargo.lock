@@ -946,6 +946,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-checksum-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-numeric-services",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "evorule-cny-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-numeric-services",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "evorule-debug-control"
 version = "0.10.0"
 dependencies = [
@@ -1313,6 +1342,8 @@ dependencies = [
  "clap",
  "evorule-browser-services",
  "evorule-bundle",
+ "evorule-checksum-services",
+ "evorule-cny-services",
  "evorule-demo-services",
  "evorule-discipline",
  "evorule-geometry-services",

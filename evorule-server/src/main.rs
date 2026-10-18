@@ -54,6 +54,8 @@ use evorule_io_handlers::{
 };
 // Phase 1: yuanze-demos 业务服务 Rust 原生实现（复合路由：原生优先，HTTP 回落）
 use evorule_browser_services::NATIVE_SERVICES as BROWSER_NATIVE_SERVICES;
+use evorule_checksum_services::NATIVE_SERVICES as CHECKSUM_NATIVE_SERVICES;
+use evorule_cny_services::NATIVE_SERVICES as CNY_NATIVE_SERVICES;
 use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
 use evorule_geometry_services::NATIVE_SERVICES as GEOMETRY_NATIVE_SERVICES;
 use evorule_gnss_services::NATIVE_SERVICES as GNSS_NATIVE_SERVICES;
@@ -897,6 +899,14 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "grav-services",
         defs: GRAV_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "checksum-services",
+        defs: CHECKSUM_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "cny-services",
+        defs: CNY_NATIVE_SERVICES,
     },
 ];
 

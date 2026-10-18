@@ -1,0 +1,21 @@
+{
+    "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/checksum-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 checksum-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+    "version": 1,
+    "services": [
+        {
+            "name": "checksum_luhn",
+            "sensitive": false,
+            "description": "Luhn 模 10 校验(银行卡号/IMEI 等;validate 校验/append 补位,纯整数,确定性)"
+        },
+        {
+            "name": "checksum_isbn",
+            "sensitive": false,
+            "description": "ISBN 校验(isbn10 模 11 含 X 位/isbn13 交替权 1-3;validate 校验/check_digit 补位,纯整数,确定性)"
+        },
+        {
+            "name": "checksum_iban",
+            "sensitive": false,
+            "description": "IBAN mod-97 校验(ISO 13616;validate 校验/check_digits 补算两位校验码;结构+mod97,国家长度表不内置如实声明,确定性)"
+        }
+    ]
+}

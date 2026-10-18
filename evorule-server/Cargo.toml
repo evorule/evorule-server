@@ -81,6 +81,8 @@ evorule-numeric-services = { path = "../plugins/numeric-services" }
 evorule-mechanics-services = { path = "../plugins/mechanics-services" }
 evorule-gnss-services = { path = "../plugins/gnss-services" }
 evorule-grav-services = { path = "../plugins/grav-services" }
+evorule-checksum-services = { path = "../plugins/checksum-services" }
+evorule-cny-services = { path = "../plugins/cny-services" }
 
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，
