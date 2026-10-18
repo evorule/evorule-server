@@ -1,0 +1,21 @@
+{
+    "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/fluid-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 fluid-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+    "version": 1,
+    "services": [
+        {
+            "name": "fluid_bernoulli",
+            "sensitive": false,
+            "description": "伯努利方程互求(p+ρv²/2+ρgh 沿流线守恒;p/h 四量线性可解,v 求解开方双根如实拒解;ρ/g 显式入参,精确有理数,确定性)"
+        },
+        {
+            "name": "fluid_continuity",
+            "sensitive": false,
+            "description": "连续性方程互求(A₁v₁=A₂v₂,不可压;四量任缺一线性可解,全给一致性校验,输出流量,精确有理数,确定性)"
+        },
+        {
+            "name": "fluid_hydrostatic",
+            "sensitive": false,
+            "description": "静水压强互求(p=p₀+ρgh;五量任缺一线性可解,全给一致性校验;ρ/g 显式入参,精确有理数,确定性)"
+        }
+    ]
+}

@@ -28,6 +28,7 @@ members = [
     "plugins/grav-services",
     "plugins/checksum-services",
     "plugins/cny-services",
+    "plugins/fluid-services",
 ]
 
 [workspace.package]
