@@ -6,6 +6,59 @@
 
 ---
 
+## 0. 启动档位门（production profile）
+
+> 交付批次：生产就绪批 P0-1/P0-2（2026-10-17）+ 生产运维面批 P1/P2（2026-10-18）。
+
+**缺省即生产语义**：启动档位 `--profile <development|production>`（env `EVORULE_PROFILE`），**未显式声明 = production**——漏配从「裸奔」变为「拒启」（fail-fast）。development 档为显式豁免通道，仅显式传入时恢复开放语义（本地开发用，自行承担数据丢失风险）。未知档位值在参数解析层即拒。
+
+### 0.1 生产配置清单
+
+| 配置项 | 通道 | 生产要求 |
+| --- | --- | --- |
+| WAL 目录 | `--wal-dir` / `EVORULE_WAL_DIR` / 配置文件 `paths.wal_dir` | **必配**（三通道任一）；未配拒启 |
+| 认证 | `EVORULE_AUTH_TOKEN` / `--auth-token`，凭据分层另配 `EVORULE_SERVICE_TOKEN` | **至少配一**；双缺拒启（§2.1：优先环境变量，不用 CLI 旗标） |
+| 监听地址 | `--addr` | `127.0.0.1:18080`（§1.2 缺省 `0.0.0.0` 禁止裸用） |
+| WAL fsync | `--wal-fsync`（env `EVORULE_WAL_FSYNC`） | production 缺省 `true`；显式 `false` 允许降档但留痕 warn |
+| 会话复活 | `--session-rehydrate` | 缺省 `true`；显式 `false` 与生产档互斥拒启 |
+| 启动全链校验 | `--verify-wal-on-start`（env `EVORULE_VERIFY_WAL_ON_START`） | **推荐恒开**：启动期对反应器审计链+共享事实账本全量重算校验，失败不拒启（取证保护现场），经 health 告警 |
+| 业务库路径 | `--db-path` / 配置文件 `paths.db_path` | 缺省 `./data/evorule.db`（语义见 §0.3） |
+
+### 0.2 拒启矩阵（五条件一票否决）
+
+production 档下任一命中即拒启，错误信息含逐项自诊断与 `--profile development` 豁免指引：
+
+| # | 条件 | 自诊断要点 |
+| --- | --- | --- |
+| R1 | wal-dir 未配置 | 三通道任一配齐即可；否则共享事实与会话审计链纯内存运行 |
+| R2 | auth-token 与 service-token 均缺失 | 治理面将匿名可达；配其一即过 |
+| R3 | 同现 `--insecure-serve` | 显式豁免认证与生产档互斥，移除 |
+| R4 | 同现 `--no-rate-limit` | 限流禁用与生产档互斥，移除 |
+| R5 | `--session-rehydrate false` | 生产必须有跨重启复活能力，恢复缺省 |
+
+另有启动自检（不属档位门，同属 fail-fast 面）：wal 目录试写试读 probe record，失败拒启（磁盘满/权限降级启动期即暴露）。
+
+### 0.3 部署面语义注记（已裁定，非缺陷）
+
+- **首启空规则集 `session_1.wal`（0 字节）为正常态**：引导初始化创建空规则集生产会话
+  （「初始化不构成发布」裁定），WAL 为空链=合法链，首次演化请求后即有内容。重启场景
+  不会出现空文件（引导优先按原 sid 复活并复用原 WAL 文件；归档缺失/损坏才回落重建并
+  ERROR 留痕）。巡检判读：0 字节仅允许出现在从未执行过演化的全新实例。
+- **`data/evorule.db` 零表为正常态**：业务库启动期 eager 连接（兼作数据目录可写自检），
+  schema 由规则集的 db io handler 运行时创建——零表=规则集尚未使用 db io handler。
+- 启动横幅输出持久化恢复统计（存档数/FactId 续起/Command 基线/共享事实版本，ASCII
+  锚点供审计脚本匹配）。
+
+### 0.4 巡检与备份
+
+- health 部署位：`/api/health` 的 `deployment` 节（`profile` / `profile_defaulted` /
+  `wal_dir_configured` / `auth_enabled` / `rate_limit_enabled`）应与实际配置一致，供
+  部署后自检与外部告警。
+- WAL 备份与巡检配方（checkpoint 一致性锚点 → 整目录拷贝 → 异地 → 恢复；指标巡检
+  口径与告警建议）：见 `wal-backup-inspection-recipe.md`。
+
+---
+
 ## 1. 拓扑与暴露面
 
 ### 1.1 标准拓扑
