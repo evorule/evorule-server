@@ -303,6 +303,20 @@ impl SharedFactsLog {
         detect_orphan_facts(&inner.facts_log, &inner.fact_sources)
     }
 
+    /// 轮换共享事实 WAL 文件（干预原语 wal.force_rotate 通路）
+    ///
+    /// 委托内层 [`FactsLog::rotate_wal`]：纯追加式分片切换（序号 +1 开新
+    /// 文件，旧分片保持完整——崩溃安全，不影响链内容与可回放性）。
+    /// 纯内存模式 / 无可轮换后端：`Ok(false)`。轮换不产生事实、不改
+    /// metadata——它是存储层操作，与审计链内容无关。
+    pub fn rotate_wal(&self) -> Result<bool, FactsLogError> {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .facts_log
+            .rotate_wal()
+    }
+
     /// 追加共享事实
     ///
     /// # 参数
@@ -646,6 +660,34 @@ mod tests {
         let log = SharedFactsLog::new();
         assert_eq!(log.version(), 0);
         assert_eq!(log.history_len(), 0);
+    }
+
+    #[test]
+    fn test_rotate_wal_pure_memory_returns_false() {
+        let log = SharedFactsLog::new();
+        assert_eq!(log.rotate_wal().unwrap(), false);
+    }
+
+    #[test]
+    fn test_rotate_wal_switches_shard_and_keeps_chain_writable() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("shared_facts.wal");
+        let log = SharedFactsLog::with_wal(&wal_path).unwrap();
+
+        // 轮换：切新分片（分片命名 {stem}.{seq}.{ext}），返回 true
+        assert_eq!(log.rotate_wal().unwrap(), true);
+        assert!(dir.path().join("shared_facts.1.wal").exists());
+
+        // 轮换后链继续可写、可读（分片切换不影响回放）
+        let version = log
+            .append("shared.after.rotate", JsonValue::string("v"), 7)
+            .unwrap();
+        assert!(version >= 1);
+        assert_eq!(log.history_len(), 1);
+
+        // 再次轮换：序号递增（.2）
+        assert_eq!(log.rotate_wal().unwrap(), true);
+        assert!(dir.path().join("shared_facts.2.wal").exists());
     }
 
     #[test]

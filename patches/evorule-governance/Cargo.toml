@@ -123,3 +123,10 @@ persistence = ["evorule-reactor/persistence"]
 # 替换注册表实例；不入 members——补丁自带 dev-deps/tests，须在本目录独立测试；
 # 与 patches/evorule-reactor 同机制先例）
 [workspace]
+
+# 独立测试解析对齐：server 仓根 [patch.crates-io] 将 evorule-reactor 替换为
+# 本仓 vendored 兄弟目录，独立 `cargo test` 同样对齐（如 rotate_wal 等
+# vendored-only 原语仅存在于 vendored 实例，注册表 0.8.5 尚未发版）。
+# path 补丁仅在声明它的 workspace 根生效，不随 publish 传播，对注册表消费方无影响。
+[patch.crates-io]
+evorule-reactor = { path = "../evorule-reactor" }

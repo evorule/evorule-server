@@ -8246,6 +8246,120 @@ async fn session_wal_rotate(
     })))
 }
 
+/// `POST /api/admin/wal/checkpoint` → 全通道 WAL checkpoint（治理面运维端点）
+///
+/// 对三通路各执行一次纯追加式 WAL 分片切换（崩溃安全，不影响链内容与可回放性）：
+/// - 会话通路：逐在线会话 `facts_log.rotate_wal()`（逐项上报，单会话失败不整体 fail）
+/// - 单反应器通路：`governance.facts_log().rotate_wal()`
+/// - 共享事实通路：`shared_facts.rotate_wal()`
+///
+/// `rotated:false` = 该通路纯内存/无可轮换后端（非失败）。partial failure
+/// 逐项上报，HTTP 恒 200（轮换是可逆运维动作，单项 IO 错误不否定其余通路）。
+/// 人工治理动作：自动化凭据拒绝 + 平台管理员硬校验（与审批模式切换同款前置）；
+/// 落账 platform.event（admin_wal_checkpoint）。
+#[utoipa::path(
+    post,
+    path = "/api/admin/wal/checkpoint",
+    tag = "admin",
+    responses(
+        (status = 200, description = "三通道轮换结果（partial failure 逐项上报）", body = serde_json::Value),
+        (status = 401, description = "未认证"),
+        (status = 403, description = "非管理员或自动化凭据")
+    )
+)]
+async fn admin_wal_checkpoint(
+    State(api): State<SessionApi>,
+    State(gov): State<GovernanceApi>,
+    State(metrics): State<SharedMetrics>,
+    headers: axum::http::HeaderMap,
+    identity: Option<Extension<CallerIdentity>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // 人工治理动作，自动化凭据拒绝（与审批模式切换同款前置）
+    if matches!(
+        identity,
+        Some(Extension(CallerIdentity::Service)) | Some(Extension(CallerIdentity::App))
+    ) {
+        return Err(proxy_err(
+            StatusCode::FORBIDDEN,
+            "自动化凭据禁止执行 WAL checkpoint（人工治理动作）".to_string(),
+        ));
+    }
+    let username = crate::api::platform_auth::require_administrator(&api.shared_facts, &headers)?;
+
+    // 会话通路：逐在线会话轮换（持锁遍历，与单会话 wal/rotate 同款锁纪律）
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut rotated_count = 0usize;
+    let mut in_memory_count = 0usize;
+    let mut failed_count = 0usize;
+    {
+        let sessions = api.sessions.lock().await;
+        for sid in sessions.list_sessions() {
+            match sessions.get_session(sid) {
+                Some(s) => match s.facts_log.rotate_wal() {
+                    Ok(true) => {
+                        rotated_count += 1;
+                        items.push(serde_json::json!({ "session_id": sid, "rotated": true }));
+                    }
+                    Ok(false) => {
+                        in_memory_count += 1;
+                        items.push(serde_json::json!({ "session_id": sid, "rotated": false }));
+                    }
+                    Err(e) => {
+                        failed_count += 1;
+                        items
+                            .push(serde_json::json!({ "session_id": sid, "error": e.to_string() }));
+                    }
+                },
+                None => {
+                    // 列举后被回收的会话：跳过并上报，不算失败
+                    items.push(serde_json::json!({ "session_id": sid, "skipped": true }));
+                }
+            }
+        }
+    }
+    let sessions_summary = serde_json::json!({
+        "total": items.len(),
+        "rotated": rotated_count,
+        "in_memory": in_memory_count,
+        "failed": failed_count,
+        "items": items,
+    });
+
+    // 单反应器通路 / 共享事实通路：单点轮换，错误逐项上报
+    let reactor_result = match gov.facts_log().rotate_wal() {
+        Ok(rotated) => serde_json::json!({ "rotated": rotated }),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
+    let shared_result = match api.shared_facts.rotate_wal() {
+        Ok(rotated) => serde_json::json!({ "rotated": rotated }),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
+
+    // 治理落账：platform.event（操作者 + 三通路摘要）
+    crate::api::platform_auth::append_platform_event(
+        &api.shared_facts,
+        "admin_wal_checkpoint",
+        serde_json::json!({
+            "operator": username,
+            "sessions": {
+                "total": sessions_summary["total"],
+                "rotated": rotated_count,
+                "in_memory": in_memory_count,
+                "failed": failed_count,
+            },
+            "reactor": reactor_result,
+            "shared_facts": shared_result,
+        }),
+    );
+    metrics.inc_commands("admin_wal_checkpoint");
+
+    Ok(Json(serde_json::json!({
+        "sessions": sessions_summary,
+        "reactor": reactor_result,
+        "shared_facts": shared_result,
+    })))
+}
+
 /// 发布域身份绑定中间件（挂 workspace 路由；认证中间件之后运行）
 ///
 /// 平台会话（含静态 user token 的占位身份）→ 注入
@@ -11917,6 +12031,8 @@ impl GovernanceServer {
                 post(session_invariants_scan),
             )
             .route("/api/sessions/{id}/wal/rotate", post(session_wal_rotate))
+            // 全通道 WAL checkpoint（治理面运维端点，管理员硬校验在 handler 内）
+            .route("/api/admin/wal/checkpoint", post(admin_wal_checkpoint))
             // 发布域治理端点（approve_mode 切换须管理员在场+双落账;
             // start_session 纯编排 fork 试验会话, 不接管生产状态）
             .route(
@@ -16421,6 +16537,89 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["approve_mode"], false);
+    }
+
+    /// 全通道 WAL checkpoint：未认证 401；管理员可执行（测试态纯内存 →
+    /// 三通路 rotated:false 非失败）；非管理员 403。
+    #[tokio::test]
+    async fn admin_wal_checkpoint_admin_gated() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        // 未认证 → 401
+        let (status, _) =
+            oneshot_json(router.clone(), "POST", "/api/admin/wal/checkpoint", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // bootstrap 管理员 + 登录
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/bootstrap",
+            Some(r#"{"username":"root","password":"admin-pass-123","display_name":""}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            Some(r#"{"username":"root","password":"admin-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let admin_token = body["token"].as_str().unwrap().to_string();
+
+        // 建一个会话（测试态纯内存，无 WAL）让会话通路有对象可轮换
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // 管理员执行 → 200，三通路逐项上报（纯内存 rotated:false 非失败）
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/admin/wal/checkpoint",
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["sessions"]["total"], 1);
+        assert_eq!(body["sessions"]["failed"], 0);
+        assert_eq!(body["sessions"]["items"][0]["rotated"], false);
+        assert_eq!(body["reactor"]["rotated"], false);
+        assert_eq!(body["shared_facts"]["rotated"], false);
+
+        // 非管理员（viewer）→ 403
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/platform/users",
+            &admin_token,
+            Some(
+                r#"{"username":"carol","password":"carol-pass-123","display_name":"","email":"","department":"","role":"viewer"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            Some(r#"{"username":"carol","password":"carol-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let carol_token = body["token"].as_str().unwrap().to_string();
+        let (status, _) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/admin/wal/checkpoint",
+            &carol_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "非管理员必须 403");
     }
 
     /// 发布试验会话：未初始化生产会话（current_session_id 缺省 NULL）→ 409。
