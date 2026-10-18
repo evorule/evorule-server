@@ -27,7 +27,9 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::Zero;
 
-use evorule_numeric_services::numcore::{decimal_string, parse_rounding, round_to_scale, Rounding};
+use evorule_numeric_services::numcore::{
+    decimal_string, parse_rounding, pow10, round_to_scale, sin_fixed, sqrt_fixed, Rounding,
+};
 use evorule_numeric_services::services::parse_value_as_rational;
 
 pub type Q = BigRational;
@@ -309,6 +311,222 @@ pub fn mk_range_error() -> Arc<dyn NativeService> {
     Arc::new(RangeErrorService)
 }
 
+// ============================================================================
+// gnss_eccentricity_correction — 偏心率周期修正（超越原语+误差契约）
+// ============================================================================
+
+/// F 系数（IS-GPS-200 明文：−4.442807633×10⁻¹⁰ s/m^½，精确十进制有理数）。
+fn f_coeff() -> Q {
+    Q::new(BigInt::from(-4_442_807_633i64), pow10(19))
+}
+
+/// 偏心率周期修正公共执行体：Δt_r = F·e·√a·sin(E)。
+/// √a 与 sin(E) 用定点原语在守护精度求值，乘法精确，末端按 scale 舍入。
+fn eccentricity_dt_r(e: &Q, a: &Q, big_e: &Q, scale: i32, mode: Rounding) -> Result<Q, String> {
+    let inner = (scale as u32).saturating_add(4).min(31);
+    let root_a = sqrt_fixed(a, inner, mode)?;
+    let root_a_q = BigRational::new(root_a.0, pow10(root_a.1 as u32));
+    let sin_e = sin_fixed(big_e, inner, mode)?;
+    let sin_q = BigRational::new(sin_e.0, pow10(sin_e.1 as u32));
+    Ok(f_coeff() * e.clone() * root_a_q * sin_q)
+}
+
+/// 偏心率入参校验（两服务共用）。
+fn validate_eccentricity_inputs(e: &Q, a: &Q) -> Result<(), String> {
+    let one = int_const(1);
+    if e < &int_const(0) || e >= &one {
+        return Err(format!(
+            "参数 e={e} 须 ∈ [0,1) — 自诊断指引: GNSS 轨道偏心率小于 1"
+        ));
+    }
+    if a <= &int_const(0) {
+        return Err("参数 a 须为正 — 自诊断指引: 半长轴为正物理量".to_string());
+    }
+    Ok(())
+}
+
+struct EccentricityCorrectionService;
+
+impl NativeService for EccentricityCorrectionService {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let e = req_rational(args, "e")?;
+        let a = req_rational(args, "a")?;
+        let big_e = req_rational(args, "E")?;
+        validate_eccentricity_inputs(&e, &a)?;
+        let scale = req_scale(args)?;
+        if scale > 27 {
+            return Err(format!(
+                "参数 scale={scale} 超出本服务误差契约上限 27 — 自诊断指引: 超越原语守护位限制"
+            ));
+        }
+        let rounding = req_rounding(args)?;
+        let dt_r = eccentricity_dt_r(&e, &a, &big_e, scale, rounding)?;
+        let dt_r_ns = dt_r.clone() * int_const(1_000_000_000);
+        let out = vec![
+            ("dt_r", dec_obj(&dt_r, scale, rounding)?),
+            ("dt_r_ns", dec_obj(&dt_r_ns, scale, rounding)?),
+            (
+                "constants",
+                JsonValue::object_from_pairs(&[
+                    ("F_s_per_m_half", JsonValue::string("-4.442807633e-10")),
+                    ("source", JsonValue::string("IS-GPS-200 revision, exact decimal")),
+                    ("pi", JsonValue::string("50-digit truncation (pi-50digit)")),
+                ]),
+            ),
+            (
+                "note",
+                JsonValue::string(
+                    "Δt_r = F·e·√a·sin(E);误差契约 |result−真值| ≤ 10⁻ˢᶜᵃˡᵉ;|E|>10⁴ rad 时 undetermined 拒解",
+                ),
+            ),
+        ];
+        Ok(envelope(&out))
+    }
+}
+
+pub fn mk_eccentricity_correction() -> Arc<dyn NativeService> {
+    Arc::new(EccentricityCorrectionService)
+}
+
+// ============================================================================
+// gnss_relativistic_drift — 相对论漂移分项
+// ============================================================================
+
+struct RelativisticDriftService;
+
+impl NativeService for RelativisticDriftService {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let a = req_rational(args, "a")?;
+        if a <= int_const(0) {
+            return Err("参数 a 须为正 — 自诊断指引: 半长轴为正物理量".to_string());
+        }
+        let mu = match args.get("mu") {
+            Some(v) => v
+                .as_str()
+                .map(parse_value_as_rational)
+                .unwrap_or_else(|| Err("参数 mu 须为字符串编码数值".to_string()))?,
+            None => Q::from(BigInt::from(398_600_500_000_000i64)), // 3.986005×10¹⁴
+        };
+        let re = match args.get("re") {
+            Some(v) => v
+                .as_str()
+                .map(parse_value_as_rational)
+                .unwrap_or_else(|| Err("参数 re 须为字符串编码数值".to_string()))?,
+            None => BigRational::from(BigInt::from(6_378_137i64)), // WGS-84 赤道半径
+        };
+        if mu <= int_const(0) || re <= int_const(0) {
+            return Err("参数 mu/re 须为正 — 自诊断指引: 引力常数与地球半径为正物理量".to_string());
+        }
+        let scale = req_scale(args)?;
+        let rounding = req_rounding(args)?;
+        let c = int_const(C_M_PER_S);
+        let c2 = c.clone() * c;
+        // GR（引力蓝移，相对参考球面）：μ/c² × (1/re − 1/a) × 86400 s → μs。
+        let gr = mu.clone() / c2.clone()
+            * (int_const(1) / re - int_const(1) / a.clone())
+            * int_const(86_400)
+            * int_const(1_000_000);
+        // SR（速度时间膨胀，圆轨道 v²=μ/a）：−μ/(2ac²) × 86400 s → μs。
+        let sr = -(mu / (int_const(2) * a * c2)) * int_const(86_400) * int_const(1_000_000);
+        let net = gr.clone() + sr.clone();
+        let out = vec![
+            ("gr_us_per_day", dec_obj(&gr, scale, rounding)?),
+            ("gr_us_per_day_exact", q_str(&gr)),
+            ("sr_us_per_day", dec_obj(&sr, scale, rounding)?),
+            ("sr_us_per_day_exact", q_str(&sr)),
+            ("net_us_per_day", dec_obj(&net, scale, rounding)?),
+            ("net_us_per_day_exact", q_str(&net)),
+            (
+                "constants",
+                JsonValue::object_from_pairs(&[
+                    ("mu_m3_per_s2", JsonValue::string("3.986005e14 (IS-GPS-200)")),
+                    ("re_m", JsonValue::string("6378137 (WGS-84 equatorial)")),
+                    ("c_m_per_s", JsonValue::string("299792458 (SI 2019 exact)")),
+                ]),
+            ),
+            (
+                "note",
+                JsonValue::string(
+                    "GR = μ/c²·(1/re−1/a)·86400s;SR = −μ/(2ac²)·86400s;GPS 标称 a=26560000 → 约 +45.7/−7.2/+38.4 μs/天",
+                ),
+            ),
+        ];
+        Ok(envelope(&out))
+    }
+}
+
+pub fn mk_relativistic_drift() -> Arc<dyn NativeService> {
+    Arc::new(RelativisticDriftService)
+}
+
+// ============================================================================
+// gnss_clock_total — 星钟总修正合成
+// ============================================================================
+
+struct ClockTotalService;
+
+impl NativeService for ClockTotalService {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let af0 = req_rational(args, "af0")?;
+        let af1 = req_rational(args, "af1")?;
+        let af2 = req_rational(args, "af2")?;
+        let t_oc = req_rational(args, "t_oc")?;
+        let t = req_rational(args, "t")?;
+        let e = req_rational(args, "e")?;
+        let a = req_rational(args, "a")?;
+        let big_e = req_rational(args, "E")?;
+        validate_eccentricity_inputs(&e, &a)?;
+        let scale = req_scale(args)?;
+        if scale > 27 {
+            return Err(format!(
+                "参数 scale={scale} 超出本服务误差契约上限 27 — 自诊断指引: 超越原语守护位限制"
+            ));
+        }
+        let rounding = req_rounding(args)?;
+        // 半周翻转：dt = t − t_oc 折入 [−302400, +302400)。
+        let dt_raw = t - t_oc;
+        let week = int_const(604_800);
+        let half_week = int_const(302_400);
+        let n = ((dt_raw.clone() + half_week) / week.clone()).floor();
+        let dt = dt_raw.clone() - week * n;
+        // 多项式（精确）。
+        let dt_af = af0.clone() + af1.clone() * dt.clone() + af2.clone() * dt.clone() * dt.clone();
+        // 周期修正（超越原语+误差契约）。
+        let dt_r = eccentricity_dt_r(&e, &a, &big_e, scale, rounding)?;
+        let total = dt_af.clone() + dt_r.clone();
+        let total_ns = total.clone() * int_const(1_000_000_000);
+        let out = vec![
+            ("dt", dec_obj(&dt, scale, rounding)?),
+            ("dt_af", dec_obj(&dt_af, scale, rounding)?),
+            ("dt_r", dec_obj(&dt_r, scale, rounding)?),
+            ("dt_r_ns", dec_obj(&(dt_r.clone() * int_const(1_000_000_000)), scale, rounding)?),
+            ("dt_total", dec_obj(&total, scale, rounding)?),
+            ("dt_total_ns", dec_obj(&total_ns, scale, rounding)?),
+            (
+                "constants",
+                JsonValue::object_from_pairs(&[
+                    (
+                        "F_s_per_m_half",
+                        JsonValue::string("-4.442807633e-10 (IS-GPS-200)"),
+                    ),
+                    ("pi", JsonValue::string("50-digit truncation (pi-50digit)")),
+                ]),
+            ),
+            (
+                "note",
+                JsonValue::string(
+                    "Δt_total = af0+af1·dt+af2·dt² + F·e·√a·sin(E);dt 折入半周 ±302400;周期项误差 ≤10⁻ˢᶜᵃˡᵉ",
+                ),
+            ),
+        ];
+        Ok(envelope(&out))
+    }
+}
+
+pub fn mk_clock_total() -> Arc<dyn NativeService> {
+    Arc::new(ClockTotalService)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -499,5 +717,109 @@ mod tests {
             ]))
             .expect_err("缺 time_seconds 应报错");
         assert!(err.contains("缺少参数"), "报错应点名缺参: {err}");
+    }
+
+    /// 黄金向量：偏心率周期修正 — e=0.01、a=26560000、E≈π/2（sin≈1）
+    /// → dt_r = F·e·√a ≈ −22.9 ns（|e·√a| 峰值量级的经典 ±23 ns）。
+    #[test]
+    fn eccentricity_golden() {
+        let out = EccentricityCorrectionService
+            .execute(&args(&[
+                ("e", JsonValue::string("0.01")),
+                ("a", JsonValue::string("26560000")),
+                ("E", JsonValue::string("1.5707963267948966192311")),
+                ("scale", JsonValue::Integer(0)),
+                ("rounding", rounding()),
+            ]))
+            .expect("偏心率黄金向量应成功");
+        assert_eq!(dec_of(&out, "dt_r_ns"), "-23", "峰值量级 ±23 ns");
+        // |E| 超限 → undetermined。
+        let err = EccentricityCorrectionService
+            .execute(&args(&[
+                ("e", JsonValue::string("0.01")),
+                ("a", JsonValue::string("26560000")),
+                ("E", JsonValue::string("20000")),
+                ("scale", JsonValue::Integer(0)),
+                ("rounding", rounding()),
+            ]))
+            .expect_err("大幅角应 undetermined");
+        assert!(err.contains("undetermined"), "报错应含 undetermined: {err}");
+        // e=1 非束缚轨道 fail-visible。
+        let err = EccentricityCorrectionService
+            .execute(&args(&[
+                ("e", JsonValue::string("1")),
+                ("a", JsonValue::string("26560000")),
+                ("E", JsonValue::string("0")),
+                ("scale", JsonValue::Integer(0)),
+                ("rounding", rounding()),
+            ]))
+            .expect_err("e=1 应报错");
+        assert!(err.contains("[0,1)"), "报错应点名偏心率约束: {err}");
+    }
+
+    /// 黄金向量：GPS 标称半长轴 a=26560000 → GR +45.7 / SR −7.2 / 净 +38.4 μs/天
+    /// （教科书 45.7/−7.2/38.5 分项，净随输入半径取值略有差异）。
+    #[test]
+    fn drift_golden() {
+        let out = RelativisticDriftService
+            .execute(&args(&[
+                ("a", JsonValue::string("26560000")),
+                ("scale", JsonValue::Integer(1)),
+                ("rounding", rounding()),
+            ]))
+            .expect("漂移分项黄金向量应成功");
+        assert_eq!(dec_of(&out, "gr_us_per_day"), "45.7", "GR 分项");
+        assert_eq!(
+            dec_of(&out, "sr_us_per_day"),
+            "-7.2",
+            "SR 分项(负=星钟变慢)"
+        );
+        assert_eq!(dec_of(&out, "net_us_per_day"), "38.4", "净漂移");
+        assert_eq!(field(&out, "status"), "determined");
+    }
+
+    /// 黄金向量：af0=1 ms、dt=0（多项式 1 ms）+ 周期项 −23 ns
+    /// → 合成 ≈ 999977 ns；半周翻转 t=605000 → dt=200。
+    #[test]
+    fn clock_total_golden() {
+        let out = ClockTotalService
+            .execute(&args(&[
+                ("af0", JsonValue::string("1/1000")),
+                ("af1", JsonValue::string("0")),
+                ("af2", JsonValue::string("0")),
+                ("t_oc", JsonValue::string("0")),
+                ("t", JsonValue::string("0")),
+                ("e", JsonValue::string("0.01")),
+                ("a", JsonValue::string("26560000")),
+                ("E", JsonValue::string("1.5707963267948966192311")),
+                ("scale", JsonValue::Integer(0)),
+                ("rounding", rounding()),
+            ]))
+            .expect("总修正黄金向量应成功");
+        assert_eq!(dec_of(&out, "dt"), "0", "dt=0 无翻转");
+        assert_eq!(dec_of(&out, "dt_af"), "0", "af0=1ms 在 scale 0 显示为 0");
+        assert_eq!(dec_of(&out, "dt_r_ns"), "-23", "周期项 −23 ns");
+        assert_eq!(dec_of(&out, "dt_total_ns"), "999977", "合成 = 10⁶ − 23 ns");
+        // 半周翻转：t=605000 → dt = 605000 − 604800 = 200。
+        let out = ClockTotalService
+            .execute(&args(&[
+                ("af0", JsonValue::string("0")),
+                ("af1", JsonValue::string("1/1000000")),
+                ("af2", JsonValue::string("0")),
+                ("t_oc", JsonValue::string("0")),
+                ("t", JsonValue::string("605000")),
+                ("e", JsonValue::string("0")),
+                ("a", JsonValue::string("26560000")),
+                ("E", JsonValue::string("0")),
+                ("scale", JsonValue::Integer(0)),
+                ("rounding", rounding()),
+            ]))
+            .expect("翻转用例应成功");
+        assert_eq!(dec_of(&out, "dt"), "200", "翻转后 dt=200(非 605000)");
+        assert_eq!(
+            dec_of(&out, "dt_af"),
+            "0",
+            "af1·200 = 2×10⁻⁴ s,scale 0 为 0"
+        );
     }
 }

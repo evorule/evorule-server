@@ -36,6 +36,9 @@
 //! # 服务清单（SSOT = official_native_services.json，双侧守卫锁定）
 //! 1. `gnss_factory_prebias` — 工厂频率预偏置换算（三量互求+每日漂移）
 //! 2. `gnss_range_error` — 时间误差与距离误差换算
+//! 3. `gnss_eccentricity_correction` — 偏心率周期修正（超越原语+误差契约）
+//! 4. `gnss_relativistic_drift` — 相对论漂移分项（GR/SR/净）
+//! 5. `gnss_clock_total` — 星钟总修正合成（多项式+周期修正）
 
 #![forbid(unsafe_code)]
 
@@ -48,7 +51,10 @@ use evorule_tcb::JsonValue;
 
 pub mod services;
 
-use services::{mk_factory_prebias, mk_range_error};
+use services::{
+    mk_clock_total, mk_eccentricity_correction, mk_factory_prebias, mk_range_error,
+    mk_relativistic_drift,
+};
 
 // ============================================================================
 // 声明表（SSOT 配对文件: official_native_services.json; 顺序即声明序,
@@ -76,6 +82,33 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
             r#"{"type":"object","properties":{"mode":{"type":"string","enum":["time_to_distance","distance_to_time"]},"time_seconds":{"type":"string","description":"时间误差(s,非负,十进制字面量或分数;mode=time_to_distance 必填)"},"distance_m":{"type":"string","description":"距离误差(m,非负;mode=distance_to_time 必填)"},"scale":{"type":"integer"},"rounding":{"type":"string","enum":["half_even","half_up","floor","trunc"]}},"required":["mode","scale","rounding"]}"#,
         ),
         make: mk_range_error,
+    },
+    NativeServiceDef {
+        name: "gnss_eccentricity_correction",
+        sensitive: false,
+        description: "偏心率周期修正 Δt_r=F·e·√a·sin(E)(F 为 IS-GPS-200 明文内置带版本戳;√a/sin 用定点原语,误差 ≤10⁻ˢᶜᵃˡᵉ 契约,大幅角 undetermined,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"e":{"type":"string","description":"轨道偏心率([0,1))"},"a":{"type":"string","description":"轨道半长轴(m,正值)"},"E":{"type":"string","description":"偏近点角(rad,|E|≤10⁴)"},"scale":{"type":"integer"},"rounding":{"type":"string","enum":["half_even","half_up","floor","trunc"]}},"required":["e","a","E","scale","rounding"]}"#,
+        ),
+        make: mk_eccentricity_correction,
+    },
+    NativeServiceDef {
+        name: "gnss_relativistic_drift",
+        sensitive: false,
+        description: "相对论漂移分项(GR/SR/净,μs/天;μ 与参考地球半径内置带版本戳,a 显式入参,精确有理数,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"a":{"type":"string","description":"轨道半长轴(m,正值,GPS 标称 26560000)"},"re":{"type":"string","description":"参考地球半径(m,缺省 6378137 WGS-84 赤道)"},"mu":{"type":"string","description":"地球引力常数(m³/s²,缺省 3.986005×10¹⁴ IS-GPS-200)"},"scale":{"type":"integer"},"rounding":{"type":"string","enum":["half_even","half_up","floor","trunc"]}},"required":["a","scale","rounding"]}"#,
+        ),
+        make: mk_relativistic_drift,
+    },
+    NativeServiceDef {
+        name: "gnss_clock_total",
+        sensitive: false,
+        description: "星钟总修正合成(广播多项式含半周翻转 + 偏心率周期修正,双分量+合成值纳秒呈现,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"af0":{"type":"string","description":"钟偏置(s)"},"af1":{"type":"string","description":"漂移(s/s)"},"af2":{"type":"string","description":"漂移率(s/s²)"},"t_oc":{"type":"string","description":"钟差参考时刻(s)"},"t":{"type":"string","description":"当前时刻(s,dt 折入 ±302400)"},"e":{"type":"string","description":"轨道偏心率([0,1))"},"a":{"type":"string","description":"轨道半长轴(m,正值)"},"E":{"type":"string","description":"偏近点角(rad,|E|≤10⁴)"},"scale":{"type":"integer"},"rounding":{"type":"string","enum":["half_even","half_up","floor","trunc"]}},"required":["af0","af1","af2","t_oc","t","e","a","E","scale","rounding"]}"#,
+        ),
+        make: mk_clock_total,
     },
 ];
 
@@ -130,7 +163,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
-        assert_eq!(total, 2, "本插件声明表应为 2 项");
+        assert_eq!(total, 5, "本插件声明表应为 5 项");
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
         }

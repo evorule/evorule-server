@@ -11,6 +11,21 @@
             "name": "gnss_range_error",
             "sensitive": false,
             "description": "GNSS 时间误差与距离误差换算(c=SI 精确定义内置带版本戳,精确有理数,确定性)"
+        },
+        {
+            "name": "gnss_eccentricity_correction",
+            "sensitive": false,
+            "description": "偏心率周期修正 Δt_r=F·e·√a·sin(E)(F 为 IS-GPS-200 明文内置带版本戳;√a/sin 用定点原语,误差 ≤10⁻ˢᶜᵃˡᵉ 契约,大幅角 undetermined,确定性)"
+        },
+        {
+            "name": "gnss_relativistic_drift",
+            "sensitive": false,
+            "description": "相对论漂移分项(GR/SR/净,μs/天;μ 与参考地球半径内置带版本戳,a 显式入参,精确有理数,确定性)"
+        },
+        {
+            "name": "gnss_clock_total",
+            "sensitive": false,
+            "description": "星钟总修正合成(广播多项式含半周翻转 + 偏心率周期修正,双分量+合成值纳秒呈现,确定性)"
         }
     ]
 }

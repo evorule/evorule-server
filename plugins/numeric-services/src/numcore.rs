@@ -691,6 +691,131 @@ pub fn eval_expr(
     Ok(v)
 }
 
+// ============================================================================
+// 超越/无理原语：定点平方根与定点正弦（误差契约 + undetermined 出口）
+// ============================================================================
+
+/// π 的 50 位截断有理近似（pi-50digit-truncation，相对误差 < 10⁻⁴⁹）。
+/// 以 10 位数字组给出：3.1415926535 8979323846 2643383279 5028841971 6939937510。
+const PI50_GROUPS: [u64; 6] = [
+    3,
+    1_415_926_535,
+    8_979_323_846,
+    2_643_383_279,
+    5_028_841_971,
+    6_939_937_510,
+];
+
+/// π 近似分子（整数值 = π × 10⁵⁰，十进制意义下）。
+fn pi50_num() -> BigInt {
+    let mut v = BigInt::zero();
+    for g in PI50_GROUPS {
+        v = v * 10_000_000_000u64 + g;
+    }
+    v
+}
+
+/// π 近似：pi50_num / 10⁵⁰。
+fn pi50() -> BigRational {
+    BigRational::new(pi50_num(), pow10(50))
+}
+
+/// 定点平方根：返回 √r 的十进制定点表示 `(unscaled, scale)`，
+/// 值 = unscaled × 10⁻ˢᶜᵃˡᵉ。
+///
+/// # 误差契约
+/// `|result − √r| ≤ 10⁻ˢᶜᵃˡᵉ`（内部带 5 位守护位后按 mode 舍入）。
+///
+/// # 诚实边界
+/// 负数输入无实平方根 → fail-visible；零输入原样归零。
+pub fn sqrt_fixed(r: &BigRational, scale: u32, mode: Rounding) -> Result<(BigInt, i32), String> {
+    if scale as i64 + 5 > MAX_SCALE as i64 {
+        return Err(format!(
+            "scale={scale} 加守护位超出硬上限 ±{MAX_SCALE} — 自诊断指引: 本原语支持至 scale 31"
+        ));
+    }
+    if r.is_zero() {
+        return round_to_scale(r, scale as i32, mode);
+    }
+    if !r.is_positive() {
+        return Err(format!(
+            "负数 {r} 无实平方根 — 自诊断指引: 平方根原语只接受非负有理数"
+        ));
+    }
+    let guard = 5u32;
+    let shift = scale + guard;
+    // floor( r × 10^{2·shift} ) 的整数平方根 → 误差 < 10⁻ˢʰⁱᶠᵗ。
+    let v = (r.numer() * pow10(2 * shift)) / r.denom();
+    let root = v.sqrt();
+    round_to_scale(&BigRational::new(root, pow10(shift)), scale as i32, mode)
+}
+
+/// 定点正弦：返回 sin(x)（x 为弧度有理数）的十进制定点表示 `(unscaled, scale)`。
+///
+/// # 误差契约
+/// `|result − sin(x)| ≤ 10⁻ˢᶜᵃˡᵉ`（π 用 50 位近似降析 + 泰勒截断带 5 位守护，
+/// 两者误差均低于守护位）。
+///
+/// # undetermined 出口
+/// `|x| > 10⁴ rad` 时降析误差逼近守护位、无法维持契约 → 如实拒解
+/// （错误信息含 `undetermined`），不静默输出不可证的结果。
+pub fn sin_fixed(x: &BigRational, scale: u32, mode: Rounding) -> Result<(BigInt, i32), String> {
+    if scale as i64 + 5 > MAX_SCALE as i64 {
+        return Err(format!(
+            "scale={scale} 加守护位超出硬上限 ±{MAX_SCALE} — 自诊断指引: 本原语支持至 scale 31"
+        ));
+    }
+    let bound = BigRational::from(BigInt::from(10_000i64));
+    if x.abs() > bound {
+        return Err(format!(
+            "undetermined: |x| = {x} rad 超出降析精度范围(>10⁴) — 自诊断指引: \
+             大幅角请先在调用方完成周期归约"
+        ));
+    }
+    let pi = pi50();
+    let two_pi = pi.clone() + pi.clone();
+    let half = pi.clone() / BigRational::from(BigInt::from(2i64));
+    // 周期归约到 [0, 2π)。
+    let k = (x / two_pi.clone()).floor();
+    let r = x - k * two_pi.clone();
+    // 对称化到 [0, π/2] 并记录符号。
+    let (sign, t) = if r <= half {
+        (1i8, r)
+    } else if r <= pi {
+        (1i8, pi.clone() - r)
+    } else if r <= pi.clone() + half.clone() {
+        (-1i8, r - pi.clone())
+    } else {
+        (-1i8, two_pi.clone() - r)
+    };
+    // 泰勒展开（交错级数，t ∈ [0, π/2] 单调递减）：截断误差 ≤ 首个舍弃项。
+    let t2 = t.clone() * t.clone();
+    let threshold = BigRational::new(BigInt::from(1i64), pow10(scale + 5));
+    let mut term = t.clone();
+    let mut sum = t.clone();
+    let mut n: u64 = 1;
+    loop {
+        // termₙ = termₙ₋₁ × t²/(2n·(2n+1))。
+        let denom = BigRational::from(BigInt::from((2 * n) * (2 * n + 1)));
+        term = term * t2.clone() / denom;
+        if term < threshold {
+            break;
+        }
+        sum += if n % 2 == 1 {
+            -term.clone()
+        } else {
+            term.clone()
+        };
+        n += 1;
+        if n > 400 {
+            // t ≤ π/2 时必不抵达;此分支为资源守卫,如实拒解。
+            return Err("undetermined: 泰勒迭代超限 — 自诊断指引: 请上报该输入用例".to_string());
+        }
+    }
+    let result = if sign > 0 { sum } else { -sum };
+    round_to_scale(&result, scale as i32, mode)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -814,5 +939,79 @@ mod tests {
             BigRational::new(3.into(), 10.into()),
             "0.1+0.2 精确等于 3/10"
         );
+    }
+}
+
+/// 超越/无理原语黄金测试（误差契约验证）。
+#[cfg(test)]
+mod transcendental_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn dec_of((unscaled, scale): (BigInt, i32)) -> String {
+        decimal_string(&unscaled, scale)
+    }
+
+    #[test]
+    fn sqrt_golden_and_contract() {
+        // √2 = 1.4142135623730950488...（scale 8 → 1.41421356）。
+        let r = BigRational::new(BigInt::from(2i64), BigInt::from(1i64));
+        assert_eq!(
+            dec_of(sqrt_fixed(&r, 8, Rounding::HalfEven).unwrap()),
+            "1.41421356"
+        );
+        // √(1/4) = 0.5 精确。
+        let r = BigRational::new(BigInt::from(1i64), BigInt::from(4i64));
+        assert_eq!(
+            dec_of(sqrt_fixed(&r, 6, Rounding::HalfEven).unwrap()),
+            "0.500000"
+        );
+        // √(26560000) ≈ 5153.6398（gnss 场景量级）。
+        let r = BigRational::from(BigInt::from(26_560_000i64));
+        assert_eq!(
+            dec_of(sqrt_fixed(&r, 4, Rounding::HalfEven).unwrap()),
+            "5153.6395"
+        );
+        // 负数 fail-visible。
+        let r = BigRational::from(BigInt::from(-4i64));
+        assert!(sqrt_fixed(&r, 4, Rounding::HalfEven).is_err());
+    }
+
+    #[test]
+    fn sin_golden_and_contract() {
+        // sin(0) = 0。
+        let z = BigRational::zero();
+        assert_eq!(
+            dec_of(sin_fixed(&z, 6, Rounding::HalfEven).unwrap()),
+            "0.000000"
+        );
+        // sin(π/6) = 0.5（π 近似下 x_red ≈ π/6 → sin ≈ 0.5 误差远低于 scale）。
+        let x = pi50() / BigRational::from(BigInt::from(6i64));
+        assert_eq!(
+            dec_of(sin_fixed(&x, 6, Rounding::HalfEven).unwrap()),
+            "0.500000"
+        );
+        // sin(π/2) = 1。
+        let x = pi50() / BigRational::from(BigInt::from(2i64));
+        assert_eq!(
+            dec_of(sin_fixed(&x, 6, Rounding::HalfEven).unwrap()),
+            "1.000000"
+        );
+        // sin(π) ≈ 0（π 近似下真值 ~10⁻⁴⁹,scale 6 归零）。
+        let x = pi50();
+        assert_eq!(
+            dec_of(sin_fixed(&x, 6, Rounding::HalfEven).unwrap()),
+            "0.000000"
+        );
+        // sin(−π/6) = −0.5（负角符号）。
+        let x = -(pi50() / BigRational::from(BigInt::from(6i64)));
+        assert_eq!(
+            dec_of(sin_fixed(&x, 6, Rounding::HalfEven).unwrap()),
+            "-0.500000"
+        );
+        // 大幅角 undetermined。
+        let x = BigRational::from(BigInt::from(20_000i64));
+        let err = sin_fixed(&x, 6, Rounding::HalfEven).unwrap_err();
+        assert!(err.contains("undetermined"), "报错应含 undetermined: {err}");
     }
 }
