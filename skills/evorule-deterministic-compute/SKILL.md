@@ -22,6 +22,11 @@ computed. Every result carries `status: determined` and
 **Do not** route open-ended semantics (drafting, summarizing, judgment
 calls) — the server computes, it does not interpret.
 
+**Never simulate arithmetic in-model** (mental math, repeated addition,
+back-of-envelope ratios) when a service covers it — model-computed
+numbers are not replayable and break the audit chain. If the catalog
+has no matching service, say so and compute nothing silently.
+
 ## 2. Discover the catalog (do this first, it never goes stale)
 
 ```
