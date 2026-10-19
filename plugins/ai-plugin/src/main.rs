@@ -54,6 +54,8 @@ struct PluginState {
     execute_http: std::sync::Arc<reqwest::Client>,
     /// 模型准入白名单（None = 扩展执行体未就绪，/llm/execute 显式拒绝）
     allowlist: Arc<Option<BTreeSet<String>>>,
+    /// 调用方令牌（Some = /llm/execute 校验 Authorization;None = 不鉴权）
+    caller_token: Option<String>,
 }
 
 fn main() {
@@ -148,6 +150,7 @@ fn main() {
     } else {
         None
     };
+    let caller_token = cfg.caller_token.clone();
     let state = PluginState {
         cfg: Arc::new(cfg),
         http: std::sync::Arc::new(match build_http_client() {
@@ -165,6 +168,7 @@ fn main() {
             }
         }),
         allowlist: Arc::new(allowlist),
+        caller_token,
     };
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -243,7 +247,25 @@ async fn health() -> Json<Value> {
 /// 扩展型执行体端点（SG-1 件1）：body 原样 → 四键。
 /// 未就绪（未配置/白名单物料未装载）→ 500 自诊断（fail-closed，绝不静默放行）；
 /// 白名单违规/provider 失败 → 502 显式上抛（fail-visible，无静默兜底）。
-async fn llm_execute(State(st): State<PluginState>, Json(body): Json<Value>) -> Response {
+async fn llm_execute(
+    State(st): State<PluginState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    // O 系安全登记:调用方令牌校验(配置后启用)——本机其他进程无令牌即 401,
+    // 防烧用户配额;浏览器侧被 JSON preflight 天然阻断。
+    if let Some(expected) = st.caller_token.as_deref() {
+        let present = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        if present != Some(&format!("Bearer {expected}")) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "caller token missing or mismatched" })),
+            )
+                .into_response();
+        }
+    }
     let Some(allowlist) = st.allowlist.as_ref() else {
         let diag = if st.cfg.llm_execute_url.is_some() {
             "扩展执行体未就绪: model_allowlist_path 未配置或白名单物料装载失败\
