@@ -590,9 +590,14 @@ fn test_content_hash_different_inputs() {
     );
 }
 
-
 /// 构造 band_check 指令（Tier 1 立法 v0.7.0：纯判定+标签,开区间 lo<v<hi）
-fn make_band_check_instruction(value: i64, lo: i64, hi: i64, in_value: &str, out_value: &str) -> JsonValue {
+fn make_band_check_instruction(
+    value: i64,
+    lo: i64,
+    hi: i64,
+    in_value: &str,
+    out_value: &str,
+) -> JsonValue {
     let mut params = BTreeMap::new();
     params.insert("value".to_string(), JsonValue::Integer(value));
     params.insert("lo".to_string(), JsonValue::Integer(lo));
