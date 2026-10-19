@@ -375,6 +375,17 @@ fn exec_set(instr: &JsonValue, mut state: JsonValue) -> Result<JsonValue, TcbErr
 }
 
 /// 应用 set 运算：`set` 覆盖、`add`/`sub` checked 算术（溢出报 `IntegerOverflow`）
+///
+/// # 架构裁定（2026-10-19）：本枚举刻意不引入 `mul`/`div`
+///
+/// 规则层词汇表止步于加减——加减服务步进语义（计数器/期限/循环推进），
+/// 乘除属计算语义，一律走服务面原生服务（黄金向量+双跑锁定，正确性
+/// 证明一次、处处受证）。比例/百分比类治理需求由带参数的通用服务
+/// 承担（如 ratio_split）；若某类场景高频出现，演化路径是立法一条
+/// 治理语义的新指令（乘除内化为指令实现并全程入审计），而非向本
+/// 函数追加算术操作码——词汇表每收一个算术词，规则作者就被迫在
+/// 立法文本里手写一段算术。校验面对应枚举：
+/// core/rule_schema/schemas/_shared/v1.0.json 的 operation 字段。
 fn apply_set_operation(
     operation: &str,
     current: JsonValue,

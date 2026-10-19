@@ -274,7 +274,7 @@
                           "add",
                           "sub"
                         ],
-                        "description": "必填；increment→add / decrement→sub / set→set"
+                        "description": "必填；increment→add / decrement→sub / set→set。枚举刻意不含 mul/div（2026-10-19 架构裁定）：乘除属计算语义走服务面原生服务，比例场景优先用带参数的通用服务；高频场景走立法新指令（乘除内化入审计），不扩本枚举"
                       },
                       "value": {
                         "$ref": "#/$defs/path_or_literal",
