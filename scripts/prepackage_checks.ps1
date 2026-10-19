@@ -8,10 +8,10 @@
           llm_api_key=<非空值>）
     闸 2 · 规则装载门禁 —— 暂存的全部规则 JSON 过运行体装载门禁
         （POST {ServerBase}/api/rules/validate，与本仓 CI 同门禁；
-         eq/lt 域缺 on_missing 等违规在此拦截，对应登记册 O-525）
+         eq/lt 域缺 on_missing 等违规在此拦截，即存量回归拦截）
 
   附带校验：service_tools 覆盖数与运行目录一致、base_url 不含死端口
-  （对应 O-526/O-527 的回归拦截）。
+  （服务清单与端口失指的回归拦截）。
 
   用法：
     pwsh ./scripts/prepackage_checks.ps1 `
@@ -104,7 +104,7 @@ if (-not $RulesDir -or -not (Test-Path $RulesDir)) {
         }
     }
     if ($gateFail -eq 0) { Write-Host "[OK] 规则装载门禁：$($ruleFiles.Count) 文件全过" -ForegroundColor Green }
-    else { Write-Host "[FAIL] 装载门禁失败 $gateFail 文件 — 停止发布（对应登记册 O-525）" -ForegroundColor Red; $fail++ }
+    else { Write-Host "[FAIL] 装载门禁失败 $gateFail 文件 — 停止发布（存量回归拦截）" -ForegroundColor Red; $fail++ }
 }
 
 # ── 收官 ────────────────────────────────────────────────────────
