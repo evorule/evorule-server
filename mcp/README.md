@@ -46,3 +46,11 @@ Failures are fail-visible with self-diagnosing messages; surface them
 verbatim. See
 `skills/evorule-deterministic-compute/SKILL.md` for the full service
 families, worked examples, and usage guidance.
+
+## npm packaging
+
+This directory carries a `package.json` (zero runtime dependencies, the
+`bin` field points at `evorule-mcp.mjs`), so once published to the npm
+registry clients can simply run `npx evorule-mcp` instead of cloning
+this repository. Publishing is a maintainer action:
+`cd mcp && npm publish`.
