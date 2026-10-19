@@ -31,6 +31,7 @@ members = [
     "plugins/fluid-services",
     "plugins/quantum-services",
     "plugins/metrology-services",
+    "plugins/gov-services",
 ]
 
 [workspace.package]
