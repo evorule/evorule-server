@@ -928,6 +928,43 @@ mod tests {
     }
 
     #[test]
+    fn constitution_discipline_gate_enforce_rejects_and_warn_allows() {
+        // 纪律门归属测试：生产 server 宪法 loader 的 enforce/warn 两态语义已收口
+        // 至本 crate（DC-02 违规 = enforce 嵌入 branch 内——引擎级阻止权只允许
+        // 顶层治理条目，嵌套即违规），本测试补齐此前缺失的门禁拒绝路径覆盖。
+        let doc = json!({
+            "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+            "kind": "rule_set", "id": "x.y.dc", "version": "0.1.0",
+            "metadata": { "title": "L2 纪律门测试" },
+            "transform": [
+                { "type": "branch", "params": {
+                    "domain": { "type": "all", "inner": [], "on_missing": "error" },
+                    "on_true": [ { "type": "enforce", "params": { "domain": { "type": "all", "inner": [] }, "reason": "governance" } } ],
+                    "on_false": []
+                }}
+            ]
+        });
+
+        // enforce 位（缺省，SSOT=discipline_enforce_from）：违规必须拒载，
+        // 报错点明 L2 纪律门禁（对齐生产宪法 loader 拒载语义）
+        let ctx = LoadContext::constitution("core_eval.json");
+        let err = load_rule_set(&doc, &ctx).expect_err("宪法 DC-02 违规在 enforce 位必须拒载");
+        assert!(matches!(err, ConstitutionError::DisciplineGate(_)));
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("L2 纪律门禁"),
+            "拒载报错应点明 L2 纪律门禁: {msg}"
+        );
+
+        // warn 位（显式回退口）：放行+结构化留痕（W1 渐进口径）
+        let mut ctx = LoadContext::constitution("core_eval.json");
+        ctx.discipline_enforce = false;
+        let loaded = load_rule_set(&doc, &ctx).expect("warn 位违规放行+留痕");
+        assert!(!loaded.engine_rules.is_empty());
+        assert!(loaded.provenance.gates.discipline_gate);
+    }
+
+    #[test]
     fn wrapped_without_transform_rejected() {
         let doc = json!({ "foo": 1 });
         let ctx = LoadContext::business_file("x.json");
