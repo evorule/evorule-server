@@ -1,0 +1,30 @@
+{
+  "name": "evorule-mcp",
+  "version": "1.0.0",
+  "description": "Zero-dependency MCP server exposing evorule-server deterministic computation services (exact arithmetic, physics, GNSS, finance, checksums) as list_services/invoke_service tools",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "bin": {
+    "evorule-mcp": "./evorule-mcp.mjs"
+  },
+  "files": [
+    "evorule-mcp.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "evorule",
+    "deterministic",
+    "exact-arithmetic",
+    "verifiable-computing"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evorule/evorule-server.git",
+    "directory": "mcp"
+  }
+}
