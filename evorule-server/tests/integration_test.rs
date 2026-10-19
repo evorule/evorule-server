@@ -589,3 +589,54 @@ fn test_content_hash_different_inputs() {
         "Different inputs should produce different hashes"
     );
 }
+
+
+/// 构造 band_check 指令（Tier 1 立法 v0.7.0：纯判定+标签,开区间 lo<v<hi）
+fn make_band_check_instruction(value: i64, lo: i64, hi: i64, in_value: &str, out_value: &str) -> JsonValue {
+    let mut params = BTreeMap::new();
+    params.insert("value".to_string(), JsonValue::Integer(value));
+    params.insert("lo".to_string(), JsonValue::Integer(lo));
+    params.insert("hi".to_string(), JsonValue::Integer(hi));
+    params.insert(
+        "target".to_string(),
+        JsonValue::string("__exec__.payload.verdict"),
+    );
+    params.insert("in_value".to_string(), JsonValue::string(in_value));
+    params.insert("out_value".to_string(), JsonValue::string(out_value));
+    let mut instr = BTreeMap::new();
+    instr.insert("type".to_string(), JsonValue::string("band_check"));
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+/// band_check 立法三例：带内 normal / 带外 slow / 开区间边界（v=lo 判带外）
+#[tokio::test]
+async fn test_band_check_legislation() {
+    for (value, expected) in [(500i64, "normal"), (1500i64, "slow"), (0i64, "slow")] {
+        let core_eval = load_core_eval();
+        let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+        let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+
+        let instruction = make_band_check_instruction(value, 0, 1000, "normal", "slow");
+        tx.send(Fact::Command {
+            id: FactId(1),
+            instruction,
+        })
+        .unwrap();
+
+        let snapshot = wait_for_stable(&mut rx, &facts_log)
+            .await
+            .expect("Timed out waiting for Stable");
+
+        let verdict = snapshot
+            .get("__exec__")
+            .and_then(|s| s.get("payload"))
+            .and_then(|p| p.get("verdict"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            verdict,
+            Some(expected),
+            "value={value} 应判 verdict={expected}; snapshot={snapshot:?}"
+        );
+    }
+}
