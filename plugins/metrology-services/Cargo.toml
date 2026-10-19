@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-metrology-services"
+version.workspace = true
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "计量学原生服务(GUM 乘法幂模型不确定度传播)——纯计算,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
+repository = "https://gitee.com/evorule/evorule-server"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# 核心层（主仓已发布 crates.io,纯 version——接入铁律:不依赖主仓源码路径）
+evorule-tcb = { version = "0.8" }
+evorule-reactor = { version = "0.8" }
+# 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)
+evorule-plugin-kit = { path = "../../core/plugin-kit" }
+# 精确数值原语复用(定点/有理数/舍入/值解析/定点平方根,单源不漂移)
+evorule-numeric-services = { path = "../numeric-services" }
+
+# IoHandler trait object-safety
+async-trait = "0.1"
+# 精确算术核心(与 numeric-services 家族对齐):大整数与任意精度有理数,纯 Rust 零 unsafe
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+
+[dev-dependencies]
+# 测试用 async runtime（#[tokio::test] 需要 macros + rt）
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# SSOT 守卫测试:声明表 vs official_native_services.json 对比
+serde_json = "1"

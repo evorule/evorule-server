@@ -720,6 +720,18 @@ fn pi50() -> BigRational {
     BigRational::new(pi50_num(), pow10(50))
 }
 
+/// 普朗克常数 h（SI 2019 定义精确值：6.62607015×10⁻³⁴ J·s，
+/// = 662607015/10⁴²，零近似）。
+pub fn planck_h() -> BigRational {
+    BigRational::new(BigInt::from(662_607_015i64), pow10(42))
+}
+
+/// 约化普朗克常数 ℏ = h/(2π)：h 为 SI 精确值，π 用 50 位截断近似，
+/// 结果相对误差 < 10⁻⁴⁹（版本戳 h: SI-2019 exact; π: pi-50digit）。
+pub fn planck_reduced() -> BigRational {
+    planck_h() / (pi50() + pi50())
+}
+
 /// 定点平方根：返回 √r 的十进制定点表示 `(unscaled, scale)`，
 /// 值 = unscaled × 10⁻ˢᶜᵃˡᵉ。
 ///

@@ -29,6 +29,8 @@ members = [
     "plugins/checksum-services",
     "plugins/cny-services",
     "plugins/fluid-services",
+    "plugins/quantum-services",
+    "plugins/metrology-services",
 ]
 
 [workspace.package]

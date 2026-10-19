@@ -64,8 +64,10 @@ use evorule_grav_services::NATIVE_SERVICES as GRAV_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
 use evorule_mechanics_services::NATIVE_SERVICES as MECHANICS_NATIVE_SERVICES;
+use evorule_metrology_services::NATIVE_SERVICES as METROLOGY_NATIVE_SERVICES;
 use evorule_numeric_services::NATIVE_SERVICES as NUMERIC_NATIVE_SERVICES;
 use evorule_physics_services::NATIVE_SERVICES as PHYSICS_NATIVE_SERVICES;
+use evorule_quantum_services::NATIVE_SERVICES as QUANTUM_NATIVE_SERVICES;
 use evorule_template_services::NATIVE_SERVICES as TEMPLATE_NATIVE_SERVICES;
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
@@ -912,6 +914,14 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "fluid-services",
         defs: FLUID_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "quantum-services",
+        defs: QUANTUM_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "metrology-services",
+        defs: METROLOGY_NATIVE_SERVICES,
     },
 ];
 
