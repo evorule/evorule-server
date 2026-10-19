@@ -148,6 +148,10 @@ pub struct PluginConfig {
     /// `llm_execute_url` 配置后为 fail-closed 执法面：物料缺失/解析空集 →
     /// 扩展执行体拒绝所有 /llm/execute 请求（显式自诊断，绝不静默放行）。
     pub model_allowlist_path: Option<String>,
+    /// 调用方令牌（Some = /llm/execute 要求 Authorization: Bearer 匹配，
+    /// 本机其他进程无令牌即 401；None = 不鉴权，dev 兼容形态）。
+    /// 来源：env `EVORULE_AI_PLUGIN_CALLER_TOKEN` > 配置 `caller_token`。
+    pub caller_token: Option<String>,
 }
 
 fn require_str(v: &Value, key: &str) -> Result<String, PluginError> {
@@ -193,6 +197,10 @@ impl std::fmt::Debug for PluginConfig {
             .field("tools_enabled", &self.tools_enabled)
             .field("llm_execute_url", &self.llm_execute_url)
             .field("model_allowlist_path", &self.model_allowlist_path)
+            .field(
+                "caller_token",
+                &self.caller_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -333,6 +341,12 @@ impl PluginConfig {
             require_http(u, "llm_execute_url")?;
         }
         let model_allowlist_path = optional_str(v, "model_allowlist_path");
+        // 调用方令牌:env 优先 > 配置文件;None = /llm/execute 不鉴权(dev 兼容)。
+        let caller_token = std::env::var("EVORULE_AI_PLUGIN_CALLER_TOKEN")
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .or_else(|| optional_str(v, "caller_token"));
         Ok(Self {
             listen_addr: listen_addr.to_string(),
             server_base_url,
@@ -346,6 +360,7 @@ impl PluginConfig {
             tools_enabled,
             llm_execute_url,
             model_allowlist_path,
+            caller_token,
         })
     }
 
