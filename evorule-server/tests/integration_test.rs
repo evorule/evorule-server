@@ -602,10 +602,7 @@ fn make_band_check_instruction(
     params.insert("value".to_string(), JsonValue::Integer(value));
     params.insert("lo".to_string(), JsonValue::Integer(lo));
     params.insert("hi".to_string(), JsonValue::Integer(hi));
-    params.insert(
-        "target".to_string(),
-        JsonValue::string("__exec__.payload.verdict"),
-    );
+    params.insert("target".to_string(), JsonValue::string("verdict"));
     params.insert("in_value".to_string(), JsonValue::string(in_value));
     params.insert("out_value".to_string(), JsonValue::string(out_value));
     let mut instr = BTreeMap::new();
@@ -633,11 +630,8 @@ async fn test_band_check_legislation() {
             .await
             .expect("Timed out waiting for Stable");
 
-        let verdict = snapshot
-            .get("__exec__")
-            .and_then(|s| s.get("payload"))
-            .and_then(|p| p.get("verdict"))
-            .and_then(|v| v.as_str());
+        // 相对路径 target 写 payload.verdict；Stable 快照根即 payload 本体
+        let verdict = snapshot.get("verdict").and_then(|v| v.as_str());
         assert_eq!(
             verdict,
             Some(expected),
