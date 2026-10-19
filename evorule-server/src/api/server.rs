@@ -2699,27 +2699,6 @@ impl SessionApi {
             .unwrap_or(false)
     }
 
-    /// 加载路径的层级门禁包装：违规 warn + 拒载（fail-soft，与 schema 门禁同策略，
-    /// 保证热重载可用性）。静默判定见 [`Self::tier_gate_reason`]。
-    #[cfg(test)]
-    fn passes_tier_gate(
-        p: &std::path::Path,
-        rules_dir: &std::path::Path,
-        json: &serde_json::Value,
-    ) -> bool {
-        match Self::tier_gate_reason(p, rules_dir, json) {
-            Ok(()) => true,
-            Err(reason) => {
-                tracing::warn!(
-                    "规则文件 {} 未过层级门禁：{}，拒绝加载（回归验证）",
-                    p.display(),
-                    reason
-                );
-                false
-            }
-        }
-    }
-
     /// 读取规则文件并解析为 JSON；失败时 warn 并返回 None
     fn load_rule_doc(p: &std::path::Path) -> Option<serde_json::Value> {
         let raw = match std::fs::read_to_string(p) {
@@ -2863,65 +2842,6 @@ impl SessionApi {
                     "纪律门禁求值失败"
                 );
                 !enforce
-            }
-        }
-    }
-
-    // 非 _with 桥（passes_discipline_gate / check_discipline_for_core_eval）已删：
-    // 零星面（tier_inventory / 宪法 reload）直接调 _with 并显式传模式
-    // （模式单一事实源 = `discipline_gate_enforce()`）。
-
-    /// 宪法文件的纪律门禁（接线点②，宪法 loader）：
-    /// 宪法走独立 loader、此前零门禁，补 L2 纪律门禁。enforce 期违规 = Err 拒启
-    /// （fail-fast，与本 loader 既有的 call_external 校验同款）；warn 期仅告警。
-    /// 生产调用面已随装载收口迁至 rule_loader；_with 变体保留供测试面复用。
-    #[cfg(test)]
-    fn check_discipline_for_core_eval_with(
-        p: &std::path::Path,
-        tcb: &[JsonValue],
-        enforce: bool,
-    ) -> Result<(), String> {
-        Self::discipline_gate_banner();
-        match evorule_discipline::check(tcb) {
-            Ok(report) if report.violations.is_empty() => Ok(()),
-            Ok(report) => {
-                for v in &report.violations {
-                    tracing::error!(
-                        target: "discipline_gate",
-                        file = %p.display(),
-                        dc_code = %v.code,
-                        node_type = %v.node_type,
-                        node_path = %v.path,
-                        reason = %v.reason,
-                        "影子强制：宪法文件未过 L2 纪律门禁（若 enforce 将拒绝启动）"
-                    );
-                }
-                if enforce {
-                    Err(format!(
-                        "宪法文件 {} 未通过 L2 纪律门禁（{} 条违规；条款见 \
-                         evorule-tcb/discipline/core_eval.json；临时恢复 = \
-                         EVORULE_DISCIPLINE_GATE=warn）",
-                        p.display(),
-                        report.violations.len()
-                    ))
-                } else {
-                    // 影子强制：宪法照常装载，但计数供装载后汇总曝光
-                    SHADOW_VIOLATION_FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Ok(())
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    target: "discipline_gate",
-                    file = %p.display(),
-                    error = %e,
-                    "纪律门禁求值失败（宪法文件）"
-                );
-                if enforce {
-                    Err(format!("纪律门禁求值失败: {e}"))
-                } else {
-                    Ok(())
-                }
             }
         }
     }
@@ -14747,8 +14667,9 @@ mod tests {
         assert_eq!(predicted[0].violations[0].door, "missing_declaration");
     }
 
-    /// 接线点 ②（宪法 loader）：enforce 期宪法违规 fail-fast 拒启；warn 期放行。
-    /// 宪法此前零门禁（补防前缺口），本测试锁死补防后的语义。
+    /// 接线点 ②（宪法 loader）装载语义已收口至 evorule_rule_loader（四步固定顺序），
+    /// enforce/warn 两态语义由其纪律门测试覆盖；本测试直调纪律求值本体，
+    /// 锁死 DC-02 违规样本（enforce 嵌入 branch 内）必被检出。
     #[test]
     fn discipline_gate_wired_into_core_eval_loader() {
         // DC-02 违规：enforce 嵌入 branch 内（{"transform":[...]} 包裹形态）
@@ -14762,16 +14683,15 @@ mod tests {
             .map(serde_to_tcb)
             .collect();
         assert!(!tcb.is_empty(), "测试样本必须实际解析出规则");
-        let p = std::path::Path::new("server_eval.json");
+        let report = evorule_discipline::check(&tcb).expect("纪律求值本身不得失败");
         assert!(
-            SessionApi::check_discipline_for_core_eval_with(p, &tcb, false).is_ok(),
-            "warn 模式宪法违规只告警不拒启（W1）"
+            !report.violations.is_empty(),
+            "DC-02 嵌套 enforce 样本必须被纪律门禁检出"
         );
-        let err = SessionApi::check_discipline_for_core_eval_with(p, &tcb, true)
-            .expect_err("enforce 模式宪法违规必须 fail-fast 拒启");
         assert!(
-            err.contains("L2 纪律门禁"),
-            "拒启错误信息应指明纪律门禁与恢复方式: {err}"
+            report.violations.iter().any(|v| v.code.contains("DC-02")),
+            "违规码应含 DC-02: {:?}",
+            report.violations
         );
     }
 
@@ -20047,7 +19967,7 @@ mod tests {
             "00_meta_x.json",
             r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
         );
-        assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20061,7 +19981,7 @@ mod tests {
             "00_constraint_x.json",
             r#"{"kind":"rule_set","metadata":{"tier":"constraint"},"transform":[]}"#,
         );
-        assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20080,7 +20000,7 @@ mod tests {
                 &format!(r#"{{"kind":"rule_set","metadata":{{"tier":"{tier}"}},"transform":[]}}"#),
             );
             assert!(
-                SessionApi::passes_tier_gate(&f, &dir, &json),
+                SessionApi::tier_gate_reason(&f, &dir, &json).is_ok(),
                 "{name} + tier={tier} 应放行"
             );
         }
@@ -20097,7 +20017,7 @@ mod tests {
             "sub/00_constraint_y.json",
             r#"{"kind":"rule_set","metadata":{"tier":"constraint"},"transform":[]}"#,
         );
-        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20111,7 +20031,7 @@ mod tests {
             "00_meta_x.json",
             r#"{"kind":"rule_set","metadata":{"title":"x"},"transform":[]}"#,
         );
-        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20125,7 +20045,7 @@ mod tests {
             "bundles/b-001/entry_a.json",
             r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
         );
-        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20139,7 +20059,7 @@ mod tests {
             "sub/00_meta_y.json",
             r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
         );
-        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20153,7 +20073,7 @@ mod tests {
             "biz_rules.json",
             r#"{"kind":"rule_set","metadata":{"title":"biz"},"transform":[]}"#,
         );
-        assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20167,7 +20087,7 @@ mod tests {
             "00_meta_guard.json",
             r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"违规拦截"}}]}"#,
         );
-        assert!(SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20181,7 +20101,7 @@ mod tests {
             "biz_rules.json",
             r#"{"kind":"rule_set","metadata":{"title":"biz"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"越权"}}]}"#,
         );
-        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20195,7 +20115,7 @@ mod tests {
             "sub/00_meta_y.json",
             r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"越权"}}]}"#,
         );
-        assert!(!SessionApi::passes_tier_gate(&f, &dir, &json));
+        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
