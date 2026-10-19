@@ -87,6 +87,7 @@ evorule-fluid-services = { path = "../plugins/fluid-services" }
 evorule-quantum-services = { path = "../plugins/quantum-services" }
 evorule-metrology-services = { path = "../plugins/metrology-services" }
 evorule-gov-services = { path = "../plugins/gov-services" }
+evorule-legal-services = { path = "../plugins/legal-services" }
 
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，
