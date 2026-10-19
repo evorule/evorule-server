@@ -1064,6 +1064,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-gov-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-numeric-services",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "evorule-governance"
 version = "0.8.5"
 dependencies = [
@@ -1172,6 +1188,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-legal-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-numeric-services",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "evorule-mechanics-services"
 version = "0.10.0"
 dependencies = [
@@ -1204,6 +1236,22 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "evorule-metrology-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-numeric-services",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1243,6 +1291,22 @@ dependencies = [
  "async-trait",
  "evorule-reactor",
  "evorule-tcb",
+ "tokio",
+]
+
+[[package]]
+name = "evorule-quantum-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-numeric-services",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "serde_json",
  "tokio",
 ]
 
@@ -1365,16 +1429,20 @@ dependencies = [
  "evorule-fluid-services",
  "evorule-geometry-services",
  "evorule-gnss-services",
+ "evorule-gov-services",
  "evorule-governance",
  "evorule-grav-services",
  "evorule-hash",
  "evorule-indicator-services",
  "evorule-inference-services",
  "evorule-io-handlers",
+ "evorule-legal-services",
  "evorule-mechanics-services",
+ "evorule-metrology-services",
  "evorule-numeric-services",
  "evorule-physics-services",
  "evorule-plugin-kit",
+ "evorule-quantum-services",
  "evorule-reactor",
  "evorule-rule",
  "evorule-rule-loader",

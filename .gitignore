@@ -117,3 +117,6 @@ dist/plugins-watchdog.json
 # === console-cloud 构建产物镜像（prepare-payload 从 evorule-console-cloud build/ 汇集;源仓重建,不入库）===
 web/
 plugins/ai-plugin/config.json
+
+# 运营登记册（本地私有面，不上库）
+plan/
