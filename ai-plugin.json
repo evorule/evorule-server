@@ -1,0 +1,11 @@
+{
+  "listen_addr": "127.0.0.1:9130",
+  "server_base_url": "http://127.0.0.1:18080",
+  "server_auth_token": "",
+  "llm_endpoint": "https://api.minimaxi.com/v1",
+  "llm_model": "MiniMax-M3",
+  "llm_temperature": 0.2,
+  "llm_timeout_ms": 60000,
+  "llm_execute_url": "https://api.minimaxi.com/v1/text/chatcompletion_v2",
+  "model_allowlist_path": "data/agent-governance/rules/00_constraint_model_allowlist.json"
+}
