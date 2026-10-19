@@ -16,25 +16,66 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "djbh_mfa_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "djbh_mfa_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
               "domain": {
                 "type": "all",
                 "inner": [
-                  { "type": "eq", "path": "__exec__.payload.data.operation_risk", "value": "high" },
-                  { "type": "lt", "path": "__exec__.payload.data.mfa_factor_count", "value": 2 }
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.operation_risk",
+                    "value": "high",
+                    "on_missing": "error"
+                  },
+                  {
+                    "type": "lt",
+                    "path": "__exec__.payload.data.mfa_factor_count",
+                    "value": 2,
+                    "on_missing": "error"
+                  }
                 ]
               },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.1.d：高风险操作需双因子认证" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "等保2.0三级 §8.1.4.1.d：高风险操作需双因子认证"
+                  }
+                }
               ],
               "on_false": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  }
+                }
               ]
             }
           }
@@ -45,25 +86,69 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "djbh_access_control_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "djbh_access_control_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
               "domain": {
                 "type": "all",
                 "inner": [
-                  { "type": "eq", "path": "__exec__.payload.data.requested_permission", "value": "admin" },
-                  { "type": "not", "inner": { "type": "eq", "path": "__exec__.payload.data.user_role", "value": "admin" } }
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.requested_permission",
+                    "value": "admin",
+                    "on_missing": "error"
+                  },
+                  {
+                    "type": "not",
+                    "inner": {
+                      "type": "eq",
+                      "path": "__exec__.payload.data.user_role",
+                      "value": "admin",
+                      "on_missing": "error"
+                    }
+                  }
                 ]
               },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.2.d：最小权限原则，非管理员不得请求管理员权限" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "等保2.0三级 §8.1.4.2.d：最小权限原则，非管理员不得请求管理员权限"
+                  }
+                }
               ],
               "on_false": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  }
+                }
               ]
             }
           }
@@ -74,28 +159,83 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "djbh_audit_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "djbh_audit_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
-              "domain": { "type": "eq", "path": "__exec__.payload.data.audit_enabled", "value": false },
+              "domain": {
+                "type": "eq",
+                "path": "__exec__.payload.data.audit_enabled",
+                "value": false,
+                "on_missing": "error"
+              },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.3.a：安全审计未启用" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "等保2.0三级 §8.1.4.3.a：安全审计未启用"
+                  }
+                }
               ],
               "on_false": [
                 {
                   "type": "branch",
                   "params": {
-                    "domain": { "type": "eq", "path": "__exec__.payload.data.audit_log_protected", "value": false },
+                    "domain": {
+                      "type": "eq",
+                      "path": "__exec__.payload.data.audit_log_protected",
+                      "value": false,
+                      "on_missing": "error"
+                    },
                     "on_true": [
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "warning" } },
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.3.c：审计记录未受保护" } }
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.decision",
+                          "operation": "set",
+                          "value": "warning"
+                        }
+                      },
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.reason",
+                          "operation": "set",
+                          "value": "等保2.0三级 §8.1.4.3.c：审计记录未受保护"
+                        }
+                      }
                     ],
                     "on_false": [
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "compliant" } }
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.decision",
+                          "operation": "set",
+                          "value": "compliant"
+                        }
+                      }
                     ]
                   }
                 }
@@ -109,25 +249,66 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "djbh_confidentiality_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "djbh_confidentiality_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
               "domain": {
                 "type": "all",
                 "inner": [
-                  { "type": "eq", "path": "__exec__.payload.data.data_classification", "value": "sensitive" },
-                  { "type": "eq", "path": "__exec__.payload.data.encryption", "value": "none" }
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.data_classification",
+                    "value": "sensitive",
+                    "on_missing": "error"
+                  },
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.encryption",
+                    "value": "none",
+                    "on_missing": "error"
+                  }
                 ]
               },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.8.b：敏感数据存储需加密" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "等保2.0三级 §8.1.4.8.b：敏感数据存储需加密"
+                  }
+                }
               ],
               "on_false": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  }
+                }
               ]
             }
           }

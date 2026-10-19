@@ -34,7 +34,8 @@
               "domain": {
                 "path": "__exec__.payload.data.sensor.temperature",
                 "type": "lt",
-                "value": 80
+                "value": 80,
+                "on_missing": "error"
               },
               "on_false": [
                 {
@@ -72,7 +73,8 @@
               "domain": {
                 "path": "__exec__.payload.data.sensor.vibration",
                 "type": "lt",
-                "value": 5
+                "value": 5,
+                "on_missing": "error"
               },
               "on_false": [
                 {
