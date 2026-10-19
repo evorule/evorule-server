@@ -1,0 +1,11 @@
+{
+    "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/legal-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 legal-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+    "version": 1,
+    "services": [
+        {
+            "name": "legal_deadline",
+            "sensitive": false,
+            "description": "期间届日计算(日起算不含当日/周月年按历法对应日,对应日不存在取当月末;节假日表与周末顺延显式入参,法定休假数据不内置如实声明;确定性)"
+        }
+    ]
+}

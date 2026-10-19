@@ -64,6 +64,7 @@ use evorule_gov_services::NATIVE_SERVICES as GOV_NATIVE_SERVICES;
 use evorule_grav_services::NATIVE_SERVICES as GRAV_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
+use evorule_legal_services::NATIVE_SERVICES as LEGAL_NATIVE_SERVICES;
 use evorule_mechanics_services::NATIVE_SERVICES as MECHANICS_NATIVE_SERVICES;
 use evorule_metrology_services::NATIVE_SERVICES as METROLOGY_NATIVE_SERVICES;
 use evorule_numeric_services::NATIVE_SERVICES as NUMERIC_NATIVE_SERVICES;
@@ -927,6 +928,10 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "gov-services",
         defs: GOV_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "legal-services",
+        defs: LEGAL_NATIVE_SERVICES,
     },
 ];
 
