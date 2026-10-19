@@ -34,7 +34,8 @@
               "domain": {
                 "path": "__exec__.payload.data.invoice.duplicate",
                 "type": "eq",
-                "value": true
+                "value": true,
+                "on_missing": "error"
               },
               "on_false": [
                 {
@@ -42,7 +43,8 @@
                     "domain": {
                       "path": "__exec__.payload.data.expense.amount",
                       "type": "lt",
-                      "value": 5000
+                      "value": 5000,
+                      "on_missing": "error"
                     },
                     "on_false": [
                       {

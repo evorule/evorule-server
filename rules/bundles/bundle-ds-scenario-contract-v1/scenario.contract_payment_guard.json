@@ -36,7 +36,8 @@
                   {
                     "path": "__exec__.payload.data.contract.signed",
                     "type": "eq",
-                    "value": true
+                    "value": true,
+                    "on_missing": "error"
                   },
                   {
                     "path": "__exec__.payload.data.approval_id",
@@ -45,7 +46,8 @@
                   {
                     "path": "__exec__.payload.data.payment.amount",
                     "type": "lt",
-                    "value": 100000
+                    "value": 100000,
+                    "on_missing": "error"
                   }
                 ],
                 "type": "all"

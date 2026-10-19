@@ -34,7 +34,8 @@
               "domain": {
                 "path": "__exec__.payload.data.request.mfa_verified",
                 "type": "eq",
-                "value": true
+                "value": true,
+                "on_missing": "error"
               },
               "on_false": [
                 {

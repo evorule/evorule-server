@@ -16,22 +16,56 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "medical_antibiotic_tier_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "medical_antibiotic_tier_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
               "domain": {
                 "type": "all",
                 "inner": [
-                  { "type": "eq", "path": "__exec__.payload.data.prescription.antibiotic_tier", "value": "special" },
-                  { "type": "eq", "path": "__exec__.payload.data.visit.type", "value": "outpatient" }
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.prescription.antibiotic_tier",
+                    "value": "special",
+                    "on_missing": "error"
+                  },
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.visit.type",
+                    "value": "outpatient",
+                    "on_missing": "error"
+                  }
                 ]
               },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "特殊使用级抗菌药物不得在门诊使用（卫生部令84号第二十七条）" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "特殊使用级抗菌药物不得在门诊使用（卫生部令84号第二十七条）"
+                  }
+                }
               ],
               "on_false": [
                 {
@@ -40,17 +74,59 @@
                     "domain": {
                       "type": "all",
                       "inner": [
-                        { "type": "eq", "path": "__exec__.payload.data.prescription.antibiotic_tier", "value": "restricted" },
-                        { "type": "not", "inner": { "type": "eq", "path": "__exec__.payload.data.prescriber.title", "value": "attending" } },
-                        { "type": "not", "inner": { "type": "eq", "path": "__exec__.payload.data.prescriber.title", "value": "chief" } }
+                        {
+                          "type": "eq",
+                          "path": "__exec__.payload.data.prescription.antibiotic_tier",
+                          "value": "restricted",
+                          "on_missing": "error"
+                        },
+                        {
+                          "type": "not",
+                          "inner": {
+                            "type": "eq",
+                            "path": "__exec__.payload.data.prescriber.title",
+                            "value": "attending",
+                            "on_missing": "error"
+                          }
+                        },
+                        {
+                          "type": "not",
+                          "inner": {
+                            "type": "eq",
+                            "path": "__exec__.payload.data.prescriber.title",
+                            "value": "chief",
+                            "on_missing": "error"
+                          }
+                        }
                       ]
                     },
                     "on_true": [
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "限制使用级需主治医师及以上处方权（卫生部令84号第二十四条）" } }
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.decision",
+                          "operation": "set",
+                          "value": "blocked"
+                        }
+                      },
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.reason",
+                          "operation": "set",
+                          "value": "限制使用级需主治医师及以上处方权（卫生部令84号第二十四条）"
+                        }
+                      }
                     ],
                     "on_false": [
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.decision",
+                          "operation": "set",
+                          "value": "allowed"
+                        }
+                      }
                     ]
                   }
                 }
@@ -64,39 +140,106 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "medical_drug_indication_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "medical_drug_indication_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
-              "domain": { "type": "eq", "path": "__exec__.payload.data.diagnosis.type", "value": "viral" },
+              "domain": {
+                "type": "eq",
+                "path": "__exec__.payload.data.diagnosis.type",
+                "value": "viral",
+                "on_missing": "error"
+              },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "病毒性感染无抗菌药物使用指征（2015指导原则：病毒性感染者均无应用抗菌药物指征）" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "病毒性感染无抗菌药物使用指征（2015指导原则：病毒性感染者均无应用抗菌药物指征）"
+                  }
+                }
               ],
               "on_false": [
                 {
                   "type": "branch",
                   "params": {
-                    "domain": { "type": "eq", "path": "__exec__.payload.data.diagnosis.type", "value": "bacterial" },
+                    "domain": {
+                      "type": "eq",
+                      "path": "__exec__.payload.data.diagnosis.type",
+                      "value": "bacterial",
+                      "on_missing": "error"
+                    },
                     "on_true": [
                       {
                         "type": "branch",
                         "params": {
-                          "domain": { "type": "eq", "path": "__exec__.payload.data.lab.has_drug_sensitivity", "value": true },
+                          "domain": {
+                            "type": "eq",
+                            "path": "__exec__.payload.data.lab.has_drug_sensitivity",
+                            "value": true,
+                            "on_missing": "error"
+                          },
                           "on_true": [
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.decision",
+                                "operation": "set",
+                                "value": "allowed"
+                              }
+                            }
                           ],
                           "on_false": [
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "warning" } },
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "建议完善药敏试验（卫生部令84号第三十一条）" } }
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.decision",
+                                "operation": "set",
+                                "value": "warning"
+                              }
+                            },
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.reason",
+                                "operation": "set",
+                                "value": "建议完善药敏试验（卫生部令84号第三十一条）"
+                              }
+                            }
                           ]
                         }
                       }
                     ],
                     "on_false": [
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "need_more_info" } }
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.decision",
+                          "operation": "set",
+                          "value": "need_more_info"
+                        }
+                      }
                     ]
                   }
                 }
@@ -110,25 +253,66 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "medical_drug_allergy_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "medical_drug_allergy_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
               "domain": {
                 "type": "all",
                 "inner": [
-                  { "type": "eq", "path": "__exec__.payload.data.patient.has_penicillin_allergy", "value": true },
-                  { "type": "eq", "path": "__exec__.payload.data.prescription.drug_class", "value": "penicillin" }
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.patient.has_penicillin_allergy",
+                    "value": true,
+                    "on_missing": "error"
+                  },
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.prescription.drug_class",
+                    "value": "penicillin",
+                    "on_missing": "error"
+                  }
                 ]
               },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "青霉素过敏者禁用青霉素类药物（药品说明书禁忌）" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "青霉素过敏者禁用青霉素类药物（药品说明书禁忌）"
+                  }
+                }
               ],
               "on_false": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  }
+                }
               ]
             }
           }
@@ -139,33 +323,96 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "medical_antibiotic_override_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "medical_antibiotic_override_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
-              "domain": { "type": "eq", "path": "__exec__.payload.data.prescription.is_emergency_override", "value": true },
+              "domain": {
+                "type": "eq",
+                "path": "__exec__.payload.data.prescription.is_emergency_override",
+                "value": true,
+                "on_missing": "error"
+              },
               "on_true": [
                 {
                   "type": "branch",
                   "params": {
-                    "domain": { "type": "eq", "path": "__exec__.payload.data.prescription.paperwork_filed", "value": true },
+                    "domain": {
+                      "type": "eq",
+                      "path": "__exec__.payload.data.prescription.paperwork_filed",
+                      "value": true,
+                      "on_missing": "error"
+                    },
                     "on_true": [
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.decision",
+                          "operation": "set",
+                          "value": "allowed"
+                        }
+                      }
                     ],
                     "on_false": [
                       {
                         "type": "branch",
                         "params": {
-                          "domain": { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.prescription.hours_since_prescription", "value": 25 } },
+                          "domain": {
+                            "type": "not",
+                            "inner": {
+                              "type": "lt",
+                              "path": "__exec__.payload.data.prescription.hours_since_prescription",
+                              "value": 25,
+                              "on_missing": "error"
+                            }
+                          },
                           "on_true": [
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "越级使用超24小时未补办手续（卫生部令84号第二十八条）" } }
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.decision",
+                                "operation": "set",
+                                "value": "blocked"
+                              }
+                            },
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.reason",
+                                "operation": "set",
+                                "value": "越级使用超24小时未补办手续（卫生部令84号第二十八条）"
+                              }
+                            }
                           ],
                           "on_false": [
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } },
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "急诊越级使用，须于24小时内补办手续（卫生部令84号第二十八条）" } }
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.decision",
+                                "operation": "set",
+                                "value": "allowed"
+                              }
+                            },
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.reason",
+                                "operation": "set",
+                                "value": "急诊越级使用，须于24小时内补办手续（卫生部令84号第二十八条）"
+                              }
+                            }
                           ]
                         }
                       }
@@ -174,7 +421,14 @@
                 }
               ],
               "on_false": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  }
+                }
               ]
             }
           }
@@ -185,31 +439,93 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "medical_triage_check" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "medical_triage_check"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
               "domain": {
                 "type": "all",
                 "inner": [
-                  { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.patient.age", "value": 65 } },
-                  { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.patient.temperature_tenths", "value": 385 } }
+                  {
+                    "type": "not",
+                    "inner": {
+                      "type": "lt",
+                      "path": "__exec__.payload.data.patient.age",
+                      "value": 65,
+                      "on_missing": "error"
+                    }
+                  },
+                  {
+                    "type": "not",
+                    "inner": {
+                      "type": "lt",
+                      "path": "__exec__.payload.data.patient.temperature_tenths",
+                      "value": 385,
+                      "on_missing": "error"
+                    }
+                  }
                 ]
               },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "urgent" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "高龄高热（≥65岁且≥38.5℃），优先分诊" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "urgent"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "高龄高热（≥65岁且≥38.5℃），优先分诊"
+                  }
+                }
               ],
               "on_false": [
                 {
                   "type": "branch",
                   "params": {
-                    "domain": { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.patient.temperature_tenths", "value": 395 } },
+                    "domain": {
+                      "type": "not",
+                      "inner": {
+                        "type": "lt",
+                        "path": "__exec__.payload.data.patient.temperature_tenths",
+                        "value": 395,
+                        "on_missing": "error"
+                      }
+                    },
                     "on_true": [
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "urgent" } },
-                      { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "高热≥39.5℃，优先分诊" } }
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.decision",
+                          "operation": "set",
+                          "value": "urgent"
+                        }
+                      },
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.payload.data.result.reason",
+                          "operation": "set",
+                          "value": "高热≥39.5℃，优先分诊"
+                        }
+                      }
                     ],
                     "on_false": [
                       {
@@ -218,16 +534,53 @@
                           "domain": {
                             "type": "all",
                             "inner": [
-                              { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.lab.wbc", "value": 15000 } },
-                              { "type": "not", "inner": { "type": "lt", "path": "__exec__.payload.data.lab.crp", "value": 50 } }
+                              {
+                                "type": "not",
+                                "inner": {
+                                  "type": "lt",
+                                  "path": "__exec__.payload.data.lab.wbc",
+                                  "value": 15000,
+                                  "on_missing": "error"
+                                }
+                              },
+                              {
+                                "type": "not",
+                                "inner": {
+                                  "type": "lt",
+                                  "path": "__exec__.payload.data.lab.crp",
+                                  "value": 50,
+                                  "on_missing": "error"
+                                }
+                              }
                             ]
                           },
                           "on_true": [
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "urgent" } },
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "感染指标显著升高（WBC≥15000且CRP≥50）" } }
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.decision",
+                                "operation": "set",
+                                "value": "urgent"
+                              }
+                            },
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.reason",
+                                "operation": "set",
+                                "value": "感染指标显著升高（WBC≥15000且CRP≥50）"
+                              }
+                            }
                           ],
                           "on_false": [
-                            { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "routine" } }
+                            {
+                              "type": "set",
+                              "params": {
+                                "attr": "__exec__.payload.data.result.decision",
+                                "operation": "set",
+                                "value": "routine"
+                              }
+                            }
                           ]
                         }
                       }
@@ -244,25 +597,66 @@
     {
       "type": "branch",
       "params": {
-        "domain": { "type": "instruction", "instruction_type": "medical_mfa_gate" },
+        "domain": {
+          "type": "instruction",
+          "instruction_type": "medical_mfa_gate"
+        },
         "on_true": [
-          { "type": "set", "params": { "attr": "data", "operation": "set", "value": "__exec__.instruction.params" } },
+          {
+            "type": "set",
+            "params": {
+              "attr": "data",
+              "operation": "set",
+              "value": "__exec__.instruction.params"
+            }
+          },
           {
             "type": "branch",
             "params": {
               "domain": {
                 "type": "all",
                 "inner": [
-                  { "type": "eq", "path": "__exec__.payload.data.operation.type", "value": "read_medical_record" },
-                  { "type": "eq", "path": "__exec__.payload.data.auth.mfa_verified", "value": false }
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.operation.type",
+                    "value": "read_medical_record",
+                    "on_missing": "error"
+                  },
+                  {
+                    "type": "eq",
+                    "path": "__exec__.payload.data.auth.mfa_verified",
+                    "value": false,
+                    "on_missing": "error"
+                  }
                 ]
               },
               "on_true": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "blocked" } },
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.reason", "operation": "set", "value": "等保2.0三级 §8.1.4.1.d：病历读取需双因子认证，已阻断并留痕" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "blocked"
+                  }
+                },
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.reason",
+                    "operation": "set",
+                    "value": "等保2.0三级 §8.1.4.1.d：病历读取需双因子认证，已阻断并留痕"
+                  }
+                }
               ],
               "on_false": [
-                { "type": "set", "params": { "attr": "__exec__.payload.data.result.decision", "operation": "set", "value": "allowed" } }
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.payload.data.result.decision",
+                    "operation": "set",
+                    "value": "allowed"
+                  }
+                }
               ]
             }
           }
