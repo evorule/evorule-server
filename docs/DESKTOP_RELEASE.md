@@ -65,11 +65,14 @@ pwsh <server 仓根>\scripts\prepackage_checks.ps1 `
 ## 5. 发布到 Gitee/GitHub（内部邀请 Beta）
 
 1. Gitee Release 页新建（tag：`evo-agent-desktop-v<语义化版本>` 形态）；
-2. 上传安装包 + SHA256 校验和文件；
-3. GitHub Releases 镜像同步；
+2. 上传安装包 + SHA256 校验和文件 + **latest.json（更新器喂料，随构建三件套产出）**；
+3. GitHub Releases 镜像同步（**latest.json 必传**——更新器端点 =
+   GitHub Releases 稳定 latest 资产 URL，缺件即全体用户更新检查失败；
+   latest.json 内 url 已按本版 tag permalink 钉版，勿改）；
 4. Release 说明模板：
    - 本版本新增（能力摘要：确定性计算服务家族、期间届日、比例分配等）；
-   - **首次启动**：在设置中录入你的模型 API 密钥（仅存本机）；
+   - **首次启动**：把你的模型 API 密钥单行写入
+     `%APPDATA%\evo-agent-desktop\llm-key.txt`（仅存本机，不进浏览器界面）；
    - 内部邀请性质说明 + 反馈渠道（Gitee issue）；
 5. **可见性**：Gitee 仓为公开时 Release 即公开可下载——内部邀请阶段
    如需限流，用点对点分发给邀请名单，或调整仓库可见性。
@@ -78,9 +81,8 @@ pwsh <server 仓根>\scripts\prepackage_checks.ps1 `
 
 | 来源 | 问题 | 发布说明口径 |
 |---|---|---|
-| 已知问题 | 发版迁移丢用户 localStorage 密钥 | 在设置中重录即恢复；迁移逻辑修复在途 |
-| 已知问题 | 旧版 service_tools 不含计算家族/执行体端口失指 | 本版已修复 |
-| 已知问题 | 自动更新器端点未配置 | 本版暂无自动更新，请手动下载 |
+| 已知问题 | 旧版 service_tools 不含计算家族/执行体端口失指 | 本版已修复（发版模板入库+SSOT 守卫） |
+| 已知问题 | 自动更新器端点未配置 | 本版已配置（GitHub Releases latest）；不可达时手动下载 Gitee Release |
 
 ## 7. 发布后
 
