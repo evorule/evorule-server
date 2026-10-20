@@ -220,6 +220,33 @@ fn is_unit_char(c: char) -> bool {
         )
 }
 
+/// 单位幂后缀吸收:m/s^2、s^-1、N·m^2 —— 幂属于单位字面量本身;
+/// 不吸收则 '^' 会作用到「数值×单位」整体(9.8 m/s^2 被当作
+/// (9.8·m/s)²,值与量纲双双平方)。'^' 后无数字则不吸收,留给解析器。
+fn absorb_caret_exponent(chars: &[(usize, char)], mut i: usize, u: &mut String) -> usize {
+    while let Some(&(_, '^')) = chars.get(i) {
+        let mut j = i + 1;
+        let has_minus = matches!(chars.get(j), Some(&(_, '-')));
+        if has_minus {
+            j += 1;
+        }
+        let d0 = j;
+        while matches!(chars.get(j), Some(&(_, c)) if c.is_ascii_digit()) {
+            j += 1;
+        }
+        if j == d0 {
+            break;
+        }
+        u.push('^');
+        if has_minus {
+            u.push('-');
+        }
+        u.extend(chars[d0..j].iter().map(|&(_, c)| c));
+        i = j;
+    }
+    i
+}
+
 fn tokenize(src: &str, dialect: ExprDialect) -> Result<Vec<Toked>, String> {
     if src.chars().count() > MAX_EXPR_CHARS {
         return Err(format!(
@@ -350,32 +377,8 @@ fn tokenize(src: &str, dialect: ExprDialect) -> Result<Vec<Toked>, String> {
                         break;
                     }
                 }
-                // 幂后缀吸收:m/s^2、s^-1、N·m^2 — 幂属于单位字面量本身;
-                // 不吸收则 '^' 会作用到「数值×单位」整体(9.8 m/s^2 被当作
-                // (9.8·m/s)²,值与量纲双双平方)。
-                while let Some(&(_, '^')) = chars.get(i) {
-                    let mut j = i + 1;
-                    let has_minus = matches!(chars.get(j), Some(&(_, '-')));
-                    if has_minus {
-                        j += 1;
-                    }
-                    let d0 = j;
-                    while matches!(chars.get(j), Some(&(_, c)) if c.is_ascii_digit()) {
-                        j += 1;
-                    }
-                    if j == d0 {
-                        // '^' 后无数字:非单位幂记法,留给解析器处理
-                        break;
-                    }
-                    u.push('^');
-                    if has_minus {
-                        u.push('-');
-                    }
-                    for k in d0..j {
-                        u.push(chars[k].1);
-                    }
-                    i = j;
-                }
+                // 幂后缀吸收(m/s^2、s^-1、N·m^2):幂属于单位字面量本身
+                i = absorb_caret_exponent(&chars, i, &mut u);
                 out.push(Toked {
                     kind: Tok::Unit(u),
                     pos: start,
