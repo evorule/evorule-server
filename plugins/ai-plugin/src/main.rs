@@ -185,6 +185,7 @@ fn main() {
         let app = Router::new()
             .route("/services/ai_plugin_chat", post(ai_plugin_chat))
             .route("/llm/execute", post(llm_execute))
+            .route("/llm/models", get(llm_models))
             .route("/health", get(health))
             .with_state(state);
         let listener = match tokio::net::TcpListener::bind(&listen_addr).await {
@@ -291,13 +292,54 @@ async fn llm_execute(
     }
 }
 
+/// 模型清单端点（S5 模型选择器配套）：白名单只读下发——正源即执法面同一
+/// BTreeSet，杜绝 serve 侧复制产生双真相。`{ready, models}`：未就绪
+/// ready=false+空表+自诊断语（fail-closed 姿态对消费方可见）；就绪出排序
+/// 数组。本端点不携带任何凭据物料。
+async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMap) -> Response {
+    // 调用方令牌校验与 /llm/execute 同面一致（配置后启用）
+    if let Some(expected) = st.caller_token.as_deref() {
+        let present = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        if present != Some(&format!("Bearer {expected}")) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "caller token missing or mismatched" })),
+            )
+                .into_response();
+        }
+    }
+    match st.allowlist.as_ref() {
+        None => Json(json!({
+            "ready": false,
+            "models": [],
+            "note": "扩展执行体未就绪: 白名单物料未配置或装载失败（见启动日志）"
+        }))
+        .into_response(),
+        Some(set) => {
+            let models: Vec<&String> = set.iter().collect();
+            Json(json!({ "ready": true, "models": models })).into_response()
+        }
+    }
+}
+
 async fn ai_plugin_chat(State(st): State<PluginState>, Json(body): Json<Value>) -> Response {
     // 请求体校验：消费方错误 → 400
     let req = match ChatRequest::from_value(&body) {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
     };
-    let purpose = req.audit_purpose.clone().unwrap_or_else(|| "chat".to_string());
+    let purpose = req
+        .audit_purpose
+        .clone()
+        .unwrap_or_else(|| "chat".to_string());
     match run_audited_chat(&st.cfg, &st.http, &req).await {
         Ok(outcome) => {
             tracing::info!(
@@ -305,7 +347,8 @@ async fn ai_plugin_chat(State(st): State<PluginState>, Json(body): Json<Value>) 
                 outcome.session_id,
                 outcome.reply.chars().count()
             );
-            Json(json!({ "reply": outcome.reply, "session_id": outcome.session_id })).into_response()
+            Json(json!({ "reply": outcome.reply, "session_id": outcome.session_id }))
+                .into_response()
         }
         Err(e) => {
             // 错误已回写 io_response（lib 层保证），此处显式上抛，无静默兜底
@@ -325,4 +368,96 @@ fn error_response(e: &PluginError) -> Response {
         | PluginError::Llm(_) => StatusCode::BAD_GATEWAY,
     };
     (status, Json(json!({ "error": e.to_string() }))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    // 测试代码允许 unwrap/expect/panic（lib.rs tests 同先例：生产路径仍全量 deny）
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use axum::body::to_bytes;
+
+    fn test_state(
+        allowlist: Option<BTreeSet<String>>,
+        caller_token: Option<String>,
+    ) -> PluginState {
+        let cfg = PluginConfig::from_json_str(
+            r#"{
+                "listen_addr": "127.0.0.1:0",
+                "server_base_url": "http://127.0.0.1:18080",
+                "llm_endpoint": "https://example.invalid/v1",
+                "llm_api_key": "unused-in-test",
+                "llm_model": "test-model",
+                "llm_temperature": 0.2,
+                "llm_timeout_ms": 1000,
+                "tools_enabled": []
+            }"#,
+        )
+        .expect("test config must parse");
+        PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(reqwest::Client::new()),
+            allowlist: Arc::new(allowlist),
+            caller_token,
+        }
+    }
+
+    async fn body_json(resp: Response) -> Value {
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        serde_json::from_slice(&bytes).expect("json body")
+    }
+
+    #[tokio::test]
+    async fn llm_models_ready_lists_sorted_allowlist() {
+        let st = test_state(
+            Some(BTreeSet::from([
+                "MiniMax-M3".to_string(),
+                "MiniMax-M2.5".to_string(),
+            ])),
+            None,
+        );
+        let resp = llm_models(State(st), axum::http::HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["ready"], serde_json::json!(true));
+        assert_eq!(
+            v["models"],
+            serde_json::json!(["MiniMax-M2.5", "MiniMax-M3"])
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_models_unready_reports_diag_not_error() {
+        let st = test_state(None, None);
+        let resp = llm_models(State(st), axum::http::HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["ready"], serde_json::json!(false));
+        assert_eq!(v["models"], serde_json::json!([]));
+        assert!(v["note"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn llm_models_requires_caller_token_when_configured() {
+        let st = test_state(
+            Some(BTreeSet::from(["m1".to_string()])),
+            Some("secret-token".into()),
+        );
+        let resp = llm_models(State(st), axum::http::HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let st = test_state(
+            Some(BTreeSet::from(["m1".to_string()])),
+            Some("secret-token".into()),
+        );
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer secret-token"),
+        );
+        let resp = llm_models(State(st), headers).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
