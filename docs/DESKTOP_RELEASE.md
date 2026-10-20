@@ -1,5 +1,10 @@
 # evo-agent-desktop 发版流程（内部邀请 Beta）
 
+> **已让位（2026-10-20）**：发版操作唯一正本 = evo-agent 仓 `desktop/RELEASE.md`
+> （生产级差距批D 入仓；本档仅存历史参考，双闸预检节仍有效——预检脚本
+> `scripts/prepackage_checks.ps1` 在本仓，发布前照跑）。发布渠道口径以正本
+> 为准（GitHub Releases 单通道+自更新）。
+>
 > **文档性质**：evo-agent-desktop 安装包的发布操作手册（固化版）。
 > **发布形态**：安装包（exe）发布到 Gitee/GitHub Releases，内部邀请试用
 > 反馈；尚非公开推广——公开推广另有物料与渠道决策。
