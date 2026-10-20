@@ -443,8 +443,8 @@ impl SIDimension {
             }
             // 解析带幂次的单位（如 m², s⁻², kg^3）
             let (base, exp) = Self::parse_unit_with_exponent(part)?;
-            // 使用基础单位映射（避免递归调用 from_si_unit → parse_compound_unit）
-            let base_dim = Self::base_unit_to_dimension(&base)?;
+            // 基本或导出单位(避免递归调用 from_si_unit → parse_compound_unit)
+            let base_dim = Self::unit_to_dimension_no_recurse(&base)?;
             dims.push(base_dim.power(exp));
         }
 
@@ -452,6 +452,48 @@ impl SIDimension {
             None
         } else {
             Some(dims)
+        }
+    }
+
+    /// 复合成员单位解析:先基本单位,再导出单位(不递归——导出单位以
+    /// SI 基本量纲常量合成,与 from_si_unit 顶层精确匹配表同一套定义)
+    fn unit_to_dimension_no_recurse(unit: &str) -> Option<SIDimension> {
+        if let Some(d) = Self::base_unit_to_dimension(unit) {
+            return Some(d);
+        }
+        Self::derived_unit_to_dimension(unit)
+    }
+
+    /// 导出单位 → SI 基本量纲合成(N/J/W/Pa/Hz/C/V/Ω/F;Ω 亦接受 ohm)
+    fn derived_unit_to_dimension(unit: &str) -> Option<SIDimension> {
+        match unit.trim() {
+            "N" => Some(SIDimension::FORCE),
+            "J" => Some(SIDimension::ENERGY),
+            "W" => Some(SIDimension::POWER),
+            "Pa" => Some(SIDimension::PRESSURE),
+            "Hz" => Some(SIDimension::TIME.power(-1)),
+            "C" => Some(SIDimension::CURRENT.multiply(&SIDimension::TIME)),
+            "V" => Some(
+                SIDimension::ENERGY
+                    .divide(&SIDimension::CURRENT)
+                    .divide(&SIDimension::TIME),
+            ),
+            "Ω" | "ohm" => Some(
+                SIDimension::ENERGY
+                    .divide(&SIDimension::CURRENT)
+                    .divide(&SIDimension::TIME)
+                    .divide(&SIDimension::CURRENT),
+            ),
+            "F" => Some(
+                SIDimension::CURRENT.multiply(&SIDimension::TIME).divide(
+                    &SIDimension::ENERGY
+                        .divide(&SIDimension::CURRENT)
+                        .divide(&SIDimension::TIME),
+                ),
+            ),
+            // 无量纲 1 可作复合分子(如 1/s)
+            "1" => Some(SIDimension::DIMENSIONLESS),
+            _ => None,
         }
     }
 
@@ -1237,5 +1279,45 @@ mod tests {
         let v = SIDimension::FORCE.to_vector();
         assert_eq!(v, [1, 1, -2, 0, 0, 0, 0]);
         assert_eq!(SIDimension::from_vector(v), SIDimension::FORCE);
+    }
+    #[test]
+    fn test_compound_with_derived_units() {
+        // 导出单位可入复合式(此前只认基本单位,N·m/N*m/J/m^3 全部解析失败)
+        assert_eq!(SIDimension::from_si_unit("N·m"), Some(SIDimension::ENERGY));
+        assert_eq!(SIDimension::from_si_unit("N*m"), Some(SIDimension::ENERGY));
+        // J/m³(能量密度)与 Pa(压强)同量纲 L⁻¹MT⁻²
+        assert_eq!(
+            SIDimension::from_si_unit("J/m^3"),
+            SIDimension::from_si_unit("Pa")
+        );
+        // W/A 即 V;V/A 即 Ω;C/V 即 F
+        assert_eq!(
+            SIDimension::from_si_unit("W/A"),
+            SIDimension::from_si_unit("V")
+        );
+        assert_eq!(
+            SIDimension::from_si_unit("V/A"),
+            SIDimension::from_si_unit("Ω")
+        );
+        assert_eq!(
+            SIDimension::from_si_unit("C/V"),
+            SIDimension::from_si_unit("F")
+        );
+        // 无量纲分子 1/s 即 Hz(s⁻¹)
+        assert_eq!(
+            SIDimension::from_si_unit("1/s"),
+            SIDimension::from_si_unit("Hz")
+        );
+        // 幂记法与 Unicode 上标等价
+        assert_eq!(
+            SIDimension::from_si_unit("m/s^2"),
+            SIDimension::from_si_unit("m/s²")
+        );
+        assert_eq!(
+            SIDimension::from_si_unit("s^-1"),
+            SIDimension::from_si_unit("s⁻¹")
+        );
+        // SI 词头仍不支持(量纲面):明确失败而非静默误解
+        assert_eq!(SIDimension::from_si_unit("km/h"), None);
     }
 }
