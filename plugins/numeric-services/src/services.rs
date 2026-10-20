@@ -847,6 +847,58 @@ mod tests {
     }
 
     #[test]
+    fn dim_eval_bare_fractional_power_unit_not_squared() {
+        // 裸分数幂单位:9.8 m/s^2 应为 9.8 与加速度量纲——此前词法器把
+        // m/s^2 切成 Unit("m/s")+^+2,幂作用到「值×单位」整体得 96.04 m²/s²
+        let out = DimEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("9.8 m/s^2")),
+                ("scale", JsonValue::Integer(4)),
+                ("rounding", JsonValue::string("half_even")),
+            ]))
+            .expect("应成功");
+        assert_eq!(field(&out, "numerator"), "49");
+        assert_eq!(field(&out, "denominator"), "5");
+        let dim = match out.get("dimension") {
+            Some(JsonValue::Array(a)) => a.clone(),
+            _ => panic!("dimension 应为数组"),
+        };
+        assert_eq!(dim[0], JsonValue::Integer(1), "长度幂次应为 1(非 2)");
+        assert_eq!(dim[2], JsonValue::Integer(-2), "时间幂次应为 -2(非 -4)");
+    }
+
+    #[test]
+    fn dim_eval_gravity_times_time() {
+        // 演示黄金例:9.8 m/s^2 × 2 s = 19.6 m/s
+        let out = DimEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("9.8 m/s^2 * 2 s")),
+                ("scale", JsonValue::Integer(2)),
+                ("rounding", JsonValue::string("half_even")),
+            ]))
+            .expect("应成功");
+        assert_eq!(field(&out, "si_string"), "m / s");
+        assert_eq!(field(&out, "numerator"), "98");
+        assert_eq!(field(&out, "denominator"), "5");
+    }
+
+    #[test]
+    fn dim_eval_negative_caret_exponent() {
+        // 负幂记法:9.8 m/s^2 × 2 s^-1 = 19.6 m/s³(负幂正确并入单位;
+        // 服务要求结果带量纲,无量纲算式按设计走 numeric_decimal_eval)
+        let out = DimEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("9.8 m/s^2 * 2 s^-1")),
+                ("scale", JsonValue::Integer(2)),
+                ("rounding", JsonValue::string("half_even")),
+            ]))
+            .expect("应成功");
+        assert_eq!(field(&out, "si_string"), "m / s³");
+        assert_eq!(field(&out, "numerator"), "98");
+        assert_eq!(field(&out, "denominator"), "5");
+    }
+
+    #[test]
     fn dim_eval_incompatible_addition_fails() {
         let err = DimEvalService
             .execute(&args(&[
