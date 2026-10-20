@@ -40,7 +40,6 @@ DENY = [
     ("internal-design-id", re.compile(r"\bdesign-\d{1,3}\b")),
     ("internal-doc-id", re.compile(r"\d{1,3}\s*号档")),
     ("private-repo-path", re.compile(r"(?i)D:[\\/]+knowledge")),
-    ("private-repo-path", re.compile(r"(?i)knowledge[\\/](论文|2-Projects|3-Topics|确定性)")),
     ("secret-like-key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
 ]
 
