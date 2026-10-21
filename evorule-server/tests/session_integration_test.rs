@@ -843,7 +843,10 @@ async fn test_audit_archive_replay_after_close_and_restart() {
 
     // 关闭前在线链头（同一链的两条产出路径之一：内存 Auditor 增量）
     let (_, live_audit) = send(&state, "GET", &format!("/api/sessions/{sid}/audit"), None).await;
-    let live_last_hash = live_audit["last_hash"].as_str().expect("在线审计报告含 last_hash").to_string();
+    let live_last_hash = live_audit["last_hash"]
+        .as_str()
+        .expect("在线审计报告含 last_hash")
+        .to_string();
 
     let (status, _) = send(&state, "DELETE", &format!("/api/sessions/{sid}"), None).await;
     assert_eq!(status, axum::http::StatusCode::OK, "会话应正常关闭");
@@ -915,7 +918,9 @@ async fn test_audit_archive_replay_after_close_and_restart() {
     // 链头一致性：archive 重建（WAL 重算路径）必须与关闭前在线 Auditor 链头相等
     // （同一链的独立双产出路径互证——跨重启衔接锚定）
     assert_eq!(
-        audit["last_hash"].as_str().expect("archive 审计含 last_hash"),
+        audit["last_hash"]
+            .as_str()
+            .expect("archive 审计含 last_hash"),
         live_last_hash,
         "archive 重建链头与关闭前在线链头不一致（跨面断链）"
     );
