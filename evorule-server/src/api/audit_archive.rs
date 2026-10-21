@@ -201,6 +201,12 @@ fn build_meta(session_id: u64, records: &[WalRecord], wal_bytes: u64) -> Archive
 /// 返回 (entries, last_chain_hash, verified, unhashed_records)。
 /// 验证：每条重算 `blake3(prev_hash + content_hash)` 与 WAL 存储 chain_hash 比对；
 /// 任一不匹配 → verified=false（疑似篡改/损坏，如实上报）。
+///
+/// # 验证口径（与在线恢复面有意区分）
+/// 本函数为**尽力全报**：失配置 verified=false 后继续扫完全链
+/// （服务全景报告）；在线恢复面（evorule-governance
+/// `Auditor::load_from_tier1_wal`）为 **fast-fail** 定位首错。两口径均为
+/// 设计使然，非缺陷；修改任一侧前先核对另一侧语义。
 fn rebuild_chain(records: &[WalRecord]) -> (Vec<ArchiveAuditEntry>, String, bool, usize) {
     let mut entries = Vec::with_capacity(records.len());
     let mut prev_hash = String::from("genesis");
@@ -520,10 +526,11 @@ mod tests {
         std::fs::write(&path, &tampered).unwrap();
 
         let audit = read_archive_audit(&dir, 3, false).unwrap();
-        // 内容被改 → content_hash 重算不一致或解析出不同事实 → 链必须不通过
-        if audit["fact_count"].as_u64().unwrap() == 2 {
-            assert_eq!(audit["verified"], false, "篡改后验证必须失败");
-        }
+        // 篡改样本刻意保持 JSON 结构合法（"increment" 同长度字节替换为 "incXment"）：
+        // 本测试检验的是哈希链检出路径（content_hash 重算失配），而非 JSON 解析失败
+        // 路径——结构未破坏，fact_count 必为 2，verified 必须为 false。
+        assert_eq!(audit["fact_count"], 2, "同长度字节替换不得破坏 JSON 结构");
+        assert_eq!(audit["verified"], false, "篡改后哈希链验证必须失败");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
