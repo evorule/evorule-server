@@ -120,3 +120,4 @@ plugins/ai-plugin/config.json
 
 # 运营登记册（本地私有面，不上库）
 plan/
+target-si/
