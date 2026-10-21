@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 EvoRule Project
 # ai-plugin 脚本级 e2e（回归验证 DoD-①② + 回归验证 P1-c 工具回路全链）：
 # 真实 evorule-server + 真实 ai-plugin 进程 + mock LLM。
@@ -71,13 +71,14 @@ try {
     # ---------- 2. ai-plugin 配置 + 启动 ----------
     $pluginCfg = Join-Path $Tmp "ai-plugin.json"
     @{
-        listen_addr      = "127.0.0.1:9130"
-        server_base_url  = $ServerUrl
-        llm_endpoint     = "http://127.0.0.1:$MockLlmPort/v1"
-        llm_api_key      = "e2e-mock-key"
-        llm_model        = "e2e-model"
-        llm_temperature  = 0.2
-        llm_timeout_ms   = 30000
+        listen_addr         = "127.0.0.1:9130"
+        server_base_url     = $ServerUrl
+        llm_endpoint        = "http://127.0.0.1:$MockLlmPort/v1"
+        llm_api_key         = "e2e-mock-key"
+        llm_model           = "e2e-model"
+        llm_temperature     = 0.2
+        llm_timeout_ms      = 30000
+        web_search_provider = "brave"
     } | ConvertTo-Json | ForEach-Object { Write-Utf8NoBom $pluginCfg $_ }
     $pluginProc = Start-Process -FilePath $PluginExe -ArgumentList @("--config", $pluginCfg) -PassThru -WindowStyle Hidden
 
@@ -132,6 +133,18 @@ try {
     Assert-True ($factJson -match "executor") "审计链含 executor 通道协调位"
     Assert-True ($factJson -match "e2e mock reply") "审计链含 io_response 结果全文"
     Assert-True ($factJson -match "IoRequest") "审计链含 IoRequest 事实"
+
+    # ---------- 6.5 web_search 中继 fail-visible（批K 段2: 配 provider 不配 key → 500 自诊断） ----------
+    # 环境刻意不配 Brave key：端点可达但凭据缺失，验证 fail-visible 自诊断
+    # （错误体含 "Brave" 归因与环境变量名指引）。curl.exe 取错误体（PS5.1 quirk 同步骤 7）。
+    $wsBodyFile = Join-Path $Tmp "ws-body.json"
+    Write-Utf8NoBom $wsBodyFile '{"query":"e2e probe"}'
+    $wsOut = Join-Path $Tmp "ws-out.txt"
+    $wsStatus = & curl.exe -s -o $wsOut -w "%{response_code}" -X POST -H "Content-Type: application/json" --data "@$wsBodyFile" "http://127.0.0.1:9130/tools/web_search"
+    $wsErr = if (Test-Path $wsOut) { Get-Content $wsOut -Raw -Encoding UTF8 } else { "" }
+    Assert-True ($wsStatus -eq 500) "web_search 未配 key → 500 自诊断（fail-visible）"
+    Assert-True ($wsErr -match "Brave") "自诊断消息含 Brave 归因"
+    Assert-True ($wsErr -match "EVORULE_AI_PLUGIN_BRAVE_API_KEY") "自诊断消息含环境变量名指引"
 } catch {
     Write-Host "  [FAIL] e2e 执行异常: $($_.Exception.Message)"
     $Failures.Add("e2e 执行异常") | Out-Null

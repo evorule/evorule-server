@@ -104,6 +104,26 @@ impl std::error::Error for PluginError {}
 /// LLM 凭据环境变量名（推荐注入方式：凭据不落盘；优先于配置文件值）。
 pub const LLM_API_KEY_ENV: &str = "EVORULE_AI_PLUGIN_LLM_API_KEY";
 
+/// Brave Search API 凭据环境变量名（批K 段2；推荐注入方式：凭据不落盘，
+/// 优先于配置文件值 `brave_api_key`）。
+pub const BRAVE_API_KEY_ENV: &str = "EVORULE_AI_PLUGIN_BRAVE_API_KEY";
+
+/// Brave Search API v1 web search 端点（代码级固定——出站目标不受配置
+/// 控制，无 SSRF 面；provider 扩位时新端点随枚举分支演进）
+pub const BRAVE_SEARCH_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
+
+/// web_search 中继缺省结果条数
+pub const WEB_SEARCH_DEFAULT_COUNT: u64 = 5;
+
+/// web_search 中继结果条数帽（代码级常量，配置不可调）
+pub const WEB_SEARCH_MAX_COUNT: u64 = 10;
+
+/// web_search 出站请求总超时（秒）
+pub const WEB_SEARCH_TIMEOUT_SECS: u64 = 15;
+
+/// web_search 出站连接超时（秒）
+pub const WEB_SEARCH_CONNECT_TIMEOUT_SECS: u64 = 5;
+
 /// LLM 凭据实际生效来源（日志/自诊断只记来源，不记凭据内容）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmApiKeySource {
@@ -152,6 +172,14 @@ pub struct PluginConfig {
     /// 本机其他进程无令牌即 401；None = 不鉴权，dev 兼容形态）。
     /// 来源：env `EVORULE_AI_PLUGIN_CALLER_TOKEN` > 配置 `caller_token`。
     pub caller_token: Option<String>,
+    /// web_search 中继 provider（批K 段2；None = /tools/web_search 未启用，
+    /// 请求显式 500 自诊断）。代码级枚举白名单：现仅 "brave"（provider
+    /// 扩位——新 provider 加枚举分支，端点/鉴权形态随分支演进）。
+    pub web_search_provider: Option<String>,
+    /// Brave Search API 订阅令牌（env `EVORULE_AI_PLUGIN_BRAVE_API_KEY` >
+    /// 配置 `brave_api_key`；None = /tools/web_search 显式 500 自诊断，
+    /// fail-visible 不静默）。凭据纪律同 llm_api_key：不进日志/错误消息。
+    pub brave_api_key: Option<String>,
 }
 
 fn require_str(v: &Value, key: &str) -> Result<String, PluginError> {
@@ -200,6 +228,11 @@ impl std::fmt::Debug for PluginConfig {
             .field(
                 "caller_token",
                 &self.caller_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("web_search_provider", &self.web_search_provider)
+            .field(
+                "brave_api_key",
+                &self.brave_api_key.as_ref().map(|_| "[REDACTED]"),
             )
             .finish()
     }
@@ -347,6 +380,20 @@ impl PluginConfig {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .or_else(|| optional_str(v, "caller_token"));
+        // web_search 中继配置（批K 段2）：provider 代码级枚举白名单（现仅
+        // brave，未知值 fail-fast）；key env 优先 > 配置文件（凭据不落盘推荐）。
+        let web_search_provider = optional_str(v, "web_search_provider");
+        if let Some(p) = &web_search_provider {
+            if p != "brave" {
+                return Err(PluginError::Config(format!(
+                    "字段 'web_search_provider' 非法: '{p}'（代码级 provider 白名单: brave）"
+                )));
+            }
+        }
+        let brave_api_key = env(BRAVE_API_KEY_ENV)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| optional_str(v, "brave_api_key"));
         Ok(Self {
             listen_addr: listen_addr.to_string(),
             server_base_url,
@@ -361,6 +408,8 @@ impl PluginConfig {
             llm_execute_url,
             model_allowlist_path,
             caller_token,
+            web_search_provider,
+            brave_api_key,
         })
     }
 
@@ -729,7 +778,8 @@ pub fn sanitize_for_prompt(text: &str) -> (String, usize) {
         let mut start = 0usize;
         while start + pat_chars.len() <= chars.len() {
             let matched = (0..pat_chars.len()).all(|k| {
-                chars[start + k].to_ascii_lowercase() == pat_chars[k].to_ascii_lowercase()
+                // clippy 1.99 manual_ignore_case_cmp 顺手修（批K 段2）
+                chars[start + k].eq_ignore_ascii_case(&pat_chars[k])
             });
             if matched {
                 spans.push((start, start + pat_chars.len()));
@@ -859,6 +909,147 @@ pub async fn execute_tool(
     resp.json()
         .await
         .map_err(|e| format!("工具 GET {path} 响应 JSON 解析失败: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// web_search 中继（批K 段2）：POST /tools/web_search 出站搜索通路
+//
+// 职责单一：evo-agent 侧 WebSearchTool → 本插件端点 → Brave Search API v1。
+// key 仅本插件侧持有（evo-agent 进程零密钥）；凭据纪律同 llm_api_key：
+// 不进日志/错误消息/URL。fail-visible：未启用/未配 key 显式自诊断（端点
+// 映射 500），上游失败归因透传（502），绝不静默兜底。
+// ---------------------------------------------------------------------------
+
+/// web_search 中继错误分类（HTTP 映射由 main.rs 端点分派：
+/// [`WebSearchError::NotReady`]→500 / [`WebSearchError::Upstream`]→502）
+#[derive(Debug)]
+pub enum WebSearchError {
+    /// 服务未就绪：未启用（provider 未配置）或凭据缺失——部署自诊断项
+    NotReady(String),
+    /// 上游（Brave）请求失败——归因透传
+    Upstream(String),
+}
+
+impl fmt::Display for WebSearchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WebSearchError::NotReady(m) => write!(f, "{m}"),
+            WebSearchError::Upstream(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::error::Error for WebSearchError {}
+
+/// web_search 中继入口：provider 分派（代码级枚举白名单，现仅 brave；
+/// 未知值配置期已 fail-fast，此处兜底防御）。
+pub async fn web_search_relay(
+    cfg: &PluginConfig,
+    query: &str,
+    count: u64,
+) -> Result<Value, WebSearchError> {
+    match cfg.web_search_provider.as_deref() {
+        None => Err(WebSearchError::NotReady(
+            "web_search 未启用: 配置键 web_search_provider 未填写（自诊断指引: \
+             ai-plugin.json 填 \"web_search_provider\": \"brave\" 并配置 Brave API key）"
+                .to_string(),
+        )),
+        Some("brave") => {
+            let key = cfg.brave_api_key.as_deref().ok_or_else(|| {
+                WebSearchError::NotReady(format!(
+                    "Brave API key 未配置（自诊断指引: 推荐设环境变量 {BRAVE_API_KEY_ENV}，\
+                     凭据不落盘; 或在 ai-plugin.json 填 brave_api_key）"
+                ))
+            })?;
+            brave_web_search(BRAVE_SEARCH_ENDPOINT, key, query, count)
+                .await
+                .map_err(WebSearchError::Upstream)
+        }
+        Some(other) => Err(WebSearchError::NotReady(format!(
+            "web_search provider '{other}' 无实现分支（代码级白名单: brave; \
+             配置校验应已拦截，属插件缺陷）"
+        ))),
+    }
+}
+
+/// Brave Search API v1 web search 出站（GET `q`/`count` + `X-Subscription-Token`）。
+///
+/// 独立 client：重定向不跟随（P0-1 纪律，同 [`build_http_client`]）+ 总
+/// 15s/连接 5s 超时（搜索是交互面短请求，不随 LLM 长窗）；端点为代码级
+/// 常量（出站目标不受配置控制，无 SSRF 面）。
+async fn brave_web_search(
+    endpoint: &str,
+    key: &str,
+    query: &str,
+    count: u64,
+) -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(WEB_SEARCH_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(WEB_SEARCH_CONNECT_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
+    // 先绑定再进 query 数组（临时值不得跨 await 持借用）
+    let count_str = count.to_string();
+    let resp = client
+        .get(endpoint)
+        .query(&[("q", query), ("count", count_str.as_str())])
+        .header("X-Subscription-Token", key)
+        .send()
+        .await
+        .map_err(|e| format!("Brave 请求失败: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(200).collect();
+        let kind = match status.as_u16() {
+            401 => "鉴权失败(API key 无效)",
+            429 => "限流(429)",
+            _ => "上游错误",
+        };
+        return Err(format!("Brave HTTP {status}({kind}): {snippet}"));
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Brave 响应 JSON 解析失败: {e}"))?;
+    normalize_brave_response(&body, query, count)
+}
+
+/// Brave 响应归一（纯函数）：`{web:{results:[{title,url,description}]}}` →
+/// `{status, provider, query, result_count, results:[{title,url,description}]}`。
+///
+/// 缺 `web` 节点 = 零结果（Brave 无命中的正常形态，非错误）；条目缺 url
+/// 字段 = 形态异常 fail-visible（宁可显式报错，绝不静默丢结果）；title/
+/// description 缺省按空串归一。截取前 `count` 条（调用方已钳帽）。
+fn normalize_brave_response(body: &Value, query: &str, count: u64) -> Result<Value, String> {
+    let raw = body
+        .get("web")
+        .and_then(|w| w.get("results"))
+        .and_then(Value::as_array);
+    let mut results = Vec::new();
+    if let Some(items) = raw {
+        for item in items.iter().take(count as usize) {
+            let url = item
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Brave 响应结果缺 url 字段（形态异常，fail-visible）".to_string())?;
+            let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+            let description = item
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            results.push(json!({ "title": title, "url": url, "description": description }));
+        }
+    }
+    let result_count = results.len();
+    Ok(json!({
+        "status": "ok",
+        "provider": "brave",
+        "query": query,
+        "result_count": result_count,
+        "results": results,
+    }))
 }
 
 /// LLM 调用 —— 本 crate 唯一 LLM 路径。
@@ -1675,6 +1866,9 @@ async fn run_loop(
 
 /// 提交一轮 call_external 命令（LLM 轮；prompt 全文随 messages 入链）。
 /// `tool_round` 为已执行工具命令数（0=首轮），作审计可读位随命令入链。
+// clippy 1.99 too_many_arguments 豁免（批K 段2 顺手登记）：提交上下文七元组
+// 均为独立语义位，拆 struct 反增一层无谓间接——审计面直读性优先。
+#[allow(clippy::too_many_arguments)]
 async fn submit_llm_command(
     http: &reqwest::Client,
     base: &str,
@@ -1711,6 +1905,8 @@ async fn submit_llm_command(
 /// 谓词放行外部订阅者，内置 IoSubscriber 不抢答）。白名单校验在工具
 /// IoRequest 分支的 [`execute_tool`] 内做：尝试命令先入链，拒绝以错误
 /// io_response 入链（可审计的显式拒绝）。
+// clippy 1.99 too_many_arguments 豁免（批K 段2 顺手登记，理由同 submit_llm_command）
+#[allow(clippy::too_many_arguments)]
 async fn submit_tool_command(
     http: &reqwest::Client,
     base: &str,
@@ -1885,6 +2081,173 @@ mod tests {
         )
         .unwrap();
         assert!(cfg2.server_auth_token.is_none());
+    }
+
+    // ---------- web_search 中继（批K 段2） ----------
+
+    #[test]
+    fn config_web_search_provider_and_key() {
+        // 非法 provider fail-fast（代码级枚举白名单）
+        let err = PluginConfig::from_json_str(
+            r#"{"server_base_url":"http://x","llm_endpoint":"http://y","llm_api_key":"k",
+                "llm_model":"m","web_search_provider":"google"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("web_search_provider"), "{err}");
+        // 合法 brave；key env 优先于配置文件（含 trim）
+        let v = json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_api_key":"k","llm_model":"m","web_search_provider":"brave",
+            "brave_api_key":"file-key"});
+        let cfg = PluginConfig::from_value_with_env(&v, &|name| {
+            if name == BRAVE_API_KEY_ENV {
+                Some("  env-key  ".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(cfg.web_search_provider.as_deref(), Some("brave"));
+        assert_eq!(cfg.brave_api_key.as_deref(), Some("env-key"));
+        // env 缺省回落配置文件
+        let cfg2 = PluginConfig::from_value_with_env(&v, &|_| None).unwrap();
+        assert_eq!(cfg2.brave_api_key.as_deref(), Some("file-key"));
+        // 凭据纪律：Debug 脱敏
+        assert!(!format!("{cfg:?}").contains("env-key"));
+        assert!(!format!("{cfg:?}").contains("file-key"));
+    }
+
+    #[test]
+    fn web_search_normalize_shapes() {
+        // happy：字段归一 + title/description 缺省空串
+        let body = json!({"web": {"results": [
+            {"title": "t1", "url": "https://a/1", "description": "d1"},
+            {"title": "t2", "url": "https://a/2"},
+        ]}});
+        let out = normalize_brave_response(&body, "rust async", 5).unwrap();
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["provider"], "brave");
+        assert_eq!(out["query"], "rust async");
+        assert_eq!(out["result_count"], 2);
+        assert_eq!(out["results"][1]["description"], "");
+        // 缺 web 节点 = 零结果（Brave 无命中正常形态，非错误）
+        let out = normalize_brave_response(&json!({}), "q", 5).unwrap();
+        assert_eq!(out["result_count"], 0);
+        assert_eq!(out["results"].as_array().unwrap().len(), 0);
+        // 条目缺 url 字段 = 形态异常 fail-visible
+        let body = json!({"web": {"results": [{"title": "x"}]}});
+        assert!(normalize_brave_response(&body, "q", 5)
+            .unwrap_err()
+            .contains("url"));
+    }
+
+    /// 构造带/不带 web_search 配置的 PluginConfig（relay 自诊断测试用）
+    fn ws_cfg(provider: Option<&str>, key: Option<&str>) -> PluginConfig {
+        let mut v = json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_api_key":"k","llm_model":"m"});
+        if let Some(p) = provider {
+            v["web_search_provider"] = json!(p);
+        }
+        if let Some(k) = key {
+            v["brave_api_key"] = json!(k);
+        }
+        PluginConfig::from_value_with_env(&v, &|_| None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn web_search_relay_not_ready_self_diagnosis() {
+        // 未启用：provider 未配置 → NotReady + 显式指引
+        let err = web_search_relay(&ws_cfg(None, None), "q", 5)
+            .await
+            .unwrap_err();
+        match err {
+            WebSearchError::NotReady(m) => assert!(m.contains("web_search 未启用"), "{m}"),
+            other => panic!("应为 NotReady, 实为 {other:?}"),
+        }
+        // 启用但未配 key → NotReady + 提及环境变量名
+        let err = web_search_relay(&ws_cfg(Some("brave"), None), "q", 5)
+            .await
+            .unwrap_err();
+        match err {
+            WebSearchError::NotReady(m) => assert!(m.contains(BRAVE_API_KEY_ENV), "{m}"),
+            other => panic!("应为 NotReady, 实为 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn brave_web_search_happy_and_request_shape() {
+        // axum `query` feature 未启用（不为测试加 feature）→ RawQuery 手解
+        use axum::extract::RawQuery;
+        let seen = Arc::new(Mutex::new(None::<Value>));
+        let seen_h = seen.clone();
+        let app = Router::new().route(
+            "/res/v1/web/search",
+            get(
+                move |RawQuery(rq): RawQuery, headers: axum::http::HeaderMap| {
+                    let seen_h = seen_h.clone();
+                    async move {
+                        let qs = rq.unwrap_or_default();
+                        let getp = |key: &str| {
+                            qs.split('&').find_map(|kv| {
+                                let (k, v) = kv.split_once('=')?;
+                                (k == key).then(|| v.to_string())
+                            })
+                        };
+                        *seen_h.lock().unwrap() = Some(json!({
+                            "q": getp("q"),
+                            "count": getp("count"),
+                            "token": headers
+                                .get("X-Subscription-Token")
+                                .and_then(|v| v.to_str().ok()),
+                        }));
+                        Json(json!({"web": {"results": [
+                            {"title": "t1", "url": "https://a.example/1", "description": "d1"},
+                            {"title": "t2", "url": "https://a.example/2", "description": "d2"},
+                            {"title": "t3", "url": "https://a.example/3", "description": "d3"},
+                        ]}}))
+                    }
+                },
+            ),
+        );
+        let addr = spawn_app(app).await;
+        let out = brave_web_search(
+            &format!("http://{addr}/res/v1/web/search"),
+            "brave-key-1",
+            "rust",
+            2,
+        )
+        .await
+        .unwrap();
+        // 请求形态：q/count 进 query string，key 进订阅头（不进 URL）
+        let req = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(req["q"], "rust");
+        assert_eq!(req["count"], "2");
+        assert_eq!(req["token"], "brave-key-1");
+        // 归一：截取前 count 条
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["provider"], "brave");
+        assert_eq!(out["query"], "rust");
+        assert_eq!(out["result_count"], 2);
+        assert_eq!(out["results"].as_array().unwrap().len(), 2);
+        assert_eq!(out["results"][0]["url"], "https://a.example/1");
+    }
+
+    #[tokio::test]
+    async fn brave_web_search_http_401_surfaced() {
+        let app = Router::new().route(
+            "/res/v1/web/search",
+            get(|| async { (axum::http::StatusCode::UNAUTHORIZED, "invalid token") }),
+        );
+        let addr = spawn_app(app).await;
+        let err = brave_web_search(
+            &format!("http://{addr}/res/v1/web/search"),
+            "bad-key",
+            "q",
+            5,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("401"), "{err}");
+        assert!(err.contains("鉴权失败"), "{err}");
     }
 
     // ---------- 请求体解析 ----------
