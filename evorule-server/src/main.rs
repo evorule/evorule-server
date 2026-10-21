@@ -1062,6 +1062,13 @@ struct ExternalPluginManifest {
     /// 把策略表未覆盖的增量按默认策略合入注册表（sensitive=false + 启动日志明示）。
     #[serde(default)]
     auto_discover: bool,
+    /// 契约 v1.3 MINOR 增补：可选调用方令牌。声明后 server 对该包全部服务
+    /// 调用（含 auto_discover 发现 GET）携带 `Authorization: Bearer <token>`；
+    /// sidecar 侧逐请求校验对齐（如 codegraph-bridge CODEGRAPH_BRIDGE_TOKEN）。
+    /// 取值支持 `${ENV_NAME}` 环境变量引用（缺失 fail-fast 拒载，防静默空
+    /// token）；其余按字面值处理。缺省 None = 不携带（存量零迁移，现行为不变）。
+    #[serde(default)]
+    auth_token: Option<String>,
     services: Vec<ExternalServiceDecl>,
 }
 
@@ -1137,7 +1144,7 @@ fn base_url_is_loopback(base_url: &str) -> bool {
 /// "services": [非空字符串, ...]}`。只认 `services` 字符串数组；缺失 /
 /// 元素类型错 / 空名 = 拉取失败（显式 Err，由调用方 error 告警后跳过增量合入，
 /// 不崩 server）。顺序保持 + 去重（同一实载名重复自报按一条算）。
-async fn fetch_host_services(base_url: &str) -> Result<Vec<String>, String> {
+async fn fetch_host_services(base_url: &str, auth: Option<&str>) -> Result<Vec<String>, String> {
     let url = format!("{}/services", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(
@@ -1148,10 +1155,14 @@ async fn fetch_host_services(base_url: &str) -> Result<Vec<String>, String> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("HTTP 客户端构建失败: {e}"))?;
-    let resp =
-        client.get(&url).send().await.map_err(|e| {
-            format!("GET {url} 失败: {e}（host 未启动？启动顺序须先 host 后 server）")
-        })?;
+    let mut req = client.get(&url);
+    if let Some(token) = auth {
+        req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("GET {url} 失败: {e}（host 未启动？启动顺序须先 host 后 server）"))?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("GET {url} 返回 HTTP {status}"));
@@ -1184,8 +1195,9 @@ async fn fetch_host_services(base_url: &str) -> Result<Vec<String>, String> {
 /// `load_external_plugins` 是同步装载链（十余处单测直调，启动期仅此一跳），
 /// 刻意不改 async——以临时线程 + current_thread runtime 执行一次 GET，
 /// channel 回收结果。仅对 `auto_discover: true` 的插件触发，启动期成本可忽略。
-fn fetch_host_services_blocking(base_url: &str) -> Result<Vec<String>, String> {
+fn fetch_host_services_blocking(base_url: &str, auth: Option<&str>) -> Result<Vec<String>, String> {
     let url = base_url.trim_end_matches('/').to_string();
+    let auth = auth.map(str::to_string);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("auto-discover-fetch".to_string())
@@ -1194,7 +1206,7 @@ fn fetch_host_services_blocking(base_url: &str) -> Result<Vec<String>, String> {
                 .enable_all()
                 .build()
             {
-                Ok(rt) => rt.block_on(fetch_host_services(&url)),
+                Ok(rt) => rt.block_on(fetch_host_services(&url, auth.as_deref())),
                 Err(e) => Err(format!("临时 runtime 构建失败: {e}")),
             };
             let _ = tx.send(result);
@@ -1202,6 +1214,31 @@ fn fetch_host_services_blocking(base_url: &str) -> Result<Vec<String>, String> {
         .map_err(|e| format!("自动发现线程启动失败: {e}"))?;
     rx.recv()
         .map_err(|e| format!("自动发现线程异常退出: {e}"))?
+}
+
+/// 解析外部插件包 `auth_token` 声明（契约 v1.3）。
+///
+/// `${ENV_NAME}` 形式引用环境变量——env 未设置即 fail-fast 拒载（防静默
+/// 空 token 使鉴权形同虚设）；其余值按字面 token 处理。空串一律拒绝
+/// （空 Bearer 与不携带语义混浊，声明了就该给真值）。
+fn resolve_auth_token(raw: &str, id: &str, rel: &str) -> Result<String, String> {
+    if let Some(env_name) = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+        if env_name.is_empty() {
+            return Err(format!(
+                "外部插件包 {id} auth_token 环境变量引用名为空（{rel}）"
+            ));
+        }
+        return std::env::var(env_name).map_err(|_| {
+            format!(
+                "外部插件包 {id} auth_token 引用的环境变量 {env_name} 未设置 — \
+                 鉴权声明不完整拒载（{rel};请设置该环境变量或移除 auth_token 声明）"
+            )
+        });
+    }
+    if raw.trim().is_empty() {
+        return Err(format!("外部插件包 {id} auth_token 为空串（{rel}）"));
+    }
+    Ok(raw.to_string())
 }
 
 /// 装载外部插件包：读各 plugin.json → 校验 → 派生路由条目合入服务注册表
@@ -1288,6 +1325,12 @@ fn load_external_plugins(
                 pj.display()
             )
         })?;
+        // 契约 v1.3 MINOR 增补：可选 auth_token —— 缺省 None = 不携带（存量零
+        // 迁移）；声明即解析（env 引用缺失/空值 fail-fast）并注入全部服务调用头
+        let auth_header: Option<String> = match &m.auth_token {
+            None => None,
+            Some(raw) => Some(resolve_auth_token(raw, id, rel)?),
+        };
         if m.id != *id {
             return Err(format!(
                 "外部插件包 id 漂移: 清单条目键 '{id}' 与 plugin.json 声明 id '{}' 不一致（{rel}）",
@@ -1332,6 +1375,10 @@ fn load_external_plugins(
             let url = format!("{}/services/{}", m.base_url.trim_end_matches('/'), s.name);
             let mut headers = std::collections::BTreeMap::new();
             headers.insert("X-Source".to_string(), "evorule-server".to_string());
+            // 契约 v1.3：auth_token 声明后全部服务调用携带 Bearer（sidecar 逐请求校验）
+            if let Some(t) = &auth_header {
+                headers.insert("Authorization".to_string(), format!("Bearer {t}"));
+            }
             // 契约 v1.2：可选 timeout_ms —— 非正 fail-fast；超上限钳制（warn 留痕，
             // 不静默：钳制值可从启动日志对账）。缺省 5000 与既有行为一致。
             let timeout_ms = match s.timeout_ms {
@@ -1392,7 +1439,7 @@ fn load_external_plugins(
                     declared.len()
                 );
             } else {
-                match fetch_host_services_blocking(&m.base_url) {
+                match fetch_host_services_blocking(&m.base_url, auth_header.as_deref()) {
                     Ok(names) => {
                         for n in names {
                             // 策略表已覆盖 → 保留显式策略（F2：sensitive 覆盖不被自动化吞掉）
@@ -1410,6 +1457,10 @@ fn load_external_plugins(
                                 format!("{}/services/{}", m.base_url.trim_end_matches('/'), n);
                             let mut headers = std::collections::BTreeMap::new();
                             headers.insert("X-Source".to_string(), "evorule-server".to_string());
+                            // 契约 v1.3：auth_token 同样覆盖自动发现增量（调用面统一）
+                            if let Some(t) = &auth_header {
+                                headers.insert("Authorization".to_string(), format!("Bearer {t}"));
+                            }
                             registry.insert(
                                 n.clone(),
                                 evorule_io_handlers::ServiceEntry {
@@ -1901,6 +1952,15 @@ fn count_nonempty_session_wals(wal_dir: &std::path::Path) -> usize {
         .unwrap_or(0)
 }
 
+/// 启动期 WAL 校验失败处置开关（env）：默认仅告警保护取证现场；
+/// 置 EVORULE_WAL_VERIFY_FAIL_CLOSED=1 时校验失败拒绝启动（生产可选硬姿态）
+fn wal_verify_fail_closed_enabled() -> bool {
+    std::env::var("EVORULE_WAL_VERIFY_FAIL_CLOSED")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
 #[tokio::main]
 // 主函数集成所有子命令 + 启动流程, 268 行是当前架构必要。详见 GATE_REFERENCE.md §六(豁免索引)
 #[allow(clippy::too_many_lines)]
@@ -2345,14 +2405,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Ok(orphans) => {
                             warn!(
-                                "共享事实账本启动校验发现不可归因孤立 fact：{:?}（现场保留，不拒绝启动）",
+                                "共享事实账本启动校验发现不可归因孤立 fact：{:?}（默认现场保留）",
                                 orphans
                             );
                             set_wal_verify_shared_facts(WAL_VERIFY_FAILED);
+                            if wal_verify_fail_closed_enabled() {
+                                return Err("shared facts WAL verify failed (orphan facts); EVORULE_WAL_VERIFY_FAIL_CLOSED=1".into());
+                            }
                         }
                         Err(e) => {
-                            warn!("共享事实账本启动校验未完成：{e}（现场保留，不拒绝启动）");
+                            warn!("共享事实账本启动校验未完成：{e}（默认现场保留）");
                             set_wal_verify_shared_facts(WAL_VERIFY_FAILED);
+                            if wal_verify_fail_closed_enabled() {
+                                return Err(format!("shared facts WAL verify failed: {e}; EVORULE_WAL_VERIFY_FAIL_CLOSED=1").into());
+                            }
                         }
                     }
                 }
@@ -2666,8 +2732,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("反应器审计链启动校验通过：全链重算一致");
             set_wal_verify_reactor(WAL_VERIFY_OK);
         } else {
-            warn!("反应器审计链启动校验失败：哈希链断裂或内容被篡改（现场保留，不拒绝启动）");
+            warn!("反应器审计链启动校验失败：哈希链断裂或内容被篡改（默认现场保留）");
             set_wal_verify_reactor(WAL_VERIFY_FAILED);
+            if wal_verify_fail_closed_enabled() {
+                return Err(
+                    "reactor audit chain verify failed; EVORULE_WAL_VERIFY_FAIL_CLOSED=1".into(),
+                );
+            }
         }
     }
     let api = GovernanceApi::new(tx.clone(), facts_log, auditor);
@@ -3392,6 +3463,146 @@ mod tests {
                     .unwrap_err();
             assert!(err.contains("contract_version"), "got: {err}");
             assert!(err.contains("MAJOR 不符"), "got: {err}");
+        }
+
+        // 契约 v1.3（auth_token）：字面值声明 → 服务条目携带 Bearer 头
+        #[test]
+        fn auth_token_literal_injects_bearer_header() {
+            let dir = TempDir::new().unwrap();
+            let json = r#"{
+                "id": "finance-config", "version": "0.1.0", "contract_version": "1.3",
+                "auth_token": "secret-literal",
+                "base_url": "http://127.0.0.1:9110",
+                "services": [{"name": "finance_config_get", "sensitive": false, "description": "读"}]
+            }"#;
+            write_file(dir.path(), "plugin.json", json);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false).unwrap();
+            let entry = registry
+                .get("finance_config_get")
+                .expect("服务条目应已注册");
+            assert_eq!(
+                entry.headers.get("Authorization").map(String::as_str),
+                Some("Bearer secret-literal"),
+                "auth_token 字面值必须以 Bearer 头注入"
+            );
+            assert_eq!(
+                entry.headers.get("X-Source").map(String::as_str),
+                Some("evorule-server")
+            );
+        }
+
+        // 契约 v1.3：${ENV} 引用解析 + env 缺失 fail-fast
+        #[test]
+        fn auth_token_env_ref_resolved_and_missing_fails_fast() {
+            let dir = TempDir::new().unwrap();
+            let env_name = "EVORULE_TEST_PLUGIN_AUTH_TOKEN_V13";
+            let json_tpl = |env_expr: &str| {
+                format!(
+                    r#"{{
+                        "id": "finance-config", "version": "0.1.0", "contract_version": "1.3",
+                        "auth_token": "{env_expr}",
+                        "base_url": "http://127.0.0.1:9110",
+                        "services": [{{"name": "finance_config_get", "sensitive": false, "description": "读"}}]
+                    }}"#
+                )
+            };
+            // env 已设置 → 解析注入
+            std::env::set_var(env_name, "from-env-token");
+            write_file(
+                dir.path(),
+                "plugin.json",
+                &json_tpl(&format!("${{{env_name}}}")),
+            );
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false).unwrap();
+            assert_eq!(
+                registry
+                    .get("finance_config_get")
+                    .unwrap()
+                    .headers
+                    .get("Authorization")
+                    .map(String::as_str),
+                Some("Bearer from-env-token"),
+                "${{ENV}} 引用必须解析为 env 值"
+            );
+            // env 缺失 → fail-fast（引用名唯一,不与并行测试互扰）
+            let dir2 = TempDir::new().unwrap();
+            std::env::remove_var(env_name);
+            write_file(
+                dir2.path(),
+                "plugin.json",
+                &json_tpl(&format!("${{{env_name}}}")),
+            );
+            let manifest2 = write_file(
+                dir2.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry2 = ServiceRegistry::empty();
+            let err =
+                load_external_plugins(Some(&manifest2), &mut registry2, &builtin_names(), false)
+                    .unwrap_err();
+            assert!(err.contains("auth_token"), "got: {err}");
+            assert!(err.contains("未设置"), "got: {err}");
+        }
+
+        // 契约 v1.3：缺省不声明 = 无 Authorization 头（存量零迁移,现行为不变）
+        #[test]
+        fn no_auth_token_keeps_headers_unchanged() {
+            let dir = TempDir::new().unwrap();
+            write_file(dir.path(), "plugin.json", PLUGIN_JSON_OK);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false).unwrap();
+            let entry = registry
+                .get("finance_config_get")
+                .expect("服务条目应已注册");
+            assert!(
+                !entry.headers.contains_key("Authorization"),
+                "未声明 auth_token 不得注入 Authorization 头（缺省不变式）"
+            );
+        }
+
+        // 契约 v1.3：${EMPTY}（空引用名）与空串字面值均 fail-fast
+        #[test]
+        fn auth_token_empty_variants_rejected() {
+            for bad in ["${}", "   "] {
+                let dir = TempDir::new().unwrap();
+                let json = format!(
+                    r#"{{
+                        "id": "finance-config", "version": "0.1.0", "contract_version": "1.3",
+                        "auth_token": "{bad}",
+                        "base_url": "http://127.0.0.1:9110",
+                        "services": [{{"name": "finance_config_get", "sensitive": false, "description": "读"}}]
+                    }}"#
+                );
+                write_file(dir.path(), "plugin.json", &json);
+                let manifest = write_file(
+                    dir.path(),
+                    "plugin_manifest.json",
+                    r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+                );
+                let mut registry = ServiceRegistry::empty();
+                let err =
+                    load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                        .unwrap_err();
+                assert!(err.contains("auth_token"), "bad={bad:?} got: {err}");
+            }
         }
 
         // 批次A（P1-10 折叠撞名）: 两个 id 折叠后映射到同一
