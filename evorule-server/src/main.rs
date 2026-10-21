@@ -1952,6 +1952,12 @@ fn count_nonempty_session_wals(wal_dir: &std::path::Path) -> usize {
         .unwrap_or(0)
 }
 
+/// 启动期 WAL 校验失败处置开关（env）：默认仅告警保护取证现场；
+/// 置 EVORULE_WAL_VERIFY_FAIL_CLOSED=1 时校验失败拒绝启动（生产可选硬姿态）
+fn wal_verify_fail_closed_enabled() -> bool {
+    std::env::var("EVORULE_WAL_VERIFY_FAIL_CLOSED").ok().as_deref() == Some("1")
+}
+
 #[tokio::main]
 // 主函数集成所有子命令 + 启动流程, 268 行是当前架构必要。详见 GATE_REFERENCE.md §六(豁免索引)
 #[allow(clippy::too_many_lines)]
@@ -2396,14 +2402,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Ok(orphans) => {
                             warn!(
-                                "共享事实账本启动校验发现不可归因孤立 fact：{:?}（现场保留，不拒绝启动）",
+                                "共享事实账本启动校验发现不可归因孤立 fact：{:?}（默认现场保留）",
                                 orphans
                             );
                             set_wal_verify_shared_facts(WAL_VERIFY_FAILED);
+                            if wal_verify_fail_closed_enabled() {
+                                return Err("shared facts WAL verify failed (orphan facts); EVORULE_WAL_VERIFY_FAIL_CLOSED=1".into());
+                            }
                         }
                         Err(e) => {
-                            warn!("共享事实账本启动校验未完成：{e}（现场保留，不拒绝启动）");
+                            warn!("共享事实账本启动校验未完成：{e}（默认现场保留）");
                             set_wal_verify_shared_facts(WAL_VERIFY_FAILED);
+                            if wal_verify_fail_closed_enabled() {
+                                return Err(format!("shared facts WAL verify failed: {e}; EVORULE_WAL_VERIFY_FAIL_CLOSED=1").into());
+                            }
                         }
                     }
                 }
@@ -2717,8 +2729,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("反应器审计链启动校验通过：全链重算一致");
             set_wal_verify_reactor(WAL_VERIFY_OK);
         } else {
-            warn!("反应器审计链启动校验失败：哈希链断裂或内容被篡改（现场保留，不拒绝启动）");
+            warn!("反应器审计链启动校验失败：哈希链断裂或内容被篡改（默认现场保留）");
             set_wal_verify_reactor(WAL_VERIFY_FAILED);
+            if wal_verify_fail_closed_enabled() {
+                return Err("reactor audit chain verify failed; EVORULE_WAL_VERIFY_FAIL_CLOSED=1".into());
+            }
         }
     }
     let api = GovernanceApi::new(tx.clone(), facts_log, auditor);

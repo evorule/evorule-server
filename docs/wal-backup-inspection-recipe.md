@@ -110,6 +110,27 @@ checkpoint 后对 `wal_dir` 全量拷贝：
 | `/api/health` `wal.verify` = `failed` | 高 | 立即停写、保全现场、人工核查 |
 | `verify` 长期为 `skipped` | 低 | 补开 `--verify-wal-on-start` |
 
+## 2.4 定时巡检（审计链哨兵）
+
+`evorule scan-wal-dir`（内核仓 CLI）定时扫描 wal_dir：每次运行先做黄金向量自检（验证器自身忠实），再逐文件全链重算，并与上轮基线比对（前缀锚定：纯追加 vs 历史被改后重算精确区分）。
+
+退出码：`0` 全绿/正常追加/首跑 ｜ `2` 工具自检失败（尺子坏，结论不可信）｜ `3` 链破坏（含整链重算攻击）｜ `4` 文件消失｜ `5` 半行/损坏（用 `evorule truncate-partial-line <file> --confirm` 受控恢复，备份 .partial.bak）。
+
+调度样例（每小时，退出码非零即告警，衔接 §2.3 口径）：
+
+```bash
+# Linux cron：
+0 * * * * evorule scan-wal-dir /var/lib/evorule/wal     --baseline /var/lib/evorule/sentinel/baseline.json     --sentinel-log /var/lib/evorule/sentinel/log.txt     --json /var/lib/evorule/sentinel/last.json || alert-high
+```
+
+```powershell
+# Windows 计划任务（每小时）：
+schtasks /Create /TN "evorule-audit-sentinel" /SC HOURLY /TR `
+  "evorule.exe scan-wal-dir D:\evorule-data\wal --baseline D:\evorule-data\sentinelaseline.json --sentinel-log D:\evorule-data\sentinel\log.txt"
+```
+
+哨兵基线/日志建议放独立目录（与 WAL 同保护不同卷）；诚实边界：本地哨兵可被磁盘写攻击者清除，对抗级锚定仍属 ed25519 锚点链——两者互补不互替。
+
 ## 3. 磁盘满应对
 
 症状链（阈值机制，SSOT=WAL 写入连续失败终止阈值 3）：
