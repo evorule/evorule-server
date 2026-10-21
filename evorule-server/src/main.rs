@@ -1955,7 +1955,10 @@ fn count_nonempty_session_wals(wal_dir: &std::path::Path) -> usize {
 /// 启动期 WAL 校验失败处置开关（env）：默认仅告警保护取证现场；
 /// 置 EVORULE_WAL_VERIFY_FAIL_CLOSED=1 时校验失败拒绝启动（生产可选硬姿态）
 fn wal_verify_fail_closed_enabled() -> bool {
-    std::env::var("EVORULE_WAL_VERIFY_FAIL_CLOSED").ok().as_deref() == Some("1")
+    std::env::var("EVORULE_WAL_VERIFY_FAIL_CLOSED")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 #[tokio::main]
@@ -2732,7 +2735,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             warn!("反应器审计链启动校验失败：哈希链断裂或内容被篡改（默认现场保留）");
             set_wal_verify_reactor(WAL_VERIFY_FAILED);
             if wal_verify_fail_closed_enabled() {
-                return Err("reactor audit chain verify failed; EVORULE_WAL_VERIFY_FAIL_CLOSED=1".into());
+                return Err(
+                    "reactor audit chain verify failed; EVORULE_WAL_VERIFY_FAIL_CLOSED=1".into(),
+                );
             }
         }
     }
