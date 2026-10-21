@@ -74,7 +74,8 @@ fn golden_fact_hash_matches_kernel_ssot() {
     for (i, fact) in golden_facts().iter().enumerate() {
         let h = fact_hash(fact).unwrap();
         assert_eq!(
-            h, KERNEL_SNAPSHOT[i],
+            h,
+            KERNEL_SNAPSHOT[i],
             "第 {} 条标准事实哈希与内核 SSOT 快照不一致——跨仓实现漂移（本仓产出的审计链\
              将与内核工具不互证）。若内核快照有意变更，须同批同步本常量",
             i + 1
