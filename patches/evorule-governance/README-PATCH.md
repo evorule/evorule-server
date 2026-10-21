@@ -27,3 +27,12 @@
 
 主仓发布 ≥0.8.6 且含同形 API → 删 server 仓 `[patch.crates-io]` 中
 `evorule-governance` 行 + 本目录，依赖回纯 version，`cargo update` 验证一致。
+
+## 基线升级记录（2026-10-21，A-2 核对单首战）
+
+**evorule-governance：基线升级至内核 main `0a4d592`（批 H）**
+- 同步面：`shared_facts_log.rs`（recover 前置链三查+共享账本 ed25519 锚点链[载荷含 metadata 摘要]+锚点持久化入 metadata）、`auditor.rs`（import_compressed 解压限额+口径 doc）
+- **重放 server 专属改动**：`rotate_wal`（干预原语 wal.force_rotate 通路——server checkpoint 端点消费）
+- 测试门：patch workspace 234/0（--features persistence）；主 workspace 1608/0
+- 哈希等价：跨仓黄金断言（主仓 tests/golden_hash_cross_repo.rs）持续在役
+- 触发依据：批 H 为行为级变更（recover 语义+WAL 锚定）——不升级则跨仓链不互证窗口期开启

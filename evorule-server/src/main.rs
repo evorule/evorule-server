@@ -2388,7 +2388,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_facts = if let Some(wal_dir) = &cfg.wal_dir {
         let shared_wal = wal_dir.join("shared_facts.wal");
         let shared_meta = wal_dir.join("shared_facts_meta.json");
-        match SharedFactsLog::recover(&shared_wal, &shared_meta) {
+        // 批 H：共享账本锚点（同 EVORULE_ANCHOR_SEED 体系——一密钥护三账本；
+        // 未配置 seed=锚点关，行为不变）
+        let shared_anchor = evorule_server::anchor_setup::anchor_config_from_env();
+        match SharedFactsLog::recover(&shared_wal, &shared_meta).map(|log| {
+            if let Some(cfg) = &shared_anchor {
+                log.with_anchor(
+                    evorule_governance::signing::AuditSigner::from_bytes(cfg.signer_seed),
+                    cfg.key_id.clone(),
+                    cfg.engine_id.clone(),
+                    256,
+                );
+            }
+            log
+        }) {
             Ok(log) => {
                 info!(
                     "共享事实 WAL 已恢复：{}（metadata: {}）",

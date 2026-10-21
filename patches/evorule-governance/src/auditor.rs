@@ -865,6 +865,13 @@ impl Auditor {
     /// - [`LoadError::ContentHashMismatch`]：Fact 内容被篡改（content_hash 不匹配）
     /// - [`LoadError::ChainBroken`]：哈希链断裂（prev_hash 链接不正确）
     /// - [`LoadError::ChainHashMismatch`]：链哈希不匹配（chain_hash 被篡改）
+    ///
+    /// # 验证口径（与档案面有意区分）
+    /// 本函数为 **fast-fail**：首个失配即返回带定位的错误——服务于在线恢复
+    /// 场景（快速定位首错）。历史会话档案回看面（evorule-server
+    /// `api::audit_archive::rebuild_chain`）为**尽力全报**：置 `verified=false`
+    /// 后继续扫完全链，服务于全景报告。两口径均为设计使然，非缺陷；
+    /// 修改任一侧前先核对另一侧语义。
     // 106 行: tier1 WAL 加载 + 链式哈希验证 + mount 必须单函数原子语义
     // 拆函数会让 hash chain 验证状态在 step 间传递时丢失 early-return 信号
     #[allow(clippy::too_many_lines)]
@@ -1234,11 +1241,21 @@ impl Auditor {
         use flate2::read::GzDecoder;
         use std::io::Read;
 
-        let mut decoder = GzDecoder::new(compressed);
+        // 解压限额：gzip 压缩比可达 1000:1+，无界读入会 OOM（压缩炸弹）；
+        // 审计链导出物的合理规模远低于此上限
+        const MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+
+        let decoder = GzDecoder::new(compressed);
         let mut decompressed = String::new();
-        decoder
+        let read = decoder
+            .take(MAX_DECOMPRESSED_BYTES + 1)
             .read_to_string(&mut decompressed)
             .map_err(|e| format!("Decompression error: {}", e))?;
+        if read as u64 > MAX_DECOMPRESSED_BYTES {
+            return Err(format!(
+                "Decompressed audit export exceeds {MAX_DECOMPRESSED_BYTES} bytes limit (possible compressed bomb)"
+            ));
+        }
 
         self.import(&decompressed)
     }
