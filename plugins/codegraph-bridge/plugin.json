@@ -1,8 +1,8 @@
 {
   "id": "codegraph-bridge",
-  "contract_version": "1.2",
-  "version": "0.1.0",
-  "description": "CodeGraph 代码知识图谱 sidecar：封装 @colbymchenry/codegraph，按 projectPath 服务任意本机已初始化仓库。全部只读查询（sensitive=false），projectPath 为绝对路径。首次使用某仓库前先调 codegraph_ensure_index。",
+  "contract_version": "1.3",
+  "version": "0.2.0",
+  "description": "CodeGraph 代码知识图谱 sidecar：封装 @colbymchenry/codegraph，按 projectPath 服务任意本机已初始化仓库。全部只读查询（sensitive=false），projectPath 为绝对路径。首次使用某仓库前先调 codegraph_ensure_index。可选鉴权（契约 v1.3）：设置 env CODEGRAPH_BRIDGE_TOKEN 武装 sidecar 逐请求 Bearer 校验，并在本清单加 \"auth_token\": \"${CODEGRAPH_BRIDGE_TOKEN}\" 使 server 调用自动携带——两者齐备前行为不变。",
   "base_url": "http://127.0.0.1:9150",
   "services": [
     {
