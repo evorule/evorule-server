@@ -19,12 +19,20 @@
 //!        → 200 agent LlmResponse 同构四键 {content, tool_calls, finish_reason, token_usage}
 //!        → 500 { "error": "..." }  扩展执行体未配置/白名单物料未就绪（fail-closed）
 //!        → 502 { "error": "..." }  provider 失败 / 模型不在准入白名单（网络入口执法）
+//!   POST /tools/web_search（批K 段2 web_search 中继；evo-agent 进程零密钥）
+//!        body: { "query": "...", "count"?: n }   （count 缺省 5、代码级帽 10）
+//!        → 200 { status:"ok", provider, query, result_count, results:[{title,url,description}] }
+//!        → 400 { "error": "..." }  请求体非法
+//!        → 500 { "error": "..." }  未启用/Brave key 未配置（fail-visible 自诊断）
+//!        → 502 { "error": "..." }  Brave 上游失败（归因透传）
 //!   GET  /health      存活探针
 //!
 //! 红线：本进程内 LLM 出站仅两条受管辖路径——①call_external 审计回路内的
 //! `call_llm`（sidecar IoRequest 分支专用，见 lib.rs）；②扩展执行体
 //! `call_llm_ext`（POST /llm/execute，模型白名单网络入口执法，prompt 已由
-//! agent 侧命令事实先行入链）。其余任何直连禁止；凭据不进日志/错误消息。
+//! agent 侧命令事实先行入链）。非 LLM 出站仅 web_search 中继一条
+//! （POST /tools/web_search → Brave Search API，key 仅本插件侧持有）；其余
+//! 任何直连禁止；凭据（llm_api_key/brave_api_key）不进日志/错误消息。
 //!
 //! 配置：`ai-plugin.json`（--config 指定；缺省依次找 exe 同目录/工作目录）。
 //! 缺文件 fail-fast 自诊断退出——不静默、不带缺省凭据启动（清单缺省禁用，
@@ -39,7 +47,8 @@ use axum::routing::{get, post};
 use axum::Router;
 use evorule_ai_plugin::{
     build_http_client, build_llm_execute_client, call_llm_ext, load_model_allowlist_file,
-    run_audited_chat, ChatRequest, PluginConfig, PluginError,
+    run_audited_chat, web_search_relay, ChatRequest, PluginConfig, PluginError, WebSearchError,
+    WEB_SEARCH_DEFAULT_COUNT, WEB_SEARCH_MAX_COUNT,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -186,6 +195,7 @@ fn main() {
             .route("/services/ai_plugin_chat", post(ai_plugin_chat))
             .route("/llm/execute", post(llm_execute))
             .route("/llm/models", get(llm_models))
+            .route("/tools/web_search", post(web_search))
             .route("/health", get(health))
             .with_state(state);
         let listener = match tokio::net::TcpListener::bind(&listen_addr).await {
@@ -320,6 +330,74 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
         Some(set) => {
             let models: Vec<&String> = set.iter().collect();
             Json(json!({ "ready": true, "models": models })).into_response()
+        }
+    }
+}
+
+/// web_search 中继端点（批K 段2）：evo-agent WebSearchTool → Brave Search。
+/// 调用方令牌校验与 /llm/execute 同面一致（配置后启用；本机其他进程无令牌
+/// 即 401）。请求体非法 → 400；未启用/未配 key → 500 自诊断（fail-visible，
+/// 绝不静默）；Brave 上游失败 → 502 归因透传。key 不进日志/错误消息。
+async fn web_search(
+    State(st): State<PluginState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    // 调用方令牌校验（O 系安全登记同款：配置后启用）
+    if let Some(expected) = st.caller_token.as_deref() {
+        let present = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        if present != Some(&format!("Bearer {expected}")) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "caller token missing or mismatched" })),
+            )
+                .into_response();
+        }
+    }
+    // 请求体校验：query 非空字符串；count 缺省 5、正整数、代码级帽 10
+    let Some(query) = body
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "字段 'query' 须为非空字符串" })),
+        )
+            .into_response();
+    };
+    let count = match body.get("count") {
+        None | Some(Value::Null) => WEB_SEARCH_DEFAULT_COUNT,
+        Some(Value::Number(n)) => match n.as_u64() {
+            Some(c) if c >= 1 => c.min(WEB_SEARCH_MAX_COUNT),
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "字段 'count' 须为正整数" })),
+                )
+                    .into_response()
+            }
+        },
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "字段 'count' 须为正整数" })),
+            )
+                .into_response()
+        }
+    };
+    match web_search_relay(&st.cfg, query, count).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => {
+            tracing::warn!("tools/web_search 失败: {e}");
+            let status = match &e {
+                WebSearchError::NotReady(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                WebSearchError::Upstream(_) => StatusCode::BAD_GATEWAY,
+            };
+            (status, Json(json!({ "error": e.to_string() }))).into_response()
         }
     }
 }
@@ -459,5 +537,136 @@ mod tests {
         );
         let resp = llm_models(State(st), headers).await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ---------- web_search 中继端点（批K 段2） ----------
+
+    /// 构造带/不带 web_search 配置的 PluginState（env 闭包恒 None——测试
+    /// 不受宿主环境变量影响；allowlist 恒 None，web_search 不消费它）
+    fn ws_state(
+        provider: Option<&str>,
+        key: Option<&str>,
+        caller_token: Option<String>,
+    ) -> PluginState {
+        let mut cfg = json!({
+            "listen_addr": "127.0.0.1:0",
+            "server_base_url": "http://127.0.0.1:18080",
+            "llm_endpoint": "https://example.invalid/v1",
+            "llm_api_key": "unused-in-test",
+            "llm_model": "test-model",
+            "tools_enabled": []
+        });
+        if let Some(p) = provider {
+            cfg["web_search_provider"] = json!(p);
+        }
+        if let Some(k) = key {
+            cfg["brave_api_key"] = json!(k);
+        }
+        let cfg =
+            PluginConfig::from_value_with_env(&cfg, &|_| None).expect("test config must parse");
+        PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(reqwest::Client::new()),
+            allowlist: Arc::new(None),
+            caller_token,
+        }
+    }
+
+    #[tokio::test]
+    async fn web_search_requires_caller_token_when_configured() {
+        // 无令牌 → 401（同 /llm/execute 面）
+        let st = ws_state(Some("brave"), Some("k"), Some("secret-token".into()));
+        let resp = web_search(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({"query": "q"})),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // 令牌正确 → 通过校验进入业务面（provider 未配置 → 500 自诊断，
+        // 不触网；同时验证令牌形态）
+        let st = ws_state(None, None, Some("secret-token".into()));
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer secret-token"),
+        );
+        let resp = web_search(State(st), headers, Json(json!({"query": "q"}))).await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn web_search_not_ready_self_diagnosis() {
+        // 未启用（provider 未配置）→ 500 + 显式指引
+        let st = ws_state(None, None, None);
+        let resp = web_search(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({"query": "q"})),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let v = body_json(resp).await;
+        assert!(
+            v["error"]
+                .as_str()
+                .is_some_and(|s| s.contains("web_search 未启用")),
+            "{v}"
+        );
+        // 启用但未配 key → 500 + 提及环境变量名
+        let st = ws_state(Some("brave"), None, None);
+        let resp = web_search(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({"query": "q"})),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let v = body_json(resp).await;
+        assert!(
+            v["error"]
+                .as_str()
+                .is_some_and(|s| s.contains("EVORULE_AI_PLUGIN_BRAVE_API_KEY")),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_search_rejects_bad_body() {
+        // query 缺失 / 空白 → 400
+        for bad in [json!({}), json!({"query": "   "})] {
+            let st = ws_state(Some("brave"), Some("k"), None);
+            let resp = web_search(State(st), axum::http::HeaderMap::new(), Json(bad)).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            let v = body_json(resp).await;
+            assert!(
+                v["error"].as_str().is_some_and(|s| s.contains("query")),
+                "{v}"
+            );
+        }
+        // count 非法（0 / 非数字）→ 400
+        for bad in [
+            json!({"query": "q", "count": 0}),
+            json!({"query": "q", "count": "x"}),
+        ] {
+            let st = ws_state(Some("brave"), Some("k"), None);
+            let resp = web_search(State(st), axum::http::HeaderMap::new(), Json(bad)).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            let v = body_json(resp).await;
+            assert!(
+                v["error"].as_str().is_some_and(|s| s.contains("count")),
+                "{v}"
+            );
+        }
+        // count 超帽 → 静默钳制进业务面（未启用配置下表现为 500 自诊断，非 400）
+        let st = ws_state(None, None, None);
+        let resp = web_search(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({"query": "q", "count": 99})),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
