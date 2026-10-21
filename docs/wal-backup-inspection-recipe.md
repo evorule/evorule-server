@@ -131,6 +131,27 @@ schtasks /Create /TN "evorule-audit-sentinel" /SC HOURLY /TR `
 
 哨兵基线/日志建议放独立目录（与 WAL 同保护不同卷）；诚实边界：本地哨兵可被磁盘写攻击者清除，对抗级锚定仍属 ed25519 锚点链——两者互补不互替。
 
+### 2.5 生产锚点启用（发布前必项）
+
+审计链的第三层（防整链重算）依赖 ed25519 锚点链，**默认关闭**（兼容判据）——生产发布前必须启用：
+
+```bash
+# 1) 一次性密钥生成（evorule CLI，离线操作；种子不落盘不入库）
+evorule anchor-keygen --output /secure/anchor.seed   # 64 hex
+evorule anchor-pubkey /secure/anchor.seed            # 公钥分发验证方
+
+# 2) server 环境变量（密钥仅进程内存）
+EVORULE_ANCHOR_SEED=<64hex>          # 必填：启用锚点链
+EVORULE_ANCHOR_INTERVAL=64           # 每 64 条事实封一锚（默认）
+# EVORULE_ANCHOR_KEY_ID / ENGINE_ID 按部署定制
+
+# 3) 发布核查（双门已固化于 scripts/prepackage_checks.ps1之外，本项为人工确认项）
+#   □ 启动日志含 "审计锚点链已启用（G-A2）"
+#   □ GET /api/sessions/{id}/anchors 非空且 evorule verify-anchors 验签通过
+```
+
+**三层贯通**：启用后会话审计链（含 evo-agent 经 `__journal__.anchor` 锚入的 journal 链尾）均受签名锚保护——磁盘写攻击者整链重算也无法通过锚点验签。
+
 ## 3. 磁盘满应对
 
 症状链（阈值机制，SSOT=WAL 写入连续失败终止阈值 3）：
