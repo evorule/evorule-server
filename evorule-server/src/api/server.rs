@@ -12865,14 +12865,29 @@ pub async fn invoke_service_handler(
                     )),
                 };
             }
-            let class = classify_upstream_error(&e);
-            tracing::warn!("REST invoke 服务直调失败: service={name} detail={e}");
-            Err((
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": format!("服务调用失败: {class}（详情见服务端日志）")
-                })),
-            ))
+            // 网络类签名（超时/连接）→ 502 脱敏（原文可携带上游 URL/端口）;
+            // 其余为服务自身校验错误——原生服务的错误串按设计约定即"自诊断
+            // 指引"（作者态、确定性、无内网细节），400 原文回传给调用方，
+            // 不再把可自修复的入参错误伪装成网关故障。
+            if upstream_network_error(&e) {
+                let class = classify_upstream_error(&e);
+                tracing::warn!("REST invoke 服务直调失败(网络类): service={name} detail={e}");
+                Err((
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": format!("服务调用失败: {class}（详情见服务端日志）")
+                    })),
+                ))
+            } else {
+                tracing::warn!("REST invoke 服务直调失败(服务校验): service={name} detail={e}");
+                Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": e.to_string(),
+                        "error_kind": "service_validation"
+                    })),
+                ))
+            }
         }
     }
 }
@@ -12907,6 +12922,20 @@ fn classify_upstream_error(e: &str) -> &'static str {
     } else {
         "上游请求失败"
     }
+}
+
+/// 网络/传输类错误签名判定（与 classify_upstream_error 前两支同源）:
+/// 命中 → 上游故障（502 脱敏）;未命中 → 服务自身校验错误（400 原文）。
+fn upstream_network_error(e: &str) -> bool {
+    let lower = e.to_ascii_lowercase();
+    lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("deadline")
+        || lower.contains("dns lookup failed")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("connect")
+        || lower.contains("error sending request")
 }
 
 /// approver 强制注入判定（纯逻辑,单测锁定）:
