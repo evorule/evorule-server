@@ -539,6 +539,70 @@ impl NativeService for UnitConvertService {
     }
 }
 
+/// 单位字面量数值换算(km→1000、h→3600;复合单位按分子/分母/幂次组合)。
+/// 与 inference dimension 解析结构同构镜像:整词表 → SI 词头 → 复合
+/// ( '/' 分层,'·'/'*' 乘积,'^'与 Unicode 上标幂次,剥外层括号)。
+/// 未知原子返回 1(量纲层在同点已先行拦截,不会走到)。
+fn unit_scale_factor(unit: &str) -> BigRational {
+    use evorule_inference_services::dimension as dim;
+
+    fn pow10_r(exp: i32) -> BigRational {
+        if exp >= 0 {
+            BigRational::from_integer(crate::numcore::pow10(exp as u32))
+        } else {
+            BigRational::new(1.into(), crate::numcore::pow10((-exp) as u32))
+        }
+    }
+
+    fn atomic(u: &str) -> BigRational {
+        if dim::SIDimension::known_unit_pub(u) {
+            if let Some(n) = dim::non_si_time_scale(u) {
+                return BigRational::from_integer(n.into());
+            }
+            return BigRational::one();
+        }
+        if let Some((p, rest)) = dim::split_si_prefix(u) {
+            let base = pow10_r(dim::si_prefix_exponent(p).unwrap_or(0));
+            return base * atomic(rest);
+        }
+        BigRational::one()
+    }
+
+    // 乘积段:与 parse_product 同构(· 优先于 * 判定,token 带幂次)
+    fn part(expr: &str) -> BigRational {
+        let expr = expr.trim().trim_start_matches('(').trim_end_matches(')');
+        let tokens: Vec<&str> = if expr.contains('·') {
+            expr.split('·').collect()
+        } else if expr.contains('*') {
+            expr.split('*').collect()
+        } else {
+            vec![expr]
+        };
+        let mut acc = BigRational::one();
+        for t in tokens {
+            let t = t.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if let Some((base, e)) = dim::SIDimension::parse_unit_with_exponent(t) {
+                acc *= atomic(&base).pow(e);
+            }
+        }
+        acc
+    }
+
+    let segs: Vec<&str> = unit.trim().split('/').collect();
+    let mut r = part(segs[0]);
+    for d in &segs[1..] {
+        let p = part(d);
+        if p.is_zero() {
+            return BigRational::one();
+        }
+        r /= p;
+    }
+    r
+}
+
 // ============================================================================
 // 服务 8：量纲感知表达式求值（量纲原语复用 inference 家族）
 // ============================================================================
@@ -550,7 +614,7 @@ impl NativeService for DimEvalService {
         let expr = req_str(args, "expr")?;
         let scale = req_scale(args)?;
         let rounding = req_rounding(args)?;
-        let val = crate::numcore::eval_expr(
+        let val = crate::numcore::eval_expr_with_unit_scale(
             expr,
             ExprDialect {
                 decimal_literals: true,
@@ -562,6 +626,7 @@ impl NativeService for DimEvalService {
                 evorule_inference_services::dimension::SIDimension::from_si_unit(u)
                     .map(|d| d.to_vector())
             },
+            &unit_scale_factor,
         )
         .map_err(|e| format!("{e} (expr={expr})"))?;
         let dim = val.dim.ok_or_else(|| {
@@ -896,6 +961,66 @@ mod tests {
         assert_eq!(field(&out, "si_string"), "m / s³");
         assert_eq!(field(&out, "numerator"), "98");
         assert_eq!(field(&out, "denominator"), "5");
+    }
+
+    #[test]
+    fn dim_eval_si_prefix_scaling() {
+        // 词头数值换算:5 km + 3 m = 5003 m(此前 km 解析失败)
+        let out = DimEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("5 km + 3 m")),
+                ("scale", JsonValue::Integer(0)),
+                ("rounding", JsonValue::string("half_even")),
+            ]))
+            .expect("应成功");
+        assert_eq!(field(&out, "si_string"), "m");
+        assert_eq!(field(&out, "numerator"), "5003");
+        assert_eq!(field(&out, "denominator"), "1");
+    }
+
+    #[test]
+    fn dim_eval_kmh_classic() {
+        // 经典对照:90 km/h = 25 m/s(词头 10^3 / 非 SI 小时 3600)
+        let out = DimEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("90 km/h")),
+                ("scale", JsonValue::Integer(2)),
+                ("rounding", JsonValue::string("half_even")),
+            ]))
+            .expect("应成功");
+        assert_eq!(field(&out, "si_string"), "m / s");
+        assert_eq!(field(&out, "numerator"), "25");
+        assert_eq!(field(&out, "denominator"), "1");
+    }
+
+    #[test]
+    fn dim_eval_non_si_time_units() {
+        // 非 SI 时间换算:2 h + 30 min = 9000 s
+        let out = DimEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("2 h + 30 min")),
+                ("scale", JsonValue::Integer(0)),
+                ("rounding", JsonValue::string("half_even")),
+            ]))
+            .expect("应成功");
+        assert_eq!(field(&out, "si_string"), "s");
+        assert_eq!(field(&out, "numerator"), "9000");
+        assert_eq!(field(&out, "denominator"), "1");
+    }
+
+    #[test]
+    fn dim_eval_kn_mm_is_joule() {
+        // 词头复合:1 kN × 1 mm = 1 J(1000 × 10⁻³,量纲力×长度=能)
+        let out = DimEvalService
+            .execute(&args(&[
+                ("expr", JsonValue::string("1 kN * 1 mm")),
+                ("scale", JsonValue::Integer(6)),
+                ("rounding", JsonValue::string("half_even")),
+            ]))
+            .expect("应成功");
+        assert_eq!(field(&out, "si_string"), "kg·m² / s²");
+        assert_eq!(field(&out, "numerator"), "1");
+        assert_eq!(field(&out, "denominator"), "1");
     }
 
     #[test]

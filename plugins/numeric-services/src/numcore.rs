@@ -415,6 +415,8 @@ struct Parser<'a> {
     dialect: ExprDialect,
     vars_lookup: &'a dyn Fn(&str) -> Option<BigRational>,
     unit_lookup: &'a dyn Fn(&str) -> Option<[i32; 7]>,
+    /// 单位字面量数值换算(km→1000 等);恒为 1 表示不换算(非量纲方言)
+    unit_scale: &'a dyn Fn(&str) -> BigRational,
     depth: usize,
 }
 
@@ -672,9 +674,13 @@ impl<'a> Parser<'a> {
         match unit {
             None => Ok(Val { q, dim: None }),
             Some(u) => {
-                let lookup = self.unit_lookup;
-                let dim = lookup(&u).ok_or_else(|| format!("位置 {pos}: 未知单位 '{u}'"))?;
-                Ok(Val { q, dim: Some(dim) })
+                let dim =
+                    (self.unit_lookup)(&u).ok_or_else(|| format!("位置 {pos}: 未知单位 '{u}'"))?;
+                let scaled = q * (self.unit_scale)(&u);
+                Ok(Val {
+                    q: scaled,
+                    dim: Some(dim),
+                })
             }
         }
     }
@@ -698,6 +704,21 @@ pub fn eval_expr(
     vars_lookup: &dyn Fn(&str) -> Option<BigRational>,
     unit_lookup: &dyn Fn(&str) -> Option<[i32; 7]>,
 ) -> Result<Val, String> {
+    eval_expr_with_unit_scale(src, dialect, vars_lookup, unit_lookup, &|_| {
+        BigRational::one()
+    })
+}
+
+/// 带单位数值换算的求值入口:`unit_scale` 给出单位字面量的有理数换算因子
+/// (km→1000、h→3600、复合单位按分子/分母幂次组合)。单位量纲方言外的
+/// 调用方经 `eval_expr` 走恒 1 通道,行为不变。
+pub fn eval_expr_with_unit_scale(
+    src: &str,
+    dialect: ExprDialect,
+    vars_lookup: &dyn Fn(&str) -> Option<BigRational>,
+    unit_lookup: &dyn Fn(&str) -> Option<[i32; 7]>,
+    unit_scale: &dyn Fn(&str) -> BigRational,
+) -> Result<Val, String> {
     let toks = tokenize(src, dialect)?;
     if toks.is_empty() {
         return Err("空表达式 — 自诊断指引: 提供非空算式".to_string());
@@ -708,6 +729,7 @@ pub fn eval_expr(
         dialect,
         vars_lookup,
         unit_lookup,
+        unit_scale,
         depth: 0,
     };
     let v = p.expr()?;

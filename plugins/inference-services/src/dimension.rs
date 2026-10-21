@@ -46,6 +46,70 @@ pub struct SIDimension {
     pub luminosity: i32,
 }
 
+/// SI 词头(2022 扩展版 24 个;da 最长置首保最长匹配,其余单字符)
+const SI_PREFIXES: &[&str] = &[
+    "da", "Q", "R", "Y", "Z", "E", "P", "T", "G", "M", "k", "h", "d", "c", "m", "µ", "u", "n", "p",
+    "f", "a", "z", "y", "r", "q",
+];
+
+/// SI 词头 → 10 的幂指数(Q=30 … q=−30;µ/u 同为 −6)
+pub fn si_prefix_exponent(p: &str) -> Option<i32> {
+    Some(match p {
+        "Q" => 30,
+        "R" => 27,
+        "Y" => 24,
+        "Z" => 21,
+        "E" => 18,
+        "P" => 15,
+        "T" => 12,
+        "G" => 9,
+        "M" => 6,
+        "k" => 3,
+        "h" => 2,
+        "da" => 1,
+        "d" => -1,
+        "c" => -2,
+        "m" => -3,
+        "µ" | "u" => -6,
+        "n" => -9,
+        "p" => -12,
+        "f" => -15,
+        "a" => -18,
+        "z" => -21,
+        "y" => -24,
+        "r" => -27,
+        "q" => -30,
+        _ => return None,
+    })
+}
+
+/// 非 SI 常用时间单位的数值换算(相对 s):h=3600,min=60
+pub fn non_si_time_scale(u: &str) -> Option<i64> {
+    match u.trim() {
+        "h" => Some(3600),
+        "min" => Some(60),
+        _ => None,
+    }
+}
+
+/// SI 词头剥离:完整单位名先查已知表(整词优先,Pa/mol 不拆),再按
+/// 最长词头切分,要求剩余部分是已知单位。单一解释、确定性。
+/// 量纲解析(词头不改量纲)与数值换算(10^n)同源消费此切分。
+pub fn split_si_prefix(unit: &str) -> Option<(&'static str, &str)> {
+    let u = unit.trim();
+    if SIDimension::known_unit_pub(u) {
+        return None;
+    }
+    for p in SI_PREFIXES {
+        if let Some(rest) = u.strip_prefix(p) {
+            if !rest.is_empty() && SIDimension::known_unit_pub(rest) {
+                return Some((p, rest));
+            }
+        }
+    }
+    None
+}
+
 impl SIDimension {
     /// 无量纲
     pub const DIMENSIONLESS: SIDimension = SIDimension {
@@ -455,13 +519,38 @@ impl SIDimension {
         }
     }
 
-    /// 复合成员单位解析:先基本单位,再导出单位(不递归——导出单位以
-    /// SI 基本量纲常量合成,与 from_si_unit 顶层精确匹配表同一套定义)
+    /// 单位已知性判定(基本/导出/非 SI 时间;不含复合——复合在 parse_product 分层)
+    pub fn known_unit_pub(u: &str) -> bool {
+        Self::base_unit_to_dimension(u).is_some()
+            || Self::derived_unit_to_dimension(u).is_some()
+            || Self::non_si_time_to_dimension(u).is_some()
+    }
+
+    /// 复合成员单位解析:基本 → 导出 → 非 SI 常用时间 → SI 词头剥离。
+    /// (原"不递归"指不回调 from_si_unit;词头分支对更短的剩余串自递归,
+    ///  长度严格递减必然终止)
     fn unit_to_dimension_no_recurse(unit: &str) -> Option<SIDimension> {
         if let Some(d) = Self::base_unit_to_dimension(unit) {
             return Some(d);
         }
-        Self::derived_unit_to_dimension(unit)
+        if let Some(d) = Self::derived_unit_to_dimension(unit) {
+            return Some(d);
+        }
+        if let Some(d) = Self::non_si_time_to_dimension(unit) {
+            return Some(d);
+        }
+        if let Some((_prefix, rest)) = split_si_prefix(unit) {
+            return Self::unit_to_dimension_no_recurse(rest);
+        }
+        None
+    }
+
+    /// 非 SI 常用时间单位(量纲面):h/min 与 s 同量纲
+    fn non_si_time_to_dimension(unit: &str) -> Option<SIDimension> {
+        match unit.trim() {
+            "h" | "min" => Some(SIDimension::TIME),
+            _ => None,
+        }
     }
 
     /// 导出单位 → SI 基本量纲合成(N/J/W/Pa/Hz/C/V/Ω/F;Ω 亦接受 ohm)
@@ -493,6 +582,8 @@ impl SIDimension {
             ),
             // 无量纲 1 可作复合分子(如 1/s)
             "1" => Some(SIDimension::DIMENSIONLESS),
+            // 非 SI 常用时间单位(量纲面同 s)
+            "h" | "min" => Some(SIDimension::TIME),
             _ => None,
         }
     }
@@ -520,7 +611,7 @@ impl SIDimension {
     }
 
     /// 解析带幂次的单位（如 m² → (m, 2), s⁻² → (s, -2)）
-    fn parse_unit_with_exponent(s: &str) -> Option<(String, i32)> {
+    pub fn parse_unit_with_exponent(s: &str) -> Option<(String, i32)> {
         let s = s.trim();
 
         // Unicode 上标数字
@@ -1317,7 +1408,22 @@ mod tests {
             SIDimension::from_si_unit("s^-1"),
             SIDimension::from_si_unit("s⁻¹")
         );
-        // SI 词头仍不支持(量纲面):明确失败而非静默误解
-        assert_eq!(SIDimension::from_si_unit("km/h"), None);
+        // SI 词头(2022 扩展 24 个):量纲面词头不改量纲;km/h 与 m/s 同量纲
+        assert_eq!(
+            SIDimension::from_si_unit("km/h"),
+            SIDimension::from_si_unit("m/s")
+        );
+        assert_eq!(SIDimension::from_si_unit("kN"), Some(SIDimension::FORCE));
+        assert_eq!(SIDimension::from_si_unit("mm"), Some(SIDimension::LENGTH));
+        assert_eq!(SIDimension::from_si_unit("µs"), Some(SIDimension::TIME));
+        assert_eq!(SIDimension::from_si_unit("kJ"), Some(SIDimension::ENERGY));
+        // 非 SI 常用时间单位:h/min 与 s 同量纲(km/h 经典对照的前提)
+        assert_eq!(SIDimension::from_si_unit("h"), Some(SIDimension::TIME));
+        assert_eq!(SIDimension::from_si_unit("min"), Some(SIDimension::TIME));
+        // 整词优先不误拆:Pa 是单位不是 P+a;mol 不是 m+ol
+        assert_eq!(SIDimension::from_si_unit("Pa"), Some(SIDimension::PRESSURE));
+        assert_eq!(SIDimension::from_si_unit("mol"), Some(SIDimension::AMOUNT));
+        // 无效词头组合仍明确失败
+        assert_eq!(SIDimension::from_si_unit("qq"), None);
     }
 }
