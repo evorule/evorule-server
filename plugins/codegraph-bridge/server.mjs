@@ -17,6 +17,11 @@ const HOST = process.env.CODEGRAPH_BRIDGE_HOST || '127.0.0.1';
 const PORT = Number(process.env.CODEGRAPH_BRIDGE_PORT || 9150);
 const MAX_INSTANCES = 16;
 const MAX_OUTPUT = 15000;
+// 调用方令牌（对齐 ai-plugin caller_token 模式）：env 设置后 /services/* 逐
+// 请求校验 `Authorization: Bearer <token>`；未设置 = 不武装（现行为不变）。
+// server 侧契约 v1.3：plugin.json auth_token 声明后自动携带同名头。
+// /health 保持无鉴权（plugin_probe 探活契约）。
+const TOKEN = process.env.CODEGRAPH_BRIDGE_TOKEN || null;
 
 // Lazy-loaded (ESM default export)
 let CodeGraph = null;
@@ -49,11 +54,38 @@ function evictIfNeeded() {
   }
 }
 
+// ---- Index lock -----------------------------------------------------------
+// Per-project 索引重建互斥：ensure_index（init/indexAll/sync，数十秒级）全程
+// 持锁，读路径 getOrOpen 打开前等待同路径在途重建完成——防并发读命中半成品
+// 索引（readOnly 不损坏库,但会读到不完整符号集）。重建失败不阻塞后续读
+// （等待吞掉错误,打开时自然报真实故障）。
+const indexing = new Map(); // resolvedPath -> Promise
+
+async function waitForIndexing(resolved) {
+  const job = indexing.get(resolved);
+  if (job) {
+    try { await job; } catch {}
+  }
+}
+
+function withIndexLock(resolved, fn) {
+  const prev = indexing.get(resolved) || Promise.resolve();
+  const job = (async () => {
+    await prev;
+    return fn();
+  })();
+  indexing.set(resolved, job);
+  return job.finally(() => {
+    if (indexing.get(resolved) === job) indexing.delete(resolved);
+  });
+}
+
 async function getOrOpen(projectPath) {
   if (!projectPath || typeof projectPath !== 'string') {
     throw new Error('projectPath is required (absolute path to a repo with .codegraph/ initialized)');
   }
   const resolved = path.resolve(projectPath);
+  await waitForIndexing(resolved);
   if (pool.has(resolved)) {
     const entry = pool.get(resolved);
     entry.lastUsed = Date.now();
@@ -220,24 +252,27 @@ const handlers = {
     if (!args.projectPath) throw new Error('projectPath is required');
     const resolved = path.resolve(args.projectPath);
     if (!fs.existsSync(resolved)) throw new Error(`projectPath does not exist: ${resolved}`);
-    if (!CodeGraph.isInitialized(resolved) || args.force) {
-      if (pool.has(resolved)) { try { pool.get(resolved).cg.close(); } catch {} pool.delete(resolved); }
-      if (CodeGraph.isInitialized(resolved) && args.force) {
-        // re-index: open existing and indexAll
-        const cg = await CodeGraph.open(resolved, { readOnly: false });
-        await cg.indexAll({});
-        cg.close();
-      } else {
-        const cg = await CodeGraph.init(resolved, { index: true });
-        cg.close();
+    // 全程持 per-project 索引锁（读路径 waitForIndexing 等待;防并发读半成品）
+    return withIndexLock(resolved, async () => {
+      if (!CodeGraph.isInitialized(resolved) || args.force) {
+        if (pool.has(resolved)) { try { pool.get(resolved).cg.close(); } catch {} pool.delete(resolved); }
+        if (CodeGraph.isInitialized(resolved) && args.force) {
+          // re-index: open existing and indexAll
+          const cg = await CodeGraph.open(resolved, { readOnly: false });
+          await cg.indexAll({});
+          cg.close();
+        } else {
+          const cg = await CodeGraph.init(resolved, { index: true });
+          cg.close();
+        }
+        return { ok: true, action: args.force ? 'reindexed' : 'initialized+indexed', projectRoot: resolved };
       }
-      return { ok: true, action: args.force ? 'reindexed' : 'initialized+indexed', projectRoot: resolved };
-    }
-    // already initialized: quick sync
-    const cg = await CodeGraph.open(resolved, { sync: false, readOnly: false });
-    const syncResult = await cg.sync();
-    cg.close();
-    return { ok: true, action: 'synced', projectRoot: resolved, ...syncResult };
+      // already initialized: quick sync
+      const cg = await CodeGraph.open(resolved, { sync: false, readOnly: false });
+      const syncResult = await cg.sync();
+      cg.close();
+      return { ok: true, action: 'synced', projectRoot: resolved, ...syncResult };
+    });
   },
 };
 
@@ -263,6 +298,14 @@ const server = http.createServer(async (req, res) => {
     }
     const m = req.method === 'POST' && req.url.match(/^\/services\/([\w-]+)\/?$/);
     if (m) {
+      // 武装态逐请求校验（fail-visible 401;未武装 = 现行为不变）
+      if (TOKEN) {
+        const present = req.headers['authorization'] || '';
+        if (present !== `Bearer ${TOKEN}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'unauthorized (Bearer token mismatch)' }));
+        }
+      }
       const name = m[1];
       const handler = handlers[name];
       if (!handler) {
