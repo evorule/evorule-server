@@ -57,6 +57,7 @@ use evorule_browser_services::NATIVE_SERVICES as BROWSER_NATIVE_SERVICES;
 use evorule_checksum_services::NATIVE_SERVICES as CHECKSUM_NATIVE_SERVICES;
 use evorule_cny_services::NATIVE_SERVICES as CNY_NATIVE_SERVICES;
 use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
+use evorule_export_services::NATIVE_SERVICES as EXPORT_NATIVE_SERVICES;
 use evorule_fluid_services::NATIVE_SERVICES as FLUID_NATIVE_SERVICES;
 use evorule_geometry_services::NATIVE_SERVICES as GEOMETRY_NATIVE_SERVICES;
 use evorule_gnss_services::NATIVE_SERVICES as GNSS_NATIVE_SERVICES;
@@ -65,7 +66,6 @@ use evorule_grav_services::NATIVE_SERVICES as GRAV_NATIVE_SERVICES;
 use evorule_indicator_services::NATIVE_SERVICES as INDICATOR_NATIVE_SERVICES;
 use evorule_inference_services::NATIVE_SERVICES as INFERENCE_NATIVE_SERVICES;
 use evorule_legal_services::NATIVE_SERVICES as LEGAL_NATIVE_SERVICES;
-use evorule_export_services::NATIVE_SERVICES as EXPORT_NATIVE_SERVICES;
 use evorule_mechanics_services::NATIVE_SERVICES as MECHANICS_NATIVE_SERVICES;
 use evorule_metrology_services::NATIVE_SERVICES as METROLOGY_NATIVE_SERVICES;
 use evorule_numeric_services::NATIVE_SERVICES as NUMERIC_NATIVE_SERVICES;
@@ -2149,6 +2149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let step_start = Instant::now();
     let (core_eval, ruleset_layout, rejected_overlaps, rejected_domains) =
         SessionApi::load_merged_with_layout(&cfg.core_eval, &cfg.rules_dir)?;
+    let ruleset_version_for_anchor = ruleset_layout.ruleset_version.clone();
     info!(
         "已加载 {} 条 transform 规则（ruleset_version={}，耗时: {}ms）",
         core_eval.len(),
@@ -2802,6 +2803,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // G-A2 锚点链：环境变量注入（EVORULE_ANCHOR_SEED 等；未配置=锚点关）
         evorule_server::anchor_setup::anchor_config_from_env(),
     )
+    // G6 最小修：规则集版本哈希注入（会话创建落 __ruleset__.version 锚定事实）
+    .with_ruleset_version(ruleset_version_for_anchor)
     .with_dispatcher(session_dispatcher)
     .with_bound_services(registry_names)
     // 注入命中统计聚合器（注册了 Prometheus 指标、含权威初始 layout）

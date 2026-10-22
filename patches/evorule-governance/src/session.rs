@@ -404,6 +404,10 @@ pub struct SessionManager {
     /// 密钥材料不落审计资产——builder 在此持有 signer（内存态），
     /// 每会话从配置派生独立 builder（私钥种子注入，不入 WAL）。
     anchor_config: Option<SessionAnchorConfig>,
+    /// 规则集版本哈希（G6 最小修：会话创建时落链 `__ruleset__.version`——
+    /// TraceHit.index 可回溯解释：取该版本规则集确定性重放合并按下标取规则）。
+    /// OnceLock：启动期 builder 一次性 set（先于任何会话创建），创建期无锁读
+    ruleset_version: std::sync::OnceLock<String>,
 }
 
 /// 会话审计锚点链配置（G-A2）
@@ -630,6 +634,7 @@ impl SessionManager {
             count: AtomicU64::new(0),
             pending_recycle: Mutex::new(Vec::new()),
             anchor_config: None,
+            ruleset_version: std::sync::OnceLock::new(),
         }
     }
 
@@ -642,11 +647,43 @@ impl SessionManager {
         self
     }
 
+    /// 注入规则集版本哈希（G6 最小修）：此后创建的会话在审计链落
+    /// `__ruleset__.version` 锚定事实——TraceHit/Violation 的规则下标
+    /// 可取该版本规则集确定性重放解释
+    pub fn with_ruleset_version(mut self, version: String) -> Self {
+        let _ = self.ruleset_version.set(version);
+        self
+    }
+
+    /// by-ref 变体（SessionApi 透传用：Arc<Mutex<SessionManager>> 不可消费）
+    pub fn set_ruleset_version(&self, version: String) {
+        let _ = self.ruleset_version.set(version);
+    }
+
     /// 从锚点配置派生单会话审计器（私钥种子注入 signer，session_id 入锚点载荷）
     ///
     /// 锚点载荷中的会话标识取显式传入的 `session_id`（该会话的真实 ID），
     /// 而非全局 ID 计数器——计数器在并发创建下可能已越过本会话 ID，
     /// 复活路径下更与计数器无关，显式传参保证锚点归因精确。
+    /// G6 最小修：规则集版本锚定事实落链（`__ruleset__.version`）
+    ///
+    /// TraceHit/Violation 只携带规则下标——本事实使下标可回溯解释：
+    /// 取该版本规则集确定性重放合并（load_merged 确定性保证）按下标取规则。
+    /// 固定 FactId（u64::MAX-1，独立于常规分配器与 M-4 fork 锚的 1e9 段）；
+    /// 未注入 ruleset_version 时零事实（行为与旧版一致）。
+    fn append_ruleset_anchor(&self, facts_log: &FactsLog) {
+        if let Some(version) = self.ruleset_version.get() {
+            let fact = Fact::PayloadUpdate {
+                id: FactId(u64::MAX - 1),
+                path: "__ruleset__.version".to_string(),
+                value: JsonValue::string(version.clone()),
+            };
+            if let Err(e) = facts_log.append(fact) {
+                tracing::warn!(error = %e, "规则集版本锚定事实落链失败");
+            }
+        }
+    }
+
     fn auditor_from_config(&self, facts_log: FactsLog, session_id: SessionId) -> Auditor {
         let auditor = Auditor::new_with_auto_verify(
             facts_log,
@@ -825,6 +862,7 @@ impl SessionManager {
             .facts_log(facts_log)
             .build();
         let (command_tx, _event_rx, event_tx, handle, facts_log) = reactor.spawn();
+        self.append_ruleset_anchor(&facts_log);
 
         let shard = self.get_shard(session_id);
         let mut shard_guard = match lock_mutex(shard) {
@@ -1028,6 +1066,7 @@ impl SessionManager {
             .facts_log(facts_log)
             .build();
         let (command_tx, _event_rx, event_tx, handle, facts_log) = reactor.spawn();
+        self.append_ruleset_anchor(&facts_log);
 
         let shard = self.get_shard(session_id);
         let mut shard_guard = match lock_mutex(shard) {
@@ -1148,6 +1187,7 @@ impl SessionManager {
             .facts_log(facts_log)
             .build();
         let (command_tx, _event_rx, event_tx, handle, facts_log) = reactor.spawn();
+        self.append_ruleset_anchor(&facts_log);
 
         let shard = self.get_shard(session_id);
         let mut shard_guard = match lock_mutex(shard) {
@@ -2725,4 +2765,50 @@ mod tests {
         let _ = sid2;
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // ===== G6 最小修：规则集版本锚定 =====
+
+    /// 注入 ruleset_version 后创建会话 → 链上含 `__ruleset__.version` 事实；
+    /// 未注入 → 零该事实（行为与旧版一致）
+    #[tokio::test]
+    async fn ruleset_version_anchored_into_chain() {
+        let core_eval = make_core_eval();
+        let mgr = SessionManager::new(core_eval.clone(), 100).with_ruleset_version(
+            "blake3:ruleset-v7".into(),
+        );
+        let sid = mgr.create_session().map_err(|e| format!("{e:?}")).unwrap();
+        let session = mgr.get_session(sid).unwrap();
+        let hits: Vec<_> = session
+            .facts_log
+            .history()
+            .iter()
+            .filter_map(|f| match f {
+                Fact::PayloadUpdate { path, value, .. }
+                    if path == "__ruleset__.version" =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hits.len(), 1, "注入后必须恰有一条规则集版本锚定事实");
+        assert!(
+            format!("{:?}", hits[0]).contains("blake3:ruleset-v7"),
+            "值为注入串: {:?}",
+            hits[0]
+        );
+
+        // 未注入 → 零事实
+        let mgr2 = SessionManager::new(core_eval, 100);
+        let sid2 = mgr2.create_session().map_err(|e| format!("{e:?}")).unwrap();
+        let session2 = mgr2.get_session(sid2).unwrap();
+        let hits2: usize = session2
+            .facts_log
+            .history()
+            .iter()
+            .filter(|f| matches!(f, Fact::PayloadUpdate { path, .. } if path == "__ruleset__.version"))
+            .count();
+        assert_eq!(hits2, 0, "未注入时零锚定事实（行为与旧版一致）");
+    }
+
 }

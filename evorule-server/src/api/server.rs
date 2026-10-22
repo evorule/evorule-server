@@ -865,6 +865,17 @@ impl SessionApi {
         self
     }
 
+    /// 注入规则集版本哈希（G6 最小修透传）：会话创建落 `__ruleset__.version`
+    /// 锚定事实，TraceHit/Violation 规则下标可回溯解释
+    pub fn with_ruleset_version(mut self, version: String) -> Self {
+        // builder 非 async 上下文：tokio Mutex 的 blocking_lock（启动期单线程
+        // 装配段调用，先于 runtime 进入服务——无死锁面）
+        let mgr = self.sessions.blocking_lock();
+        mgr.set_ruleset_version(version);
+        drop(mgr);
+        self
+    }
+
     /// 注入 Prometheus 指标句柄（builder 模式）
     ///
     /// 复活路径的 inc_sessions 与 IoSubscriber 装配消费；未注入（桥接路径/
@@ -15959,7 +15970,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "verify 应成功: {body}");
         // P0-3（G4）：空锚点链 valid=null（"没封过锚点"≠"验过了"）
-        assert!(body["valid"].is_null(), "空锚点链 valid 必须为 null: {body}");
+        assert!(
+            body["valid"].is_null(),
+            "空锚点链 valid 必须为 null: {body}"
+        );
         assert_eq!(body["anchor_count"], 0);
 
         // 404 面：不存在会话
