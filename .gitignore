@@ -121,3 +121,8 @@ plugins/ai-plugin/config.json
 # 运营登记册（本地私有面，不上库）
 plan/
 target-si/
+
+# 本线验证侧靶目录与运行时本地件（2026-10-22）
+target-a3/
+plugins/export-services/data/
+plugins/wasm-host/trusted-keys.json

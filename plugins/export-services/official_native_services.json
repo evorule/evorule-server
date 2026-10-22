@@ -1,0 +1,17 @@
+{
+  "$schema": "https://gitee.com/evorule/evorule-server/raw/main/plugins/schema/official_native_services.schema.json",
+  "$id": "https://gitee.com/evorule/evorule-server/plugins/export-services/official_native_services.json",
+  "title": "export-services 官方原生服务声明（第十九个进程内插件）",
+  "version": "1.0.0",
+  "plugin_id": "export-services",
+  "description": "交付物导出原生服务（报告数据→PDF 渲染→内容寻址落盘，纯 Rust 文本型路线）",
+  "license": "AGPL-3.0-or-later",
+  "$comment": "SSOT：执行侧 NATIVE_SERVICES 与治理侧服务目录种子均以本文件为准（sync-native-services.ps1 同步）。同步守卫锁定 name/sensitive/description 三字段与顺序。渲染引擎为确定性纯函数（无墙钟/无随机/不写随机文档 ID）；中文字体经系统探测或显式指定，字体环境差异属环境常量，信封附 blake3 内容哈希供跨机对账。落盘目录可经 EVORULE_EXPORT_DIR 覆盖，缺省 data/exports；文件名消毒防路径穿越；同输入同文件名幂等覆写。",
+  "services": [
+    {
+      "name": "export_report_pdf",
+      "sensitive": false,
+      "description": "报告PDF导出(审计/业务数据→纯Rust文本型PDF渲染→落盘导出目录,返回绝对路径与字节数及blake3内容哈希,幂等覆写)"
+    }
+  ]
+}

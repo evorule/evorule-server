@@ -10,7 +10,7 @@
 #   ⑦ numeric-services      ⑧ mechanics-services      ⑨ gnss-services
 #   ⑩ grav-services      ⑪ checksum-services      ⑫ cny-services
 #   ⑬ fluid-services      ⑭ quantum-services      ⑮ metrology-services
-#   ⑯ gov-services      ⑰ legal-services
+#   ⑯ gov-services      ⑰ legal-services      ⑱ export-services
 #
 # 流程 = 节奏强制（逐插件）：复制 → 字节核验 → 双侧守卫测试
 #   执行侧守卫：各插件声明文件 vs 其 NATIVE_SERVICES（三字段+序）
@@ -60,6 +60,7 @@ $plugins = @(
     @{ Id = "metrology-services"; Crate = "evorule-metrology-services" },
     @{ Id = "gov-services"; Crate = "evorule-gov-services" },
     @{ Id = "legal-services"; Crate = "evorule-legal-services" }
+    @{ Id = "export-services"; Crate = "evorule-export-services" }
 )
 
 if (-not (Test-Path (Join-Path $RepoRule "Cargo.toml"))) { Write-Host "[FAIL] 治理仓不存在: $RepoRule" -ForegroundColor Red; exit 1 }

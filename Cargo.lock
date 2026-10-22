@@ -1020,6 +1020,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-export-services"
+version = "0.10.0"
+dependencies = [
+ "evorule-hash",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "pdf-writer",
+ "serde",
+ "serde_json",
+ "subsetter",
+ "ttf-parser",
+]
+
+[[package]]
 name = "evorule-fluid-services"
 version = "0.10.0"
 dependencies = [
@@ -1426,6 +1441,7 @@ dependencies = [
  "evorule-cny-services",
  "evorule-demo-services",
  "evorule-discipline",
+ "evorule-export-services",
  "evorule-fluid-services",
  "evorule-geometry-services",
  "evorule-gnss-services",
@@ -1453,13 +1469,11 @@ dependencies = [
  "fs4",
  "futures-core",
  "governor",
- "pdf-writer",
  "prometheus",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
- "subsetter",
  "subtle",
  "tempfile",
  "thiserror 2.0.19",
@@ -1470,7 +1484,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "ttf-parser",
  "utoipa",
  "utoipa-swagger-ui",
 ]
