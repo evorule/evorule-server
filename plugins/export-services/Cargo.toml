@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-export-services"
+version.workspace = true
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "交付物导出原生服务(报告 PDF 渲染+内容寻址落盘)——纯 Rust 文本型渲染引擎,以声明表挂载到 evorule-server 服务链"
+repository = "https://gitee.com/evorule/evorule-server"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# 核心层（主仓已发布 crates.io,纯 version——接入铁律:不依赖主仓源码路径）
+evorule-tcb = { version = "0.8" }
+evorule-reactor = { version = "0.8" }
+# 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表)
+evorule-plugin-kit = { path = "../../core/plugin-kit" }
+# 族 B 哈希纪律:禁自写 blake3,一律 evorule-hash,存储字段带 blake3: 前缀
+evorule-hash = "0.1.3"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 纯 Rust 文本型 PDF 路线（typst 同源生态,零系统依赖）
+pdf-writer = "0.15.0"
+ttf-parser = "0.25.1"
+subsetter = "0.2.6"
+
+[dev-dependencies]

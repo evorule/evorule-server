@@ -88,6 +88,8 @@ evorule-quantum-services = { path = "../plugins/quantum-services" }
 evorule-metrology-services = { path = "../plugins/metrology-services" }
 evorule-gov-services = { path = "../plugins/gov-services" }
 evorule-legal-services = { path = "../plugins/legal-services" }
+# 交付物导出插件（PDF 引擎 SSOT 下沉：api/pdf_export.rs 薄壳消费其 render_pdf）
+evorule-export-services = { path = "../plugins/export-services" }
 
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，
@@ -147,9 +149,6 @@ async-trait = "0.1"
 
 # Phase 1: 第一层输入净化（正则匹配 + 静默改写，可复用公共服务）
 regex = "1"
-pdf-writer = "0.15.0"
-ttf-parser = "0.25.1"
-subsetter = "0.2.6"
 
 # 插件探活任务生产依赖(原仅在 dev-dependencies 供 benchmarks 使用;探活目标 =
 # 部署侧自配的插件 base_url,属可信目标,不走 HttpHandler 的 SSRF 防护形态——
