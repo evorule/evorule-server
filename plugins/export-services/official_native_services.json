@@ -12,6 +12,16 @@
       "name": "export_report_pdf",
       "sensitive": false,
       "description": "报告PDF导出(审计/业务数据→纯Rust文本型PDF渲染→落盘导出目录,返回绝对路径与字节数及blake3内容哈希,幂等覆写)"
+    },
+    {
+      "name": "export_workbook_xlsx",
+      "sensitive": false,
+      "description": "工作簿xlsx导出(多表+表头/整数字符串值域→rust_xlsxwriter确定性渲染,固定文档时间戳,落盘导出目录,返回绝对路径与字节数及blake3内容哈希,幂等覆写)"
+    },
+    {
+      "name": "export_document_docx",
+      "sensitive": false,
+      "description": "文档docx导出(标题+段落+表格+溯源表→docx-rs确定性渲染(零时间戳内嵌),落盘导出目录,返回绝对路径与字节数及blake3内容哈希,幂等覆写)"
     }
   ]
 }
