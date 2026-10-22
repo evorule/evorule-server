@@ -1038,6 +1038,7 @@ dependencies = [
  "evorule-reactor",
  "evorule-rule-schema",
  "evorule-tcb",
+ "reqwest",
  "serde_json",
  "tokio",
  "tracing",

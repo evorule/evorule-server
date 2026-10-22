@@ -34,7 +34,7 @@
 |--------|--------|------|
 | `inverse_kinematics_solver` | `ik_solver.rs` | 逆运动学求解器（LMA 算法） |
 | `robot_move_joints` | `robot_move.rs` | 机器人移动指令生成（确定性 ID，无墙钟依赖） |
-| `llm_advisor` | `llm_advisor.rs` | LLM 建议生成（规则驱动，非真实 LLM 调用;sensitive:涉及外部 LLM API） |
+| `llm_advisor` | `llm_advisor.rs` | LLM 建议生成（**真 LLM 出网**（OpenAI 兼容 chat completions）或离线替身；返回体恒带 `provider` / `real_llm` 溯源位；sensitive:涉及外部 LLM API） |
 | `shadow_ik_solver` | `shadow_validate.rs` | 影子 IK 求解（新旧规则并行执行 + 结果对照） |
 | `sampling_service` | `sampling.rs` | 采样决策器（决定哪些规则需要影子验证） |
 | `rule_sandbox` | `rule_sandbox.rs` | 规则沙盒试运行（隔离执行 + 结果对比） |
@@ -60,6 +60,63 @@ io_request(call_service, service_name="ik_solver", args={...})
 > `core/plugin-kit`（`evorule-plugin-kit`）公共 crate，三插件归一单份维护；
 > 本 crate 为薄壳具名委托（`DemoServiceRouter` → `NativeServiceRouter`），
 > 对外 API 与行为逐字节等价，插件自持声明表 `NATIVE_SERVICES`。
+
+---
+
+## `llm_advisor`：真 LLM 出网 vs 离线替身
+
+`llm_advisor` 有两条路径，**返回体恒带溯源位，替身绝不冒充真身**：
+
+| 形态 | 触发条件 | `provider` | `real_llm` |
+|------|----------|-----------|------------|
+| 出网 | 配置 `EVORULE_LLM_ADVISOR_ENDPOINT` | `http` | `true` |
+| 离线 | 未配置端点 | `offline_mock` | `false` |
+
+### 环境变量
+
+| 变量 | 作用 | 缺省 |
+|------|------|------|
+| `EVORULE_LLM_ADVISOR_ENDPOINT` | LLM 端点（OpenAI 兼容 chat completions）。形态：`https://host` → 拼 `/v1/chat/completions`；`https://host/v1` → 拼 `/chat/completions`；其余路径按**全 URL 端点**原样使用 | 未设置 = 离线替身，不出网 |
+| `EVORULE_LLM_ADVISOR_API_KEY` | Bearer 凭据。**只从环境变量注入**——不进日志 / 不进错误消息 / 不进 URL；不落配置文件、不进规则集（规则集是审计数据） | 空 = 不带 Authorization 头 |
+| `EVORULE_LLM_ADVISOR_TIMEOUT_MS` | 请求超时（毫秒） | `30000` |
+
+### fail-visible 纪律
+
+- 端点已配置但调用失败（连不上 / 非 2xx / 响应不合法 / 缺 `choices[0].message.content`）→ **报错**，
+  **绝不静默降级为离线替身**（否则「自进化闭环用了真 LLM」这句话会被离线假数据顶替）。
+- **同步入口** `execute` 无外部出口能力，若端点已配置 → **报错**，不返回替身
+  （防同步调用方在不知情下拿到假建议）。
+- 生产路由走 `IoDispatcher` 的 `call_service` → 插件路由器的 `execute_async`（异步出网路径）。
+
+### 与 Python 基线的关系
+
+离线替身的建议文本与 Python `_call_llm` 离线分支**逐字一致**（含 prompt 前 200 字符截断），
+`{suggestion, model}` 包装不变（`rule_sandbox` 依赖该包装提取规则），
+新增的 `provider` / `real_llm` 为**增量字段**，不影响既有提取链。
+
+### 测试与泄漏防线
+
+`tests/llm_advisor_http_e2e.rs` 用**进程内 OpenAI 兼容桩走真实 HTTP 栈**（不 mock 客户端），锁 5 条纪律：
+真身标记 / 端点不可达报错 / 非 2xx 报错 / 响应缺 `choices[0].message.content` 报错 / 离线替身如实标注。
+
+并断言**凭据与端点 URL 既不进请求体、不进返回体、也不进错误消息**——
+`reqwest` 的错误 Display **默认带 URL**（`error sending request for url (...)`），
+故出网路径用 `without_url()` 剥 URL，并对上游错误回显文本做脱敏（凭据/URL → 占位符）。
+
+> **凡是写进文档的「不含 X」承诺，都必须有断言该承诺的测试**：承诺不是描述，是契约。
+
+### 生产调用路径
+
+`llm_advisor` 声明 `sensitive=true` ⇒ **服务端禁止 REST 直调**（HTTP 403），
+必须经会话 `call_service` 指令走审计与审批链：
+
+```
+POST /api/sessions/{id}/command
+{"instruction": {"type": "call_service",
+                 "params": {"service_name": "llm_advisor", "args": {…}}}}
+```
+
+指令**顶层 `type` 必须是 `call_service`**（域判定比对顶层 `type`，`params.instruction_type` 无效）。
 
 ---
 
@@ -111,7 +168,7 @@ dispatcher.register(IoType::call_service, router);
 
 新增原生能力 = 声明文件追加一项 + `NATIVE_SERVICES` 声明表追加构造子，宿主代码零改动：
 
-1. 实现 `NativeService` trait（`execute(&self, args: &JsonValue) -> IoResult`；浮点一律字符串返回，确定性优先，禁用墙钟/随机源）。
+1. 实现 `NativeService` trait（`execute(&self, args: &JsonValue) -> IoResult`；浮点一律字符串返回，确定性优先，禁用墙钟/随机源）。**需要外部 I/O（HTTP 出网等）的服务须额外覆写 `execute_async`**——`evorule-plugin-kit` 的异步扩展点（默认实现 = 同步 `execute` 立即就绪，行为不变）；出网失败须 fail-visible 报错，降级须在返回体标注来源。
 2. 在 `official_native_services.json`（SSOT）追加一项（name/sensitive/description）。
 3. 在 `lib.rs` 的 `NATIVE_SERVICES` 声明表追加 `NativeServiceDef { name, sensitive, description, make }`（`make` 构造子必须留在代码；其余元数据以声明文件为准）。
 4. 运行 `evorule-server/scripts/sync-native-services.ps1`：同步治理侧嵌入副本 + 双侧守卫自动验证（脚本即节奏，双绿才算完成）。
@@ -128,6 +185,7 @@ dispatcher.register(IoType::call_service, router);
 - `serde_json` — JSON 处理
 - `tracing` — 日志
 - `async-trait` — `IoHandler` trait object-safety
+- `reqwest` 0.12（`json` + `rustls-tls`）— `llm_advisor` 真 LLM 出网；版本/特性与 evorule-server 侧一致，lockfile 已有解析结果
 
 > **注意**: 核心层依赖通过顶层 `[patch.crates-io]` 覆盖为本地源码（开发阶段），发布前需移除 patch 段并使用 crates.io 正式版本。
 

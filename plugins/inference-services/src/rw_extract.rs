@@ -396,11 +396,45 @@ pub fn normalize_path(raw: &str) -> String {
 }
 
 /// payload 相对路径 → 规范化状态路径（写侧形态 1/3 共用）
-fn payload_rel_to_canonical(rel: &str) -> String {
+pub fn payload_rel_to_canonical(rel: &str) -> String {
     if let Some(rest) = rel.strip_prefix("__io_results__.") {
         return format!("io:{rest}");
     }
     format!("payload.{rel}")
+}
+
+/// 目标路径规范化（查询侧入口，与写侧形态 1/3 对齐同一套归一）。
+///
+/// 语义：
+/// - 裸相对路径（`x`）→ `payload.x`（写侧相对形态同解）
+/// - `__exec__.payload.x` → `payload.x`（剥前缀）
+/// - 已带根段（`payload.*` / `instruction.*` / `queue[*]` / `io:*`）→ 原样保留
+/// - 空串 → 空串（调用方须自行 fail-fast 拒绝）
+///
+/// 存在理由：生产者索引的键是**写侧规范化后**的路径（`payload.y`），
+/// 而查询侧目标路径此前原样入索引——`y` 与 `payload.y` 会得到不同结论
+/// （前者查无生产者 → 落「外部必需输入」分支回 achievable=true，
+/// 后者命中生产者 → 走生产链搜索）。同一目标两种写法两种结论 = 口径不自洽。
+/// 归一后等价写法必得等价结论。
+pub fn canonical_target_path(raw: &str) -> String {
+    let s = normalize_path(raw);
+    let t = s.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    // 已带根段 → 原样保留（裸相对路径不属此列）
+    if t.starts_with("payload.")
+        || t.starts_with("payload[")
+        || t.starts_with("instruction.")
+        || t.starts_with("instruction[")
+        || t.starts_with("queue.")
+        || t.starts_with("queue[")
+        || t.starts_with("io:")
+    {
+        return t.to_string();
+    }
+    // 其余（裸相对路径）→ payload 相对路径（与写侧形态 1 同解）
+    format!("payload.{t}")
 }
 
 /// 字符串值是否为路径引用（对齐 resolve_value_reference_outcome 语义）：

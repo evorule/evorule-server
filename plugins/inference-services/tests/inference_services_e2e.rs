@@ -1129,6 +1129,92 @@ async fn backward_plan_e2e_producer_chain() {
 }
 
 #[tokio::test]
+async fn backward_plan_e2e_equivalent_target_spellings_agree() {
+    // 口径修正（2026-10-22）：目标路径先归一 —— 等价写法必得等价结论。
+    // 修正前 "x" 查无生产者 → achievable=true + 空生产链；"payload.x" 命中生产者 → 走生产链。
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let mut outs = Vec::new();
+    for spelling in ["payload.x", "x", "__exec__.payload.x"] {
+        let args = JsonValue::object_from_pairs(&[
+            ("rules", JsonValue::Array(stage3_rules())),
+            ("sources", JsonValue::Array(stage3_sources())),
+            ("target_path", str_val(spelling)),
+        ]);
+        let out = router
+            .execute(&svc_params("inference_backward_plan", args))
+            .await
+            .unwrap();
+        // 归一后目标路径一律规范形态；原始输入原样保留
+        assert_eq!(
+            out.get("target_path").and_then(|v| v.as_str()),
+            Some("payload.x"),
+            "写法 {spelling} 归一结果错"
+        );
+        assert_eq!(
+            out.get("target_path_input").and_then(|v| v.as_str()),
+            Some(spelling),
+            "原始输入须原样保留"
+        );
+        outs.push(out);
+    }
+    // 三种写法的结论（除 target_path_input 外）必须完全一致
+    let a = outs[0].clone();
+    for b in outs.iter().skip(1) {
+        assert_eq!(
+            a.get("achievable"),
+            b.get("achievable"),
+            "等价写法的 achievable 必须一致"
+        );
+        assert_eq!(
+            a.get("rule_sequence"),
+            b.get("rule_sequence"),
+            "等价写法的生产链必须一致"
+        );
+        assert_eq!(
+            a.get("produced_by_rules"),
+            b.get("produced_by_rules"),
+            "等价写法的 produced_by_rules 必须一致"
+        );
+    }
+    // 该 fixture 确有生产者 → produced_by_rules=true
+    assert_eq!(
+        a.get("produced_by_rules").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn backward_plan_e2e_no_producer_is_not_reported_as_rule_produced() {
+    // 无规则产出的目标：achievable 保留 v4 语义（外部必需输入亦算可达），
+    // 但 produced_by_rules 必须为 false —— 空生产链不得被读成「可由规则达成」。
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("rules", JsonValue::Array(stage3_rules())),
+        ("sources", JsonValue::Array(stage3_sources())),
+        ("target_path", str_val("payload.never_written")),
+    ]);
+    let out = router
+        .execute(&svc_params("inference_backward_plan", args))
+        .await
+        .unwrap();
+    assert_eq!(out.get("achievable").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        out.get("produced_by_rules").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert!(out
+        .get("rule_sequence")
+        .and_then(|v| v.as_array())
+        .unwrap()
+        .is_empty());
+    let reason = out.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        reason.contains("无规则产出该路径"),
+        "reason 须明示须外部提供: {reason}"
+    );
+}
+
+#[tokio::test]
 async fn effect_predict_e2e_impact_grading() {
     let router = InferenceServiceRouter::new(noop_fallback());
     let args = JsonValue::object_from_pairs(&[

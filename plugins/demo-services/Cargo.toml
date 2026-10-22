@@ -24,6 +24,10 @@ evorule-plugin-kit = { path = "../../core/plugin-kit" }
 
 serde_json = "1"
 tracing = "0.1"
+# llm_advisor 真 LLM 出网（OpenAI 兼容 chat completions）。
+# 版本/特性与 evorule-server 侧一致（reqwest 0.12 + rustls-tls），lockfile 已有解析结果，
+# 不引入新的下载与特性面；异步出网经 plugin-kit 的 execute_async 扩展点。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # IoHandler trait object-safety
 async-trait = "0.1"

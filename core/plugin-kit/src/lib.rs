@@ -13,6 +13,16 @@
 //! - 差异仅在:声明表由各插件自持(本 crate 只定义项结构与泛型路由器),
 //!   `service_name` 解析、浮点字符串化等业务约定亦留各插件。
 //!
+//! # 2026-10-22 机制扩展(不再是"纯等价重构"一处)
+//!
+//! - `NativeService` 新增**带默认实现的异步扩展点** `execute_async`
+//!   (见 trait 文档);路由器改为 `await execute_async`。
+//! - **默认实现 = 同步 `execute` 立即就绪** ⇒ 未覆写的服务行为**逐字节不变**
+//!   (三插件中仅 `demo-services` 的 `llm_advisor` 覆写,其余全部走默认路径);
+//! - 扩展目的:插件此前**无任何正规外部 I/O 通路**(`execute` 同步、无 runtime 支撑),
+//!   需要出网的服务只能落回离线替身。异步扩展点把"出网"纳入插件机制的正规路径,
+//!   且**不改动核心 crate 的执行语义**。
+//!
 //! # 使用方式(插件侧)
 //! - 插件导出 `&'static [NativeServiceDef]` 声明表(SSOT 模式同 ):
 //!   新增原生能力 = 表追加一项 + 清单启用,宿主与插件机制零改动;
@@ -23,6 +33,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -32,6 +44,31 @@ use evorule_tcb::JsonValue;
 /// 原生服务的统一入参入口：接收 `args`（已由引擎解析 __ 路径为实际值），返回业务结果。
 pub trait NativeService: Send + Sync {
     fn execute(&self, args: &JsonValue) -> IoResult;
+
+    /// 异步扩展点：需要**外部 I/O**（HTTP 出网 / 长轮询等）的原生服务覆写此方法。
+    ///
+    /// 默认实现 = 把同步 `execute` 包进一个立即就绪的 future
+    /// （对既有服务逐字节等价——上层无差别）。
+    /// 路由器统一 `await execute_async`，故覆写者与不覆写者对上层完全透明。
+    ///
+    /// # 为什么要这个扩展点
+    ///
+    /// `execute` 是同步的：插件此前**没有任何正规出网口子**——
+    /// 纯计算服务够用，但需要调用外部 API 的服务（LLM 顾问等）无从落地，
+    /// 只能落回离线替身。异步扩展点把「出网」纳入插件机制的正规路径，
+    /// 且不改动核心 crate 的执行语义。
+    ///
+    /// # 纪律
+    ///
+    /// 需要外部 I/O 的服务**必须**覆写本方法；不得在同步 `execute` 里偷偷出网
+    /// （同步路径无 runtime 支撑）。降级（如外部不可用改走本地替身）必须
+    /// **在返回体中如实标注来源**，不得让替身冒充真身。
+    fn execute_async<'a>(
+        &'a self,
+        args: &'a JsonValue,
+    ) -> Pin<Box<dyn Future<Output = IoResult> + Send + 'a>> {
+        Box::pin(async move { self.execute(args) })
+    }
 }
 
 /// 原生服务声明项(声明式注册:新增原生能力 = 向插件声明表追加一项,
@@ -155,7 +192,9 @@ impl IoHandler for NativeServiceRouter {
         // 声明表查找分发:新增原生服务 = 表加一项,此处零改动;
         // :仅在本路由实例已启用的子集内查找(未启用 → 回落/如实报错)
         match self.instances.iter().find(|(n, _)| *n == name) {
-            Some((_, svc)) => svc.execute(&args),
+            // 统一 await execute_async：需要外部 I/O 的服务覆写异步扩展点即可出网，
+            // 不覆写者走默认实现（= 同步 execute 立即就绪），行为逐字节等价。
+            Some((_, svc)) => svc.execute_async(&args).await,
             _ => self.fallback.execute(params).await,
         }
     }
@@ -263,6 +302,49 @@ mod tests {
         let r = router.execute(&p).await.unwrap();
         assert_eq!(r.get("svc").and_then(|v| v.as_str()), Some("echo"));
         assert_eq!(r.get("got").and_then(|v| v.as_i64()), Some(7));
+    }
+
+    #[tokio::test]
+    async fn test_router_dispatches_through_async_extension_point() {
+        // 异步扩展点：覆写 execute_async 的服务必须经该路径生效（出网类服务的新增正规口子），
+        // 未覆写者仍走同步 execute（默认实现等价）。
+        struct AsyncOnly;
+        impl NativeService for AsyncOnly {
+            fn execute(&self, _args: &JsonValue) -> IoResult {
+                Ok(JsonValue::object_from_pairs(&[(
+                    "path",
+                    JsonValue::string("sync"),
+                )]))
+            }
+            fn execute_async<'a>(
+                &'a self,
+                _args: &'a JsonValue,
+            ) -> Pin<Box<dyn Future<Output = IoResult> + Send + 'a>> {
+                Box::pin(async move {
+                    Ok(JsonValue::object_from_pairs(&[(
+                        "path",
+                        JsonValue::string("async"),
+                    )]))
+                })
+            }
+        }
+
+        static DEFS2: &[NativeServiceDef] = &[NativeServiceDef {
+            name: "kit_async_only",
+            sensitive: false,
+            description: "async 扩展点桩",
+            parameters: None,
+            make: || Arc::new(AsyncOnly),
+        }];
+
+        let router = NativeServiceRouter::new(DEFS2, Arc::new(ErrHandler));
+        let p = params_of("kit_async_only", JsonValue::object_from_pairs(&[]));
+        let r = router.execute(&p).await.unwrap();
+        assert_eq!(
+            r.get("path").and_then(|v| v.as_str()),
+            Some("async"),
+            "路由器必须走 execute_async（否则出网类服务无正规通路）"
+        );
     }
 
     #[test]

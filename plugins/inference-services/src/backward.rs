@@ -14,12 +14,24 @@
 //! - 动态写目标（`write_dyn`）规则可作生产者但整体结论降级 `conservative`；
 //! - 豁免桶规则（宪法段）不作为生产者（自引用形态，计入即是假能力），
 //!   显式列入 `excluded` 透出。
+//!
+//! # 口径（2026-10-22 修正）
+//!
+//! - 目标路径与初始可用路径集**先归一**再入索引（`canonical_target_path`），
+//!   与生产者索引键（写侧规范化后的 `payload.*`）同口径——
+//!   等价写法（`x` / `payload.x` / `__exec__.payload.x`）必得等价结论。
+//!   修正前：`x` 查无生产者 → 落「外部必需输入」分支回 `achievable=true`，
+//!   `payload.x` 命中生产者 → 走生产链搜索；同一目标两种写法两种结论。
+//! - `achievable` 与 `produced_by_rules` **分列**：
+//!   `achievable=true` 保留 v4 语义（外部必需输入亦算可达），
+//!   但 `produced_by_rules=false` 明示「规则集本身产不出该路径」，
+//!   避免空生产链被读成「可由规则达成」。
 
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::rw_extract::RuleRw;
+use crate::rw_extract::{canonical_target_path, RuleRw};
 
 /// 搜索深度缺省值
 pub const DEFAULT_MAX_DEPTH: usize = 8;
@@ -37,8 +49,20 @@ pub struct PlanReport {
     pub required_inputs: Vec<String>,
     /// 搜索深度（规则链最长递归层）
     pub depth: usize,
-    /// 目标路径
+    /// 目标路径（**规范化后**的形态，与生产者索引键同口径）
     pub target_path: String,
+    /// 目标路径**调用方原始输入**（未经归一）——归一映射透明可查，不静默改写
+    pub target_path_input: String,
+    /// 目标路径是否**确由规则集产出**（`rule_sequence` 非空）。
+    ///
+    /// 与 `achievable` 的区别（v4 语义「无生产者 = 外部必需输入，链仍可达」保留）：
+    /// - `achievable=true` + `produced_by_rules=true` → 有生产链，照 `rule_sequence` 跑即可
+    /// - `achievable=true` + `produced_by_rules=false` → **无任何规则产出该路径**，
+    ///   须由外部提供（`required_inputs` 列出），规则集本身产不出来
+    ///
+    /// 二者曾共用一句 reason，调用方无法区分「规则能产出」与「没人产出」——
+    /// 本字段把该区分显式化，避免把空生产链读成「可达成」。
+    pub produced_by_rules: bool,
     /// 结论是否保守（链上含动态写生产者 → 可达性非严格保证）
     pub conservative: bool,
     /// 豁免桶规则（未参与生产者搜索，透明透出）
@@ -175,6 +199,9 @@ fn plan_recursive(
 }
 
 /// 后向链规划（见模块文档）。
+///
+/// 目标路径与初始可用路径集**均先归一**（[`crate::rw_extract::canonical_target_path`]），
+/// 与生产者索引的键（写侧规范化后的 `payload.*`）同口径——等价写法必得等价结论。
 pub fn plan(
     rws: &[RuleRw],
     target_path: &str,
@@ -188,24 +215,35 @@ pub fn plan(
         .collect();
     let producers = producer_index(rws);
 
+    // 目标路径归一（裸相对路径 → payload 相对路径；__exec__ 前缀剥离）
+    let target = canonical_target_path(target_path);
+    // 初始可用集同样归一（否则 "b" 与 "payload.b" 两种写法结论不一致）
+    let available_canon: BTreeSet<String> = available_paths
+        .iter()
+        .map(|p| canonical_target_path(p))
+        .filter(|p| !p.is_empty())
+        .collect();
+
     // 目标本身已可用 → 平凡可达
-    if available_paths.contains(target_path) {
+    if available_canon.contains(&target) {
         return PlanReport {
             achievable: true,
-            target_path: target_path.to_string(),
+            produced_by_rules: false,
+            target_path: target,
+            target_path_input: target_path.to_string(),
             reason: "目标路径已在可用集内".to_string(),
             excluded,
             ..PlanReport::default()
         };
     }
 
-    let mut available = available_paths.clone();
+    let mut available = available_canon;
     let mut on_path = BTreeSet::new();
     let mut sequence: Vec<usize> = Vec::new();
     let mut conservative = false;
     let mut required: BTreeSet<String> = BTreeSet::new();
     let (ok, depth) = plan_recursive(
-        target_path,
+        &target,
         rws,
         &producers,
         &mut available,
@@ -221,8 +259,10 @@ pub fn plan(
         // 收集缺失输入：沿失败链无法给出精确清单，诚实输出不可达 + 建议看 producers
         return PlanReport {
             achievable: false,
+            produced_by_rules: false,
             rule_sequence: Vec::new(),
-            target_path: target_path.to_string(),
+            target_path: target,
+            target_path_input: target_path.to_string(),
             conservative,
             excluded,
             reason: format!(
@@ -235,16 +275,29 @@ pub fn plan(
 
     // 深度 = 链长；sequence 已按"生产者在前、目标规则在后"收集
     let rule_sequence: Vec<String> = sequence.iter().map(|&ri| rws[ri].id.clone()).collect();
+    let produced_by_rules = !rule_sequence.is_empty();
+    let reason = if produced_by_rules {
+        format!(
+            "静态生产链可达（{} 条规则）；链上所需外部输入 {} 项",
+            rule_sequence.len(),
+            required.len()
+        )
+    } else {
+        // 无任何规则产出该路径 → 规则集产不出来，须外部提供（不冒充"可由规则达成"）
+        "无规则产出该路径 — 须外部提供（规则集本身产不出；生产链为空）".to_string()
+    };
     PlanReport {
         achievable: true,
         rule_sequence,
         // 无生产者的路径 = 外部必需输入（链上规则产出的不在此列）
         required_inputs: required.into_iter().collect(),
         depth,
-        target_path: target_path.to_string(),
+        target_path: target,
+        target_path_input: target_path.to_string(),
+        produced_by_rules,
         conservative,
         excluded,
-        reason: "静态生产链可达（含外部必需输入）".to_string(),
+        reason,
     }
 }
 
@@ -343,6 +396,87 @@ mod tests {
         assert!(report.achievable);
         assert!(report.rule_sequence.is_empty());
         assert_eq!(report.required_inputs, vec!["payload.ghost".to_string()]);
+        // 口径分列：规则集本身产不出该路径 → produced_by_rules=false（不冒充可由规则达成）
+        assert!(!report.produced_by_rules);
+        assert!(
+            report.reason.contains("无规则产出该路径"),
+            "reason 须明示须外部提供: {}",
+            report.reason
+        );
+    }
+
+    #[test]
+    fn equivalent_target_spellings_give_identical_verdict() {
+        // 口径修正（2026-10-22）：目标路径先归一，等价写法必得等价结论。
+        // 修正前 "b" 查无生产者 → achievable=true + 空生产链；
+        //         "payload.b" 命中生产者 → 走生产链；同一目标两种结论。
+        let rules = vec![
+            cond_set("__exec__.payload.mode", "m", "a", 1),
+            cond_set("__exec__.payload.a", "v", "b", 2),
+        ];
+        let rws = rws_of(&rules);
+        let canonical = plan(&rws, "payload.b", &BTreeSet::new(), DEFAULT_MAX_DEPTH);
+        for spelling in ["b", "__exec__.payload.b", "payload.b"] {
+            let got = plan(&rws, spelling, &BTreeSet::new(), DEFAULT_MAX_DEPTH);
+            assert_eq!(
+                got.achievable, canonical.achievable,
+                "写法 {spelling} 的 achievable 与规范写法不一致"
+            );
+            assert_eq!(
+                got.rule_sequence, canonical.rule_sequence,
+                "写法 {spelling} 的生产链与规范写法不一致"
+            );
+            assert_eq!(
+                got.produced_by_rules, canonical.produced_by_rules,
+                "写法 {spelling} 的 produced_by_rules 与规范写法不一致"
+            );
+            // 归一后目标路径一律为规范形态；原始输入原样保留可查
+            assert_eq!(got.target_path, "payload.b", "写法 {spelling} 归一结果错");
+            assert_eq!(got.target_path_input, spelling, "原始输入须原样保留");
+        }
+    }
+
+    #[test]
+    fn produced_case_flags_produced_by_rules() {
+        // 有生产链 → produced_by_rules=true（与「须外部提供」情形明确区分）
+        let rules = vec![
+            cond_set("__exec__.payload.mode", "m", "a", 1),
+            cond_set("__exec__.payload.a", "v", "b", 2),
+        ];
+        let report = plan(
+            &rws_of(&rules),
+            "payload.b",
+            &BTreeSet::new(),
+            DEFAULT_MAX_DEPTH,
+        );
+        assert!(report.achievable);
+        assert!(report.produced_by_rules);
+        assert_eq!(report.rule_sequence.len(), 2);
+        assert!(
+            report.reason.contains("静态生产链可达"),
+            "reason 须明示生产链: {}",
+            report.reason
+        );
+    }
+
+    #[test]
+    fn available_paths_are_normalized_too() {
+        // 初始可用集同样归一：available=["b"] 与 available=["payload.b"] 等价
+        let rules = vec![cond_set("__exec__.payload.mode", "m", "b", 1)];
+        let mut avail_rel = BTreeSet::new();
+        avail_rel.insert("b".to_string());
+        let mut avail_abs = BTreeSet::new();
+        avail_abs.insert("payload.b".to_string());
+        for avail in [avail_rel, avail_abs] {
+            let report = plan(&rws_of(&rules), "payload.b", &avail, DEFAULT_MAX_DEPTH);
+            assert!(report.achievable, "已在可用集内 → 平凡可达");
+            assert!(report.rule_sequence.is_empty());
+            assert!(
+                report.reason.contains("已在可用集内"),
+                "reason 须明示平凡可达: {}",
+                report.reason
+            );
+        }
     }
 
     #[test]
