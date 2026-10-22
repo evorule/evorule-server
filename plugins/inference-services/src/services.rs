@@ -707,6 +707,13 @@ impl NativeService for RuleBackwardPlan {
                 )
             }
         };
+        // 空/纯空白目标路径 fail-fast：归一后为空串，落入「无生产者」分支会回
+        // achievable=true + required_inputs=[""] —— 与「须外部提供」语义不符，误导调用方。
+        if target.trim().is_empty() {
+            return Err(
+                "参数 target_path 不得为空 — 自诊断指引: 目标写路径(如 payload.x)".to_string(),
+            );
+        }
         let max_depth = match args.get("max_depth") {
             Some(JsonValue::Integer(n)) if *n >= 0 => {
                 let n = usize::try_from(*n).unwrap_or(MAX_DEPTH_CAP);
@@ -766,6 +773,14 @@ impl NativeService for RuleBackwardPlan {
                 JsonValue::Integer(i64::try_from(report.depth).unwrap_or(-1)),
             ),
             ("target_path", JsonValue::string(report.target_path.clone())),
+            (
+                "target_path_input",
+                JsonValue::string(report.target_path_input.clone()),
+            ),
+            (
+                "produced_by_rules",
+                JsonValue::Bool(report.produced_by_rules),
+            ),
             ("conservative", JsonValue::Bool(report.conservative)),
             (
                 "excluded",
