@@ -119,7 +119,7 @@ pub type AnchorSeq = u64;
 /// `fact_lo` = 上一锚点未覆盖的首条事实下标（首锚点为 0）；
 /// `fact_hi` = 本锚点覆盖的最后一条事实下标 + 1。
 /// 区间严格递增且相邻锚点 `prev.fact_hi == next.fact_lo`（无缝覆盖）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FactRange {
     /// 区间起点（含）：上一锚点覆盖止点
     pub lo: usize,
@@ -131,7 +131,10 @@ pub struct FactRange {
 ///
 /// 一个锚点 = 对「截至 fact_hi 为止的审计链尾」的一次签名封条。
 /// 载荷哈希覆盖全部防伪造字段；签名由 [`AuditSigner`] 对载荷哈希字节施加。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialize/Deserialize（P0-1 锚点持久化）：JSONL 锚点日志的行格式；
+/// 字段全量参与序列化（无跳过）——持久化即全部防伪造字段。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuditAnchor {
     /// 锚点链序号（0 起，严格 +1）
     pub seq: AnchorSeq,
@@ -335,6 +338,16 @@ impl AnchorChainBuilder {
     /// 当前覆盖进度（下一锚点的 fact_lo）
     pub fn next_fact_lo(&self) -> usize {
         self.last_fact_hi
+    }
+
+    /// 签名器只读访问（锚点持久化恢复时重建 builder 用）
+    pub fn signer(&self) -> &AuditSigner {
+        &self.signer
+    }
+
+    /// 锚点身份四元组只读访问（持久化恢复重建 builder 用）
+    pub fn identity(&self) -> (&AuditSigner, &str, &str, &str) {
+        (&self.signer, &self.key_id, &self.engine_id, &self.session_id)
     }
 
     /// 从既有链状态续建（密钥轮换/进程重启恢复用）

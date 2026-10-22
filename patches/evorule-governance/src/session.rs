@@ -655,13 +655,32 @@ impl SessionManager {
             self.auto_verify_interval,
         );
         match &self.anchor_config {
-            Some(cfg) => auditor.with_anchor(
-                crate::signing::AuditSigner::from_bytes(cfg.signer_seed),
-                cfg.key_id.clone(),
-                cfg.engine_id.clone(),
-                format!("session-{}", session_id),
-                cfg.interval,
-            ),
+            Some(cfg) => {
+                // P0-1（G1）：锚点持久化——anchor log 与会话 WAL 同目录
+                //（session_{id}.anchors.jsonl；append-only，每封一锚追加一行，
+                // auditor open 时读回续链）。wal_dir 未配置=纯内存模式，退回
+                // with_anchor（无持久化，行为同旧版）。
+                let anchor_log = self.wal_dir.as_ref().map(|dir| {
+                    dir.join(format!("session_{}.anchors.jsonl", session_id))
+                });
+                match anchor_log {
+                    Some(path) => auditor.with_anchor_persisted(
+                        crate::signing::AuditSigner::from_bytes(cfg.signer_seed),
+                        cfg.key_id.clone(),
+                        cfg.engine_id.clone(),
+                        format!("session-{}", session_id),
+                        cfg.interval,
+                        path,
+                    ),
+                    None => auditor.with_anchor(
+                        crate::signing::AuditSigner::from_bytes(cfg.signer_seed),
+                        cfg.key_id.clone(),
+                        cfg.engine_id.clone(),
+                        format!("session-{}", session_id),
+                        cfg.interval,
+                    ),
+                }
+            }
             None => auditor,
         }
     }
