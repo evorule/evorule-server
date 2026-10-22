@@ -2804,7 +2804,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         evorule_server::anchor_setup::anchor_config_from_env(),
     )
     // G6 最小修：规则集版本哈希注入（会话创建落 __ruleset__.version 锚定事实）
-    .with_ruleset_version(ruleset_version_for_anchor)
+    // 失败即拒绝启动（Err 透传）——版本锚定缺失会让 TraceHit/Violation 的规则下标
+    // 失去可回溯解释，不静默降级。
+    .with_ruleset_version(ruleset_version_for_anchor)?
     .with_dispatcher(session_dispatcher)
     .with_bound_services(registry_names)
     // 注入命中统计聚合器（注册了 Prometheus 指标、含权威初始 layout）
