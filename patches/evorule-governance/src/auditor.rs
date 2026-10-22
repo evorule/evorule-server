@@ -183,6 +183,8 @@ pub struct Auditor {
     anchor_interval: usize,
     /// 已产出的锚点序列（append-only；供导出/验证）
     anchors: Vec<crate::anchor::AuditAnchor>,
+    /// 锚点持久化日志路径（P0-1/G1；None=纯内存，兼容旧构造）
+    anchor_log_path: Option<std::path::PathBuf>,
     /// 自动验证跳过计数（P5-A2 修复，2026-08-27：阈值/间隔跳过留痕可观测）
     auto_verify_skip_count: std::sync::atomic::AtomicU64,
 }
@@ -209,6 +211,7 @@ impl Auditor {
             anchor_builder: None,
             anchor_interval: 0,
             anchors: Vec::new(),
+            anchor_log_path: None,
         }
     }
 
@@ -246,6 +249,7 @@ impl Auditor {
             anchor_builder: None,
             anchor_interval: 0,
             anchors: Vec::new(),
+            anchor_log_path: None,
         }
     }
 
@@ -371,20 +375,37 @@ impl Auditor {
             let fact_id = fact.id();
             let fact_type = fact.type_name();
             let logical_time = clock.tick();
+            let cause = extract_cause(fact);
             let content_hash = match hash::fact_hash(fact) {
                 Ok(h) => h,
                 Err(e) => {
+                    // #10 修复：跳过会产生 entries 与 history 的 index 错位
+                    // （causal_chain 越界风险）——改为占位条目保持对齐，
+                    // content_hash 置空串并 error 留痕（占位条目参与链接，
+                    // 后续 verify 会以空串续链——损坏即显性化，不静默伪装）
                     tracing::error!(
                         事实ID = ?fact_id,
                         事实类型 = %fact_type,
                         错误 = %e,
-                        "审计器: 事实哈希计算失败，跳过损坏事实"
+                        "审计器: 事实哈希计算失败，落占位条目（链显性化，不跳过）"
                     );
+                    let placeholder_prev = last_hash.clone();
+                    let placeholder_chain =
+                        hash::chain_step(&placeholder_prev, "corrupted-entry");
+                    index.insert(fact_id, entry_index);
+                    entries.push(AuditEntry {
+                        fact_id,
+                        fact_type,
+                        logical_time,
+                        content_hash: "corrupted-entry".into(),
+                        prev_hash: placeholder_prev,
+                        cause,
+                    });
+                    *last_hash = placeholder_chain;
                     return;
                 }
             };
             let prev_hash = last_hash.clone();
-            let cause = extract_cause(fact);
 
             // 计算新的链哈希：blake3(prev_hash + content_hash)
             // B1（report-002）：改用 reactor SSOT chain_step，消除本地重复实现漂移风险
@@ -527,6 +548,52 @@ impl Auditor {
         true
     }
 
+    /// 深度验证（#9 修复）：在 `verify` 链接验证之上，**重算每条 content_hash**
+    ///
+    /// `verify` 的链步用**存储的** content_hash 续链——攻击者改内容并同步改
+    /// content_hash 后重推 prev 链，可通过 verify。本方法要求携带事实原文
+    /// （`facts: &[Fact]`，与 entries 同序同长），逐条重算 fact_hash 比对。
+    /// 调用方：审计器持有 FactsLog 引用的场景（audit_new 后）/ 导入校验场景。
+    /// 无原文时调用方退回 `verify`（链接语义）并在报告中如实标注。
+    pub fn verify_deep(&self, facts: &[Fact]) -> Result<(), crate::auditor::LoadError> {
+        if facts.len() != self.entries.len() {
+            return Err(crate::auditor::LoadError::ChainBroken {
+                index: usize::MAX,
+                fact_id: FactId(0),
+                stored_prev: String::new(),
+                expected_prev: format!(
+                    "facts.len()={} != entries.len()={}",
+                    facts.len(),
+                    self.entries.len()
+                ),
+            });
+        }
+        // 先做链接验证（同 verify）
+        if !self.verify() {
+            return Err(crate::auditor::LoadError::ChainBroken {
+                index: 0,
+                fact_id: FactId(0),
+                stored_prev: String::new(),
+                expected_prev: "verify() failed".into(),
+            });
+        }
+        // 逐条重算 content
+        for (idx, (entry, fact)) in self.entries.iter().zip(facts.iter()).enumerate() {
+            let recomputed = hash::fact_hash(fact).map_err(|e| {
+                crate::auditor::LoadError::HashError(format!("entry[{idx}]: {e}"))
+            })?;
+            if recomputed != entry.content_hash {
+                return Err(crate::auditor::LoadError::ContentHashMismatch {
+                    index: idx,
+                    fact_id: entry.fact_id,
+                    stored: entry.content_hash.clone(),
+                    recomputed,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// 获取审计条目
     pub fn entries(&self) -> &[AuditEntry] {
         &self.entries
@@ -552,11 +619,120 @@ impl Auditor {
         session_id: String,
         interval: usize,
     ) -> Self {
+        self.with_anchor_impl(signer, key_id, engine_id, session_id, interval, None)
+    }
+
+    /// 同 [`with_anchor`]，另指定锚点持久化日志（P0-1/G1：append-only JSONL，
+    /// 每封一锚追加一行；恢复时读回——进程重启后历史锚点仍可验）
+    pub fn with_anchor_persisted(
+        mut self,
+        signer: crate::signing::AuditSigner,
+        key_id: String,
+        engine_id: String,
+        session_id: String,
+        interval: usize,
+        anchor_log_path: std::path::PathBuf,
+    ) -> Self {
+        self.with_anchor_impl(
+            signer,
+            key_id,
+            engine_id,
+            session_id,
+            interval,
+            Some(anchor_log_path),
+        )
+    }
+
+    fn with_anchor_impl(
+        mut self,
+        signer: crate::signing::AuditSigner,
+        key_id: String,
+        engine_id: String,
+        session_id: String,
+        interval: usize,
+        anchor_log_path: Option<std::path::PathBuf>,
+    ) -> Self {
         self.anchor_builder = Some(crate::anchor::AnchorChainBuilder::new(
             signer, key_id, engine_id, session_id,
         ));
         self.anchor_interval = interval;
+        // P0-1：恢复既有锚点（存在则读回续链；损坏行如实跳过+warn，不静默）
+        if let Some(path) = &anchor_log_path {
+            match Self::load_anchor_log(path) {
+                Ok(restored) => {
+                    if !restored.is_empty() {
+                        tracing::info!(count = restored.len(), path = %path.display(), "锚点日志恢复");
+                    }
+                    self.anchors = restored;
+                    // 重建 builder 的续链状态（prev_anchor_hash/seq/fact_hi）
+                    if let Some(builder) = &mut self.anchor_builder {
+                        if let Some(last) = self.anchors.last() {
+                            let (signer, key_id, engine_id, session_id) = builder.identity();
+                            *builder = crate::anchor::AnchorChainBuilder::new_with_prev(
+                                signer.clone(),
+                                key_id.to_string(),
+                                engine_id.to_string(),
+                                session_id.to_string(),
+                                last.anchor_hash.clone(),
+                                last.seq + 1,
+                                last.fact_range.hi,
+                            );
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(path = %path.display(), error = %e, "锚点日志读取失败（按空锚点链起步）"),
+            }
+        }
+        self.anchor_log_path = anchor_log_path;
         self
+    }
+
+    /// 追加一锚到持久化日志（best-effort：失败 warn 不阻塞封条语义）
+    fn persist_anchor(&self, anchor: &crate::anchor::AuditAnchor) {
+        if let Some(path) = &self.anchor_log_path {
+            let json = match serde_json::to_string(anchor) {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::warn!(error = %e, "锚点序列化失败（未持久化）");
+                    return;
+                }
+            };
+            use std::io::Write;
+            let write = || -> std::io::Result<()> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)?;
+                writeln!(f, "{json}")
+            };
+            if let Err(e) = write() {
+                tracing::warn!(path = %path.display(), error = %e, "锚点持久化写入失败");
+            }
+        }
+    }
+
+    /// 读锚点日志（JSONL；损坏行跳过+收集，返回（合法锚点, 损坏行数）由调用方留痕）
+    fn load_anchor_log(
+        path: &std::path::Path,
+    ) -> Result<Vec<crate::anchor::AuditAnchor>, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("read: {e}"))?;
+        let mut out = Vec::new();
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<crate::anchor::AuditAnchor>(line) {
+                Ok(a) => out.push(a),
+                Err(e) => {
+                    tracing::warn!(line = idx + 1, error = %e, "锚点日志损坏行跳过");
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// 立即封一个锚点（会话结束封条 / 手动强制封）
@@ -574,6 +750,8 @@ impl Auditor {
                 "锚点链未配置（先调用 with_anchor）".to_string(),
             ))?;
         let anchor = builder.seal(fact_hi, &head)?;
+        // P0-1：锚点持久化（append-only JSONL；best-effort 失败 warn 不阻塞封条）
+        self.persist_anchor(&anchor);
         self.anchors.push(anchor);
         // 刚 push 必非空；不用 expect（F11 门禁），失败即编程错误返回 Err
         self.anchors.last().cloned().ok_or_else(|| {
@@ -1184,6 +1362,10 @@ impl Auditor {
     /// 等价于 `import()` 后调用 `verify()`，返回导入是否成功且审计链完整。
     pub fn import_and_verify(&mut self, json_str: &str) -> Result<bool, String> {
         self.import(json_str)?;
+        // #9 语义边界（诚实标注）：import 的 JSON 不含事实原文，verify 只能做
+        // 链接验证（prev 链自洽）——**攻击者构造自洽伪链可通过**。可信校验须
+        // 持原文走 `verify_deep`（tier1 WAL 场景）或对照签名锚点。此限制为
+        // 导出格式固有（导出物本就不含原文），非实现缺陷；文档明示。
         let valid = self.verify();
         if !valid {
             tracing::warn!(

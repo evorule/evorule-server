@@ -8858,9 +8858,16 @@ async fn session_anchor_verify(
     let anchors = session.anchors();
     let result = session.verify_anchors(&keys);
     drop(sessions);
+    // P0-3（G4 修复）：空锚点链语义显式化——0 锚点时 valid 置 null（客户端
+    // 不再把"什么都没验"读成"验过了"）；anchor_count 保留供旧客户端判断
+    let anchor_status = if anchors.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Bool(result.is_ok())
+    };
     Ok(Json(serde_json::json!({
         "session_id": session_id,
-        "valid": result.is_ok(),
+        "valid": anchor_status,
         "anchor_count": anchors.len(),
         "error": result.err(),
     })))
@@ -15951,7 +15958,8 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "verify 应成功: {body}");
-        assert_eq!(body["valid"], true, "空锚点链（未启用）验证必须通过");
+        // P0-3（G4）：空锚点链 valid=null（"没封过锚点"≠"验过了"）
+        assert!(body["valid"].is_null(), "空锚点链 valid 必须为 null: {body}");
         assert_eq!(body["anchor_count"], 0);
 
         // 404 面：不存在会话
