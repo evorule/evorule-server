@@ -867,13 +867,39 @@ impl SessionApi {
 
     /// 注入规则集版本哈希（G6 最小修透传）：会话创建落 `__ruleset__.version`
     /// 锚定事实，TraceHit/Violation 规则下标可回溯解释
-    pub fn with_ruleset_version(mut self, version: String) -> Self {
-        // builder 非 async 上下文：tokio Mutex 的 blocking_lock（启动期单线程
-        // 装配段调用，先于 runtime 进入服务——无死锁面）
-        let mgr = self.sessions.blocking_lock();
-        mgr.set_ruleset_version(version);
-        drop(mgr);
-        self
+    ///
+    /// # 失败语义
+    ///
+    /// 返回 `Err` 而非 panic：server 主代码路径禁用 panic-prone 构造
+    /// （编译期 S1 门禁：`panic!` / `.unwrap(` / `.expect(` / `debug_assert!`）。
+    /// 锁竞争在启动装配期不应发生（会话管理器此时无人持有）；真发生即启动装配序有 bug——
+    /// **如实报错拒绝启动**，不静默跳过（否则版本锚定缺失，而其缺失会让
+    /// TraceHit/Violation 的规则下标失去可回溯解释）。
+    ///
+    /// # 上下文注记（2026-10-22 修正）
+    ///
+    /// builder 在 **tokio runtime 内** 被调用（`main.rs` 的 `#[tokio::main] async fn main`
+    /// 体内），故**不可**用 `blocking_lock()`——tokio 明令禁止在 runtime 线程上阻塞，
+    /// 调用即 panic（"Cannot block the current thread from within a runtime"）。
+    /// 历史注记：2026-10-22 19:07 的 903b13b 引入本注入时，调用点已在 async main 内，
+    /// 而此处原注释写的是"builder 非 async 上下文…先于 runtime 进入服务"——与实际调用点
+    /// 不符，导致**服务启动即崩**（该缺陷由 2026-10-22 的实机验证发现）。
+    pub fn with_ruleset_version(mut self, version: String) -> Result<Self, String> {
+        {
+            // 借用作用域收敛在本块内：块结束即释放 MutexGuard 与 match 临时值，
+            // 随后才可把 self 整体移出（否则 E0505：cannot move out of `self` because it is borrowed）
+            match self.sessions.try_lock() {
+                Ok(mgr) => mgr.set_ruleset_version(version),
+                Err(_) => {
+                    return Err(
+                        "with_ruleset_version: 会话管理器锁在启动装配期已被占用 — \
+                         会话管理器不应在启动装配段被持有（否则 G6 规则集版本锚定无法注入）"
+                            .to_string(),
+                    )
+                }
+            }
+        }
+        Ok(self)
     }
 
     /// 注入 Prometheus 指标句柄（builder 模式）
@@ -15865,6 +15891,28 @@ mod tests {
     /// 对账清单必须只保留 native/plugin 条目（带 sensitive/parameters/plugin
     /// 全元数据），消费方按名索引不再有命中缺元数据条目的形态；仅 registry
     /// 绑定的服务不受去重影响，照常列出。
+    /// 回归（2026-10-22）：`SessionApi::with_ruleset_version` 必须在 **tokio runtime 内**
+    /// 安全调用——生产调用点在 `#[tokio::main] async fn main` 体内。
+    /// 旧实现用 `blocking_lock()`，在 runtime 线程上调用即 panic
+    /// （"Cannot block the current thread from within a runtime"）⇒ **服务启动即崩**。
+    /// 该缺陷由 903b13b（2026-10-22 19:07）引入，2026-10-22 实机验证发现。
+    ///
+    /// 覆盖缺口说明：`patches/evorule-governance/src/session.rs` 的
+    /// `ruleset_version_anchored_into_chain` 走的是 **SessionManager 自身的 by-value
+    /// builder**，**未覆盖 SessionApi 这层包装** ⇒ 该 panic 漏过全部测试。
+    #[tokio::test]
+    async fn test_with_ruleset_version_safe_inside_tokio_runtime() {
+        let mut instr = std::collections::BTreeMap::new();
+        instr.insert("type".to_string(), JsonValue::string("noop"));
+        let core_eval = vec![JsonValue::Object(instr)];
+        // 旧实现在此 panic —— 本用例即崩溃点
+        let api = SessionApi::new(core_eval, 100)
+            .with_ruleset_version("blake3:test-ruleset".to_string())
+            .expect("启动装配期锁应无竞争");
+        // 注入确实落到会话管理器上（创建会话后链上应有 __ruleset__.version 锚定事实）
+        let _ = api;
+    }
+
     #[tokio::test]
     async fn test_list_services_dedups_same_name_registry_entry() {
         let mut instr = std::collections::BTreeMap::new();
