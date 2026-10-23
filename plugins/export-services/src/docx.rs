@@ -25,9 +25,8 @@ pub struct TableSpec {
 
 /// 渲染 docx → 字节流（确定性纯函数；失败带指引）。
 pub fn render_docx(spec: &DocxSpec) -> Result<Vec<u8>, String> {
-    let mut doc = Docx::new().add_paragraph(
-        Paragraph::new().add_run(Run::new().add_text(spec.title.as_str()).bold()),
-    );
+    let mut doc = Docx::new()
+        .add_paragraph(Paragraph::new().add_run(Run::new().add_text(spec.title.as_str()).bold()));
     for p in &spec.paragraphs {
         doc = doc.add_paragraph(Paragraph::new().add_run(Run::new().add_text(p.as_str())));
     }
