@@ -3,11 +3,12 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! 规则文件加载器
 //!
-//! # Schema 门禁（线1 防御层, records/77）
-//! `load_rules` 对每个解析成功的规则文件先跑 `evorule_rule_schema::validate_rule_input`：
-//! - 合规（引擎原生结构，`{transform:[]}` 或裸 transform 数组）→ 放行
-//! - 不合规 → 跳过该文件并记录 warn（含具体 Schema 错误），**不向 server 推送**，
-//!   防止 Schema 非法规则进入引擎（TCB 只保证确定性执行，不保证正确性）。
+//! # Schema 预检（仅用于本 crate `/status` 面的规则计数展示）
+//! `load_rules` 对每个解析成功的规则文件跑 `evorule_rule_schema::validate_rule_input`，
+//! 便于在 status 输出中区分合规/不合规文件数。**这不是生产装载门**：本 crate 的
+//! `load_rules` 结果只作计数展示，从不向 server 推送；真正的规则装载与非法规则
+//! 拦截发生在 server 侧合并装载层（`evorule_rule_loader` 的 discipline/domain 门）。
+//! （TCB 只保证确定性执行，不保证内容正确性。）
 
 use serde_json::Value;
 use std::fs;
