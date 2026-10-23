@@ -39,12 +39,14 @@
                   {
                     "type": "eq",
                     "path": "__exec__.payload.data.data_classification",
-                    "value": "sensitive"
+                    "value": "sensitive",
+                    "on_missing": "error"
                   },
                   {
                     "type": "eq",
                     "path": "__exec__.payload.data.encryption",
-                    "value": "none"
+                    "value": "none",
+                    "on_missing": "error"
                   }
                 ]
               },

@@ -30,7 +30,8 @@
            "inner": {
             "path": "payload.shadow_result.diff_exceeded",
             "type": "eq",
-            "value": true
+            "value": true,
+            "on_missing": "error"
            },
            "type": "not"
           },
@@ -45,7 +46,8 @@
               "inner": {
                "path": "payload.audit.pending_alert",
                "type": "eq",
-               "value": null
+               "value": null,
+               "on_missing": "error"
               },
               "type": "not"
              }

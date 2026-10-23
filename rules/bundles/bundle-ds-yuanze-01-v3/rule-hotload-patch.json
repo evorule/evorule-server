@@ -26,7 +26,8 @@
        "domain": {
         "path": "payload.audit.sandbox_verdict.passed",
         "type": "eq",
-        "value": true
+        "value": true,
+        "on_missing": "error"
        },
        "on_false": [
         {
