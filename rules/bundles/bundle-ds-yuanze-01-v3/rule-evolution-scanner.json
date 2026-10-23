@@ -35,7 +35,8 @@
                 "inner": {
                   "path": "payload.audit.failure_count",
                   "type": "lt",
-                  "value": 3
+                  "value": 3,
+                  "on_missing": "error"
                 },
                 "type": "not"
               },

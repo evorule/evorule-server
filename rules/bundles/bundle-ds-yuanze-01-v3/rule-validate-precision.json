@@ -26,7 +26,8 @@
               "domain": {
                 "path": "payload.service_result.converged_ok",
                 "type": "eq",
-                "value": true
+                "value": true,
+                "on_missing": "error"
               },
               "on_false": [
                 {

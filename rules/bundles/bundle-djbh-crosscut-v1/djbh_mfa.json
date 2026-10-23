@@ -39,12 +39,14 @@
                   {
                     "type": "eq",
                     "path": "__exec__.payload.data.operation_risk",
-                    "value": "high"
+                    "value": "high",
+                    "on_missing": "error"
                   },
                   {
                     "type": "lt",
                     "path": "__exec__.payload.data.mfa_factor_count",
-                    "value": 2
+                    "value": 2,
+                    "on_missing": "error"
                   }
                 ]
               },

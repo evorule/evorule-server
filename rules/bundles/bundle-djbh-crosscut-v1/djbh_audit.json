@@ -36,7 +36,8 @@
               "domain": {
                 "type": "eq",
                 "path": "__exec__.payload.data.audit_enabled",
-                "value": false
+                "value": false,
+                "on_missing": "error"
               },
               "on_true": [
                 {
@@ -63,7 +64,8 @@
                     "domain": {
                       "type": "eq",
                       "path": "__exec__.payload.data.audit_log_protected",
-                      "value": false
+                      "value": false,
+                      "on_missing": "error"
                     },
                     "on_true": [
                       {

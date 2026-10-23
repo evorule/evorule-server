@@ -24,7 +24,7 @@
     {
       "entry_id": "rule-evolution-scanner",
       "file": "rule-evolution-scanner.json",
-      "content_hash": "blake3:0a98840009ae2f91126cc5aae278eed7e31028ef1f9b4dd9651d4e2d4bb45716"
+      "content_hash": "blake3:c1e787a30613d66a8de69c57b018b7ab6b428aa5a98eb361f9f0000e3017f2f8"
     },
     {
       "entry_id": "rule-generate-patch",
@@ -34,7 +34,7 @@
     {
       "entry_id": "rule-hotload-patch",
       "file": "rule-hotload-patch.json",
-      "content_hash": "blake3:1f59d10ce3d3d864fd4ba7f9e5c51a9e55cfe789dc63e9c68cd35aa22ec02361"
+      "content_hash": "blake3:bc1d8c7c9515a73cb1735ed880993aea699d48737bf322fbdb91f7290ab9c8a0"
     },
     {
       "entry_id": "rule-robot-move",
@@ -44,7 +44,7 @@
     {
       "entry_id": "rule-safety-rollback",
       "file": "rule-safety-rollback.json",
-      "content_hash": "blake3:0c8dcb1720689eee059533645d95584b8e43a8c37ba155f5e916bf6f743d39a0"
+      "content_hash": "blake3:21f0e9a5ca3ae23079f2c19d5cb35c5d3b3094f0056d069472473649a6d3a814"
     },
     {
       "entry_id": "rule-sampling-decider",
@@ -64,7 +64,7 @@
     {
       "entry_id": "rule-validate-precision",
       "file": "rule-validate-precision.json",
-      "content_hash": "blake3:2b8028346fd58098b0932b59e1640986811bc2ec99aeae21c57de05ec8d9b623"
+      "content_hash": "blake3:b8e8c4017ca77e47d5e594e150044722182c3d960e4151d9f11aec428826a8b5"
     }
   ]
 }
