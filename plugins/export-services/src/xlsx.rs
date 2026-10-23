@@ -31,7 +31,11 @@ pub struct SheetSpec {
 ///
 /// - 首表前插「溯源」表：每行 = claim/service/args(压缩 JSON)/digest（可复算清单入口）；
 /// - 表头加粗；表名消毒由 rust_xlsxwriter 校验（非法名报错不静默）。
-pub fn render_xlsx(title: &str, sheets: &[SheetSpec], provenance: &[(String, String, String, String)]) -> Result<Vec<u8>, String> {
+pub fn render_xlsx(
+    title: &str,
+    sheets: &[SheetSpec],
+    provenance: &[(String, String, String, String)],
+) -> Result<Vec<u8>, String> {
     let mut wb = Workbook::new();
 
     // 溯源表（恒为首表）：可复算清单——数字出自哪个服务、什么参数、信封哈希
@@ -40,7 +44,8 @@ pub fn render_xlsx(title: &str, sheets: &[SheetSpec], provenance: &[(String, Str
         ws.set_name("溯源").map_err(|e| format!("表名非法: {e}"))?;
         let bold = Format::new().set_bold();
         for (c, h) in ["断言", "服务", "入参", "信封摘要"].iter().enumerate() {
-            ws.write_with_format(0, c as u16, *h, &bold).map_err(err_of)?;
+            ws.write_with_format(0, c as u16, *h, &bold)
+                .map_err(err_of)?;
         }
         for (r, (claim, service, args, digest)) in provenance.iter().enumerate() {
             let row = (r + 1) as u32;
@@ -58,7 +63,8 @@ pub fn render_xlsx(title: &str, sheets: &[SheetSpec], provenance: &[(String, Str
             .map_err(|e| format!("第 {} 表表名非法 {:?}: {e}", idx + 1, spec.name))?;
         let bold = Format::new().set_bold();
         for (c, h) in spec.header.iter().enumerate() {
-            ws.write_with_format(0, c as u16, h.as_str(), &bold).map_err(err_of)?;
+            ws.write_with_format(0, c as u16, h.as_str(), &bold)
+                .map_err(err_of)?;
         }
         for (r, row) in spec.rows.iter().enumerate() {
             let row_no = (r + 1) as u32;
@@ -83,7 +89,9 @@ pub fn render_xlsx(title: &str, sheets: &[SheetSpec], provenance: &[(String, Str
         .set_creation_datetime(&date);
     wb.set_properties(&props);
 
-    let bytes = wb.save_to_buffer().map_err(|e| format!("xlsx 序列化失败: {e}"))?;
+    let bytes = wb
+        .save_to_buffer()
+        .map_err(|e| format!("xlsx 序列化失败: {e}"))?;
     Ok(bytes)
 }
 

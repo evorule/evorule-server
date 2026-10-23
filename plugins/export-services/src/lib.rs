@@ -122,8 +122,15 @@ struct ExportWorkbookXlsx;
 
 impl NativeService for ExportWorkbookXlsx {
     fn execute(&self, args: &JsonValue) -> IoResult {
-        let filename = args.get("filename").and_then(|v| v.as_str()).map(str::to_string);
-        let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("工作簿").to_string();
+        let filename = args
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("工作簿")
+            .to_string();
         let sheets_val = args
             .get("sheets")
             .ok_or_else(|| "缺 sheets 参数 — 需为表数组。自诊断指引: args 形如 {\"title\":\"..\",\"sheets\":[{\"name\":\"..\",\"header\":[..],\"rows\":[[..]]}],\"provenance\":[..],\"filename\":\"..\"}".to_string())?;
@@ -134,9 +141,11 @@ impl NativeService for ExportWorkbookXlsx {
             .iter()
             .enumerate()
         {
-            let name = sv.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
-                format!("sheets[{i}] 缺 name（字符串表名）")
-            })?.to_string();
+            let name = sv
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("sheets[{i}] 缺 name（字符串表名）"))?
+                .to_string();
             let header: Vec<String> = sv
                 .get("header")
                 .and_then(|v| v.as_array())
@@ -150,7 +159,9 @@ impl NativeService for ExportWorkbookXlsx {
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| format!("sheets[{i}] 缺 rows（行数组）"))?
             {
-                let row = rv.as_array().ok_or_else(|| format!("sheets[{i}].rows 需为行数组"))?;
+                let row = rv
+                    .as_array()
+                    .ok_or_else(|| format!("sheets[{i}].rows 需为行数组"))?;
                 let mut cells = Vec::new();
                 for cv in row {
                     if let Some(t) = cv.as_str() {
@@ -177,7 +188,10 @@ struct ExportDocumentDocx;
 
 impl NativeService for ExportDocumentDocx {
     fn execute(&self, args: &JsonValue) -> IoResult {
-        let filename = args.get("filename").and_then(|v| v.as_str()).map(str::to_string);
+        let filename = args
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let title = args
             .get("title")
             .and_then(|v| v.as_str())
@@ -186,7 +200,11 @@ impl NativeService for ExportDocumentDocx {
         let paragraphs: Vec<String> = args
             .get("paragraphs")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(|p| p.as_str().map(str::to_string).unwrap_or_default()).collect())
+            .map(|arr| {
+                arr.iter()
+                    .map(|p| p.as_str().map(str::to_string).unwrap_or_default())
+                    .collect()
+            })
             .unwrap_or_default();
         let mut tables = Vec::new();
         if let Some(tv) = args.get("tables").and_then(|v| v.as_array()) {
@@ -199,9 +217,11 @@ impl NativeService for ExportDocumentDocx {
                     .map(|c| c.as_str().map(str::to_string).unwrap_or_default())
                     .collect();
                 let mut rows = Vec::new();
-                for rv in t.get("rows").and_then(|v| v.as_array()).ok_or_else(|| {
-                    format!("tables[{i}] 缺 rows（行数组，单元格为字符串）")
-                })? {
+                for rv in t
+                    .get("rows")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| format!("tables[{i}] 缺 rows（行数组，单元格为字符串）"))?
+                {
                     rows.push(
                         rv.as_array()
                             .ok_or_else(|| format!("tables[{i}].rows 需为行数组"))?
@@ -217,14 +237,23 @@ impl NativeService for ExportDocumentDocx {
         let provenance = parse_provenance(args)?;
         if !provenance.is_empty() {
             tables.push(docx::TableSpec {
-                header: vec!["断言".into(), "服务".into(), "入参".into(), "信封摘要".into()],
+                header: vec![
+                    "断言".into(),
+                    "服务".into(),
+                    "入参".into(),
+                    "信封摘要".into(),
+                ],
                 rows: provenance
                     .iter()
                     .map(|(c, s, a, d)| vec![c.clone(), s.clone(), a.clone(), d.clone()])
                     .collect(),
             });
         }
-        let bytes = docx::render_docx(&docx::DocxSpec { title: title.clone(), paragraphs, tables })?;
+        let bytes = docx::render_docx(&docx::DocxSpec {
+            title: title.clone(),
+            paragraphs,
+            tables,
+        })?;
         persist_and_envelope(&bytes, filename.as_deref(), &title, "docx")
     }
 }
@@ -280,7 +309,10 @@ fn persist_and_envelope(
     Ok(JsonValue::object_from_pairs(&[
         ("status", JsonValue::string("determined")),
         ("determinism", JsonValue::string("bitwise_replayable")),
-        ("path", JsonValue::string(abs.to_string_lossy().into_owned())),
+        (
+            "path",
+            JsonValue::string(abs.to_string_lossy().into_owned()),
+        ),
         ("filename", JsonValue::string(fname)),
         ("bytes", JsonValue::Integer(bytes.len() as i64)),
         ("blake3", JsonValue::string(format!("blake3:{hex}"))),
@@ -351,7 +383,11 @@ fn sanitize_filename(specified: Option<&str>, stem_hint: &str, hex: &str, ext: &
     };
     let default_stem = || {
         let ct = sanitize_stem(stem_hint);
-        let ct = if ct.is_empty() { "report".to_string() } else { ct };
+        let ct = if ct.is_empty() {
+            "report".to_string()
+        } else {
+            ct
+        };
         format!("{ct}_{}", &hex.chars().take(12).collect::<String>())
     };
     let stem = match specified {
@@ -388,11 +424,7 @@ mod tests {
         let doc: serde_json::Value =
             serde_json::from_str(include_str!("../official_native_services.json")).unwrap();
         let svcs = doc["services"].as_array().unwrap();
-        assert_eq!(
-            svcs.len(),
-            NATIVE_SERVICES.len(),
-            "SSOT 与声明表件数应一致"
-        );
+        assert_eq!(svcs.len(), NATIVE_SERVICES.len(), "SSOT 与声明表件数应一致");
         for (j, d) in svcs.iter().zip(NATIVE_SERVICES.iter()) {
             assert_eq!(j["name"].as_str().unwrap(), d.name, "name 应一致");
             assert_eq!(
@@ -431,7 +463,12 @@ mod tests {
     /// 文件名消毒：路径穿越/非法字符/后缀/缺省名幂等语义
     #[test]
     fn filename_sanitization_blocks_traversal() {
-        let f = sanitize_filename(Some("../../evil/name"), "audit_chain", "abcd1234ef56", "pdf");
+        let f = sanitize_filename(
+            Some("../../evil/name"),
+            "audit_chain",
+            "abcd1234ef56",
+            "pdf",
+        );
         assert!(!f.contains('/'), "不应含路径分隔符: {f}");
         assert!(!f.contains('\\'), "不应含反斜杠: {f}");
         assert!(!f.contains(".."), "不应含相对上跳: {f}");
@@ -446,7 +483,10 @@ mod tests {
         let a = sanitize_filename(None, "audit_chain", "abcd1234ef56", "pdf");
         let b = sanitize_filename(None, "audit_chain", "abcd1234ef56", "pdf");
         assert_eq!(a, b, "缺省名应确定性");
-        assert!(a.starts_with("audit_chain_abcd1234ef56"), "缺省名含内容哈希前缀: {a}");
+        assert!(
+            a.starts_with("audit_chain_abcd1234ef56"),
+            "缺省名含内容哈希前缀: {a}"
+        );
 
         // 显式 .pdf 后缀不双写
         let c = sanitize_filename(Some("x.pdf"), "t", "00", "pdf");
@@ -472,14 +512,8 @@ mod tests {
                     (
                         "rows",
                         JsonValue::array(vec![
-                            JsonValue::array(vec![
-                                JsonValue::string("甲"),
-                                JsonValue::Integer(34),
-                            ]),
-                            JsonValue::array(vec![
-                                JsonValue::string("乙"),
-                                JsonValue::Integer(33),
-                            ]),
+                            JsonValue::array(vec![JsonValue::string("甲"), JsonValue::Integer(34)]),
+                            JsonValue::array(vec![JsonValue::string("乙"), JsonValue::Integer(33)]),
                         ]),
                     ),
                 ])]),
@@ -489,7 +523,10 @@ mod tests {
                 JsonValue::array(vec![JsonValue::object_from_pairs(&[
                     ("claim", JsonValue::string("三份均分 100")),
                     ("service", JsonValue::string("gov_ratio_split")),
-                    ("args", JsonValue::string("{\"total\":100,\"weights\":[1,1,1]}")),
+                    (
+                        "args",
+                        JsonValue::string("{\"total\":100,\"weights\":[1,1,1]}"),
+                    ),
                     ("digest", JsonValue::string("blake3:demo")),
                 ])]),
             ),
@@ -504,9 +541,15 @@ mod tests {
             "xlsx 同输入双跑 blake3 应一致（确定性门）"
         );
         let path = e1.get("path").and_then(|v| v.as_str()).unwrap();
-        assert!(path.ends_with("golden_split.xlsx"), "落盘路径应含指定名: {path}");
+        assert!(
+            path.ends_with("golden_split.xlsx"),
+            "落盘路径应含指定名: {path}"
+        );
         let bytes = std::fs::read(path).unwrap();
-        assert!(bytes.starts_with(b"PK") || bytes.starts_with(b"PK"), "xlsx 应为 zip 魔数开头");
+        assert!(
+            bytes.starts_with(b"PK") || bytes.starts_with(b"PK"),
+            "xlsx 应为 zip 魔数开头"
+        );
     }
 
     /// docx 服务黄金：双跑同 blake3 + zip 魔数（docx 亦为 zip 容器）
@@ -566,15 +609,16 @@ mod tests {
             ("content_type", JsonValue::string("audit_chain")),
             (
                 "raw_data",
-                JsonValue::array(vec![
-                    JsonValue::object_from_pairs(&[
-                        ("fact_id", JsonValue::string("#30001")),
-                        (
-                            "payload",
-                            JsonValue::object_from_pairs(&[("规则", JsonValue::string("上限 5000 元"))]),
-                        ),
-                    ]),
-                ]),
+                JsonValue::array(vec![JsonValue::object_from_pairs(&[
+                    ("fact_id", JsonValue::string("#30001")),
+                    (
+                        "payload",
+                        JsonValue::object_from_pairs(&[(
+                            "规则",
+                            JsonValue::string("上限 5000 元"),
+                        )]),
+                    ),
+                ])]),
             ),
             ("filename", JsonValue::string("golden_audit.pdf")),
         ]);
@@ -591,7 +635,10 @@ mod tests {
             Some("determined")
         );
         let path = e1.get("path").and_then(|v| v.as_str()).unwrap();
-        assert!(path.ends_with("golden_audit.pdf"), "落盘路径应含指定名: {path}");
+        assert!(
+            path.ends_with("golden_audit.pdf"),
+            "落盘路径应含指定名: {path}"
+        );
         let bytes = std::fs::read(path).unwrap();
         assert!(bytes.starts_with(b"%PDF"), "落盘文件应为 PDF 魔数开头");
     }
