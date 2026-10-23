@@ -52,7 +52,11 @@ pub fn anchor_config_from_env() -> Option<SessionAnchorConfig> {
     })
 }
 
-/// 解析 64 位 hex 种子（严格 32 字节；解析失败=启动失败优于静默降级）
+/// 解析 64 位 hex 种子（严格 32 字节）。
+///
+/// 失败语义：返回 `None`（调用方据此整体停用锚点链，server 继续启动）——
+/// 坏种子不会阻断进程，但会留下 error 日志且锚点签名验证随之关闭；
+/// 运维须从日志确认锚点链状态，不能默认它在运行。
 fn decode_seed(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
         tracing::error!(

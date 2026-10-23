@@ -19,6 +19,8 @@ evorule-governance 同机制先例）。基线 = crates.io `evorule-tcb 0.8.4`
 | 文件 | 改动 |
 |---|---|
 | `src/domain.rs` | ① dispatch 加 `"in"` 分支；② 新增 `evaluate_in_outcome`（三态：含→Sat/不含→Unsat/路径缺→按 on_missing；空集→Unsat；字符串元素命中根段点形态→Missing(ValueLiteralAmbiguous)，复用 `is_root_segment_dot_path` 谓词零镜像）；③ 模块 doc 与 evaluate_domain doc 域清单 7→8；④ tests 增 in 组 10 件（sat/unsat/整数成员/空集 Unsat/缺省 unsat 投影/on_missing=error 拒执行/values 缺失 Err/values 非数组 Err/根段点元素歧义/确定性幂等） |
+| `src/executor.rs` | 仅 doc 注释增量（+11 行，含空行，零代码差异）：`apply_set_operation` 上方的算术词汇表架构裁定注释——本枚举刻意不引入 `mul`/`div`，乘除走服务面原生服务，演化路径=立法治理语义新指令，校验面对应 `_shared/v1.0.json` 的 operation 字段 |
+| `src/lib.rs` | 纯行尾差异（CRLF；基线与主仓为 LF），零内容差异——任何按字节比对的同步闸对本文件会误报，按规范化内容比对一致 |
 
 语义裁定（design-19 R-2/R-3，2026-10-16 用户批准）：
 - values 元素 = 纯字面量（不做 `__` 引用解析）

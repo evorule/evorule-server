@@ -16,6 +16,27 @@
 | `IoSubscriber` deny 回写 error 串拼 route 段（`route=deny` / `route=ask-fallback`，确定性构造） | `src/io_subscriber.rs` | J-SG2 判据（负向可区分） |
 | `permission::mod` 导出 RoutePolicy 族 | `src/permission/mod.rs` | — |
 
+## 相对基线 `0a4d592` 的全量文件级差异（2026-10-24 实测复核，11 文件）
+
+> 行数为相对基线 `0a4d592`（批 H）的增/删（行尾规范化后 diff）。
+> **同步纪律执行现状**：此前本表只登记 SG-2 四件，漏登下列 7 文件与能力族，本次补全。
+
+| 文件 | ±行 | 内容 |
+|---|---|---|
+| `session.rs` | +499/−143 | **G6 规则集锚定族**（`with_ruleset_version`/`set_ruleset_version`/`append_ruleset_anchor`/`ruleset_version_anchored_into_chain`）+ **rehydrate 族**（`rehydrate_session_from_wal` + `auditor_from_config` + 4 测试）+ **tick 步进族**（`tick_instruction`/`submit_tick`/`wait_version_stable`）；消费方=server checkpoint/规则集锚定/会话恢复 |
+| `auditor.rs` | +184/−2 | **锚点持久化族**（`persist_anchor`/`load_anchor_log`/`with_anchor_persisted`/`with_anchor_impl`）+ import_compressed 解压限额与口径 doc |
+| `shared_facts_log.rs` | +14/−0 | recover 前置链三查 + 共享账本 ed25519 锚点链（载荷含 metadata 摘要）+ 锚点持久化入 metadata |
+| `io_subscriber.rs` | +5/−109 | deny 回写 route 段；大幅收缩为 SG-2 后形态 |
+| `permission/gate.rs` | +9/−34 | SG-2 静态层接线（`check_routed` 裁决序） |
+| `circuit_breaker.rs` | +4/−10 | 收敛 |
+| `permission/route_policy.rs` | +3/−12 | 微调 |
+| `anchor.rs` | +15/−2 | 锚点链配合 G6 |
+| `signing.rs` | +0/−9 | 移除 9 行 |
+| `metrics.rs` | +2/−2 | 微调 |
+| `rule_validation.rs` | +3/−1 | 微调+注释指正（业务语义校验层在 server 侧 core/semantic_invariants） |
+
+**主仓有而本补丁无（退役条件，非本补丁缺陷）**：时钟缝族（`with_clock`/`reap_expired_at`/`max_session_id_from_names`）——主仓 `0a4d592` 后新增；本补丁退役前提=主仓先吸收 G6 锚定/rehydrate/tick 三族，否则删补丁即丢 server 在用能力。`verify_deep` 两侧签名同形（主仓已吸收先例）。
+
 ## vendored 化机械差异（非语义）
 
 - `[package]` workspace 继承字段固定为 0.8.5 对应值

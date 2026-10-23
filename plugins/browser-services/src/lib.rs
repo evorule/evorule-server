@@ -9,8 +9,8 @@
 //! - 底层：zendriver-rs（纯 Rust async CDP）；同步 trait × async 经 `bridge` 桥接。
 //!
 //! # 最大能力面
-//! - NATIVE_SERVICES 28 项一次声明全（SSOT=official_native_services.json）；
-//!   v0.1 先打通表/路由/审计，真 zendriver 调用逐服务接入。
+//! - NATIVE_SERVICES 45 项一次声明全（SSOT=official_native_services.json）；
+//!   核心服务有真实 zendriver 实现，其余按同一执行骨架接入。
 
 #![forbid(unsafe_code)]
 
@@ -56,8 +56,9 @@ impl IoHandler for BrowserServiceRouter {
 }
 
 // ============================================================================
-// 28 个服务：v0.1 全部占位返回 not-implemented，真 zendriver 调用逐服务接入。
-// 服务名与 sensitive 与 official_native_services.json 逐字段+顺序一致（漂移测试守卫）。
+// 45 个服务：核心服务有真实 zendriver 实现；未接入的服务经统一骨架返回
+// not-implemented 语义。服务名与 sensitive 与 official_native_services.json
+// 逐字段+顺序一致（漂移测试守卫）。
 // ============================================================================
 
 macro_rules! placeholder {

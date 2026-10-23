@@ -16,7 +16,9 @@
 //! - ✅ 结构完整性：type 字段存在、必填参数完备
 //! - ✅ 类型合法性：指令类型在白名单内
 //! - ✅ 安全风险：循环深度、I/O 频率、payload 增长边界
-//! - ❌ 不验证业务规则（如"库存扣减不能为负"）—— 那是 semantic_invariants 的职责
+//! - ❌ 不验证业务规则（如"库存扣减不能为负"）—— 那是业务语义校验层
+//!   （server 侧 `core/semantic_invariants` crate）的职责；governance 仓内
+//!   没有该模块，勿在本仓找
 //!
 //! # 参考
 //! - `evorule-cli/src/commands/validate.rs`：CLI 侧的元指令白名单校验
