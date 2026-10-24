@@ -884,7 +884,7 @@ impl SessionApi {
     /// 历史注记：2026-10-22 19:07 的 903b13b 引入本注入时，调用点已在 async main 内，
     /// 而此处原注释写的是"builder 非 async 上下文…先于 runtime 进入服务"——与实际调用点
     /// 不符，导致**服务启动即崩**（该缺陷由 2026-10-22 的实机验证发现）。
-    pub fn with_ruleset_version(mut self, version: String) -> Result<Self, String> {
+    pub fn with_ruleset_version(self, version: String) -> Result<Self, String> {
         {
             // 借用作用域收敛在本块内：块结束即释放 MutexGuard 与 match 临时值，
             // 随后才可把 self 整体移出（否则 E0505：cannot move out of `self` because it is borrowed）
