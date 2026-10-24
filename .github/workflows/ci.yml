@@ -168,6 +168,34 @@ jobs:
       - name: cargo test
         run: cargo test
 
+  # ===== vendored reactor 副本自测（Fact 契约黄金向量自证闸门 · 强阻塞）=====
+  # patches/evorule-reactor 是 [patch.crates-io] 路径补丁（非 workspace 成员），
+  # 主 CI 的 lint/test 天然不覆盖其测试面。本 job 跑其黄金向量自证闸门：
+  # 副本 live 哈希契约 == 冻结向量（对向闸门在 evorule-integration-tests，
+  # 经 include_str! 读同一向量；共同契约物变更须双仓同批留痕），副本漂移即红。
+  # 测试态 tcb 经本目录 [patch.crates-io] 重定向至仓内 vendored 副本
+  # （注册表 0.8.4 缺 u64 全域通道，见 patches/evorule-reactor/Cargo.toml 注释）。
+  vendored-reactor-gate:
+    name: vendored reactor fact-contract gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: patches/evorule-reactor
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: patches/evorule-reactor
+          key: vendored-reactor-${{ hashFiles('patches/evorule-reactor/Cargo.lock') }}
+
+      - name: cargo test (fact contract golden gate)
+        run: cargo test --test ssot_fact_contract_gate
+
   # ===== Rust tests =====
   test:
     name: Rust Tests

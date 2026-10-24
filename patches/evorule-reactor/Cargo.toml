@@ -121,6 +121,20 @@ required-features = ["persistence"]
 name = "differential_test"
 path = "verification/differential_test.rs"
 
+# Fact 稳定序列化黄金向量自证闸门（副本侧棘轮；对向闸门在
+# evorule-integration-tests）。断言面仅哈希契约（fact_to_stable_json /
+# fact_hash，lib 导出无 feature 门控），常规 `cargo test` 即可运行，无需
+# --features persistence；WAL 展示面不属对账物（详见测试文件头注释）。
+[[test]]
+name = "ssot_fact_contract_gate"
+
+# 独立测试态 tcb 源重定向：本目录自测（空 workspace 表 + 独立 lock）下
+# `evorule-tcb` 按纯 version req 解析注册表 0.8.4——缺 u64 全域通道（U64 变体）
+# 编译不通过；重定向到仓内 vendored 副本 ../evorule-tcb（0.8.4 + u64 通道）。
+# 被根仓 [patch.crates-io] 以本目录为补丁源消费时本节不生效（patch 不嵌套）。
+[patch.crates-io]
+evorule-tcb = { path = "../evorule-tcb" }
+
 [package.metadata.kani]
 # CI 验证列表 (仅限能在 CI 预算内稳定通过的 proof; 与 .github/workflows/kani.yml
 # 的 kani-reactor job 保持同步)

@@ -25,8 +25,8 @@ crates.io 注册表实例（全局单实例替换，无双实例类型冲突；0
 | `src/hash.rs` | v0.9.0 主仓同步：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载，不经 i64 cast）+ u64 无损回归测试 |
 | `src/reactor.rs` | ① `ReactorStateSnapshot` 增 `pending_io: Vec<PendingIoEntry>`（每迭代头随快照刷新，空表零分配）；② `Reactor`/`ReactorBuilder`/`ReactorHandle` 增 `cancel_all_flag` 共享标志 + `cancel_all_pending()`；主循环迭代头 0.55 位消费（逐 pending 请求 emit `Fact::Error` "cancelled by external request" + `force_remove_io_request`，镜像超时路径，不发 Stable）；③ 增 `InvariantScanReport` 共享报告 + `latest_invariants` 槽（每迭代头由 `run_invariant_check` 返回值刷新）+ `ReactorHandle::latest_invariant_scan()`；`run_invariant_check` 改为返回违规明细（既有计数+日志行为不变） |
 | `src/lib.rs` | 导出 `InvariantScanReport` |
-| `Cargo.toml` | workspace 继承字面量化；`evorule-tcb` 去 path 保留 version；去 `[lints]` 继承；尾部空 `[workspace]` 表（脱离 server 工作区） |
-| 测试 | 增 `cancel_all_pending_clears_requests_and_emits_errors`（真实 pending 全链：快照清单可见→取消→清零→Error 入链→扫描干净） |
+| `Cargo.toml` | workspace 继承字面量化；`evorule-tcb` 去 path 保留 version；去 `[lints]` 继承；尾部空 `[workspace]` 表（脱离 server 工作区）；v0.9.0 同步另增：`[[test]] ssot_fact_contract_gate` 契约闸门声明 + `[patch.crates-io]` tcb 重定向（仅独立自测态生效，patch 不嵌套） |
+| 测试 | 增 `cancel_all_pending_clears_requests_and_emits_errors`（真实 pending 全链：快照清单可见→取消→清零→Error 入链→扫描干净）；增 `tests/ssot_fact_contract_gate.rs`（Fact 契约黄金向量自证闸门 + 重生成器，见「测试边界」）；增 `tests/fixtures/ssot_fact_contract_golden.json`（冻结黄金向量：11 样本 stable_json + fact_hash，双仓共享对账物） |
 
 governance 不打补丁：`Session.handle` / `Session.facts_log` 均为 pub，server 直接触达。
 
@@ -34,13 +34,22 @@ governance 不打补丁：`Session.handle` / `Session.facts_log` 均为 pub，se
 
 - server 工作区 `cargo test` **不含**本补丁的测试（[patch] 包不是 workspace 成员）。
   在本目录独立跑：`cargo test --lib`（自带空 workspace 表 + 独立 lock）。
-- **v0.9.0 起独立自测暂不可跑（u64 全域通道固随）**：本副本 `fact.rs` 等已改用
-  `JsonValue::U64`/`JsonValue::u64`，独立构建时 `evorule-tcb` 按纯 version 解析到
-  crates.io 0.8.4（无 U64 变体）→ 编译不通过。恢复条件 = 主仓 evorule-tcb 0.9.0
-  发布后本补丁退役（见删除条件），或将 tcb 依赖改指 `../evorule-tcb`（manifest
-  结构变更，需另行报批）。过渡期本副本行为由 server workspace 全量测试覆盖
-  （[patch.crates-io] 全局替换，全部 server 测试跑在本副本源上）。
-- 独立跑基线（v0.8.4 时代，历史留痕）：**140 passed / 3 failed**——3 件失败
+- **独立自测恢复（跨仓契约闸批次）**：
+  - tcb 源：本目录 `[patch.crates-io]` 将 `evorule-tcb` 重定向至仓内 vendored
+    副本 `../evorule-tcb`（0.8.4 + u64 全域通道；注册表 0.8.4 缺 `U64` 变体
+    编译不通过）。被根仓 `[patch.crates-io]` 以本目录为补丁源消费时本节不
+    生效（patch 不嵌套），两态互不干扰。
+  - **Fact 契约黄金向量闸门**（v0.9.0 起在役）：`tests/ssot_fact_contract_gate.rs`
+    断言副本 live 哈希契约 == 冻结向量 `tests/fixtures/ssot_fact_contract_golden.json`
+    （11 样本：9 Fact 变体 + u64::MAX-1 哨兵 id + u64 值通道；断言面仅
+    `fact_to_stable_json` / `fact_hash`，无 feature 门控）。对向闸门在
+    evorule-integration-tests（`include_str!` 跨仓读同一向量，SSOT 侧
+    `evorule-audit-chain` live 复算对账）——**双向棘轮**：任一侧漂移即红，
+    共同契约物变更须在本目录重生成向量并双仓同批提交留痕。本仓 CI 的
+    `vendored-reactor-gate` job 强阻塞。
+  - 重生成器（契约有意演进时显式执行）：
+    `cargo test --test ssot_fact_contract_gate regenerate_golden_fixture -- --ignored --nocapture`
+- 独立全量基线（v0.8.4 时代，历史留痕）：**140 passed / 3 failed**——3 件失败
   （`pure::tests::test_next_step_*`）为环境性缺夹具（读 sibling 路径
   `../evorule-tcb/core_eval.json`，仅主仓布局存在），非补丁引入；主仓内同测试
   基线绿。新增测试 1 件绿。
