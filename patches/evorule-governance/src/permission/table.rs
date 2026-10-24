@@ -39,7 +39,11 @@ pub struct DefaultPolicy {
 impl Default for DefaultPolicy {
     fn default() -> Self {
         Self {
-            human: Effect::Allow,
+            // 人类调用者缺省一律拒绝（fail-closed）：部署面必须显式播种人类
+            // 权限条目（如 io:* 白名单），未匹配即拒——不做隐式放行。
+            // 存量依赖「未播种也放行」的部署需在共享事实中显式声明宽松
+            // default_policy（DEFAULT_POLICY_PATH）或补齐条目。
+            human: Effect::Deny,
             llm: Effect::Deny,
             unknown: Effect::Deny,
         }
@@ -493,31 +497,32 @@ mod tests {
     fn default_policy_change_is_ledger_backed() {
         let log = Arc::new(SharedFactsLog::new());
 
-        // 空表 + 默认策略（human=Allow）下，人类调用者默认放行
+        // 空表 + 缺省策略（human=Deny，fail-closed）下，人类调用者默认拒绝
         let v0 = log.version();
         let table0 = PermissionTable::snapshot_at(&log, v0).unwrap();
         let mut ctx = IoCallContext::new(FactId(0), v0, None);
         ctx.caller_role = CallerRole::Human;
         assert_eq!(
             table0.evaluate(&ctx, "io:anything", "*", None),
-            crate::permission::Verdict::Allow,
-            "默认策略 human=Allow 应使空表下人类调用者默认放行"
+            crate::permission::Verdict::Deny,
+            "缺省策略 human=Deny 应使空表下人类调用者默认拒绝（不做隐式放行）"
         );
 
-        // 经账本改写默认策略：human → Deny（fail-closed 姿态），证明该姿态变更也走账本
-        let deny_human = crate::permission::DefaultPolicy {
-            human: Effect::Deny,
+        // 经账本改写默认策略：human → Allow（显式宽松姿态，须部署面声明），
+        // 证明该姿态变更也走账本——宽松是显式选择而非缺省
+        let allow_human = crate::permission::DefaultPolicy {
+            human: Effect::Allow,
             llm: Effect::Deny,
             unknown: Effect::Deny,
         };
-        let v1 = PermissionTable::set_default_policy(&log, &deny_human, 0).unwrap();
+        let v1 = PermissionTable::set_default_policy(&log, &allow_human, 0).unwrap();
         let table1 = PermissionTable::snapshot_at(&log, v1).unwrap();
         let mut ctx1 = IoCallContext::new(FactId(0), v1, None);
         ctx1.caller_role = CallerRole::Human;
         assert_eq!(
             table1.evaluate(&ctx1, "io:anything", "*", None),
-            crate::permission::Verdict::Deny,
-            "经账本改写后的默认策略必须生效：人类调用者转为 Deny（fail-closed）"
+            crate::permission::Verdict::Allow,
+            "经账本改写后的默认策略必须生效：人类调用者按显式声明转为 Allow"
         );
     }
 }

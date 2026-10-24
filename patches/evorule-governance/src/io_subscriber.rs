@@ -251,12 +251,12 @@ impl IoSubscriber {
             "IoSubscriber 启动，开始订阅 event broadcast 通道"
         );
 
-        // 可观测性：守卫未装配 = 本订阅者的 I/O 全部跳过权限仲裁（fail-open）。
-        // 此前该状态在核心仓内完全静默，只能检查调用方的装配代码才能发现。
+        // 可观测性：守卫未装配 = 本订阅者对 IoRequest 一律 fail-closed 拒绝
+        // （不分发）。此前该状态为 warn 后照发（fail-open），收紧见分发处 else 分支。
         if !self.permission_gate_enabled() {
             tracing::warn!(
-                "IoSubscriber 未装配 PermissionGate：本订阅者自动分发的 IoRequest \
-                 将跳过权限仲裁（fail-open）。生产环境须经 with_permission_gate(..) 注入。"
+                "IoSubscriber 未装配 PermissionGate：本订阅者对 IoRequest 一律 \
+                 fail-closed 拒绝（不分发）。生产装配须经 with_permission_gate(..) 注入。"
             );
         }
 
@@ -456,6 +456,29 @@ impl IoSubscriber {
                     IoSubscriberError::CommandClosed(format!("request_id={request_id}"))
                 });
             }
+        } else {
+            // 权限门未装配 = 无仲裁能力（fail-closed）：拒绝分发并回写错误
+            // IoResponse（IoRequest 不悬空），替代原先 warn 后照发的
+            // fail-open 缺省——未显式装配门的订阅者不具备 I/O 分发能力。
+            self.metrics.inc_io_errors(io_type.as_str());
+            tracing::error!(
+                request_id = %request_id,
+                io_type = %io_type.as_str(),
+                "IoSubscriber 未装配 PermissionGate：按 fail-closed 拒绝该 IoRequest"
+            );
+            let response = Fact::IoResponse {
+                id: self.next_fact_id(),
+                request_id,
+                result: JsonValue::Null,
+                error: Some(
+                    "permission gate not assembled (fail-closed): this subscriber \
+                     requires with_permission_gate(..) before it dispatches I/O"
+                        .to_string(),
+                ),
+            };
+            return command_tx.send(response).map_err(|_| {
+                IoSubscriberError::CommandClosed(format!("request_id={request_id}"))
+            });
         }
 
         // 记录整体 I/O 耗时（包含重试）。通过 trait object 分发，
@@ -811,11 +834,28 @@ mod tests {
     /// （空 dispatcher 报"分发失败"类错误，而非权限拒绝）
     #[tokio::test]
     async fn test_permission_gate_allow_proceeds_to_dispatch() {
-        use crate::permission::PermissionGate;
+        use crate::permission::{
+            Effect, PermissionEntry, PermissionGate, PermissionState, Resource, ResourceType,
+            Subject,
+        };
         use evorule_reactor::CallerRole;
         use std::sync::Arc as StdArc;
 
-        let gate = PermissionGate::new(StdArc::new(crate::shared_facts_log::SharedFactsLog::new()))
+        // 缺省策略收紧（human=Deny）后，Allow 通路须以显式播种条目表达
+        let log = StdArc::new(crate::shared_facts_log::SharedFactsLog::new());
+        let mut entry = PermissionEntry::new(
+            "seed-human-call-external",
+            Subject::human("human"),
+            Resource {
+                resource_type: ResourceType::IoAction,
+                path: "io:call_external".to_string(),
+            },
+            Effect::Allow,
+        );
+        entry.state = PermissionState::Active;
+        crate::permission::PermissionTable::store_entry(&log, &entry, 0).expect("store entry");
+
+        let gate = PermissionGate::new(log)
             .with_caller_role_resolver(StdArc::new(|_| CallerRole::Human));
         let mut subscriber =
             IoSubscriber::new(IoDispatcher::builder().build()).with_permission_gate(gate);
