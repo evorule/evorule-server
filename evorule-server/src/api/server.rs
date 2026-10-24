@@ -1072,6 +1072,12 @@ impl SessionApi {
                 return Err(RehydrateRejection::Corrupted(other.to_string()));
             }
         };
+        // 零记录归档（真·空 WAL，如 0 字节引导壳）＝无可复活状态：按无归档
+        // 静默回落重建（与 NoArchive 同道，不打 ERROR；G6 哨兵 id 解析修复后
+        // 启动期「WAL invalid fact」噪音的剩余来源即此形态）。
+        if records.is_empty() {
+            return Err(RehydrateRejection::NoArchive);
+        }
         if let Err(rej) = replay_archive_state(session_id, &records, None) {
             match rej {
                 ArchiveForkRejection::Corrupted(reason) => {
@@ -3887,13 +3893,18 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         session_id: u64,
     ) -> evorule_workspace::WorkspaceResult<serde_json::Value> {
-        let sessions = self.sessions.lock().await;
-
-        sessions.touch_session(session_id);
-
-        let session = sessions.get_session(session_id).ok_or_else(|| {
-            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
-        })?;
+        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        let session = self
+            .session_or_rehydrate(session_id)
+            .await
+            .map_err(|rej| match rej {
+                RehydrateRejection::NoArchive => {
+                    evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+                }
+                other => evorule_workspace::WorkspaceError::internal(format!(
+                    "session rehydrate rejected: {other}"
+                )),
+            })?;
 
         // 兜底刷新: send_command 后已实时刷新, 此处确保 reactor 异步处理的 fact 也进链
 
@@ -3928,13 +3939,18 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         session_id: u64,
     ) -> evorule_workspace::WorkspaceResult<String> {
-        let sessions = self.sessions.lock().await;
-
-        sessions.touch_session(session_id);
-
-        let session = sessions.get_session(session_id).ok_or_else(|| {
-            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
-        })?;
+        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        let session = self
+            .session_or_rehydrate(session_id)
+            .await
+            .map_err(|rej| match rej {
+                RehydrateRejection::NoArchive => {
+                    evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+                }
+                other => evorule_workspace::WorkspaceError::internal(format!(
+                    "session rehydrate rejected: {other}"
+                )),
+            })?;
 
         // 兜底刷新: 确保 reactor 异步处理的 fact 已进 BLAKE3 链后再导出
 
@@ -3962,13 +3978,18 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         session_id: u64,
     ) -> evorule_workspace::WorkspaceResult<Vec<serde_json::Value>> {
-        let sessions = self.sessions.lock().await;
-
-        sessions.touch_session(session_id);
-
-        let session = sessions.get_session(session_id).ok_or_else(|| {
-            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
-        })?;
+        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        let session = self
+            .session_or_rehydrate(session_id)
+            .await
+            .map_err(|rej| match rej {
+                RehydrateRejection::NoArchive => {
+                    evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+                }
+                other => evorule_workspace::WorkspaceError::internal(format!(
+                    "session rehydrate rejected: {other}"
+                )),
+            })?;
 
         Ok(session
             .facts_log
@@ -3990,13 +4011,18 @@ impl evorule_workspace::SessionOps for SessionApi {
     ) -> evorule_workspace::WorkspaceResult<serde_json::Value> {
         use evorule_reactor::FactId;
 
-        let sessions = self.sessions.lock().await;
-
-        sessions.touch_session(session_id);
-
-        let session = sessions.get_session(session_id).ok_or_else(|| {
-            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
-        })?;
+        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        let session = self
+            .session_or_rehydrate(session_id)
+            .await
+            .map_err(|rej| match rej {
+                RehydrateRejection::NoArchive => {
+                    evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+                }
+                other => evorule_workspace::WorkspaceError::internal(format!(
+                    "session rehydrate rejected: {other}"
+                )),
+            })?;
 
         // 兜底刷新: 确保 fact 已进审计链后再追溯因果
 
@@ -4055,13 +4081,18 @@ impl evorule_workspace::SessionOps for SessionApi {
     /// 将 FactsLog 中尚未审计的 Fact 刷入 BLAKE3 哈希链, 返回本次新增条目数。
     /// send_command 后应调用此方法确保审计链实时性。
     async fn flush_audit(&self, session_id: u64) -> evorule_workspace::WorkspaceResult<usize> {
-        let sessions = self.sessions.lock().await;
-
-        sessions.touch_session(session_id);
-
-        let session = sessions.get_session(session_id).ok_or_else(|| {
-            evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
-        })?;
+        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        let session = self
+            .session_or_rehydrate(session_id)
+            .await
+            .map_err(|rej| match rej {
+                RehydrateRejection::NoArchive => {
+                    evorule_workspace::WorkspaceError::not_found("session", session_id.to_string())
+                }
+                other => evorule_workspace::WorkspaceError::internal(format!(
+                    "session rehydrate rejected: {other}"
+                )),
+            })?;
 
         Ok(session.audit_new())
     }
@@ -6540,11 +6571,11 @@ async fn session_metadata(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<SessionMetadataResponse>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    // 读侧惰性复活（o31 同族）：内存未命中且归档在即按原 sid 复活，不直取 404
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     Ok(Json(SessionMetadataResponse {
         session_id,
@@ -7641,13 +7672,10 @@ async fn session_audit(
 
     axum::extract::Query(query): axum::extract::Query<AuditReportQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    sessions.touch_session(session_id);
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     // 先审计新事实
 
@@ -7838,13 +7866,10 @@ async fn session_audit_verify(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    sessions.touch_session(session_id);
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let _new_count = session.audit_new();
 
@@ -7894,17 +7919,15 @@ async fn session_anchors(
     State(api): State<SessionApi>,
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-    sessions.touch_session(session_id);
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
     // 兜底刷新：确保自动封条间隔已到的事实先入链再取快照
     let _new_count = session.audit_new();
     let anchors: Vec<serde_json::Value> =
         session.anchors().into_iter().map(anchor_to_json).collect();
     let count = anchors.len();
-    drop(sessions);
     Ok(Json(serde_json::json!({
         "session_id": session_id,
         "count": count,
@@ -8944,13 +8967,10 @@ async fn session_causal_chain(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     use evorule_reactor::FactId;
 
-    let sessions = api.sessions.lock().await;
-
-    sessions.touch_session(session_id);
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let _new_count = session.audit_new();
 
@@ -9021,13 +9041,10 @@ async fn session_audit_export(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    sessions.touch_session(session_id);
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     // 先审计新事实，确保导出包含最新条目
 
@@ -9163,13 +9180,10 @@ async fn session_audit_export_compressed(
 
     Path(session_id): Path<u64>,
 ) -> Result<Response, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    sessions.touch_session(session_id);
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     // 先审计新事实，确保导出包含最新条目
 
@@ -9710,13 +9724,10 @@ async fn session_events(
     // 从 SessionManager 获取 event 通道接收端
 
     let mut event_rx = {
-        let sessions = api.sessions.lock().await;
-
-        sessions.touch_session(session_id);
-
-        let session = sessions
-            .get_session(session_id)
-            .ok_or(StatusCode::NOT_FOUND)?;
+        let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+            tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+            rej.to_status()
+        })?;
 
         session.event_tx.subscribe()
     };
@@ -9903,11 +9914,10 @@ async fn session_replay(
 
     Query(params): Query<ReplayParams>,
 ) -> Result<Json<Vec<FactEnvelope>>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let from = params.from.unwrap_or(0);
 
@@ -10193,11 +10203,10 @@ async fn session_history(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<Vec<FactEnvelope>>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let all_facts = session.facts_log.history_with_versions();
 
@@ -10333,11 +10342,10 @@ async fn session_diff(
 
     Query(params): Query<DiffParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let facts = session.facts_log.history();
 
@@ -10433,11 +10441,12 @@ async fn session_facts_by_prefix(
 
     Query(params): Query<FactsByPrefixParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    // o31 原发点：MemoryTab 共享事实查询——内存未命中时必须走惰性复活，
+    // 引擎重启后历史会话的 facts 索引才不至于直取 404
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let prefix = params.prefix.unwrap_or_default();
 
@@ -10877,11 +10886,10 @@ async fn debug_phase(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let phase = session
         .handle
@@ -10925,11 +10933,10 @@ async fn debug_queue(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let _session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let _session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     Ok(Json(serde_json::json!({
 
@@ -10967,11 +10974,10 @@ async fn debug_pending_io(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     let pending_count = session.handle.pending_io_count().unwrap_or(0);
 
@@ -11112,11 +11118,10 @@ async fn session_finished(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     Ok(Json(serde_json::json!({
 
@@ -11154,11 +11159,10 @@ async fn session_causal_depth(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     Ok(Json(serde_json::json!({
 
@@ -11196,11 +11200,10 @@ async fn session_invariants(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     Ok(Json(serde_json::json!({
 
@@ -11238,11 +11241,10 @@ async fn session_pending_io_count(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     Ok(Json(serde_json::json!({
 
@@ -11280,11 +11282,10 @@ async fn session_step(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     Ok(Json(serde_json::json!({
 
@@ -11322,11 +11323,10 @@ async fn session_snapshot(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     match session.snapshot() {
         Some(snap) => Ok(Json(serde_json::json!({
@@ -11384,11 +11384,10 @@ async fn session_auto_verify_get(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sessions = api.sessions.lock().await;
-
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     Ok(Json(serde_json::json!({
 
@@ -12575,10 +12574,10 @@ async fn session_evolution_signals(
         extract_instr_type, scan_violations, QueueCounts, ViolationSnapshot,
     };
 
-    let sessions = api.sessions.lock().await;
-    let session = sessions
-        .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
+        tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
+        rej.to_status()
+    })?;
 
     // ① 违规事实只读采集（FactsLog 单调版本号 = 确定性时钟）
     let facts = session.facts_log.history_with_versions();
@@ -13940,39 +13939,7 @@ mod tests {
             let dispatcher = IoDispatcher::builder()
                 .register(IoType::call_service(), Arc::new(EchoHandler))
                 .build();
-            // 权限缺省 fail-closed 后（human 缺省 Deny，宽松=显式经账本声明），
-            // 生产组装在启动期幂等播种 human×io:* 放行条目；本测试按生产同口径
-            // 补种——本探针验证的是 fork 角色继承下的分发机制，不是缺省策略。
-            let shared_facts = evorule_governance::shared_facts_log::SharedFactsLog::new();
-            {
-                use evorule_governance::permission::{
-                    Effect, PermissionEntry, PermissionState, Resource, ResourceType, Subject,
-                    SubjectType,
-                };
-                let mut entry = PermissionEntry::new(
-                    "default-human-allow-io",
-                    Subject {
-                        subject_type: SubjectType::User,
-                        id: "human".to_string(),
-                    },
-                    Resource {
-                        resource_type: ResourceType::IoAction,
-                        path: "io:*".to_string(),
-                    },
-                    Effect::Allow,
-                );
-                entry.state = PermissionState::Active;
-                entry.updated_by = "bootstrap".to_string();
-                evorule_governance::permission::PermissionTable::store_entry(
-                    &shared_facts,
-                    &entry,
-                    0,
-                )
-                .expect("seed default-human-allow-io (same as production bootstrap)");
-            }
-            let api = SessionApi::new(make_io_core_eval(), 100)
-                .with_dispatcher(dispatcher)
-                .with_shared_facts(shared_facts);
+            let api = SessionApi::new(make_io_core_eval(), 100).with_dispatcher(dispatcher);
 
             // 父会话声明 human（等价于经 /api/sessions 带 caller_role 创建）
             let parent = api.sessions.lock().await.create_session().unwrap();
@@ -14010,7 +13977,7 @@ mod tests {
                 })
                 .unwrap();
 
-            // 子会话 io 被应答分发（非 60s 超时）：human 声明 + 启动期同款放行种子
+            // 子会话 io 被应答分发（非 60s 超时）：human 声明 + 默认策略 Allow
             let (error, result) =
                 wait_io_response(&session, std::time::Duration::from_secs(5)).await;
             assert!(

@@ -1460,3 +1460,131 @@ async fn test_rehydrate_disabled_keeps_404() {
         "开关关闭时归档在位也必须保持 404: {resp}"
     );
 }
+
+// ===== o31 读侧惰性复活回归（23 只读路由 + 零记录回落 + G6 哨兵锚）=====
+
+/// 重启后只读路由必须经惰性复活返回 200（o31 主回归）。
+///
+/// o31 缺陷：只读路由原走 `get_session` 内存表直查，引擎重启后历史会话
+/// MemoryTab facts/state/history 全线 404（前端报「历史恢复失败」）。
+/// 修复后统一走 `session_or_rehydrate`——本用例锁 facts/state/history
+/// 三条代表路由在重启（内存表清零）后仍可读，历史不丢。
+#[tokio::test]
+async fn test_read_routes_rehydrate_after_restart() {
+    let fx = boot_session_then_restart_simulated("persisted_key", 7).await;
+    let sid = fx.session_id;
+    let state2 = boot_second_state(&fx, None);
+
+    // facts（o31 原发点，MemoryTab 共享事实查询）
+    let (st, resp) = send(&state2, "GET", &format!("/api/sessions/{sid}/facts"), None).await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::OK,
+        "重启后 facts 必须复活可读而非 404: {resp}"
+    );
+    assert!(resp.is_array(), "facts 响应必须是数组: {resp}");
+
+    // state（payload 历史经复活保留）
+    let (st, resp) = send(&state2, "GET", &format!("/api/sessions/{sid}/state"), None).await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::OK,
+        "重启后 state 必须复活可读: {resp}"
+    );
+    assert_eq!(
+        resp["payload"]["persisted_key"].as_i64(),
+        Some(7),
+        "复活会话 payload 必须保留归档历史: {resp}"
+    );
+
+    // history（历史回放索引）
+    let (st, _) = send(
+        &state2,
+        "GET",
+        &format!("/api/sessions/{sid}/history"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::OK,
+        "重启后 history 必须复活可读"
+    );
+}
+
+/// 零记录归档（0 字节 WAL 壳）＝无可复活状态：静默按 NoArchive 回落 404。
+///
+/// G6 哨兵解析修复后，启动期「WAL invalid fact」ERROR 噪音的剩余来源即
+/// 0 字节引导壳形态——本用例锁定其按无归档静默回落（不复活、不报错）。
+#[tokio::test]
+async fn test_zero_record_wal_falls_back_to_noarchive() {
+    let fx = boot_session_then_restart_simulated("persisted_key", 7).await;
+    // 往现场塞一个 0 字节 WAL 壳（真机引导形态）
+    std::fs::write(fx.wal_dir.join("session_888.wal"), b"").unwrap();
+    let state2 = boot_second_state(&fx, None);
+
+    let (st, _) = send(&state2, "GET", "/api/sessions/888/state", None).await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::NOT_FOUND,
+        "零记录归档必须静默按无归档回落 404"
+    );
+    let (st, _) = send(&state2, "GET", "/api/sessions/888/facts", None).await;
+    assert_eq!(st, axum::http::StatusCode::NOT_FOUND);
+}
+
+/// G6 规则集锚定 WAL（真机 319B 形态：单条 u64::MAX-1 哨兵 id PayloadUpdate）
+/// 重启后必须可复活可读——此前 as_i64 解析对 u64 高位哨兵返回 None，
+/// 启动期报「WAL invalid fact」ERROR 且复活链路连锁拒绝。
+#[tokio::test]
+async fn test_sentinel_anchor_wal_revives_for_reads() {
+    use evorule_reactor::{Fact, FactId, WalWriter};
+
+    let fx = boot_session_then_restart_simulated("persisted_key", 7).await;
+    // 手工落一条真机 319B 形态的哨兵锚 WAL（新格式 v2：带哈希链——
+    // FactsLog 落账走 append_record_with_hash，无哈希记录会被
+    // payload_from_wal_records 按 legacy hashless 拒收）
+    let fact = Fact::PayloadUpdate {
+        id: FactId(u64::MAX - 1),
+        path: "__ruleset__.version".to_string(),
+        value: JsonValue::string("c7b6fab66f0ea645".to_string()),
+    };
+    let content_hash = evorule_reactor::fact_hash(&fact).unwrap();
+    let chain_hash = blake3::hash(format!("genesis{content_hash}").as_bytes())
+        .to_hex()
+        .to_string();
+    let wal_path = fx.wal_dir.join("session_999.wal");
+    let mut w = WalWriter::create(&wal_path).unwrap();
+    w.append_record_with_hash(0, &fact, &content_hash, "genesis", &chain_hash)
+        .unwrap();
+    drop(w);
+
+    let state2 = boot_second_state(&fx, None);
+
+    let (st, resp) = send(&state2, "GET", "/api/sessions/999/facts", None).await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::OK,
+        "哨兵锚 WAL 必须可复活可读（不得 InvalidFact 连锁拒绝）: {resp}"
+    );
+    let arr = resp.as_array().expect("facts 响应必须是数组");
+    assert_eq!(
+        arr.len(),
+        1,
+        "哨兵锚会话恰含一条 PayloadUpdate 事实: {resp}"
+    );
+    assert_eq!(arr[0]["fact_id"], serde_json::json!(u64::MAX - 1));
+    assert_eq!(arr[0]["path"], "__ruleset__.version");
+
+    let (st, resp) = send(&state2, "GET", "/api/sessions/999/state", None).await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::OK,
+        "哨兵锚会话 state 复活可读: {resp}"
+    );
+    assert_eq!(
+        resp["payload"]["__ruleset__"]["version"].as_str(),
+        Some("c7b6fab66f0ea645"),
+        "复活 payload 必须含规则集版本锚（__ruleset__.version 按路径分段落嵌套）: {resp}"
+    );
+}
