@@ -38,7 +38,11 @@ if "%GOV_SECRET%"=="" (
 echo     Governance admin credentials: data\governance-credentials.env ^(keep private^)
 start "evorule-rule" /min cmd /c "evorule-rule-serve.exe --db .\data\rule.db --port 18081 --secret %GOV_SECRET% --admin-user admin --admin-password %GOV_ADMIN_PASSWORD% --allowed-origins http://localhost:18080,http://127.0.0.1:18080 2>>data\rule-serve-stderr.log"
 echo [2/3] Starting main service (evorule-server, port 18080)...
-start "evorule-server" /min cmd /c "evorule-server.exe --addr 127.0.0.1:18080 --web-dir web --rules-dir rules --service-registry service_registry.json --core-eval resources\server_eval.json --wal-dir .\data\wal --wal-fsync --plugins plugin_manifest.json --workspace-db .\data\workspace.db 2>>data\server-stderr.log"
+rem --- Registry: prefer service_registry.local.json (deployment-injected credentials,
+rem --- gitignored); falls back to the tracked template (empty credential values).
+set SVC_REG=service_registry.json
+if exist "service_registry.local.json" set SVC_REG=service_registry.local.json
+start "evorule-server" /min cmd /c "evorule-server.exe --addr 127.0.0.1:18080 --web-dir web --rules-dir rules --service-registry %SVC_REG% --core-eval resources\server_eval.json --wal-dir .\data\wal --wal-fsync --plugins plugin_manifest.json --workspace-db .\data\workspace.db 2>>data\server-stderr.log"
 rem [Optional] ai-plugin: start automatically only when its config file exists
 if exist "plugins\ai-plugin\ai-plugin.json" (
   echo [+] ai-plugin config found, starting ai-plugin (port 9130)...
