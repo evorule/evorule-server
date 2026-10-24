@@ -35,6 +35,7 @@
 //! - 未命中 → 回落 ServiceRegistryHandler（HTTP，兼容其他外部服务）；
 //! - 原生实现接收的入参 = `params.args`。
 
+pub mod figure;
 pub mod geometry;
 pub mod services;
 
@@ -47,7 +48,10 @@ use evorule_tcb::JsonValue;
 // 机制件(trait/声明项/过滤路由器)在 plugin-kit,本 crate 自持声明表+薄壳具名路由器
 pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 
-use crate::services::{mk_clearance_check, mk_collision_check, mk_occlusion_check};
+use crate::services::{
+    mk_clearance_check, mk_collision_check, mk_figure_audit, mk_iso_project, mk_occlusion_check,
+    mk_tube_route,
+};
 
 // ============================================================================
 // 声明表（SSOT 配对文件: official_native_services.json; 顺序即声明序,
@@ -77,6 +81,27 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         description: "几何遮挡序检查(重叠零件绘制序vs声明z层,画家算法语义,确定性)",
         parameters: None,
         make: mk_occlusion_check,
+    },
+    NativeServiceDef {
+        name: "geometry_iso_project",
+        sensitive: false,
+        description: "等距投影(三维点集→屏幕坐标,方位角/仰角/视口适配,契约化变换,确定性)",
+        parameters: None,
+        make: mk_iso_project,
+    },
+    NativeServiceDef {
+        name: "geometry_tube_route",
+        sensitive: false,
+        description: "管路走线校核(转折点序列→段长/转角/弯径切线需求,弯径超限违规,确定性)",
+        parameters: None,
+        make: mk_tube_route,
+    },
+    NativeServiceDef {
+        name: "geometry_figure_audit",
+        sensitive: false,
+        description: "图样场景审计(棱柱/管路成对间隙下界+端点承托,保守方向声明,确定性)",
+        parameters: None,
+        make: mk_figure_audit,
     },
 ];
 
