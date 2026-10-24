@@ -225,6 +225,64 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 许可证合规 (AGPL §4): THIRD-PARTY-NOTICES.md + LICENSES/third-party/
+      # 出自根仓声明面单一事实源, 钉 SHA 保可复现; LICENSE/NOTICE.md 用本仓自带
+      - name: Checkout 根仓声明面 SSOT (钉 SHA)
+        uses: actions/checkout@v4
+        with:
+          repository: evorule/evorule
+          ref: 5560fe93c2443c1d985d21b534535b241333cffd
+          path: lic-ssot
+          persist-credentials: false
+
+      # 源码提供入口 (AGPL §13): SOURCE.md 按本次发布动态生成 (指纹表填实值),
+      # 源码 tarball 随 Release 附件分发, SHA256 记入 sha256-checks.txt
+      - name: 生成 SOURCE.md 与源码 tarball (AGPL §13)
+        run: |
+          set -e
+          VER="${GITHUB_REF_NAME#v}"
+          SRC_TGZ="evorule-server-${VER}-source.tar.gz"
+          git archive --format=tar.gz --prefix="evorule-server-${VER}/" -o "${SRC_TGZ}" HEAD
+          SRC_SHA=$(sha256sum "${SRC_TGZ}" | cut -d' ' -f1)
+          cat > SOURCE.md <<'EOF'
+          <!--
+            Copyright 2026 EvoRule Project
+
+            SPDX-License-Identifier: AGPL-3.0-or-later
+          -->
+
+          # EvoRule Server — 源码提供入口（AGPL-3.0 §13）
+
+          本分发包对应 EvoRule Server v@@VER@@，以 AGPL-3.0-or-later 授权。本文件随包
+          分发，用于定位并校验与该包对应的完整源码（AGPL-3.0 第 13 条）。
+
+          | 字段 | 值 |
+          |---|---|
+          | 发布 tag | v@@VER@@ |
+          | 源码仓库（权威源） | <https://gitee.com/evorule/evorule-server> |
+          | 源码仓库（GitHub 镜像） | <https://github.com/evorule/evorule-server> |
+          | 源码 tarball | `evorule-server-@@VER@@-source.tar.gz`（随本 Release 附件分发） |
+          | 源码 tarball SHA256 | `@@SHA@@` |
+
+          ## 获取与校验方式
+
+          1. `git clone` 上表任一仓库，`git checkout v@@VER@@`
+          2. 复现归档：`git archive --format=tar.gz --prefix=evorule-server-@@VER@@/ -o evorule-server-@@VER@@-source.tar.gz HEAD`
+          3. 计算 SHA256 并与上表值比对（同一记录亦在随 Release 发布的 `sha256-checks.txt` 中）
+
+          ## 第三方组件
+
+          许可正文与归属声明见包内 `THIRD-PARTY-NOTICES.md` 与 `LICENSES/third-party/`
+          （出自根仓声明面单一事实源，钉版 commit 5560fe93c2443c1d985d21b534535b241333cffd）。
+
+          ## 内嵌组件
+
+          - `evorule-rule-serve`（治理中心服务）：<https://gitee.com/evorule/evorule-rule>
+          - `web/`（console 用户面板静态产物）：<https://gitee.com/evorule/evorule-console-cloud>
+          EOF
+          sed -i "s/@@VER@@/${VER}/g; s/@@SHA@@/${SRC_SHA}/g" SOURCE.md
+          ls -la SOURCE.md "${SRC_TGZ}"
+
       - name: 下载全部构建产物
         uses: actions/download-artifact@v4
         with:
@@ -266,9 +324,15 @@ jobs:
           else
             cp dist/plugins-watchdog.example.json "${PKG}/plugins-watchdog.json"
           fi
+          # 许可证合规五件套 (AGPL §4): 随包附带许可正文、第三方声明与源码入口
+          cp LICENSE NOTICE.md "${PKG}/"
+          cp lic-ssot/THIRD-PARTY-NOTICES.md "${PKG}/"
+          mkdir -p "${PKG}/LICENSES"
+          cp -r lic-ssot/LICENSES/third-party "${PKG}/LICENSES/third-party"
+          cp SOURCE.md "${PKG}/"
           # 包内完整性清单
           cd "${PKG}"
-          sha256sum evorule-server.exe evorule-rule-serve.exe plugins/ai-plugin/evorule-ai-plugin.exe > sha256-checks.txt
+          sha256sum evorule-server.exe evorule-rule-serve plugins/ai-plugin/evorule-ai-plugin > sha256-checks.txt
           cd ..
           zip -qr "${PKG}.zip" "${PKG}"
           ls -la "${PKG}.zip"
@@ -306,6 +370,12 @@ jobs:
           else
             cp dist/plugins-watchdog.example.json "${PKG}/plugins-watchdog.json"
           fi
+          # 许可证合规五件套 (AGPL §4): 同 win64 语义
+          cp LICENSE NOTICE.md "${PKG}/"
+          cp lic-ssot/THIRD-PARTY-NOTICES.md "${PKG}/"
+          mkdir -p "${PKG}/LICENSES"
+          cp -r lic-ssot/LICENSES/third-party "${PKG}/LICENSES/third-party"
+          cp SOURCE.md "${PKG}/"
           cd "${PKG}"
           sha256sum evorule-server evorule-rule-serve plugins/ai-plugin/evorule-ai-plugin > sha256-checks.txt
           cd ..
@@ -317,7 +387,7 @@ jobs:
         run: |
           VER="${GITHUB_REF_NAME#v}"
           cd .
-          sha256sum "evorule-server-${VER}-win64.zip" "evorule-server-${VER}-linux64.tar.gz" > sha256-checks.txt
+          sha256sum "evorule-server-${VER}-win64.zip" "evorule-server-${VER}-linux64.tar.gz" "evorule-server-${VER}-source.tar.gz" > sha256-checks.txt
           cat sha256-checks.txt
 
       - name: 上传分发包 artifact
@@ -327,6 +397,7 @@ jobs:
           path: |
             evorule-server-*-win64.zip
             evorule-server-*-linux64.tar.gz
+            evorule-server-*-source.tar.gz
             sha256-checks.txt
 
   # ==========================================================================
@@ -357,6 +428,7 @@ jobs:
           files: |
             release-assets/evorule-server-*-win64.zip
             release-assets/evorule-server-*-linux64.tar.gz
+            release-assets/evorule-server-*-source.tar.gz
             release-assets/sha256-checks.txt
             release-sigs/evorule-server-linux-x86_64.sig
             release-sigs/evorule-server-windows-x86_64.exe.sig
@@ -366,6 +438,7 @@ jobs:
             - `evorule-server-*-win64.zip` — Windows 10/11 64 位:解压后双击 start-evorule.bat
             - `evorule-server-*-linux64.tar.gz` — Linux x86_64:解压后运行 start-evorule.sh
             - `sha256-checks.txt` — 分发包完整性校验
+            - `evorule-server-*-source.tar.gz` — 源码 tarball (AGPL §13), 指纹见包内 SOURCE.md 与 sha256-checks.txt
             - `evorule-server-*.sig` — 发布原始二进制 cosign keyless 签名, 验证见 SIGNING.md
 
             无需 Node/Rust/数据库;中文说明见包内 README-STARTUP.txt。
@@ -435,7 +508,7 @@ jobs:
           cp gitee-assets/sigs/evorule-server-linux-x86_64.sig gitee-assets/
           cp gitee-assets/sigs/evorule-server-windows-x86_64.exe.sig gitee-assets/
           cd gitee-assets
-          for f in $(ls evorule-server-*-win64.zip evorule-server-*-linux64.tar.gz sha256-checks.txt evorule-server-linux-x86_64.sig evorule-server-windows-x86_64.exe.sig); do
+          for f in $(ls evorule-server-*-win64.zip evorule-server-*-linux64.tar.gz evorule-server-*-source.tar.gz sha256-checks.txt evorule-server-linux-x86_64.sig evorule-server-windows-x86_64.exe.sig); do
             echo "上传 ${f} ..."
             # --max-time 防止单文件上传挂死(历史已知问题);-f 失败即中止,保幂等可重跑
             curl --retry 3 --retry-delay 5 --retry-connrefused --max-time 600 -fsS -X POST \
