@@ -46,9 +46,9 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use evorule_ai_plugin::{
-    build_http_client, build_llm_execute_client, call_llm_ext, load_model_allowlist_file,
-    run_audited_chat, web_search_relay, ChatRequest, PluginConfig, PluginError, WebSearchError,
-    WEB_SEARCH_DEFAULT_COUNT, WEB_SEARCH_MAX_COUNT,
+    build_http_client, build_llm_execute_client, call_llm_ext, call_llm_ext_stream,
+    load_model_allowlist_file, run_audited_chat, web_search_relay, ChatRequest, PluginConfig,
+    PluginError, WebSearchError, WEB_SEARCH_DEFAULT_COUNT, WEB_SEARCH_MAX_COUNT,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -194,6 +194,7 @@ fn main() {
         let app = Router::new()
             .route("/services/ai_plugin_chat", post(ai_plugin_chat))
             .route("/llm/execute", post(llm_execute))
+            .route("/llm/execute-stream", post(llm_execute_stream))
             .route("/llm/models", get(llm_models))
             .route("/tools/web_search", post(web_search))
             .route("/health", get(health))
@@ -255,6 +256,48 @@ async fn health() -> Json<Value> {
     Json(json!({ "ok": true, "service": "ai-plugin" }))
 }
 
+/// 扩展执行体门禁（/llm/execute 与 /llm/execute-stream 共用）：调用方令牌
+/// 校验（配置后启用）+ 白名单就绪校验（fail-closed）。通过返回白名单引用，
+/// 否则返回已构造的错误响应。
+fn require_ext_gate<'a>(
+    st: &'a PluginState,
+    headers: &axum::http::HeaderMap,
+) -> Result<&'a BTreeSet<String>, Response> {
+    // 调用方令牌校验(配置后启用)——本机其他进程无令牌即 401,
+    // 防烧用户配额;浏览器侧被 JSON preflight 天然阻断。
+    if let Some(expected) = st.caller_token.as_deref() {
+        let present = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        if present != Some(&format!("Bearer {expected}")) {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                axum::Json(json!({ "error": "caller token missing or mismatched" })),
+            )
+                .into_response());
+        }
+    }
+    match st.allowlist.as_ref() {
+        Some(allowlist) => Ok(allowlist),
+        None => {
+            let diag = if st.cfg.llm_execute_url.is_some() {
+                "扩展执行体未就绪: model_allowlist_path 未配置或白名单物料装载失败\
+                 （见启动日志；物料 = 00_constraint_model_allowlist.json server 侧副本）"
+                    .to_string()
+            } else {
+                "扩展执行体未就绪: 配置键 llm_execute_url / model_allowlist_path 未填写\
+                 （provider 全 URL 形态，如 https://api.minimaxi.com/v1/text/chatcompletion_v2）"
+                    .to_string()
+            };
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": diag })),
+            )
+                .into_response())
+        }
+    }
+}
+
 /// 扩展型执行体端点（SG-1 件1）：body 原样 → 四键。
 /// 未就绪（未配置/白名单物料未装载）→ 500 自诊断（fail-closed，绝不静默放行）；
 /// 白名单违规/provider 失败 → 502 显式上抛（fail-visible，无静默兜底）。
@@ -263,40 +306,46 @@ async fn llm_execute(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    // O 系安全登记:调用方令牌校验(配置后启用)——本机其他进程无令牌即 401,
-    // 防烧用户配额;浏览器侧被 JSON preflight 天然阻断。
-    if let Some(expected) = st.caller_token.as_deref() {
-        let present = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok());
-        if present != Some(&format!("Bearer {expected}")) {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "caller token missing or mismatched" })),
-            )
-                .into_response();
-        }
-    }
-    let Some(allowlist) = st.allowlist.as_ref() else {
-        let diag = if st.cfg.llm_execute_url.is_some() {
-            "扩展执行体未就绪: model_allowlist_path 未配置或白名单物料装载失败\
-             （见启动日志；物料 = 00_constraint_model_allowlist.json server 侧副本）"
-                .to_string()
-        } else {
-            "扩展执行体未就绪: 配置键 llm_execute_url / model_allowlist_path 未填写\
-             （provider 全 URL 形态，如 https://api.minimaxi.com/v1/text/chatcompletion_v2）"
-                .to_string()
-        };
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": diag })),
-        )
-            .into_response();
+    let allowlist = match require_ext_gate(&st, &headers) {
+        Ok(a) => a,
+        Err(resp) => return resp,
     };
     match call_llm_ext(&st.cfg, &st.execute_http, allowlist, &body).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => {
             tracing::warn!("llm/execute 失败: {e}");
+            error_response(&e)
+        }
+    }
+}
+
+/// 扩展型执行体真流式端点：body 原样 → 归一化 SSE 帧逐帧下行（真流式，
+/// 思考/正文/tool_call 分片全程不经整包缓冲）。门禁与 /llm/execute 同面
+/// （fail-closed）；provider 失败在 SSE 头发出前 → 错误响应，流内失败 →
+/// error 帧下行后即止（帧协议见 lib.rs call_llm_ext_stream 文档）。
+async fn llm_execute_stream(
+    State(st): State<PluginState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let allowlist = match require_ext_gate(&st, &headers) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    match call_llm_ext_stream(&st.cfg, &st.execute_http, allowlist, &body).await {
+        Ok(frames) => match axum::http::Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "text/event-stream")
+            .body(axum::body::Body::from_stream(frames))
+        {
+            Ok(resp) => resp.into_response(),
+            Err(e) => {
+                tracing::warn!("llm/execute-stream: SSE 响应构建失败: {e}");
+                error_response(&PluginError::Config(format!("SSE 响应构建失败: {e}")))
+            }
+        },
+        Err(e) => {
+            tracing::warn!("llm/execute-stream 失败: {e}");
             error_response(&e)
         }
     }
@@ -343,7 +392,7 @@ async fn web_search(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    // 调用方令牌校验（O 系安全登记同款：配置后启用）
+    // 调用方令牌校验（配置后启用，与流式端点同款）
     if let Some(expected) = st.caller_token.as_deref() {
         let present = headers
             .get(axum::http::header::AUTHORIZATION)
@@ -537,6 +586,147 @@ mod tests {
         );
         let resp = llm_models(State(st), headers).await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ---------- /llm/execute-stream 真流式端点（与 /llm/execute 同门禁面） ----------
+
+    /// 构造带/不带 llm_execute_url 的 PluginState（env 闭包恒 None——隔离宿主
+    /// 真机 key；execute_http 用带重定向禁令的真实出站客户端）
+    fn stream_state(
+        llm_execute_url: Option<&str>,
+        allowlist: Option<BTreeSet<String>>,
+        caller_token: Option<String>,
+    ) -> PluginState {
+        let mut cfg = json!({
+            "listen_addr": "127.0.0.1:0",
+            "server_base_url": "http://127.0.0.1:18080",
+            "llm_endpoint": "https://example.invalid/v1",
+            "llm_api_key": "test-key",
+            "llm_model": "test-model",
+            "tools_enabled": []
+        });
+        if let Some(u) = llm_execute_url {
+            cfg["llm_execute_url"] = json!(u);
+        }
+        let cfg =
+            PluginConfig::from_value_with_env(&cfg, &|_| None::<String>).expect("test config");
+        PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(build_llm_execute_client().expect("execute client")),
+            allowlist: Arc::new(allowlist),
+            caller_token,
+        }
+    }
+
+    async fn spawn_provider(app: Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn llm_execute_stream_gate_401_and_unready_500() {
+        // 令牌配置后缺凭据 → 401（与 /llm/execute 同门禁面）
+        let st = stream_state(
+            Some("http://127.0.0.1:1/v1/text/chatcompletion_v2"),
+            Some(BTreeSet::from(["m1".to_string()])),
+            Some("secret-token".into()),
+        );
+        let resp = llm_execute_stream(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({"model": "m1", "messages": []})),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // 白名单未就绪 → 500 fail-closed 自诊断（不出站）
+        let st = stream_state(None, None, None);
+        let resp = llm_execute_stream(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({"model": "m1", "messages": []})),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let v = body_json(resp).await;
+        assert!(v["error"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn llm_execute_stream_route_relays_sse_frames() {
+        use tower::ServiceExt;
+        // provider mock：reasoning/content/finish+usage 全型 SSE
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"答\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],",
+            "\"usage\":{\"total_tokens\":3}}\n\n",
+        );
+        let app_provider = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let sse = sse.to_string();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        sse,
+                    )
+                }
+            }),
+        );
+        let addr = spawn_provider(app_provider).await;
+        let st = stream_state(
+            Some(&format!("http://{addr}/v1/text/chatcompletion_v2")),
+            Some(BTreeSet::from(["m1".to_string()])),
+            None,
+        );
+        let router = Router::new()
+            .route("/llm/execute", post(llm_execute))
+            .route("/llm/execute-stream", post(llm_execute_stream))
+            .with_state(st);
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/llm/execute-stream")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({"model": "m1", "messages": [{"role": "user", "content": "hi"}]})
+                    .to_string(),
+            ))
+            .expect("request");
+        let resp = router.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream"),
+            "SSE 头必须显式 text/event-stream"
+        );
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        // 逐帧下行：reasoning → content → done 五键 → [DONE] 哨兵
+        let lines: Vec<&str> = text
+            .split("\n\n")
+            .filter(|f| f.starts_with("data: "))
+            .collect();
+        assert_eq!(lines.len(), 4, "三归一帧 + done 帧 + [DONE]（共 4 data 行）");
+        let f0: Value = serde_json::from_str(lines[0].trim_start_matches("data: ")).unwrap();
+        assert_eq!(f0["type"], "reasoning");
+        assert_eq!(f0["text"], "思");
+        let f1: Value = serde_json::from_str(lines[1].trim_start_matches("data: ")).unwrap();
+        assert_eq!(f1["type"], "content");
+        assert_eq!(f1["text"], "答");
+        let f2: Value = serde_json::from_str(lines[2].trim_start_matches("data: ")).unwrap();
+        assert_eq!(f2["type"], "done");
+        assert_eq!(f2["content"], "答");
+        assert_eq!(f2["reasoning"], "思");
+        assert_eq!(f2["finish_reason"], "stop");
+        assert_eq!(f2["token_usage"], json!({"total_tokens": 3}));
+        assert_eq!(lines[3].trim(), "data: [DONE]");
     }
 
     // ---------- web_search 中继端点（批K 段2） ----------

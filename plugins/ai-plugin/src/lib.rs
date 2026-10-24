@@ -1234,6 +1234,36 @@ pub async fn call_llm_ext(
     allowlist: &BTreeSet<String>,
     body: &Value,
 ) -> Result<Value, PluginError> {
+    let url = llm_ext_entry_checks(cfg, allowlist, body)?;
+    let is_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let resp = http
+        .post(url)
+        .bearer_auth(&cfg.llm_api_key)
+        .json(body)
+        .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({url}): {e}")))?;
+    let resp = check_llm_ext_response(resp).await?;
+    if is_stream {
+        let resp = check_sse_content_type(resp).await?;
+        execute_stream_aggregate(resp).await
+    } else {
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| PluginError::Llm(format!("LLM 响应 JSON 解析失败: {e}")))?;
+        completion_four_keys(&v)
+    }
+}
+
+/// 出站前执法段（/llm/execute 与 /llm/execute-stream 共用）：provider URL
+/// 解析 + model 非空 + 白名单执法（网络入口执法，先于任何出站流量）。
+fn llm_ext_entry_checks<'a>(
+    cfg: &'a PluginConfig,
+    allowlist: &BTreeSet<String>,
+    body: &Value,
+) -> Result<&'a str, PluginError> {
     let Some(url) = cfg.llm_execute_url.as_deref() else {
         return Err(PluginError::Config(
             "配置键 'llm_execute_url' 未填写（provider 全 URL 形态，如 \
@@ -1261,16 +1291,11 @@ pub async fn call_llm_ext(
              见 00_constraint_model_allowlist）"
         )));
     }
+    Ok(url)
+}
 
-    let is_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    let resp = http
-        .post(url)
-        .bearer_auth(&cfg.llm_api_key)
-        .json(body)
-        .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({url}): {e}")))?;
+/// provider 响应状态门（共用）：非 2xx 显式转错（含 401/429 分类）。
+async fn check_llm_ext_response(resp: reqwest::Response) -> Result<reqwest::Response, PluginError> {
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
@@ -1284,15 +1309,23 @@ pub async fn call_llm_ext(
             "LLM HTTP {status}({kind}): {snippet}"
         )));
     }
-    if is_stream {
-        execute_stream_aggregate(resp).await
-    } else {
-        let v: Value = resp
-            .json()
-            .await
-            .map_err(|e| PluginError::Llm(format!("LLM 响应 JSON 解析失败: {e}")))?;
-        completion_four_keys(&v)
+    Ok(resp)
+}
+
+/// SSE 内容类型门（仅流式路径）：200+JSON 是 MiniMax 业务错误体形态——
+/// 按 SSE 解析会静默空响应，必须显式转错（首字节前判定）。
+async fn check_sse_content_type(resp: reqwest::Response) -> Result<reqwest::Response, PluginError> {
+    if let Some(ct) = resp.headers().get(CONTENT_TYPE) {
+        let ct_str = ct.to_str().unwrap_or("");
+        if ct_str.contains("application/json") {
+            let text = resp.text().await.unwrap_or_default();
+            let preview: String = text.chars().take(300).collect();
+            return Err(PluginError::Llm(format!(
+                "LLM API returned JSON instead of SSE stream: {preview}"
+            )));
+        }
     }
+    Ok(resp)
 }
 
 /// 非流式 OpenAI 兼容响应 → 四键（与 agent `parse_success_response` 同构，
@@ -1368,12 +1401,24 @@ fn completion_four_keys(v: &Value) -> Result<Value, PluginError> {
         .and_then(Value::as_str)
         .map(str::to_string);
     let token_usage = v.get("usage").cloned();
-    Ok(json!({
+    // MiniMax 推理面：message.reasoning_content（非思考模型缺键）——仅非空携带，
+    // 非思考模型响应保持原四键字节形状不变
+    let reasoning = choice
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("reasoning_content"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let mut out = json!({
         "content": content,
         "tool_calls": tool_calls,
         "finish_reason": finish_reason,
         "token_usage": token_usage,
-    }))
+    });
+    if !reasoning.is_empty() {
+        out["reasoning"] = json!(reasoning);
+    }
+    Ok(out)
 }
 
 /// SSE tool_call 按 index 聚合器（与 agent ToolCallAccumulator 同构；
@@ -1387,23 +1432,16 @@ struct SseToolAcc {
 /// 流式 SSE 响应 → 四键聚合（与 agent `execute_stream` 解析语义逐条同构：
 /// 帧切分/data 行提取/[DONE]/content 拼接/tool_call 按 index 累积/
 /// finish_reason 末值/usage 末帧；流自然收尾不发 [DONE] 亦成立；
-/// 200+JSON 业务错误体显式转错；零帧显式失败禁止静默空响应）。
+/// 200+JSON 业务错误体已由调用侧 check_sse_content_type 显式转错；
+/// 流内 base_resp 错误帧显式转错（fail-visible，禁止错误被吞成空响应）；
+/// 零帧显式失败禁止静默空响应）。
 async fn execute_stream_aggregate(resp: reqwest::Response) -> Result<Value, PluginError> {
-    if let Some(ct) = resp.headers().get(CONTENT_TYPE) {
-        let ct_str = ct.to_str().unwrap_or("");
-        if ct_str.contains("application/json") {
-            let text = resp.text().await.unwrap_or_default();
-            let preview: String = text.chars().take(300).collect();
-            return Err(PluginError::Llm(format!(
-                "LLM API returned JSON instead of SSE stream: {preview}"
-            )));
-        }
-    }
     let full = resp
         .text()
         .await
         .map_err(|e| PluginError::Llm(format!("SSE body 读取失败: {e}")))?;
     let mut content_acc = String::new();
+    let mut reasoning_acc = String::new();
     let mut tool_acc: BTreeMap<usize, SseToolAcc> = BTreeMap::new();
     let mut finish_reason: Option<String> = None;
     let mut token_usage: Option<Value> = None;
@@ -1434,10 +1472,33 @@ async fn execute_stream_aggregate(resp: reqwest::Response) -> Result<Value, Plug
             .get("choices")
             .and_then(Value::as_array)
             .and_then(|a| a.first());
+        // 流内业务错误帧（MiniMax base_resp 非 0）：显式转错，禁止吞成空聚合
+        if let Some(base_resp) = frame_json.get("base_resp") {
+            let status_code = base_resp.get("status_code").and_then(Value::as_i64);
+            let is_error = match status_code {
+                Some(code) => code != 0,
+                None => true, // 有 base_resp 无 status_code：形态异常，按错误处理
+            };
+            if is_error {
+                let status_msg = base_resp
+                    .get("status_msg")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(no status_msg)");
+                return Err(PluginError::Llm(format!(
+                    "LLM API business error (status_code={status_code:?}): {status_msg}"
+                )));
+            }
+        }
         if let Some(choice) = choice {
             let delta = choice.get("delta");
             if let Some(c) = delta.and_then(|d| d.get("content")).and_then(Value::as_str) {
                 content_acc.push_str(c);
+            }
+            if let Some(r) = delta
+                .and_then(|d| d.get("reasoning_content"))
+                .and_then(Value::as_str)
+            {
+                reasoning_acc.push_str(r);
             }
             if let Some(tcs) = delta
                 .and_then(|d| d.get("tool_calls"))
@@ -1500,12 +1561,303 @@ async fn execute_stream_aggregate(resp: reqwest::Response) -> Result<Value, Plug
     };
     // 与 agent 流式路径一致：无 finish_reason 时兜底 "stop"
     let finish_reason = finish_reason.or_else(|| Some("stop".to_string()));
-    Ok(json!({
+    // 五键：reasoning 仅非空携带（非思考模型响应保持原四键字节形状不变）
+    let mut out = json!({
         "content": content_acc,
         "tool_calls": tool_calls,
         "finish_reason": finish_reason,
         "token_usage": token_usage,
-    }))
+    });
+    if !reasoning_acc.is_empty() {
+        out["reasoning"] = json!(reasoning_acc);
+    }
+    Ok(out)
+}
+
+/// 真流式中继状态：provider SSE → 归一化帧下行 + 五键聚合（feed 吞块产帧、
+/// finish 收尾；帧协议见 /llm/execute-stream 端点文档）。
+struct StreamRelayState {
+    resp: reqwest::Response,
+    bytes_done: bool,
+    buffer: String,
+    pending: std::collections::VecDeque<String>,
+    content_acc: String,
+    reasoning_acc: String,
+    tool_acc: BTreeMap<usize, SseToolAcc>,
+    finish_reason: Option<String>,
+    token_usage: Option<Value>,
+    saw_data_frame: bool,
+    errored: bool,
+    finalized: bool,
+}
+
+impl StreamRelayState {
+    fn new(resp: reqwest::Response) -> Self {
+        Self {
+            resp,
+            bytes_done: false,
+            buffer: String::new(),
+            pending: std::collections::VecDeque::new(),
+            content_acc: String::new(),
+            reasoning_acc: String::new(),
+            tool_acc: BTreeMap::new(),
+            finish_reason: None,
+            token_usage: None,
+            saw_data_frame: false,
+            errored: false,
+            finalized: false,
+        }
+    }
+
+    fn push_frame(&mut self, frame_json: Value) {
+        let mut s = serde_json::to_string(&frame_json).unwrap_or_default();
+        s.push_str("\n\n");
+        self.pending.push_back(format!("data: {s}"));
+    }
+
+    /// 喂原始文本块：缓冲切帧（\n\n，容 \r），逐帧解析并产出归一化帧。
+    fn feed(&mut self, chunk: &str) {
+        self.buffer.push_str(chunk);
+        while let Some(pos) = self.buffer.find("\n\n") {
+            let frame: String = self.buffer.drain(..pos + 2).collect();
+            self.handle_frame(&frame);
+            if self.errored {
+                return;
+            }
+        }
+    }
+
+    /// 单帧处理（data 行提取/多行 join/[DONE] 旗标/业务错误帧/增量归一化）——
+    /// 语义与 execute_stream_aggregate 逐条同构。
+    fn handle_frame(&mut self, frame: &str) {
+        let frame_str = frame.trim_end_matches('\n').trim_end_matches('\r');
+        let data: String = frame_str
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:").map(|s| s.trim_start()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() {
+            return;
+        }
+        self.saw_data_frame = true;
+        if data.trim() == "[DONE]" {
+            self.bytes_done = true;
+            return;
+        }
+        let frame_json: Value = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("llm/execute-stream: SSE 帧解析失败（跳过，流继续）: {e}");
+                return;
+            }
+        };
+        // 业务错误帧：error 帧下行后即止（不再发 done）
+        if let Some(base_resp) = frame_json.get("base_resp") {
+            let status_code = base_resp.get("status_code").and_then(Value::as_i64);
+            let is_error = match status_code {
+                Some(code) => code != 0,
+                None => true,
+            };
+            if is_error {
+                let status_msg = base_resp
+                    .get("status_msg")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(no status_msg)");
+                self.errored = true;
+                self.push_frame(json!({
+                    "type": "error",
+                    "error": format!(
+                        "LLM API business error (status_code={status_code:?}): {status_msg}"
+                    ),
+                }));
+                return;
+            }
+        }
+        let choice = frame_json
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first());
+        if let Some(choice) = choice {
+            let delta = choice.get("delta");
+            if let Some(c) = delta
+                .and_then(|d| d.get("content"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                self.content_acc.push_str(c);
+                self.push_frame(json!({ "type": "content", "text": c }));
+            }
+            if let Some(r) = delta
+                .and_then(|d| d.get("reasoning_content"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                self.reasoning_acc.push_str(r);
+                self.push_frame(json!({ "type": "reasoning", "text": r }));
+            }
+            if let Some(tcs) = delta
+                .and_then(|d| d.get("tool_calls"))
+                .and_then(Value::as_array)
+            {
+                for tc in tcs {
+                    let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
+                    let entry = self.tool_acc.entry(index as usize).or_default();
+                    let mut frame = json!({ "type": "tool_call_delta", "index": index });
+                    if let Some(func) = tc.get("function") {
+                        if let Some(name) = func.get("name").and_then(Value::as_str) {
+                            entry.name = Some(name.to_string());
+                            frame["name"] = json!(name);
+                        }
+                        if let Some(args) = func.get("arguments").and_then(Value::as_str) {
+                            entry.arguments.push_str(args);
+                            frame["fragment"] = json!(args);
+                        }
+                    }
+                    self.push_frame(frame);
+                }
+            }
+            if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
+                self.finish_reason = Some(fr.to_string());
+            }
+        }
+        if let Some(u) = frame_json.get("usage") {
+            self.token_usage = Some(u.clone());
+        }
+    }
+
+    /// provider 流收尾：残留缓冲处理 → done 终帧（五键聚合）→ [DONE] 哨兵；
+    /// 零 data 帧显式 error 帧下行（fail-visible，禁止静默空流）；
+    /// 业务错误已发（errored）则不再发 done（error 发后即止）。
+    fn finish(&mut self) {
+        self.finalized = true;
+        if !self.errored {
+            let residual = std::mem::take(&mut self.buffer);
+            if !residual.trim().is_empty() {
+                self.handle_frame(&residual);
+                if self.errored {
+                    return;
+                }
+            }
+            if !self.saw_data_frame {
+                self.errored = true;
+                self.push_frame(json!({
+                    "type": "error",
+                    "error": "SSE 流不含任何 data 帧（空 body）",
+                }));
+                return;
+            }
+            let tool_calls: Option<Value> = {
+                let normalized: Vec<Value> = self
+                    .tool_acc
+                    .values()
+                    .filter_map(|e| {
+                        let name = e.name.clone()?;
+                        let args_str = if e.arguments.is_empty() {
+                            "{}"
+                        } else {
+                            e.arguments.as_str()
+                        };
+                        let args: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                        Some(json!({ "tool_name": name, "args": args }))
+                    })
+                    .collect();
+                if normalized.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(normalized))
+                }
+            };
+            let finish_reason = self
+                .finish_reason
+                .clone()
+                .or_else(|| Some("stop".to_string()));
+            let mut done = json!({
+                "type": "done",
+                "content": self.content_acc,
+                "tool_calls": tool_calls,
+                "finish_reason": finish_reason,
+                "token_usage": self.token_usage,
+            });
+            if !self.reasoning_acc.is_empty() {
+                done["reasoning"] = json!(self.reasoning_acc.clone());
+            }
+            self.push_frame(done);
+            self.pending
+                .push_back("data: [DONE]\n\n".to_string());
+        }
+    }
+}
+
+/// 真流式帧下行流：provider bytes_stream 增量解析 → 归一化 SSE 帧字符串
+/// （每 Item 一个完整帧，`data: {json}\n\n` 形态，恒 Ok——流内失败均以
+/// error 帧下行，与 evo-agent 侧 executor_sse_frame_outcome 消费契约对齐）。
+fn llm_ext_stream_frames(
+    resp: reqwest::Response,
+) -> impl futures_util::Stream<Item = Result<String, PluginError>> + Send {
+    futures_util::stream::try_unfold(StreamRelayState::new(resp), |mut st| async move {
+        loop {
+            if let Some(frame) = st.pending.pop_front() {
+                return Ok(Some((frame, st)));
+            }
+            if st.errored || st.finalized {
+                return Ok(None);
+            }
+            if st.bytes_done {
+                st.finish();
+                continue;
+            }
+            match st.resp.chunk().await {
+                Ok(Some(b)) => {
+                    let chunk = String::from_utf8_lossy(&b).into_owned();
+                    st.feed(&chunk);
+                }
+                Ok(None) => {
+                    st.bytes_done = true;
+                }
+                Err(e) => {
+                    st.errored = true;
+                    st.push_frame(json!({
+                        "type": "error",
+                        "error": format!("SSE 流读取失败: {e}"),
+                    }));
+                }
+            }
+        }
+    })
+}
+
+/// 扩展执行体真流式调用 —— /llm/execute-stream 端点的唯一出站路径。
+///
+/// 与 [`call_llm_ext`] 共用出站前执法段（URL 解析/model 非空/白名单执法）
+/// 与状态门（非 2xx / 200+JSON 显式转错），强制 `stream:true` 后逐帧中继：
+/// 归一化帧协议（SSE，`data: {json}\n\n` 逐帧下行）——
+/// `{"type":"reasoning","text"}` / `{"type":"content","text"}` /
+/// `{"type":"tool_call_delta","index","name"?,"fragment"}` /
+/// `{"type":"done",...五键聚合}` / `{"type":"error","error"}` +
+/// `data: [DONE]` 哨兵帧。reasoning 仅非空携带；error 帧发后即止。
+pub async fn call_llm_ext_stream(
+    cfg: &PluginConfig,
+    http: &reqwest::Client,
+    allowlist: &BTreeSet<String>,
+    body: &Value,
+) -> Result<impl futures_util::Stream<Item = Result<String, PluginError>> + Send + 'static, PluginError>
+{
+    let url = llm_ext_entry_checks(cfg, allowlist, body)?.to_string();
+    let mut req_body = body.clone();
+    if let Some(obj) = req_body.as_object_mut() {
+        obj.insert("stream".to_string(), Value::Bool(true));
+    }
+    let resp = http
+        .post(&url)
+        .bearer_auth(&cfg.llm_api_key)
+        .json(&req_body)
+        .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({url}): {e}")))?;
+    let resp = check_llm_ext_response(resp).await?;
+    let resp = check_sse_content_type(resp).await?;
+    Ok(llm_ext_stream_frames(resp))
 }
 
 /// 自编排审计回路结果：回复文本 + sidecar 会话 id（供审计对账：
@@ -2002,10 +2354,16 @@ mod tests {
 
     #[test]
     fn config_missing_required_fails_fast() {
-        let err = PluginConfig::from_json_str(r#"{"llm_endpoint":"http://x"}"#).unwrap_err();
+        // env 拒绝注入:本机若真实设有 LLM key,须仍按"文件字段缺失"口径
+        // fail-fast(env 优先级高于配置文件,from_json_str 口径会被真机
+        // key 洗成 Ok,无法验证缺 key 报错路径)
+        let deny = &|_: &str| None::<String>;
+        let err = PluginConfig::from_value_with_env(&serde_json::json!({"llm_endpoint":"http://x"}), deny)
+            .unwrap_err();
         assert!(err.to_string().contains("缺少必填字段 'server_base_url'"));
-        let err = PluginConfig::from_json_str(
-            r#"{"server_base_url":"http://x","llm_endpoint":"http://x","llm_model":"m"}"#,
+        let err = PluginConfig::from_value_with_env(
+            &serde_json::json!({"server_base_url":"http://x","llm_endpoint":"http://x","llm_model":"m"}),
+            deny,
         )
         .unwrap_err();
         // 环境变量与文件字段皆缺 → fail-fast 且指引提到环境变量名
@@ -2300,10 +2658,17 @@ mod tests {
     // ---------- 扩展执行体（SG-1 件1）：配置键 / 白名单物料 / call_llm_ext ----------
 
     fn ext_cfg(url: &str) -> PluginConfig {
-        PluginConfig::from_json_str(&format!(
-            r#"{{"server_base_url":"http://x","llm_endpoint":"http://x",
-                "llm_api_key":"test-key","llm_model":"m","llm_execute_url":"{url}"}}"#
-        ))
+        // env 拒绝注入:env 优先级高于配置文件,本机真实设有 LLM key 时
+        // from_json_str 口径会被真机 key 覆盖文件字段"test-key",Bearer
+        // 断言被污染——显式注入空 env 读取器隔离
+        PluginConfig::from_value_with_env(
+            &serde_json::json!({
+                "server_base_url":"http://x","llm_endpoint":"http://x",
+                "llm_api_key":"test-key","llm_model":"m",
+                "llm_execute_url": url
+            }),
+            &|_| None::<String>,
+        )
         .unwrap()
     }
 
@@ -2535,6 +2900,11 @@ mod tests {
         );
         assert_eq!(out["finish_reason"], "tool_calls");
         assert_eq!(out["token_usage"], json!({"total_tokens": 7}));
+        // 非思考模型（无 reasoning_content）：输出保持原四键字节形状（回归锚）
+        assert!(
+            out.get("reasoning").is_none(),
+            "无 reasoning 流的聚合输出必须保持原四键形状"
+        );
     }
 
     #[tokio::test]
@@ -2643,6 +3013,325 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("data 帧"), "{err}");
+    }
+
+    #[test]
+    fn completion_four_keys_reasoning_carried_only_when_non_empty() {
+        // MiniMax 推理面：message.reasoning_content 非空 → 第五键携带
+        let with = completion_four_keys(&json!({
+            "choices": [{"message": {"content": "答", "reasoning_content": "思"}}],
+            "usage": {"total_tokens": 3}
+        }))
+        .unwrap();
+        assert_eq!(with["reasoning"], "思");
+        assert_eq!(with["content"], "答");
+        assert_eq!(with["token_usage"], json!({"total_tokens": 3}));
+        // 非思考模型缺键 → 原四键字节形状（键集恰四）
+        let without = completion_four_keys(&json!({
+            "choices": [{"message": {"content": "答"}}],
+            "usage": {"total_tokens": 3}
+        }))
+        .unwrap();
+        assert!(without.get("reasoning").is_none());
+        assert_eq!(without.as_object().map(|m| m.len()), Some(4));
+        // 空串 reasoning_content 同样不携带
+        let empty = completion_four_keys(&json!({
+            "choices": [{"message": {"content": "答", "reasoning_content": ""}}]
+        }))
+        .unwrap();
+        assert!(empty.get("reasoning").is_none());
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_aggregate_carries_reasoning_and_base_resp_error_fails() {
+        // 流内 reasoning_content 增量 → 聚合为第五键
+        let sse = [
+            r#"data: {"choices":[{"delta":{"reasoning_content":"想"}}]}"#,
+            r#"data: {"choices":[{"delta":{"reasoning_content":"一下"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"答"}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"total_tokens":9}}"#,
+        ]
+        .join("\n\n");
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let sse = sse.clone();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        sse,
+                    )
+                }
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let out = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["reasoning"], "想一下");
+        assert_eq!(out["content"], "答");
+        // 流内 base_resp 业务错误帧 → 显式 Err（fail-visible，禁止吞成空聚合）
+        let err_sse = [
+            r#"data: {"choices":[{"delta":{"content":"partial"}}]}"#,
+            r#"data: {"base_resp":{"status_code":1004,"status_msg":"invalid"}}"#,
+        ]
+        .join("\n\n");
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let sse = err_sse.clone();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        sse,
+                    )
+                }
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let err = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("business error"), "{err}");
+        assert!(err.to_string().contains("1004"), "{err}");
+    }
+
+    // ---------- /llm/execute-stream 真流式帧下行 ----------
+
+    /// call_llm_ext_stream 帧收集辅助：拉取整条归一化帧流为 `data: …` 行列表
+    async fn collect_stream_frames(
+        cfg: &PluginConfig,
+        http: &reqwest::Client,
+        allowlist: &BTreeSet<String>,
+        body: &Value,
+    ) -> Vec<String> {
+        use futures_util::StreamExt;
+        // impl Stream 不实现 Debug，不能用 unwrap——显式 match 转测试失败
+        let stream = match call_llm_ext_stream(cfg, http, allowlist, body).await {
+            Ok(s) => s,
+            Err(e) => panic!("call_llm_ext_stream failed: {e}"),
+        };
+        // try_unfold 流非 Unpin：栈上钉住后才能 StreamExt::next
+        tokio::pin!(stream);
+        let mut out = Vec::new();
+        while let Some(item) = stream.next().await {
+            out.push(item.unwrap());
+        }
+        out
+    }
+
+    fn frame_payload(frame: &str) -> String {
+        frame
+            .strip_prefix("data: ")
+            .unwrap_or(frame)
+            .trim_end()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_frame_sequence_all_types() {
+        // 全型帧序列：reasoning/content/tool_call_delta（含分片续帧无 name）/
+        // done 五键聚合/[DONE] 哨兵收口；请求侧 stream 强制置 true
+        let sse = [
+            r#"data: {"choices":[{"delta":{"reasoning_content":"想"}}]}"#,
+            r#"data: {"choices":[{"delta":{"reasoning_content":"一下"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"你"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"好"}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":"{\"a\""}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":1}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"total_tokens":9}}"#,
+        ]
+        .join("\n\n");
+        let captured = Arc::new(Mutex::new(None::<Value>));
+        let cap = captured.clone();
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(
+                move |Json(body): Json<Value>| {
+                    let cap = cap.clone();
+                    let sse = sse.clone();
+                    async move {
+                        *cap.lock().unwrap() = Some(body);
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            sse,
+                        )
+                    }
+                },
+            ),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let frames = collect_stream_frames(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            // 请求侧显式 stream:false —— 端点语义强制流式，必须被覆盖
+            &json!({"model": "MiniMax-M2.5", "messages": [], "stream": false}),
+        )
+        .await;
+        let payloads: Vec<Value> = frames[..frames.len() - 1]
+            .iter()
+            .map(|f| serde_json::from_str(&frame_payload(f)).unwrap())
+            .collect();
+        assert_eq!(
+            payloads[0],
+            json!({"type": "reasoning", "text": "想"}),
+            "首帧必须是 reasoning 增量"
+        );
+        assert_eq!(payloads[1]["type"], "reasoning");
+        assert_eq!(payloads[1]["text"], "一下");
+        assert_eq!(payloads[2], json!({"type": "content", "text": "你"}));
+        assert_eq!(payloads[3], json!({"type": "content", "text": "好"}));
+        assert_eq!(
+            payloads[4],
+            json!({"type": "tool_call_delta", "index": 0, "name": "f", "fragment": "{\"a\""})
+        );
+        assert_eq!(
+            payloads[5],
+            json!({"type": "tool_call_delta", "index": 0, "fragment": ":1}"}),
+            "续帧按 index 关联，name 不重复携带"
+        );
+        assert_eq!(
+            payloads[6],
+            json!({
+                "type": "done",
+                "content": "你好",
+                "reasoning": "想一下",
+                "tool_calls": [{"tool_name": "f", "args": {"a": 1}}],
+                "finish_reason": "tool_calls",
+                "token_usage": {"total_tokens": 9},
+            }),
+            "done 终帧五键聚合（reasoning 仅非空携带）"
+        );
+        assert_eq!(
+            frame_payload(&frames[7]),
+            "[DONE]",
+            "终帧后必须补 [DONE] 哨兵"
+        );
+        assert_eq!(frames.len(), 8, "帧总数固定：6 归一帧 + done + [DONE]");
+        // 请求侧：stream 被强制置 true
+        assert_eq!(
+            captured.lock().unwrap().as_ref().unwrap()["stream"],
+            json!(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_base_resp_error_frame_then_stop() {
+        // 流内业务错误帧 → error 帧下行后即止：无 done、无 [DONE]
+        let sse = [
+            r#"data: {"choices":[{"delta":{"content":"partial"}}]}"#,
+            r#"data: {"base_resp":{"status_code":1004,"status_msg":"invalid"}}"#,
+        ]
+        .join("\n\n");
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let sse = sse.clone();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        sse,
+                    )
+                }
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let frames = collect_stream_frames(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "MiniMax-M2.5", "messages": []}),
+        )
+        .await;
+        assert_eq!(frames.len(), 2, "content 帧 + error 帧后必须立即收流");
+        let err_frame: Value = serde_json::from_str(&frame_payload(&frames[1])).unwrap();
+        assert_eq!(err_frame["type"], "error");
+        assert!(
+            err_frame["error"]
+                .as_str()
+                .is_some_and(|s| s.contains("1004")),
+            "{err_frame}"
+        );
+        assert!(
+            !frames.iter().any(|f| f.contains("\"type\":\"done\"")),
+            "error 发后即止，不得再发 done"
+        );
+        assert!(!frames.iter().any(|f| f.contains("[DONE]")));
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_empty_body_yields_error_frame() {
+        // 零 data 帧（空 body）→ 单 error 帧，fail-visible 禁止静默空流
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                    String::new(),
+                )
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let frames = collect_stream_frames(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "MiniMax-M2.5", "messages": []}),
+        )
+        .await;
+        assert_eq!(frames.len(), 1, "空流仅一行 error 帧");
+        let err_frame: Value = serde_json::from_str(&frame_payload(&frames[0])).unwrap();
+        assert_eq!(err_frame["type"], "error");
+        assert!(
+            err_frame["error"]
+                .as_str()
+                .is_some_and(|s| s.contains("data 帧"))
+        );
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_json_content_type_rejected() {
+        // 200+JSON（MiniMax 业务错误体形态）→ 流式路径同样显式转错
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    json!({"base_resp": {"status_code": 1004, "status_msg": "invalid"}})
+                        .to_string(),
+                )
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let err = match call_llm_ext_stream(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            &json!({"model": "MiniMax-M2.5", "messages": []}),
+        )
+        .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("200+JSON 必须显式转错"),
+        };
+        assert!(err.to_string().contains("JSON instead of SSE"), "{err}");
     }
 
     /// 测试辅助：随机端口起 axum 服务，返回监听地址（host:port）
