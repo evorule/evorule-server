@@ -28,20 +28,20 @@
     "url": "http://127.0.0.1:18081/v1/invoke/propose_knowledge_entry",
     "method": "POST",
     "headers": {
-      "X-Api-Key": "evorule_3dSg3P_sTT08lhYsuc77d0reJecl738r7J4COG7sbo4"
+      "X-Api-Key": ""
     },
     "timeout_ms": 10000,
     "version": "1.0.0",
-    "description": "知识条目提议入账（Draft），治理闸在 evorule-rule 服务端"
+    "description": "知识条目提议入账（Draft），治理闸在 evorule-rule 服务端。X-Api-Key 凭据经部署面注入（部署时填入本地副本），版本库不留凭据值"
   },
   "knowledge-transition": {
     "url": "http://127.0.0.1:18081/v1/invoke/transition_entry",
     "method": "POST",
     "headers": {
-      "X-Api-Key": "evorule_wYMD1zsuN2_VJ8SjpPrwuGcSS1IyWBbv1B0O5ES0y3k"
+      "X-Api-Key": ""
     },
     "timeout_ms": 10000,
     "version": "1.0.0",
-    "description": "知识条目机器行权（六检全过放行 Active），机器闸在 evorule-rule 服务端"
+    "description": "知识条目机器行权（六检全过放行 Active），机器闸在 evorule-rule 服务端。X-Api-Key 凭据经部署面注入（部署时填入本地副本），版本库不留凭据值"
   }
 }

@@ -54,15 +54,19 @@
 //! 否则 → 200。理由见 `call_udf` 内注释。
 //!
 //! # 配置（环境变量）
-//! - `WASM_HOST_ADDR` 监听地址，默认 `127.0.0.1:9140`
+//! - `WASM_HOST_ADDR` 监听地址，默认 `127.0.0.1:9140`；**非回环地址必须配置
+//!   `WASM_HOST_AUTH_TOKEN`，否则拒绝启动**（服务面/管理面不对外裸奔）
 //! - `WASM_HOST_DIR`  `.wasm` 目录，默认 `../wasm`（相对本包目录即 `plugins/wasm`）；
 //!   **目录不存在即拒绝启动**（fail-fast，不再带 0 个 UDF 静默运行）
 //! - `WASM_HOST_PLUGIN_JSON` 声明文件位置，缺省按
 //!   `<WASM_HOST_DIR>/../wasm-host/plugin.json` 探测（不认 cwd，见 `declaration` 模块）
 //! - `WASM_HOST_FUEL` fuel 预算，默认 `100_000_000`
 //! - `WASM_HOST_MAX_MEM` 单模块内存上限字节，默认 `16777216`（16 MiB）
-//! - `WASM_HOST_SIGN_POLICY` 验签策略 `warn|enforce|off`，默认 `warn`
-//!   （warn=材料缺失放行/存在则全量校验；enforce=三件套强制；off=等价既有行为）
+//! - `WASM_HOST_AUTH_TOKEN` 服务面（`/services/*`）Bearer token；配置后一律
+//!   强制校验。未配置时仅允许回环监听（见 `WASM_HOST_ADDR` 行的拒启规则）
+//! - `WASM_HOST_SIGN_POLICY` 验签策略 `warn|enforce|off`，默认 `enforce`
+//!   （enforce=三件套强制+信任锚缺失拒启动；warn=材料缺失放行/存在则全量
+//!   校验，仅作显式迁移降档；off=等价既有行为）
 //! - `WASM_HOST_TRUSTED_KEYS` 信任锚文件，缺省按
 //!   `<WASM_HOST_DIR>/../wasm-host/trusted-keys.json` 探测；enforce 策略下缺失即拒启动
 
@@ -124,6 +128,23 @@ async fn serve() -> Result<(), String> {
         .init();
 
     let addr = std::env::var("WASM_HOST_ADDR").unwrap_or_else(|_| "127.0.0.1:9140".to_string());
+    // 服务面鉴权（fail-closed）：token 配置后 /services/* 一律 Bearer 校验；
+    // 未配置 token 时仅允许回环监听——非回环地址 + 无 token = UDF 执行端点
+    // 对外裸奔，拒绝启动（显式配置 token 或改回回环地址后才可对外服务）。
+    let services_token = std::env::var("WASM_HOST_AUTH_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    {
+        let bound: std::net::SocketAddr = addr
+            .parse()
+            .map_err(|e| format!("WASM_HOST_ADDR `{addr}` 不是合法的 addr:port: {e}"))?;
+        if !bound.ip().is_loopback() && services_token.is_none() {
+            return Err(format!(
+                "拒绝启动: WASM_HOST_ADDR={addr} 为非回环地址但未配置 WASM_HOST_AUTH_TOKEN，\
+                 /services/* 执行端点将对外裸奔；配置 token 后重启，或改用回环地址。"
+            ));
+        }
+    }
     let dir = std::env::var("WASM_HOST_DIR").unwrap_or_else(|_| "../wasm".to_string());
     let fuel: u64 = std::env::var("WASM_HOST_FUEL")
         .ok()
@@ -135,9 +156,11 @@ async fn serve() -> Result<(), String> {
         .unwrap_or(16 * 1024 * 1024);
 
     // 验签策略（非法值 fail-visible：拼错策略名不能等价于关掉防线）
+    // 缺省 = enforce（fail-closed）：无信任锚/未签名模块拒载或拒启动；
+    // 存量未签名部署须显式设 WASM_HOST_SIGN_POLICY=warn 降档（留日志可审计）。
     let policy = match std::env::var("WASM_HOST_SIGN_POLICY") {
         Ok(raw) => SignPolicy::parse(&raw)?,
-        Err(_) => SignPolicy::Warn,
+        Err(_) => SignPolicy::Enforce,
     };
     let dir_path = std::path::Path::new(&dir).to_path_buf();
     let trusted_path = std::env::var("WASM_HOST_TRUSTED_KEYS").ok();
@@ -235,6 +258,10 @@ async fn serve() -> Result<(), String> {
         .layer(axum::middleware::from_fn_with_state(
             admin_token.map(|t| AdminToken(t.into())),
             admin_auth_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            services_token.map(|t| AdminToken(t.into())),
+            services_auth_middleware,
         ))
         .with_state(registry);
 
@@ -616,6 +643,34 @@ async fn admin_auth_middleware(
                 Json(json!({ "ok": false, "error": "admin token 缺失或不匹配" })),
             )
                 .into_response();
+        }
+    }
+    next.run(req).await
+}
+
+/// 服务面 token 校验中间件：`WASM_HOST_AUTH_TOKEN` 已配置时拦 `/services/*`
+/// （含 `/services` 清单与 `/services/{name}` 执行端点）；未配置时启动期已
+/// 保证仅回环监听（见 `serve` 的拒绝启动检查）——两层合起来执行端点不裸奔。
+async fn services_auth_middleware(
+    State(expected): State<Option<AdminToken>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(expected) = expected.as_ref() {
+        if req.uri().path().starts_with("/services") {
+            let ok = req
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .is_some_and(|given| given == expected.0.as_ref());
+            if !ok {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "ok": false, "error": "service token 缺失或不匹配" })),
+                )
+                    .into_response();
+            }
         }
     }
     next.run(req).await

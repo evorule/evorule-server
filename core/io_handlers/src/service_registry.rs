@@ -285,9 +285,10 @@ impl ServiceRegistryHandler {
 
     /// 转换 params：service_name → url/method/headers/timeout_ms
     ///
-    /// 返回：合并后的 JsonValue（作为传给 HttpHandler 的 params）
+    /// 返回：合并后的 JsonValue（作为传给 HttpHandler 的 params）。
+    /// 注意：params 可能含凭据头与业务体，禁止原样打印到日志；
+    /// 排障需要时走 tracing 结构化字段且只记 service_name 与键名集合。
     fn resolve(&self, params: &JsonValue) -> Result<JsonValue, String> {
-        eprintln!("[DIAG resolve] incoming params={params}");
         let service_name = params
             .get("service_name")
             .and_then(|v| v.as_str())
