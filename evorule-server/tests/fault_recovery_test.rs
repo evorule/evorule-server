@@ -37,7 +37,7 @@ use evorule_rule_loader::serde_to_tcb;
 /// T8 迁出后 core_eval.json 为最小评估集(原子+控制流+兜底),且不再跨仓引用
 /// evorule-tcb 资产(属地原则:运行宪法由消费方自持)。本测试为验证故障恢复
 /// 机制层行为,附加 call_service 的应用剧本形态 transform 规则。
-
+///
 /// 测试辅助：全放行权限门（io:* × 任意主体 Allow）——权限门未装配的订阅者
 /// 现按 fail-closed 拒绝分发，本 helper 供仅需 exercising 分发/重试/持久化
 /// 语义的测试挂一个显式宽松门。
