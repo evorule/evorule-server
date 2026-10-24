@@ -2397,7 +2397,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 批 H：共享账本锚点（同 EVORULE_ANCHOR_SEED 体系——一密钥护三账本；
         // 未配置 seed=锚点关，行为不变）
         let shared_anchor = evorule_server::anchor_setup::anchor_config_from_env();
-        match SharedFactsLog::recover(&shared_wal, &shared_meta).map(|log| {
+        match SharedFactsLog::recover(&shared_wal, &shared_meta).inspect(|log| {
             if let Some(cfg) = &shared_anchor {
                 log.with_anchor(
                     evorule_governance::signing::AuditSigner::from_bytes(cfg.signer_seed),
@@ -2406,7 +2406,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     256,
                 );
             }
-            log
         }) {
             Ok(log) => {
                 info!(

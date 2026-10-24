@@ -11,6 +11,7 @@
 //!
 //! 桩是真 TCP 服务（127.0.0.1 随机端口），走真实 HTTP 栈，不 mock 客户端。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::await_holding_lock)]
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -26,6 +27,8 @@ use evorule_tcb::JsonValue;
 
 /// env 变量在测试进程内共享 —— 所有会读/写 LLM_* env 的用例必须串行，
 /// 否则 cargo test 默认多线程并行会出现「A 刚 set 完、B 以为没配」的竞态。
+/// 守卫全程持有（横跨 await 点）是 env 全局态串行的必然形态，测试面豁免 await_holding_lock；
+/// 该豁免仅约束测试面，生产代码的锁跨 await 仍被 -D warnings 阻断。
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn env_guard() -> std::sync::MutexGuard<'static, ()> {
