@@ -1,6 +1,11 @@
 # hash-bypass ratchet baseline
 # 存量冻结（2026-10-24 生成）：本文件行 = 已知豁免命中；新绕行不入列即 CI 红。
 # 收缩：修复后用 `python scripts/hash_bypass_scan.py --dump` 重生成，禁手工增列。
+# 复核（2026-10-24 哈希域复核批）：全部 33 处逐域判定合法——审计链事实哈希域 10、
+# 会话锚域 4、市场资产内容哈希 8、平台 token 库存哈希 3、wasm 分发完整性 1、
+# 测试确定性快照 1、规则集版本哈希 1（源码引用 28）+ 依赖声明 5；零迁移零收缩。
+# 自本日起本文件语义升级为「复核后白名单」（域注册表见 evorule-hash README）；
+# 增列禁令与棘轮语义不变，新增绕行仍即红。
 
 H1|evorule-server/Cargo.toml|56d3a05df961dec34b9915dc29deff59
 H1|patches/evorule-governance/Cargo.toml|c0f7a5acec056445a92da093a5cfd0e8
