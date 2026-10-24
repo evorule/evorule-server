@@ -28,7 +28,7 @@
 //! 碰撞语义下不漏报（触即算，可多报）；间隙语义下违规判定偏严。
 //! 每对间隙 = max(水平分量, 垂直分量, 0) − 组合半径，逐对声明于输出。
 
-use crate::geometry::{num_f64, point_in_poly, polys_intersect, seg_seg_dist, Shape, Pt, EPS};
+use crate::geometry::{num_f64, point_in_poly, polys_intersect, seg_seg_dist, Pt, Shape, EPS};
 use evorule_tcb::JsonValue;
 
 /// 三维点
@@ -108,8 +108,16 @@ pub fn fit_transform(pts: &[Pt], fit: &Fit) -> (f64, f64, f64) {
     let (dx, dy) = (maxx - minx, maxy - miny);
     let avail_x = (fit.width - 2.0 * fit.pad).max(0.0);
     let avail_y = (fit.height - 2.0 * fit.pad).max(0.0);
-    let sx = if dx > EPS { avail_x / dx } else { f64::INFINITY };
-    let sy = if dy > EPS { avail_y / dy } else { f64::INFINITY };
+    let sx = if dx > EPS {
+        avail_x / dx
+    } else {
+        f64::INFINITY
+    };
+    let sy = if dy > EPS {
+        avail_y / dy
+    } else {
+        f64::INFINITY
+    };
     let scale = if sx.is_finite() || sy.is_finite() {
         sx.min(sy)
     } else {
@@ -290,10 +298,7 @@ pub fn tube_tube_gap(a: &TubeSeg, b: &TubeSeg) -> f64 {
 
 /// 端点落位判定：点是否被某棱柱承托（xy 在多边形内且 z 在层内含容差）
 pub fn supported_by(p: Pt3, prism: &Prism) -> bool {
-    let xy = Pt {
-        x: p.x,
-        y: p.y,
-    };
+    let xy = Pt { x: p.x, y: p.y };
     point_in_poly(xy, &prism.poly) && p.z >= prism.base - EPS && p.z <= prism.top + EPS
 }
 
@@ -381,19 +386,37 @@ mod tests {
         );
         assert!((s - 1.8).abs() < 1e-12);
         assert!((ox - 10.0).abs() < 1e-9, "水平居中: offset={ox}");
-        assert!((oy - 50.0).abs() < 1e-9, "竖直退化轴居视口中心: offset={oy}");
+        assert!(
+            (oy - 50.0).abs() < 1e-9,
+            "竖直退化轴居视口中心: offset={oy}"
+        );
     }
 
     #[test]
     fn seg_seg_3d_known_distances() {
         // 平行线距离 5
-        let d = seg_seg_dist_3d(p3(0.0, 0.0, 0.0), p3(10.0, 0.0, 0.0), p3(0.0, 5.0, 0.0), p3(10.0, 5.0, 0.0));
+        let d = seg_seg_dist_3d(
+            p3(0.0, 0.0, 0.0),
+            p3(10.0, 0.0, 0.0),
+            p3(0.0, 5.0, 0.0),
+            p3(10.0, 5.0, 0.0),
+        );
         assert!((d - 5.0).abs() < EPS);
         // 交叉但错层：xy 十字交叉，z 相距 4
-        let d = seg_seg_dist_3d(p3(-5.0, 0.0, 0.0), p3(5.0, 0.0, 0.0), p3(0.0, -5.0, 4.0), p3(0.0, 5.0, 4.0));
+        let d = seg_seg_dist_3d(
+            p3(-5.0, 0.0, 0.0),
+            p3(5.0, 0.0, 0.0),
+            p3(0.0, -5.0, 4.0),
+            p3(0.0, 5.0, 4.0),
+        );
         assert!((d - 4.0).abs() < EPS);
         // 共点 = 0
-        let d = seg_seg_dist_3d(p3(0.0, 0.0, 0.0), p3(1.0, 1.0, 1.0), p3(1.0, 1.0, 1.0), p3(2.0, 2.0, 2.0));
+        let d = seg_seg_dist_3d(
+            p3(0.0, 0.0, 0.0),
+            p3(1.0, 1.0, 1.0),
+            p3(1.0, 1.0, 1.0),
+            p3(2.0, 2.0, 2.0),
+        );
         assert!(d < EPS);
     }
 
@@ -442,11 +465,19 @@ mod tests {
         // 直角弯 R=2：切线长 = R/tan(45°) = 2
         let right = bend_info(p3(1.0, 0.0, 0.0), p3(0.0, 1.0, 0.0), Some(2.0));
         assert!((right.turn_deg - 90.0).abs() < 1e-9);
-        assert!((right.tangent_len - 2.0).abs() < 1e-9, "实得 {}", right.tangent_len);
+        assert!(
+            (right.tangent_len - 2.0).abs() < 1e-9,
+            "实得 {}",
+            right.tangent_len
+        );
         // 掉头（180°）：切线需求 → 巨大
         let uturn = bend_info(p3(1.0, 0.0, 0.0), p3(-1.0, 0.0, 0.0), Some(1.0));
         assert!((uturn.turn_deg - 180.0).abs() < 1e-9);
-        assert!(uturn.tangent_len > 1e6, "掉头切线需求应趋无穷: {}", uturn.tangent_len);
+        assert!(
+            uturn.tangent_len > 1e6,
+            "掉头切线需求应趋无穷: {}",
+            uturn.tangent_len
+        );
     }
 
     #[test]
@@ -454,8 +485,18 @@ mod tests {
         let p = iso_project_pt(p3(1.234, 2.345, 3.456), 45.0, 30.0);
         let q = iso_project_pt(p3(1.234, 2.345, 3.456), 45.0, 30.0);
         assert_eq!(format!("{:?}", (p.x, p.y)), format!("{:?}", (q.x, q.y)));
-        let d1 = seg_seg_dist_3d(p3(0.1, 0.2, 0.3), p3(1.0, 2.0, 3.0), p3(0.0, 5.0, 0.0), p3(10.0, 5.0, 0.0));
-        let d2 = seg_seg_dist_3d(p3(0.1, 0.2, 0.3), p3(1.0, 2.0, 3.0), p3(0.0, 5.0, 0.0), p3(10.0, 5.0, 0.0));
+        let d1 = seg_seg_dist_3d(
+            p3(0.1, 0.2, 0.3),
+            p3(1.0, 2.0, 3.0),
+            p3(0.0, 5.0, 0.0),
+            p3(10.0, 5.0, 0.0),
+        );
+        let d2 = seg_seg_dist_3d(
+            p3(0.1, 0.2, 0.3),
+            p3(1.0, 2.0, 3.0),
+            p3(0.0, 5.0, 0.0),
+            p3(10.0, 5.0, 0.0),
+        );
         assert_eq!(format!("{d1:?}"), format!("{d2:?}"));
     }
 }

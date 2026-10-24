@@ -11,9 +11,7 @@ use evorule_tcb::JsonValue;
 
 use evorule_plugin_kit::NativeService;
 
-use crate::geometry::{
-    num_f64, parse_shape, shapes_dist, Pt, Shape, EPS,
-};
+use crate::geometry::{num_f64, parse_shape, shapes_dist, Pt, Shape, EPS};
 
 /// 零件数硬上限（两两判定 O(n²)，上限防滥用；超限诚实拒绝）
 pub const MAX_PARTS: usize = 4096;
@@ -251,9 +249,9 @@ pub fn mk_occlusion_check() -> Arc<dyn NativeService> {
 // ============================================================================
 
 use crate::figure::{
-    bend_info, fit_transform, iso_project_pt, len3, prism_prism_gap_lb, prism_tube_gap_lb,
-    parse_pt3, sub3, supported_by, tube_tube_gap, BendInfo, Fit, Prism, Pt3, TubeSeg, MAX_POINTS,
-    MAX_WAYPOINTS,
+    bend_info, fit_transform, iso_project_pt, len3, parse_pt3, prism_prism_gap_lb,
+    prism_tube_gap_lb, sub3, supported_by, tube_tube_gap, BendInfo, Fit, Prism, Pt3, TubeSeg,
+    MAX_POINTS, MAX_WAYPOINTS,
 };
 
 /// 信封保留键（统一信封规范 v1）
@@ -265,14 +263,24 @@ fn envelope() -> Vec<(&'static str, JsonValue)> {
 }
 
 /// 角度参数解析：声明区间即契约
-fn parse_angle(args: &JsonValue, key: &str, default: f64, lo: f64, hi: f64, lo_eq: bool) -> Result<f64, String> {
+fn parse_angle(
+    args: &JsonValue,
+    key: &str,
+    default: f64,
+    lo: f64,
+    hi: f64,
+    lo_eq: bool,
+) -> Result<f64, String> {
     match args.get(key) {
         None | Some(JsonValue::Null) => Ok(default),
         Some(v) => {
-            let d = num_f64(v).ok_or_else(|| {
-                format!("{key} 须为合法数值角度 — 自诊断指引: 拒绝 NaN/Inf")
-            })?;
-            let ok = if lo_eq { d >= lo && d < hi } else { d > lo && d < hi };
+            let d = num_f64(v)
+                .ok_or_else(|| format!("{key} 须为合法数值角度 — 自诊断指引: 拒绝 NaN/Inf"))?;
+            let ok = if lo_eq {
+                d >= lo && d < hi
+            } else {
+                d > lo && d < hi
+            };
             if ok {
                 Ok(d)
             } else {
@@ -285,7 +293,11 @@ fn parse_angle(args: &JsonValue, key: &str, default: f64, lo: f64, hi: f64, lo_e
 }
 
 fn pair_points(points: &[JsonValue], ctx: &str) -> Result<Vec<Pt3>, String> {
-    points.iter().enumerate().map(|(i, v)| parse_pt3(v, &format!("{ctx}[{i}]"))).collect()
+    points
+        .iter()
+        .enumerate()
+        .map(|(i, v)| parse_pt3(v, &format!("{ctx}[{i}]")))
+        .collect()
 }
 
 // ---- geometry_iso_project ----
@@ -313,9 +325,9 @@ impl NativeService for GeometryIsoProject {
         let (scale, ox, oy) = match args.get("fit") {
             None | Some(JsonValue::Null) => (1.0, 0.0, 0.0),
             Some(f) => {
-                let obj = f
-                    .as_object()
-                    .ok_or_else(|| "fit 须为对象 — 自诊断指引: {\"width\",\"height\",\"pad\"?}".to_string())?;
+                let obj = f.as_object().ok_or_else(|| {
+                    "fit 须为对象 — 自诊断指引: {\"width\",\"height\",\"pad\"?}".to_string()
+                })?;
                 let num = |k: &str| -> Result<f64, String> {
                     obj.get(k)
                         .and_then(num_f64)
@@ -324,8 +336,7 @@ impl NativeService for GeometryIsoProject {
                 let (width, height) = (num("width")?, num("height")?);
                 let pad = match obj.get("pad") {
                     None | Some(JsonValue::Null) => 0.0,
-                    Some(v) => num_f64(v)
-                        .ok_or_else(|| "fit.pad 须为合法数值".to_string())?,
+                    Some(v) => num_f64(v).ok_or_else(|| "fit.pad 须为合法数值".to_string())?,
                 };
                 if width <= 0.0 || height <= 0.0 {
                     return Err("fit 视口宽高须为正".to_string());
@@ -335,14 +346,7 @@ impl NativeService for GeometryIsoProject {
                         "fit.pad={pad} 非法 — 自诊断指引: pad ≥ 0 且 2·pad < min(width,height)"
                     ));
                 }
-                fit_transform(
-                    &raw,
-                    &Fit {
-                        width,
-                        height,
-                        pad,
-                    },
-                )
+                fit_transform(&raw, &Fit { width, height, pad })
             }
         };
         let projected: Vec<JsonValue> = raw
@@ -529,7 +533,8 @@ impl GeometryFigureAudit {
             .get("solids")
             .and_then(JsonValue::as_array)
             .ok_or_else(|| {
-                "缺少必填参数 solids — 自诊断指引: [{\"id\",\"kind\":\"prism\"|\"tube\",...}]".to_string()
+                "缺少必填参数 solids — 自诊断指引: [{\"id\",\"kind\":\"prism\"|\"tube\",...}]"
+                    .to_string()
             })?;
         if arr.is_empty() || arr.len() > MAX_PARTS {
             return Err(format!(
@@ -548,28 +553,35 @@ impl GeometryFigureAudit {
                 .and_then(JsonValue::as_str)
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| format!("solids[{i}] 缺非空 id"))?;
-            let kind = obj
-                .get("kind")
-                .and_then(JsonValue::as_str)
-                .ok_or_else(|| format!("solids[{i}]({id}) 缺 kind — 自诊断指引: kind ∈ prism | tube"))?;
+            let kind = obj.get("kind").and_then(JsonValue::as_str).ok_or_else(|| {
+                format!("solids[{i}]({id}) 缺 kind — 自诊断指引: kind ∈ prism | tube")
+            })?;
             match kind {
                 "prism" => {
-                    let pts_v = obj
-                        .get("points")
-                        .and_then(JsonValue::as_array)
-                        .ok_or_else(|| format!("solids[{i}]({id}) 棱柱缺 points — 自诊断指引: [[x,y],...] ≥3 点"))?;
+                    let pts_v =
+                        obj.get("points")
+                            .and_then(JsonValue::as_array)
+                            .ok_or_else(|| {
+                                format!(
+                                "solids[{i}]({id}) 棱柱缺 points — 自诊断指引: [[x,y],...] ≥3 点"
+                            )
+                            })?;
                     if pts_v.len() < 3 {
-                        return Err(format!("solids[{i}]({id}) 棱柱顶点数须 ≥3 — 实得 {}", pts_v.len()));
+                        return Err(format!(
+                            "solids[{i}]({id}) 棱柱顶点数须 ≥3 — 实得 {}",
+                            pts_v.len()
+                        ));
                     }
                     let mut poly = Vec::with_capacity(pts_v.len());
                     for (j, pv) in pts_v.iter().enumerate() {
-                        let pair = pv
-                            .as_array()
-                            .filter(|a| a.len() == 2)
-                            .ok_or_else(|| format!("solids[{i}]({id}) 第 {j} 顶点须为 [x,y] 数对"))?;
+                        let pair = pv.as_array().filter(|a| a.len() == 2).ok_or_else(|| {
+                            format!("solids[{i}]({id}) 第 {j} 顶点须为 [x,y] 数对")
+                        })?;
                         let (x, y) = (
-                            num_f64(&pair[0]).ok_or_else(|| format!("solids[{i}]({id}) 第 {j} 顶点 x 非法"))?,
-                            num_f64(&pair[1]).ok_or_else(|| format!("solids[{i}]({id}) 第 {j} 顶点 y 非法"))?,
+                            num_f64(&pair[0])
+                                .ok_or_else(|| format!("solids[{i}]({id}) 第 {j} 顶点 x 非法"))?,
+                            num_f64(&pair[1])
+                                .ok_or_else(|| format!("solids[{i}]({id}) 第 {j} 顶点 y 非法"))?,
                         );
                         poly.push(Pt { x, y });
                     }
@@ -700,10 +712,13 @@ impl NativeService for GeometryFigureAudit {
                 if hit {
                     violations.push(JsonValue::object_from_pairs(&[
                         ("kind", JsonValue::string("insufficient_gap")),
-                        ("ids", JsonValue::Array(vec![
-                            JsonValue::string(solids[i].id().to_string()),
-                            JsonValue::string(solids[j].id().to_string()),
-                        ])),
+                        (
+                            "ids",
+                            JsonValue::Array(vec![
+                                JsonValue::string(solids[i].id().to_string()),
+                                JsonValue::string(solids[j].id().to_string()),
+                            ]),
+                        ),
                         ("gap", crate::figure::fnum(gap)),
                     ]));
                 }
@@ -712,10 +727,7 @@ impl NativeService for GeometryFigureAudit {
         if require_support {
             for s in &solids {
                 if let Solid::Tube { id, segs } = s {
-                    for (end_name, pt) in [
-                        ("start", segs[0].a),
-                        ("end", segs[segs.len() - 1].b),
-                    ] {
+                    for (end_name, pt) in [("start", segs[0].a), ("end", segs[segs.len() - 1].b)] {
                         let ok = solids.iter().any(|other| match other {
                             Solid::Prism { prism, .. } => supported_by(pt, prism),
                             Solid::Tube { .. } => false,
@@ -733,7 +745,10 @@ impl NativeService for GeometryFigureAudit {
         }
         let mut out = envelope();
         out.push(("solids", JsonValue::Integer(n as i64)));
-        out.push(("pairs_checked", JsonValue::Integer((n * (n - 1) / 2) as i64)));
+        out.push((
+            "pairs_checked",
+            JsonValue::Integer((n * (n - 1) / 2) as i64),
+        ));
         out.push(("violations", JsonValue::Array(violations.clone())));
         out.push(("all_clean", JsonValue::Bool(violations.is_empty())));
         out.push((
@@ -830,8 +845,9 @@ mod figure_tests {
             Some(false)
         );
         let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
-        assert!(v.iter().any(|x| x.get("kind").and_then(JsonValue::as_str)
-            == Some("bend_exceeds_leg")));
+        assert!(v
+            .iter()
+            .any(|x| x.get("kind").and_then(JsonValue::as_str) == Some("bend_exceeds_leg")));
     }
 
     #[test]
@@ -845,8 +861,9 @@ mod figure_tests {
         ]);
         let out = GeometryTubeRoute.execute(&args).unwrap();
         let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
-        assert!(v.iter().any(|x| x.get("kind").and_then(JsonValue::as_str)
-            == Some("bend_unroutable")));
+        assert!(v
+            .iter()
+            .any(|x| x.get("kind").and_then(JsonValue::as_str) == Some("bend_unroutable")));
     }
 
     #[test]
@@ -943,8 +960,9 @@ mod figure_tests {
         ]);
         let out = GeometryFigureAudit.execute(&args).unwrap();
         let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
-        assert!(v.iter().any(|x| x.get("kind").and_then(JsonValue::as_str)
-            == Some("unsupported_end")));
+        assert!(v
+            .iter()
+            .any(|x| x.get("kind").and_then(JsonValue::as_str) == Some("unsupported_end")));
     }
 
     #[test]
