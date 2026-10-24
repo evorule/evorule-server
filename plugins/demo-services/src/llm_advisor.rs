@@ -66,6 +66,7 @@ fn py_json_dumps(v: &JsonValue) -> String {
             }
         }
         JsonValue::Integer(i) => format!("{i}"),
+        JsonValue::U64(u) => format!("{u}"),
         JsonValue::String(s) => serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()),
         JsonValue::Array(a) => {
             let items: Vec<String> = a.iter().map(py_json_dumps).collect();

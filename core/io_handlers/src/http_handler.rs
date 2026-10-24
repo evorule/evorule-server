@@ -227,7 +227,7 @@ impl IoHandler for HttpHandler {
         // - 字符串：作为原始 text body（Content-Type 由调用方在 headers 设置）
         // - 对象/数组：序列化为 JSON 文本，并自动设置 Content-Type: application/json
         // （若调用方在 headers 显式设置了 Content-Type，会覆盖此默认——以调用方为准）
-        // - Null/Bool/Integer：拒绝（避免隐式把标量当 body 发出）
+        // - Null/Bool/Integer/U64：拒绝（避免隐式把标量当 body 发出）
         if let Some(body) = params.get("body") {
             match body {
                 JsonValue::String(s) => {
@@ -238,7 +238,10 @@ impl IoHandler for HttpHandler {
                     req = req.header(reqwest::header::CONTENT_TYPE, "application/json");
                     req = req.body(json);
                 }
-                JsonValue::Null | JsonValue::Bool(_) | JsonValue::Integer(_) => {
+                JsonValue::Null
+                | JsonValue::Bool(_)
+                | JsonValue::Integer(_)
+                | JsonValue::U64(_) => {
                     return Err("param 'body' must be a string, object, or array".to_string());
                 }
             }

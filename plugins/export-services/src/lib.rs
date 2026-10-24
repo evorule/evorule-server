@@ -325,7 +325,7 @@ fn persist_and_envelope(
 
 /// TCB [`JsonValue`] → `serde_json::Value` 显式递归转换。
 ///
-/// JsonValue 六变体（Null/Bool/Integer/String/Array/Object）逐一映射；
+/// JsonValue 七变体（Null/Bool/Integer/U64/String/Array/Object）逐一映射；
 /// 无浮点变体——TCB 语义本就不携带 f64（数值精度域归各计算服务自己管），
 /// 浮点入参在服务链更早处即已如实报错，本转换不造数。
 fn tcb_to_serde(v: &JsonValue) -> Result<serde_json::Value, String> {
@@ -333,6 +333,7 @@ fn tcb_to_serde(v: &JsonValue) -> Result<serde_json::Value, String> {
         JsonValue::Null => serde_json::Value::Null,
         JsonValue::Bool(b) => serde_json::Value::Bool(*b),
         JsonValue::Integer(i) => serde_json::Value::from(*i),
+        JsonValue::U64(u) => serde_json::Value::from(*u),
         JsonValue::String(s) => serde_json::Value::String(s.to_string()),
         JsonValue::Array(items) => serde_json::Value::Array(
             items

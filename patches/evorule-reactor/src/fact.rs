@@ -389,6 +389,13 @@ impl Fact {
     ///
     /// 返回的 JSON 对象包含 `type` 字段和各变体的所有字段，
     /// 可通过 `tcb_to_serde` 转为 `serde_json::Value` 用于 HTTP 响应。
+    ///
+    /// # u64 全域无损
+    ///
+    /// FactId 与各 u64 字段经 `JsonValue::U64`（u64 全域通道）承载，
+    /// 高位值（如规则集锚定事实的 `u64::MAX-1` 哨兵 id）不回绕。
+    /// 权威序列化仍以哈希面 `fact_to_stable_json`（serde Number）为准，
+    /// 本函数仅服务展示面。
     //
     // 注：match 全部 Fact 变体的序列化分支，有意保持单一函数便于对账字段映射。
     #[allow(clippy::too_many_lines)]
@@ -397,12 +404,12 @@ impl Fact {
         match self {
             Fact::Command { id, instruction } => J::object_from_pairs(&[
                 ("type", J::string("Command")),
-                ("id", J::integer(id.0 as i64)),
+                ("id", J::u64(id.0)),
                 ("instruction", instruction.clone()),
             ]),
             Fact::PayloadUpdate { id, path, value } => J::object_from_pairs(&[
                 ("type", J::string("PayloadUpdate")),
-                ("id", J::integer(id.0 as i64)),
+                ("id", J::u64(id.0)),
                 ("path", J::string(path.clone())),
                 ("value", value.clone()),
             ]),
@@ -413,8 +420,8 @@ impl Fact {
                 new_queue,
             } => J::object_from_pairs(&[
                 ("type", J::string("StateTransition")),
-                ("id", J::integer(id.0 as i64)),
-                ("cause", J::integer(cause.0 as i64)),
+                ("id", J::u64(id.0)),
+                ("cause", J::u64(cause.0)),
                 ("new_payload", new_payload.clone()),
                 ("new_queue", J::array(new_queue.clone())),
             ]),
@@ -425,8 +432,8 @@ impl Fact {
                 params,
             } => J::object_from_pairs(&[
                 ("type", J::string("IoRequest")),
-                ("id", J::integer(id.0 as i64)),
-                ("cause", J::integer(cause.0 as i64)),
+                ("id", J::u64(id.0)),
+                ("cause", J::u64(cause.0)),
                 ("io_type", J::string(io_type.as_str())),
                 ("params", params.clone()),
             ]),
@@ -438,8 +445,8 @@ impl Fact {
             } => {
                 let pairs: Vec<(&str, J)> = vec![
                     ("type", J::string("IoResponse")),
-                    ("id", J::integer(id.0 as i64)),
-                    ("request_id", J::integer(request_id.0 as i64)),
+                    ("id", J::u64(id.0)),
+                    ("request_id", J::u64(request_id.0)),
                     ("result", result.clone()),
                     (
                         "error",
@@ -453,12 +460,12 @@ impl Fact {
             }
             Fact::Stable { id, version } => J::object_from_pairs(&[
                 ("type", J::string("Stable")),
-                ("id", J::integer(id.0 as i64)),
-                ("version", J::integer(*version as i64)),
+                ("id", J::u64(id.0)),
+                ("version", J::u64(*version)),
             ]),
             Fact::Error { id, message } => J::object_from_pairs(&[
                 ("type", J::string("Error")),
-                ("id", J::integer(id.0 as i64)),
+                ("id", J::u64(id.0)),
                 ("message", J::string(message.clone())),
             ]),
             Fact::TransitionTrace {
@@ -470,7 +477,7 @@ impl Fact {
                     .iter()
                     .map(|h| {
                         J::object_from_pairs(&[
-                            ("index", J::integer(h.index as i64)),
+                            ("index", J::u64(h.index)),
                             ("instr_type", J::string(h.instr_type.clone())),
                             ("hit", J::Bool(h.hit)),
                         ])
@@ -478,8 +485,8 @@ impl Fact {
                     .collect();
                 J::object_from_pairs(&[
                     ("type", J::string("TransitionTrace")),
-                    ("id", J::integer(id.0 as i64)),
-                    ("cause", J::integer(cause.0 as i64)),
+                    ("id", J::u64(id.0)),
+                    ("cause", J::u64(cause.0)),
                     ("rule_hits", J::array(hits)),
                 ])
             }
@@ -491,9 +498,9 @@ impl Fact {
                 instruction,
             } => J::object_from_pairs(&[
                 ("type", J::string("Violation")),
-                ("id", J::integer(id.0 as i64)),
-                ("cause", J::integer(cause.0 as i64)),
-                ("rule_index", J::integer(*rule_index as i64)),
+                ("id", J::u64(id.0)),
+                ("cause", J::u64(cause.0)),
+                ("rule_index", J::u64(*rule_index)),
                 ("reason", J::string(reason.clone())),
                 ("instruction", instruction.clone()),
             ]),

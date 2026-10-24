@@ -46,6 +46,8 @@ pub(crate) fn tcb_to_serde(v: &JsonValue) -> serde_json::Value {
         JsonValue::Null => serde_json::Value::Null,
         JsonValue::Bool(b) => serde_json::Value::Bool(*b),
         JsonValue::Integer(i) => serde_json::Value::Number((*i).into()),
+        // u64 全域通道（v0.9.0）：serde Number 原生无损承载，不经 i64 cast
+        JsonValue::U64(v) => serde_json::Value::Number((*v).into()),
         JsonValue::String(s) => serde_json::Value::String(s.to_string()),
         JsonValue::Array(a) => serde_json::Value::Array(a.iter().map(tcb_to_serde).collect()),
         JsonValue::Object(m) => {

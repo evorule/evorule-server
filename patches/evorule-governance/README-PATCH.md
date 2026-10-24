@@ -38,6 +38,22 @@
 
 **主仓有而本补丁无（退役条件，非本补丁缺陷）**：时钟缝族（`with_clock`/`reap_expired_at`/`max_session_id_from_names`）——主仓 `0a4d592` 后新增；本补丁退役前提=主仓先吸收 G6 锚定/rehydrate/tick 三族，否则删补丁即丢 server 在用能力。`verify_deep` 两侧签名同形（主仓已吸收先例）。
 
+## 增量同步记录
+
+### v0.9.0（2026-10-24，u64 全域通道）
+
+主仓 governance 随 evorule-tcb `JsonValue::U64(u64)` 变体（u64 全域通道）补齐
+两处桥接穷尽匹配，行为仅扩不改（`Integer` 分支语义不动）：
+
+| 文件 | 改动 |
+|---|---|
+| `src/permission/mod.rs` | `tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载，不经 i64 cast） |
+| `src/time_machine.rs` | `json_value_to_serde` 补 `JsonValue::U64` 分支（同上） |
+
+> 独立自测注记（同 evorule-reactor 补丁 v0.9.0 注记）：本副本已引用 `JsonValue::U64`，
+> 独立构建时 `evorule-tcb` 按纯 version 解析 crates.io 0.8.4（无 U64）→ 编译不通过，
+> 过渡期由 server workspace 全量测试覆盖（[patch.crates-io] 全局替换）。
+
 ## vendored 化机械差异（非语义）
 
 - `[package]` workspace 继承字段固定为 0.8.5 对应值

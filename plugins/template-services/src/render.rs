@@ -411,12 +411,13 @@ fn truthy(v: &JsonValue) -> bool {
     !v.is_null() && v.as_bool() != Some(false)
 }
 
-/// 值字符串化：String 原样 / Integer 十进制 / Bool true|false /
+/// 值字符串化：String 原样 / Integer|U64 十进制 / Bool true|false /
 /// Array|Object 紧凑 JSON 形态 / Null 拒绝（fail-fast）。
 fn stringify(v: &JsonValue) -> Result<String, String> {
     match v {
         JsonValue::String(s) => Ok(s.to_string()),
         JsonValue::Integer(i) => Ok(i.to_string()),
+        JsonValue::U64(u) => Ok(u.to_string()),
         JsonValue::Bool(b) => Ok(b.to_string()),
         JsonValue::Array(_) | JsonValue::Object(_) => Ok(format!("{v}")),
         JsonValue::Null => {

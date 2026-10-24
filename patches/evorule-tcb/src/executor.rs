@@ -215,6 +215,7 @@ pub(crate) fn json_type_name(v: &JsonValue) -> &'static str {
         JsonValue::Null => "null",
         JsonValue::Bool(_) => "boolean",
         JsonValue::Integer(_) => "integer",
+        JsonValue::U64(_) => "u64",
         JsonValue::String(_) => "string",
         JsonValue::Array(_) => "array",
         JsonValue::Object(_) => "object",

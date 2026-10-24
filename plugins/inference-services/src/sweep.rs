@@ -61,6 +61,7 @@ pub fn set_path(base: &JsonValue, path: &str, value: JsonValue) -> Result<JsonVa
                     JsonValue::Array(_) => "数组",
                     JsonValue::String(_) => "字符串",
                     JsonValue::Integer(_) => "整数",
+                    JsonValue::U64(_) => "无符号整数",
                     JsonValue::Bool(_) => "布尔",
                     JsonValue::Null => "null",
                     JsonValue::Object(_) => unreachable!("上一分支已覆盖"),

@@ -209,6 +209,9 @@ pub type ObjectMap = KaniMap;
 /// - 使用 `BTreeMap` 保证确定性迭代顺序
 /// - 使用 `Vec` 而非 `im::Vector`
 /// - `Integer` 为 `i64`（Kani 友好）
+/// - `U64` 为 `u64` 全域通道（v0.9.0）：`Integer` 无法无损承载 u64 高位值
+///   （如审计链规则集锚定事实的 `FactId(u64::MAX-1)` 哨兵），凡值域可能
+///   超出 `i64` 的来源一律走 `U64`，禁止 `as i64` cast 回绕
 /// - 使用 `Cow` 减少克隆开销
 ///
 /// # 不实现 `PartialEq` 的自动派生
@@ -247,6 +250,9 @@ pub enum JsonValue {
     Bool(bool),
     /// 整数（i64）
     Integer(i64),
+    /// 无符号整数（u64 全域；与 [`JsonValue::Integer`] 形态严格区分，
+    /// 不做跨形态数值相等——见 [`PartialEq`] / [`Ord`] 实现）
+    U64(u64),
     /// 字符串（使用 `Cow` 减少克隆）
     String(Cow<'static, str>),
     /// 数组（有序列表）
@@ -298,6 +304,9 @@ impl PartialEq for JsonValue {
             (JsonValue::Null, JsonValue::Null) => true,
             (JsonValue::Bool(a), JsonValue::Bool(b)) => a == b,
             (JsonValue::Integer(a), JsonValue::Integer(b)) => a == b,
+            (JsonValue::U64(a), JsonValue::U64(b)) => a == b,
+            // 跨形态（Integer vs U64）有意不相等：形态严格与 Ord 类型分组一致，
+            // 避免相等/排序语义分叉（需要数值比较时调用方显式转换形态）。
             (JsonValue::String(a), JsonValue::String(b)) => a == b,
             (JsonValue::Array(a), JsonValue::Array(b)) => a == b,
             (JsonValue::Object(a), JsonValue::Object(b)) => {
@@ -326,7 +335,7 @@ impl Eq for JsonValue {}
 impl Ord for JsonValue {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            // 按类型分组顺序：Null < Bool < Integer < String < Array < Object
+            // 按类型分组顺序：Null < Bool < Integer < U64 < String < Array < Object
             (JsonValue::Null, JsonValue::Null) => Ordering::Equal,
             (JsonValue::Null, _) => Ordering::Less,
             (_, JsonValue::Null) => Ordering::Greater,
@@ -338,6 +347,10 @@ impl Ord for JsonValue {
             (JsonValue::Integer(a), JsonValue::Integer(b)) => a.cmp(b),
             (JsonValue::Integer(_), _) => Ordering::Less,
             (_, JsonValue::Integer(_)) => Ordering::Greater,
+
+            (JsonValue::U64(a), JsonValue::U64(b)) => a.cmp(b),
+            (JsonValue::U64(_), _) => Ordering::Less,
+            (_, JsonValue::U64(_)) => Ordering::Greater,
 
             (JsonValue::String(a), JsonValue::String(b)) => a.cmp(b),
             (JsonValue::String(_), _) => Ordering::Less,
@@ -394,6 +407,11 @@ impl JsonValue {
         matches!(self, JsonValue::Integer(_))
     }
 
+    /// 检查是否为无符号整数类型（u64 全域通道）
+    pub fn is_u64(&self) -> bool {
+        matches!(self, JsonValue::U64(_))
+    }
+
     /// 检查是否为字符串类型
     pub fn is_string(&self) -> bool {
         matches!(self, JsonValue::String(_))
@@ -448,6 +466,14 @@ impl JsonValue {
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             JsonValue::Integer(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// 尝试转换为 u64（仅 [`JsonValue::U64`] 命中；与 `as_i64` 形态严格对称）
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            JsonValue::U64(v) => Some(*v),
             _ => None,
         }
     }
@@ -646,6 +672,7 @@ impl fmt::Display for JsonValue {
             JsonValue::Null => write!(f, "null"),
             JsonValue::Bool(b) => write!(f, "{b}"),
             JsonValue::Integer(i) => write!(f, "{i}"),
+            JsonValue::U64(v) => write!(f, "{v}"),
             JsonValue::String(s) => escape_json_string(s.as_ref(), f),
             JsonValue::Array(arr) => {
                 write!(f, "[")?;
@@ -710,6 +737,23 @@ impl JsonValue {
     /// 构造整数
     pub const fn integer(i: i64) -> Self {
         JsonValue::Integer(i)
+    }
+
+    /// 构造无符号整数（u64 全域通道）
+    ///
+    /// # 示例
+    ///
+    /// ```
+    /// use evorule_tcb::JsonValue;
+    ///
+    /// let v = JsonValue::u64(u64::MAX - 1);
+    /// assert!(v.is_u64());
+    /// assert_eq!(v.as_u64(), Some(u64::MAX - 1));
+    /// // 形态严格：U64 与 Integer 不做跨形态相等
+    /// assert_ne!(JsonValue::u64(5), JsonValue::Integer(5));
+    /// ```
+    pub const fn u64(v: u64) -> Self {
+        JsonValue::U64(v)
     }
 
     /// 构造字符串
@@ -879,6 +923,13 @@ impl From<Cow<'static, str>> for JsonValue {
 impl From<i64> for JsonValue {
     fn from(i: i64) -> Self {
         JsonValue::Integer(i)
+    }
+}
+
+/// 从 u64 快捷构造无符号整数（u64 全域通道，无 i64 cast 回绕）
+impl From<u64> for JsonValue {
+    fn from(v: u64) -> Self {
+        JsonValue::U64(v)
     }
 }
 
@@ -1229,5 +1280,72 @@ mod tests {
 
         let v: JsonValue = vec![JsonValue::Integer(1), JsonValue::Integer(2)].into();
         assert_eq!(v.len(), Some(2));
+    }
+
+    // ===== JSON 字符串转义边界（Display 面输出合法性）=====
+
+    /// 控制字符（< 0x20 且非专用转义字符）必须走 \u00XX 通道，
+    /// 原样输出会产生非法 JSON（消费方解析即崩）
+    #[test]
+    fn test_display_escapes_control_chars() {
+        let v = JsonValue::string("a\u{1}b");
+        assert_eq!(v.to_string(), "\"a\\u0001b\"");
+
+        // \x1f 是 < 0x20 边界的最后一个非专用控制字符
+        let v = JsonValue::string("\u{1f}");
+        assert_eq!(v.to_string(), "\"\\u001f\"");
+    }
+
+    /// 空格（0x20）是可打印字符，不属于转义区间——
+    /// 转义上界写成 <= 会把空格错误转义为 \u0020
+    #[test]
+    fn test_display_space_verbatim() {
+        let v = JsonValue::string("a b");
+        assert_eq!(v.to_string(), "\"a b\"");
+    }
+
+    // ===== U64（u64 全域通道）=====
+
+    #[test]
+    fn test_u64_construct_and_access() {
+        let v = JsonValue::u64(u64::MAX - 1);
+        assert!(v.is_u64());
+        assert!(!v.is_integer());
+        assert_eq!(v.as_u64(), Some(u64::MAX - 1));
+        // 形态严格对称：as_i64 只认 Integer，as_u64 只认 U64
+        assert_eq!(v.as_i64(), None);
+        assert_eq!(JsonValue::Integer(5).as_u64(), None);
+
+        let from_trait: JsonValue = 42u64.into();
+        assert_eq!(from_trait, JsonValue::u64(42));
+    }
+
+    #[test]
+    fn test_u64_partial_eq_strict_shape() {
+        // 跨形态有意不相等（与 Ord 类型分组一致）
+        assert_ne!(JsonValue::u64(5), JsonValue::Integer(5));
+        assert_ne!(JsonValue::Integer(5), JsonValue::u64(5));
+        assert_eq!(JsonValue::u64(5), JsonValue::u64(5));
+        assert_ne!(JsonValue::u64(u64::MAX), JsonValue::u64(u64::MAX - 1));
+    }
+
+    #[test]
+    fn test_u64_ord_group_order() {
+        // 组序：Integer < U64 < String（类型分组优先于数值）
+        assert!(JsonValue::Integer(0) < JsonValue::u64(0));
+        assert!(JsonValue::u64(0) < JsonValue::string(""));
+        assert!(JsonValue::u64(0) < JsonValue::u64(1));
+        assert!(JsonValue::u64(u64::MAX - 1) < JsonValue::u64(u64::MAX));
+        // 整数组仍小于 U64 组内任意值（组间判定优先）
+        assert!(JsonValue::Integer(i64::MAX) < JsonValue::u64(0));
+    }
+
+    #[test]
+    fn test_u64_display() {
+        assert_eq!(format!("{}", JsonValue::u64(0)), "0");
+        assert_eq!(
+            format!("{}", JsonValue::u64(u64::MAX - 1)),
+            "18446744073709551614"
+        );
     }
 }

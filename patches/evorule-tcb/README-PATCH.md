@@ -19,7 +19,8 @@ evorule-governance 同机制先例）。基线 = crates.io `evorule-tcb 0.8.4`
 | 文件 | 改动 |
 |---|---|
 | `src/domain.rs` | ① dispatch 加 `"in"` 分支；② 新增 `evaluate_in_outcome`（三态：含→Sat/不含→Unsat/路径缺→按 on_missing；空集→Unsat；字符串元素命中根段点形态→Missing(ValueLiteralAmbiguous)，复用 `is_root_segment_dot_path` 谓词零镜像）；③ 模块 doc 与 evaluate_domain doc 域清单 7→8；④ tests 增 in 组 10 件（sat/unsat/整数成员/空集 Unsat/缺省 unsat 投影/on_missing=error 拒执行/values 缺失 Err/values 非数组 Err/根段点元素歧义/确定性幂等） |
-| `src/executor.rs` | 仅 doc 注释增量（+11 行，含空行，零代码差异）：`apply_set_operation` 上方的算术词汇表架构裁定注释——本枚举刻意不引入 `mul`/`div`，乘除走服务面原生服务，演化路径=立法治理语义新指令，校验面对应 `_shared/v1.0.json` 的 operation 字段 |
+| `src/executor.rs` | 仅 doc 注释增量（+11 行，含空行，零代码差异）：`apply_set_operation` 上方的算术词汇表架构裁定注释——本枚举刻意不引入 `mul`/`div`，乘除走服务面原生服务，演化路径=立法治理语义新指令，校验面对应 `_shared/v1.0.json` 的 operation 字段；v0.9.0 同步另增代码分支：`json_type_name` 补 `JsonValue::U64(_) => "u64"` |
+| `src/value.rs` | v0.9.0 主仓同步（u64 全域通道）：枚举尾部新增 `U64(u64)` 变体（尾部追加，wire 兼容）+ `PartialEq`/`Ord`/`Display` 手动实现补分支（形态严格语义：与 `Integer` 跨形态有意不相等；Ord 组序 `Integer < U64`）+ `JsonValue::u64()` const 构造 / `From<u64>` / `is_u64` / `as_u64` + 4 单测（构造访问/严格相等/组序/Display） |
 | `src/lib.rs` | 纯行尾差异（CRLF；基线与主仓为 LF），零内容差异——任何按字节比对的同步闸对本文件会误报，按规范化内容比对一致 |
 
 语义裁定（design-19 R-2/R-3，2026-10-16 用户批准）：

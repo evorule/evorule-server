@@ -19,8 +19,10 @@ crates.io 注册表实例（全局单实例替换，无双实例类型冲突；0
 | 文件 | 改动 |
 |---|---|
 | `src/pure.rs` | `check_invariants` `pub(crate)` → `pub`（可见性提升） |
-| `src/wal.rs` | `WalWriter::rotate` 提 `pub`；`FactWalStore` trait 增 `rotate`（默认无操作返回 `Ok(false)`）；`WalWriter` 实现（委托具体方法，返回 `Ok(true)`） |
+| `src/wal.rs` | `WalWriter::rotate` 提 `pub`；`FactWalStore` trait 增 `rotate`（默认无操作返回 `Ok(false)`）；`WalWriter` 实现（委托具体方法，返回 `Ok(true)`）；v0.9.0 同步另增：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载） |
 | `src/facts_log.rs` | 增 `FactsLog::rotate_wal()`（persistence 门控；写锁透传 trait rotate；错误映射 `WalError` → `FactsLogError::WalError`） |
+| `src/fact.rs` | v0.9.0 主仓同步（u64 全域无损）：`to_json` 17 处 `as i64` cast → `JsonValue::u64()`（展示面 FactId/cause/request_id/version/index/rule_index 高位值不再回绕为负；哈希输入 `fact_to_stable_json` 不经本函数，哈希口径零扰动）+ doc u64 无损注记 + 哨兵 id 无损回归测试 |
+| `src/hash.rs` | v0.9.0 主仓同步：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载，不经 i64 cast）+ u64 无损回归测试 |
 | `src/reactor.rs` | ① `ReactorStateSnapshot` 增 `pending_io: Vec<PendingIoEntry>`（每迭代头随快照刷新，空表零分配）；② `Reactor`/`ReactorBuilder`/`ReactorHandle` 增 `cancel_all_flag` 共享标志 + `cancel_all_pending()`；主循环迭代头 0.55 位消费（逐 pending 请求 emit `Fact::Error` "cancelled by external request" + `force_remove_io_request`，镜像超时路径，不发 Stable）；③ 增 `InvariantScanReport` 共享报告 + `latest_invariants` 槽（每迭代头由 `run_invariant_check` 返回值刷新）+ `ReactorHandle::latest_invariant_scan()`；`run_invariant_check` 改为返回违规明细（既有计数+日志行为不变） |
 | `src/lib.rs` | 导出 `InvariantScanReport` |
 | `Cargo.toml` | workspace 继承字面量化；`evorule-tcb` 去 path 保留 version；去 `[lints]` 继承；尾部空 `[workspace]` 表（脱离 server 工作区） |
@@ -32,9 +34,16 @@ governance 不打补丁：`Session.handle` / `Session.facts_log` 均为 pub，se
 
 - server 工作区 `cargo test` **不含**本补丁的测试（[patch] 包不是 workspace 成员）。
   在本目录独立跑：`cargo test --lib`（自带空 workspace 表 + 独立 lock）。
-- 独立跑基线：**140 passed / 3 failed**——3 件失败（`pure::tests::test_next_step_*`）
-  为环境性缺夹具（读 sibling 路径 `../evorule-tcb/core_eval.json`，仅主仓布局存在），
-  非补丁引入；主仓内同测试基线绿。新增测试 1 件绿。
+- **v0.9.0 起独立自测暂不可跑（u64 全域通道固随）**：本副本 `fact.rs` 等已改用
+  `JsonValue::U64`/`JsonValue::u64`，独立构建时 `evorule-tcb` 按纯 version 解析到
+  crates.io 0.8.4（无 U64 变体）→ 编译不通过。恢复条件 = 主仓 evorule-tcb 0.9.0
+  发布后本补丁退役（见删除条件），或将 tcb 依赖改指 `../evorule-tcb`（manifest
+  结构变更，需另行报批）。过渡期本副本行为由 server workspace 全量测试覆盖
+  （[patch.crates-io] 全局替换，全部 server 测试跑在本副本源上）。
+- 独立跑基线（v0.8.4 时代，历史留痕）：**140 passed / 3 failed**——3 件失败
+  （`pure::tests::test_next_step_*`）为环境性缺夹具（读 sibling 路径
+  `../evorule-tcb/core_eval.json`，仅主仓布局存在），非补丁引入；主仓内同测试
+  基线绿。新增测试 1 件绿。
 - server 侧消费端点另有集成测试（`intervention_*` 5 件）覆盖门控/语义/404 面。
 
 ## 删除条件（硬性）

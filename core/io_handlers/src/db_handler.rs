@@ -120,6 +120,10 @@ impl IoHandler for DbHandler {
             for arg in args {
                 query = match arg {
                     JsonValue::Integer(i) => query.bind(*i),
+                    // u64 全域通道（v0.9.0）：收进 i64 绑定，超域 fail-fast（禁 as cast 回绕）
+                    JsonValue::U64(u) => query.bind(
+                        i64::try_from(*u).map_err(|_| format!("param 数值 {u} 超出 i64 绑定域"))?,
+                    ),
                     JsonValue::String(s) => query.bind(s.clone()),
                     JsonValue::Bool(b) => query.bind(*b),
                     JsonValue::Null => query.bind(Option::<i64>::None),
