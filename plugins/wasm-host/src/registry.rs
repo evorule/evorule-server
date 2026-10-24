@@ -127,7 +127,13 @@ impl UdfRegistry {
             let module = match runtime.load(&path) {
                 Ok(m) => m,
                 Err(e) => {
-                    let fused = if verdict != Integrity::Unchecked {
+                    // 纯度对账文案只在**清单在且验签通过**时融合：该路径的清单
+                    // 必然声明 zero-import（清单合法性校验在 verify 阶段已强制），
+                    // 实测 import 不符 = 声明×实载不一致，定性成立。
+                    // warn 策略下无清单放行（AcceptedUnverified）根本没有声明可对，
+                    // 旧条件（!= Unchecked）会把「没有声明可比」误贴成「声明不符」，
+                    // 掩盖真因（清单缺失/编译失败/ABI 不兼容），误导排查方向。
+                    let fused = if matches!(verdict, Integrity::Verified { .. }) {
                         format!(
                             "加载 UDF `{name}` 失败: {e}\
                              \n  —— 纯度对账：清单声明 zero-import 与实测 import 不符（声明×实载不一致，拒载）"
@@ -431,5 +437,83 @@ fn integrity_tag(v: &Integrity) -> &'static str {
         Integrity::Verified { .. } => "签名已验证",
         Integrity::AcceptedUnverified { .. } => "未验证放行(warn)",
         Integrity::Unchecked => "完整性检查关闭(off)",
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::integrity::{SignPolicy, Verifier};
+    use std::sync::Arc;
+
+    /// 三件套最小纯计算 guest(无清单路径:模块本身可编译、可实例化)
+    const PURE_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 8))
+  (func (export "udf") (param i32 i32) (result i64)
+    (i64.or (i64.shl (i64.const 1) (i64.const 32)) (i64.const 0)))
+)
+"#;
+
+    /// 带 import 的 guest:零能力防线①(加载期 import 枚举非空即拒)应拦下
+    const IMPORTING_WAT: &str = r#"
+(module
+  (import "env" "external" (func $f))
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 8))
+  (func (export "udf") (param i32 i32) (result i64) (call $f) (i64.const 0))
+)
+"#;
+
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("wasm-host-registry-{tag}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn unmanifested_import_module_fails_without_purity_claim() {
+        // warn 策略 + 无清单:加载失败只应报告 import 事实本身——
+        // 无清单即无 purity 声明,不得贴「清单声明 zero-import 与实测不符」标签
+        let dir = fresh_dir("import");
+        let bytes = wat::parse_str(IMPORTING_WAT).unwrap();
+        std::fs::write(dir.join("importing.wasm"), bytes).unwrap();
+
+        let runtime = Arc::new(UdfRuntime::new(1_000_000, 16 * 1024 * 1024, 1).unwrap());
+        let verifier = Verifier::new(SignPolicy::Warn, None);
+        let err =
+            match UdfRegistry::load_dir(runtime, &dir, None, &verifier, None, SignPolicy::Warn) {
+                Err(e) => e,
+                Ok(_) => panic!("带 import 的模块必须被拒载"),
+            };
+
+        assert!(err.contains("import"), "错误应点名 import: {err}");
+        assert!(
+            !err.contains("纯度对账"),
+            "无清单模块不得贴「声明×实载不符」标签: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unmanifested_pure_module_loads_under_warn() {
+        // 对照:同路径下无 import 的纯模块正常加载(失败仅因 import,非清单缺位)
+        let dir = fresh_dir("pure");
+        let bytes = wat::parse_str(PURE_WAT).unwrap();
+        std::fs::write(dir.join("pure_mod.wasm"), bytes).unwrap();
+
+        let runtime = Arc::new(UdfRuntime::new(1_000_000, 16 * 1024 * 1024, 1).unwrap());
+        let verifier = Verifier::new(SignPolicy::Warn, None);
+        let registry =
+            UdfRegistry::load_dir(runtime, &dir, None, &verifier, None, SignPolicy::Warn)
+                .expect("无清单纯模块在 warn 策略下应加载");
+        assert!(registry.names().contains(&"pure_mod".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
