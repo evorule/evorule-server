@@ -668,9 +668,10 @@ mod tests {
 
         let json = fact.to_json();
         assert_eq!(json.get("type"), Some(&JsonValue::string("Violation")));
-        assert_eq!(json.get("id"), Some(&JsonValue::Integer(9)));
-        assert_eq!(json.get("cause"), Some(&JsonValue::Integer(3)));
-        assert_eq!(json.get("rule_index"), Some(&JsonValue::Integer(2)));
+        // o04 批 u64 全域通道：to_json 展示面 FactId/rule_index 走 U64 无损承载
+        assert_eq!(json.get("id"), Some(&JsonValue::U64(9)));
+        assert_eq!(json.get("cause"), Some(&JsonValue::U64(3)));
+        assert_eq!(json.get("rule_index"), Some(&JsonValue::U64(2)));
         assert_eq!(
             json.get("reason"),
             Some(&JsonValue::string("违规：禁删数据集"))

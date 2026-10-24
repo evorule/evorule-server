@@ -276,7 +276,7 @@ pub fn tcb_to_serde(v: &JsonValue) -> serde_json::Value {
 /// # Float 处理
 /// tier0 无 Float 类型（形式化验证约束）。遇到 serde 的浮点数时，
 /// 转为字符串保留精度（`n.to_string()`），避免静默截断。
-/// u64 超 i64 范围时同样转字符串。
+/// u64 超 i64 范围时走 `U64` 变体无损承载（与 `tcb_to_serde` 正程对称）。
 pub fn serde_to_tcb(v: &serde_json::Value) -> JsonValue {
     match v {
         serde_json::Value::Null => JsonValue::Null,
@@ -285,11 +285,10 @@ pub fn serde_to_tcb(v: &serde_json::Value) -> JsonValue {
             if let Some(i) = n.as_i64() {
                 JsonValue::Integer(i)
             } else if let Some(u) = n.as_u64() {
-                // u64 超 i64 范围则转字符串保留值
-                match i64::try_from(u) {
-                    Ok(i) => JsonValue::Integer(i),
-                    Err(_) => JsonValue::string(n.to_string()),
-                }
+                // u64 全域通道回程：`as_i64` 未命中说明该值超 i64 范围，
+                // 走 `U64` 变体无损承载（转字符串会破坏 WAL 往返保形，
+                // 导致回放重算 fact_hash 失配）
+                JsonValue::U64(u)
             } else {
                 // 浮点数：tier0 无 Float，转字符串保留精度
                 JsonValue::string(n.to_string())
@@ -1290,14 +1289,43 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_to_tcb_u64_overflow_becomes_string() {
-        // u64 超 i64 范围时转字符串
+    fn test_tcb_serde_u64_roundtrip() {
+        // u64 全域通道（v0.9.0）：超 i64 范围值正程/回程双向无损。
+        // （边界）serde_json Number 无 tag：i64 范围内的 U64 经 serde 往返后
+        // as_i64 命中退化为 Integer（数值无损、哈希面不经 tcb 不受累），
+        // U64 形态保形承诺仅覆盖超 i64 范围值。
+        for u in [u64::MAX, u64::MAX - 3, i64::MAX as u64 + 1] {
+            let v = JsonValue::U64(u);
+            let s = tcb_to_serde(&v);
+            assert_eq!(s.as_u64(), Some(u));
+            assert_eq!(serde_to_tcb(&s), v);
+        }
+    }
+
+    #[test]
+    fn test_serde_to_tcb_u64_overflow_keeps_u64() {
+        // u64 超 i64 范围走 U64 变体无损承载（转字符串会破坏 WAL 往返保形）
         let s: serde_json::Value = serde_json::from_str(&format!("{}", u64::MAX)).unwrap();
         let tcb = serde_to_tcb(&s);
-        match tcb {
-            JsonValue::String(ref _str) => {}
-            ref other => panic!("expected String for u64 overflow, got {other:?}"),
-        }
+        assert_eq!(tcb, JsonValue::U64(u64::MAX));
+    }
+
+    #[test]
+    fn test_payload_update_u64_value_wal_roundtrip_hash_stable() {
+        // WAL 展示面往返保形：U64 值经 fact_to_json → fact_from_json 后形态
+        // 与哈希不变（超 i64 范围 u64 场景的回放确定性）
+        let fact = Fact::PayloadUpdate {
+            id: FactId(42),
+            path: "__ruleset__.anchor".into(),
+            value: JsonValue::U64(u64::MAX - 3),
+        };
+        let json = fact_to_json(&fact);
+        let restored = fact_from_json(&json).expect("roundtrip should succeed");
+        assert_eq!(restored, fact);
+        // 回放重算 content_hash 与落链值一致（哈希输入 fact_to_stable_json）
+        let h1 = crate::fact_hash(&fact).expect("fact_hash should succeed");
+        let h2 = crate::fact_hash(&restored).expect("fact_hash should succeed");
+        assert_eq!(h1, h2);
     }
 
     // === fact_to_json / fact_from_json 7 种变体往返测试 ===

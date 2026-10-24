@@ -19,7 +19,7 @@ crates.io 注册表实例（全局单实例替换，无双实例类型冲突；0
 | 文件 | 改动 |
 |---|---|
 | `src/pure.rs` | `check_invariants` `pub(crate)` → `pub`（可见性提升） |
-| `src/wal.rs` | `WalWriter::rotate` 提 `pub`；`FactWalStore` trait 增 `rotate`（默认无操作返回 `Ok(false)`）；`WalWriter` 实现（委托具体方法，返回 `Ok(true)`）；v0.9.0 同步另增：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载） |
+| `src/wal.rs` | `WalWriter::rotate` 提 `pub`；`FactWalStore` trait 增 `rotate`（默认无操作返回 `Ok(false)`）；`WalWriter` 实现（委托具体方法，返回 `Ok(true)`）；v0.9.0 同步另增：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载）+ `serde_to_tcb` 回程超 i64 范围 u64 由转字符串改为 `U64` 变体无损承载（WAL 展示面往返保形，回放重算 fact_hash 不失配；小值 U64 经 serde 往返退化为 Integer 属 serde_json Number 无 tag 固有约束，数值无损） |
 | `src/facts_log.rs` | 增 `FactsLog::rotate_wal()`（persistence 门控；写锁透传 trait rotate；错误映射 `WalError` → `FactsLogError::WalError`） |
 | `src/fact.rs` | v0.9.0 主仓同步（u64 全域无损）：`to_json` 17 处 `as i64` cast → `JsonValue::u64()`（展示面 FactId/cause/request_id/version/index/rule_index 高位值不再回绕为负；哈希输入 `fact_to_stable_json` 不经本函数，哈希口径零扰动）+ doc u64 无损注记 + 哨兵 id 无损回归测试 |
 | `src/hash.rs` | v0.9.0 主仓同步：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载，不经 i64 cast）+ u64 无损回归测试 |
