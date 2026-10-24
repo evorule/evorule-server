@@ -126,3 +126,4 @@ target-si/
 target-a3/
 plugins/export-services/data/
 plugins/wasm-host/trusted-keys.json
+service_registry.local.json
