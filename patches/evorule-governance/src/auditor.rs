@@ -43,6 +43,11 @@ pub struct AuditEntry {
     pub prev_hash: String,
     /// 因果父 Fact ID（如有）
     pub cause: Option<FactId>,
+    /// Fact 原文（stable JSON 形态，与 content_hash 同源序列化：`fact_to_stable_json`）
+    ///
+    /// EVID：导出附带原文使第三方可独立重算 content_hash。
+    /// 旧导出/WAL 恢复缺原文时为 `Null`——验证器须容忍 Null（退化为仅链折叠验证）。
+    pub fact_json: serde_json::Value,
 }
 
 /// 审计链加载错误（两套 WAL 合并）
@@ -390,8 +395,7 @@ impl Auditor {
                         "审计器: 事实哈希计算失败，落占位条目（链显性化，不跳过）"
                     );
                     let placeholder_prev = last_hash.clone();
-                    let placeholder_chain =
-                        hash::chain_step(&placeholder_prev, "corrupted-entry");
+                    let placeholder_chain = hash::chain_step(&placeholder_prev, "corrupted-entry");
                     index.insert(fact_id, entry_index);
                     entries.push(AuditEntry {
                         fact_id,
@@ -400,6 +404,7 @@ impl Auditor {
                         content_hash: "corrupted-entry".into(),
                         prev_hash: placeholder_prev,
                         cause,
+                        fact_json: serde_json::Value::Null,
                     });
                     *last_hash = placeholder_chain;
                     return;
@@ -421,6 +426,7 @@ impl Auditor {
                 content_hash,
                 prev_hash,
                 cause,
+                fact_json: hash::fact_to_stable_json(fact).unwrap_or(serde_json::Value::Null),
             });
 
             // 两套 WAL 合并：不再写入 auditor WAL
@@ -579,9 +585,8 @@ impl Auditor {
         }
         // 逐条重算 content
         for (idx, (entry, fact)) in self.entries.iter().zip(facts.iter()).enumerate() {
-            let recomputed = hash::fact_hash(fact).map_err(|e| {
-                crate::auditor::LoadError::HashError(format!("entry[{idx}]: {e}"))
-            })?;
+            let recomputed = hash::fact_hash(fact)
+                .map_err(|e| crate::auditor::LoadError::HashError(format!("entry[{idx}]: {e}")))?;
             if recomputed != entry.content_hash {
                 return Err(crate::auditor::LoadError::ContentHashMismatch {
                     index: idx,
@@ -680,7 +685,9 @@ impl Auditor {
                         }
                     }
                 }
-                Err(e) => tracing::warn!(path = %path.display(), error = %e, "锚点日志读取失败（按空锚点链起步）"),
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "锚点日志读取失败（按空锚点链起步）")
+                }
             }
         }
         self.anchor_log_path = anchor_log_path;
@@ -715,11 +722,8 @@ impl Auditor {
     }
 
     /// 读锚点日志（JSONL；损坏行跳过+收集，返回（合法锚点, 损坏行数）由调用方留痕）
-    fn load_anchor_log(
-        path: &std::path::Path,
-    ) -> Result<Vec<crate::anchor::AuditAnchor>, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("read: {e}"))?;
+    fn load_anchor_log(path: &std::path::Path) -> Result<Vec<crate::anchor::AuditAnchor>, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
         let mut out = Vec::new();
         for (idx, line) in content.lines().enumerate() {
             if line.trim().is_empty() {
@@ -830,6 +834,7 @@ impl Auditor {
                     "content_hash": e.content_hash,
                     "prev_hash": e.prev_hash,
                     "cause": e.cause.map(|c| c.0),
+                    "fact": e.fact_json,
                 })
             })
             .collect();
@@ -999,6 +1004,10 @@ impl Auditor {
                 content_hash: content_hash.clone(),
                 prev_hash: prev_hash.clone(),
                 cause,
+                fact_json: parsed
+                    .get("fact")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             };
 
             self.index.insert(fact_id, self.entries.len());
@@ -1145,6 +1154,7 @@ impl Auditor {
                     String::from("genesis")
                 },
                 cause,
+                fact_json: hash::fact_to_stable_json(fact).unwrap_or(serde_json::Value::Null),
             };
 
             self.index.insert(fact_id, idx);
@@ -1224,6 +1234,7 @@ impl Auditor {
                     "content_hash": e.content_hash,
                     "prev_hash": e.prev_hash,
                     "cause": e.cause.map(|c| c.0),
+                    "fact": e.fact_json,
                 })
             })
             .collect();
@@ -1320,6 +1331,11 @@ impl Auditor {
                 content_hash,
                 prev_hash,
                 cause,
+                // 旧导出（无 fact 字段）兼容：原文缺失置 Null，链折叠验证不受影响
+                fact_json: entry_val
+                    .get("fact")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             };
 
             self.index.insert(entry.fact_id, idx);
@@ -1764,8 +1780,10 @@ mod tests {
     /// Unknown（记录性事实的审计展示语义；类型表缺变体时此测试红）。
     #[test]
     fn test_load_from_tier1_wal_fact_type_trace_and_violation() {
-        let tmp = std::env::temp_dir()
-            .join(format!("auditor_facttype_test_{}.jsonl", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "auditor_facttype_test_{}.jsonl",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&tmp);
 
         {
@@ -1798,8 +1816,7 @@ mod tests {
             let mut auditor = Auditor::new(log);
             auditor.load_from_tier1_wal(&tmp).expect("load tier1 wal");
             assert_eq!(auditor.entries().len(), 3);
-            let types: Vec<&'static str> =
-                auditor.entries().iter().map(|e| e.fact_type).collect();
+            let types: Vec<&'static str> = auditor.entries().iter().map(|e| e.fact_type).collect();
             assert!(
                 types.contains(&"TransitionTrace"),
                 "TransitionTrace fact_type 退化为 Unknown: {types:?}"
