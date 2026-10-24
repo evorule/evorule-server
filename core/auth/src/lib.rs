@@ -59,14 +59,20 @@ impl TokenInfo {
     /// 返回掩码后的 token 字符串:前 8 位 + `..` + 后 4 位。
     ///
     /// Token 长度不足 `(PREFIX+SUFFIX)` 时退化为全 `*` 掩码,绝不泄露明文。
+    /// 切分走字符边界安全路径:若边界落进多字节字符内部(如手工编辑过的
+    /// 存量文件),整体退化为全 `*` 掩码 —— 按字节下标切 `&str` 会 panic,
+    /// 让列举接口整体不可用。
     fn masked_token(&self) -> String {
         let bytes = self.token.as_bytes();
         if bytes.len() < MASK_PREFIX_LEN + MASK_SUFFIX_LEN {
             return "*".repeat(bytes.len().max(1));
         }
-        let prefix = &self.token[..MASK_PREFIX_LEN];
-        let suffix = &self.token[self.token.len() - MASK_SUFFIX_LEN..];
-        format!("{prefix}..{suffix}")
+        let prefix = self.token.get(..MASK_PREFIX_LEN);
+        let suffix = self.token.get(bytes.len() - MASK_SUFFIX_LEN..);
+        match (prefix, suffix) {
+            (Some(prefix), Some(suffix)) => format!("{prefix}..{suffix}"),
+            _ => "*".repeat(bytes.len()),
+        }
     }
 
     /// 转为掩码视图
@@ -124,6 +130,12 @@ impl AuthService {
     }
 
     pub fn add_token(&self, token: TokenInfo) -> Result<(), String> {
+        // Token 语义上是 ASCII(hex)串;非 ASCII 一律拒收,杜绝多字节
+        // 字符进入掩码/比较路径(掩码按字符边界退化,但不让它进门)
+        if !token.token.is_ascii() {
+            return Err("Token 须为 ASCII 字符".to_string());
+        }
+
         let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
 
         // 恒定时间比较:与 validate_token 保持一致,避免 timing 侧信道
@@ -305,6 +317,35 @@ mod tests {
         let svc = AuthService::new(vec![make_token("abc", None)]);
         let listed = svc.list_tokens();
         assert_eq!(listed[0].token, "***");
+    }
+
+    #[test]
+    fn add_token_rejects_non_ascii_token() {
+        // Token 语义上是 hex/ASCII 串;含多字节字符的 token 在入库前即拒
+        let svc = AuthService::new(vec![]);
+        let result = svc.add_token(make_token("a1b2c3d4e5f6中文后缀", None));
+        assert!(result.is_err());
+        // 被拒后不得入库
+        assert!(svc.list_tokens().is_empty());
+    }
+
+    #[test]
+    fn masked_token_multibyte_never_panics() {
+        // 直构绕过 add_token(如存量文件装载):掩码必须在多字节字符边界处安全退化,
+        // 绝不按字节下标切 &str(UTF-8 边界 panic 会让列举接口整体不可用)。
+        // 两个用例分别让「前 8 字节」与「后 4 字节」的切割点落进多字节字符内部。
+        let prefix_cut = make_token("abcdefg中文a1b2c3d4e5f6", None);
+        let suffix_cut = make_token("a1b2c3d4e5f6中文后缀", None);
+        for info in [prefix_cut, suffix_cut] {
+            let masked = info.masked().token;
+            // 掩码不得泄露任何非 ASCII 明文
+            assert!(!masked.contains("中文"));
+            // 保留前缀后缀或全掩码均可,唯一红线是不 panic、不泄露中间段
+            assert!(
+                masked == "a1b2c3d4..g7h8" || masked.chars().all(|c| c == '*'),
+                "unexpected mask: {masked}"
+            );
+        }
     }
 
     #[test]

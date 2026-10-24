@@ -154,6 +154,15 @@ async fn serve() -> Result<(), String> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(16 * 1024 * 1024);
+    // 单次 UDF 执行的墙钟预算（秒）。fuel 限指令步数不限时间，部署性能差异
+    // 会让同一 fuel 预算对应很不一样的墙钟占用；此预算独立兜底。解析失败
+    // fail-visible：拼错配置不能等价于关掉时间防线。
+    let wall_clock_secs: u64 = match std::env::var("WASM_HOST_WALL_CLOCK_SECS") {
+        Ok(raw) => raw
+            .parse()
+            .map_err(|_| format!("WASM_HOST_WALL_CLOCK_SECS `{raw}` 不是合法整数（秒）"))?,
+        Err(_) => 30,
+    };
 
     // 验签策略（非法值 fail-visible：拼错策略名不能等价于关掉防线）
     // 缺省 = enforce（fail-closed）：无信任锚/未签名模块拒载或拒启动；
@@ -177,7 +186,7 @@ async fn serve() -> Result<(), String> {
         }
     );
 
-    let runtime = match UdfRuntime::new(fuel, max_mem) {
+    let runtime = match UdfRuntime::new(fuel, max_mem, wall_clock_secs) {
         Ok(r) => Arc::new(r),
         Err(e) => return Err(format!("运行时初始化失败: {e}")),
     };

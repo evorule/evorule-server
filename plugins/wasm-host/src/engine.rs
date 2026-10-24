@@ -9,6 +9,9 @@
 //!   ② 调用期 —— `Linker` 不定义任何 host function，实例化未授权 import 必失败。
 //!   注：wasmtime 的编译阶段不解析 import，故 ① 是必需的显式补强（T4 实证）。
 //! - **fuel**：`Config::consume_fuel(true)` + 每次调用设预算；耗尽 → trap。
+//! - **墙钟**：`Config::epoch_interruption(true)` + 后台步进线程 + 每次调用设
+//!   deadline —— fuel 限指令步数不限挂起时长，墙钟预算独立兜底时间失控的
+//!   guest（到期 epoch trap 截断，错误归类与 fuel 耗尽分列）。
 //! - **内存上限**：`ResourceLimiter` 在增长时拦截，超限 → alloc 失败而非 host OOM。
 //!
 //! # 确定性（历史批次 V5）
@@ -52,19 +55,31 @@ struct StoreData {
     limits: Limits,
 }
 
+/// 墙钟步进间隔：后台线程每 100ms 递增一次 epoch，
+/// 预算秒数按 ×10 换算为 deadline 步数。
+const EPOCH_TICK_MILLIS: u64 = 100;
+
 /// UDF 执行引擎（可共享：`Engine` 内部已 Arc 化）
 pub struct UdfRuntime {
     engine: Engine,
     fuel_budget: u64,
     limits: Limits,
+    deadline_ticks: u64,
 }
 
 impl UdfRuntime {
     /// 构造。失败返回人类可读错误（配置非法时 fail-fast）。
-    pub fn new(fuel_budget: u64, max_memory_bytes: usize) -> Result<Self, String> {
+    ///
+    /// `wall_clock_secs` = 单次执行的墙钟预算（秒，最小 1）：
+    /// fuel 限的是**指令步数**，部署性能差异会让同一 fuel 预算对应很不一样的
+    /// 墙钟占用；墙钟预算独立兜底「每步都快但总时长失控」的 guest，
+    /// 到期以 epoch trap 截断（错误归类点名「墙钟」，审计可辨）。
+    pub fn new(fuel_budget: u64, max_memory_bytes: usize, wall_clock_secs: u64) -> Result<Self, String> {
         let mut config = Config::new();
         // fuel：执行步数预算（防死循环 / 恶意计算）
         config.consume_fuel(true);
+        // 墙钟：epoch interruption + 每次调用设 deadline（独立于 fuel 的时间兜底）
+        config.epoch_interruption(true);
         // 多内存：UDF 不需要，显式关掉以收紧面
         config.wasm_multi_memory(false);
         // 其余特性（component-model / threads / gc / simd…）保持 wasmtime 默认。
@@ -73,6 +88,18 @@ impl UdfRuntime {
         // 而**编译失败**——故此处不写，依赖默认值（默认即关闭）。
 
         let engine = Engine::new(&config).map_err(|e| format!("wasmtime Engine 创建失败: {e}"))?;
+
+        // 后台步进线程：epoch 单调递增，deadline 语义才成立。
+        // 线程随进程生命周期存在（进程退出即终止），步进是纯计数操作零开销档。
+        let ticker_engine = engine.clone();
+        std::thread::Builder::new()
+            .name("wasm-epoch-ticker".into())
+            .spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(EPOCH_TICK_MILLIS));
+                ticker_engine.increment_epoch();
+            })
+            .map_err(|e| format!("epoch 步进线程启动失败: {e}"))?;
+
         Ok(Self {
             engine,
             fuel_budget,
@@ -80,13 +107,22 @@ impl UdfRuntime {
                 max_memory_bytes,
                 max_table_elements: 10_000,
             },
+            deadline_ticks: wall_clock_secs * 1000 / EPOCH_TICK_MILLIS,
         })
     }
 
     /// 从文件编译模块（编译一次，多次调用复用）
+    pub fn load(&self, path: &std::path::Path) -> Result<Module, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| format!("WASM 模块读取失败 {}: {e}", path.display()))?;
+        self.load_bytes(&bytes)
+            .map_err(|e| format!("WASM 模块编译失败 {}: {e}", path.display()))
+    }
+
+    /// 从字节编译模块（`load` 的无路径内核；测试内联构造 guest 也走此入口）
     ///
     /// # 为什么这里要显式枚举 import（T4 实证补强）
-    /// `Module::from_file` **只做编译，不解析 import** —— wasmtime 在
+    /// 编译 **不解析 import** —— wasmtime 在
     /// `Linker::instantiate` 时才解析（见下方 `call`）。若不在此主动检查，
     /// 含 WASI/env import 的模块会「装载成功、首次调用才报错」：
     /// 恶意模块多存活一整段时间，且失败时机偏离 fail-fast 承诺。
@@ -94,9 +130,9 @@ impl UdfRuntime {
     /// 故此处直接枚举 import 集合，**非空即拒**并点名缺失依赖。
     /// 下方 `call` 里的 `Linker`（零注册）作为第二道防线保留：
     /// 两道检查独立，任一生效都不足以让 import 被执行到。
-    pub fn load(&self, path: &std::path::Path) -> Result<Module, String> {
-        let module = Module::from_file(&self.engine, path)
-            .map_err(|e| format!("WASM 模块编译失败 {}: {e}", path.display()))?;
+    pub fn load_bytes(&self, bytes: &[u8]) -> Result<Module, String> {
+        let module =
+            Module::new(&self.engine, bytes).map_err(|e| format!("WASM 模块编译失败: {e}"))?;
         let imports: Vec<String> = module
             .imports()
             .map(|i| format!("{}.{}", i.module(), i.name()))
@@ -127,6 +163,8 @@ impl UdfRuntime {
             .set_fuel(self.fuel_budget)
             .map_err(|e| format!("fuel 预算设置失败（是否未启用 consume_fuel？）: {e}"))?;
         store.limiter(|d| &mut d.limits);
+        // 墙钟 deadline：相对当前 epoch 起算预算步数，到期即 epoch trap 截断
+        store.set_epoch_deadline(self.deadline_ticks);
 
         // 零能力：Linker 不注册任何 host function
         let linker = Linker::new(&self.engine);
@@ -210,7 +248,18 @@ fn classify_trap(e: &wasmtime::Error, store: &Store<StoreData>) -> String {
     let msg = e.to_string();
     // wasmtime 48：剩余 fuel 用 `Store::get_fuel()`（旧版 `fuel_consumed()` 已移除）
     let remaining = store.get_fuel().unwrap_or(0);
-    if msg.contains("all fuel consumed") || msg.contains("fuel") {
+    // 墙钟预算到期（epoch deadline）⇒ `Trap::Interrupt`。优先按 trap 类型判：
+    // wasmtime 48 的该 trap 展示文本不含 "epoch"/"interrupt" 字样，
+    // 纯字符串匹配会漏；字符串分支留作跨版本兜底。
+    if e.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::Interrupt)
+        || msg.contains("interrupt")
+        || msg.contains("epoch")
+        || msg.contains("deadline")
+    {
+        // 与 fuel 耗尽分列，审计能区分「步数烧完」与「时间挂死」两种形态
+        "UDF 执行超出墙钟预算（epoch deadline 到期）——疑似慢挂起，fuel 未耗尽即被时间截断"
+            .to_string()
+    } else if msg.contains("all fuel consumed") || msg.contains("fuel") {
         format!("UDF 执行超出 fuel 预算（剩余 {remaining}）——疑似死循环或计算量过大")
     } else if msg.contains("out of bounds") {
         "UDF 内存访问越界（trap）".to_string()
@@ -218,5 +267,62 @@ fn classify_trap(e: &wasmtime::Error, store: &Store<StoreData>) -> String {
         "UDF 主动 trap（unreachable）".to_string()
     } else {
         format!("UDF 执行失败（trap，剩余 fuel {remaining}）: {msg}")
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// 死循环 guest：alloc/memory/udf 三件套齐备，udf 无限循环（fuel 烧到天荒地老）
+    const RUNAWAY_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 8))
+  (func (export "udf") (param i32 i32) (result i64)
+    (loop (br 0))
+    (i64.const 0))
+)
+"#;
+
+    /// 正常 guest：udf 立即返回 (1<<32)|0 = 结果指针 1、长度 0
+    const NORMAL_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 8))
+  (func (export "udf") (param i32 i32) (result i64)
+    (i64.or (i64.shl (i64.const 1) (i64.const 32)) (i64.const 0)))
+)
+"#;
+
+    #[test]
+    fn wall_clock_deadline_interrupts_runaway_udf() {
+        // fuel 给到天文数字（ deadline 若失效，fuel 路径要跑数十秒后才以 fuel 错失败）；
+        // 墙钟预算 1 秒 ⇒ 乱跑 UDF 必须在墙钟到期处被截断，错误须点名「墙钟」可审计
+        let rt = UdfRuntime::new(50_000_000_000, 16 * 1024 * 1024, 1).unwrap();
+        let bytes = wat::parse_str(RUNAWAY_WAT).unwrap();
+        let module = rt.load_bytes(&bytes).unwrap();
+        let started = std::time::Instant::now();
+        let err = rt.call(&module, b"{}").unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(
+            err.contains("墙钟"),
+            "expected wall-clock deadline error, got: {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "deadline did not fire promptly: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn normal_udf_completes_within_wall_clock_budget() {
+        // 正常 UDF 远够不到墙钟预算：deadline 机制不得误伤正常调用
+        let rt = UdfRuntime::new(1_000_000, 16 * 1024 * 1024, 1).unwrap();
+        let bytes = wat::parse_str(NORMAL_WAT).unwrap();
+        let module = rt.load_bytes(&bytes).unwrap();
+        let out = rt.call(&module, b"{}").unwrap();
+        assert!(out.is_empty());
     }
 }
