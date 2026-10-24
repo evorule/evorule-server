@@ -891,11 +891,9 @@ impl SessionApi {
             match self.sessions.try_lock() {
                 Ok(mgr) => mgr.set_ruleset_version(version),
                 Err(_) => {
-                    return Err(
-                        "with_ruleset_version: 会话管理器锁在启动装配期已被占用 — \
+                    return Err("with_ruleset_version: 会话管理器锁在启动装配期已被占用 — \
                          会话管理器不应在启动装配段被持有（否则 G6 规则集版本锚定无法注入）"
-                            .to_string(),
-                    )
+                        .to_string())
                 }
             }
         }

@@ -388,7 +388,7 @@ fn sanitize_filename(specified: Option<&str>, stem_hint: &str, hex: &str, ext: &
         } else {
             ct
         };
-        format!("{ct}_{}", &hex.chars().take(12).collect::<String>())
+        format!("{ct}_{}", hex.chars().take(12).collect::<String>())
     };
     let stem = match specified {
         Some(raw) => {
