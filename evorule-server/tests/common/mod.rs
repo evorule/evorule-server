@@ -4,7 +4,7 @@
 //! （`api::evidence_fixture`），故此处保留同构独立副本。
 
 // 集成测试保留 unwrap 惯例（C5 unwrap/expect/panic = deny 仅约束生产代码）
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 /// 进程内 seed 序号（报告文件名唯一化，多测试并行互不覆盖）
 static SEED_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -77,6 +77,8 @@ pub(crate) fn seed_pass_sandbox(ws_db: &std::sync::Arc<evorule_workspace::Worksp
 ///
 /// 与 fault_recovery_test.rs 的 load_core_eval 同构（该文件直注评估集场景，
 /// 此处供 SessionApi 构造场景共用）。
+// 共享夹具按 target 取用：不消费本件的测试 target 会报 dead_code，按 target 抑制
+#[allow(dead_code)]
 pub(crate) fn load_constitution_transforms(
     core_eval_path: &std::path::Path,
 ) -> Vec<evorule_tcb::JsonValue> {

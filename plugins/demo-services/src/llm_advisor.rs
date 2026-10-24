@@ -372,6 +372,7 @@ impl NativeService for LlmAdvisor {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use crate::NativeService;
 
@@ -380,6 +381,8 @@ mod tests {
     /// cargo test 默认多线程并行：不串行就会出现「A 用例刚 set 完端点、B 用例以为
     /// 自己没配端点」的竞态（典型 flaky 源，且表现为随机失败，极难定位）。
     /// 锁中毒时取 inner 继续跑——一个用例失败不应级联污染其余用例。
+    /// 守卫全程持有（横跨 await 点）是 env 全局态串行的必然形态，测试面豁免 await_holding_lock；
+    /// 该豁免仅约束测试面，生产代码的锁跨 await 仍被 -D warnings 阻断。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
