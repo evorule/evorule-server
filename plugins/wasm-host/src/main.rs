@@ -50,8 +50,10 @@
 //! - `alloc(len: i32) -> i32`：分配输入空间
 //! - `udf(ptr: i32, len: i32) -> i64`：执行；返回 `(结果指针 << 32) | 结果长度`
 //!
-//! **失败约定**：出参 JSON 顶层若含 `error` 字段，host 视为 UDF 业务失败（→ 422）；
-//! 否则 → 200。理由见 `call_udf` 内注释。
+//! **失败约定（双层）**：出参顶层 `ok` 布尔为**显式通道**——`false` ⇒ 业务失败
+//! （→ 422，`error` 字段作为原因透传），`true` ⇒ 成功（即使携带 `error` 键）；
+//! 无 `ok` 字段时回落**存量隐式约定**——顶层 `error` 为非 `null` ⇒ 业务失败，
+//! `error: null` / 无 `error` ⇒ 200 成功。判定核心见 `classify_udf_outcome`。
 //!
 //! # 配置（环境变量）
 //! - `WASM_HOST_ADDR` 监听地址，默认 `127.0.0.1:9140`；**非回环地址必须配置
@@ -413,19 +415,18 @@ async fn call_udf(
     };
 
     match serde_json::from_slice::<Value>(&out) {
-        Ok(value) => {
-            // ABI 约定：出参 JSON **顶层含 `error` 字段** = UDF 业务失败。
-            // 理由：host 无法区分"UDF 成功返回了一个 JSON"与"UDF 自己报错并写成 JSON"，
-            // 若不约定，业务错误会被当成 200 成功透传给规则侧，治理语义失真。
-            if let Some(e) = value.get("error") {
-                tracing::warn!("UDF `{name}` 业务失败: {e}");
-                return (
+        Ok(value) => match classify_udf_outcome(value) {
+            UdfOutcome::Failure(reason) => {
+                tracing::warn!("UDF `{name}` 业务失败: {reason}");
+                (
                     StatusCode::UNPROCESSABLE_ENTITY,
-                    Json(json!({ "ok": false, "udf": name, "error": e })),
-                );
+                    Json(json!({ "ok": false, "udf": name, "error": reason })),
+                )
             }
-            (StatusCode::OK, Json(json!({ "ok": true, "value": value })))
-        }
+            UdfOutcome::Success(value) => {
+                (StatusCode::OK, Json(json!({ "ok": true, "value": value })))
+            }
+        },
         Err(e) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({
@@ -434,6 +435,37 @@ async fn call_udf(
                 "error": format!("UDF 返回值不是合法 JSON: {e}"),
             })),
         ),
+    }
+}
+
+/// UDF 出参业务结局（ABI 失败约定的判定核心，纯函数）
+pub(crate) enum UdfOutcome {
+    /// 业务成功：出参原样透传给规则侧
+    Success(Value),
+    /// 业务失败：携带失败原因（出参顶层 `error` 字段值；未带则为 null）
+    Failure(Value),
+}
+
+/// 出参结局判定（双层约定，见模块文档「失败约定」）：
+///
+/// ① 显式通道：顶层 `ok` 布尔。UDF 作者用它表态——`false` 即业务失败；
+///    `true` 即成功（携带 `error` 键的成功结果不再被误判，这是新通道的核心价值）。
+/// ② 隐式回落（存量兼容）：无 `ok` 字段时，顶层 `error` 为**非 null** ⇒ 业务失败。
+///    旧约定「顶层含 `error` 键即失败」把 `{"error": null}`、`{"error_rate": …}`
+///    这类合法成功误判成 422（fail-loud 方向安全但难以排查）——null 不是错误
+///    信息，字段名同形不构成失败信号。
+pub(crate) fn classify_udf_outcome(value: Value) -> UdfOutcome {
+    if let Some(ok) = value.get("ok").and_then(Value::as_bool) {
+        return if ok {
+            UdfOutcome::Success(value)
+        } else {
+            let reason = value.get("error").cloned().unwrap_or(Value::Null);
+            UdfOutcome::Failure(reason)
+        };
+    }
+    match value.get("error") {
+        Some(e) if !e.is_null() => UdfOutcome::Failure(e.clone()),
+        _ => UdfOutcome::Success(value),
     }
 }
 
@@ -823,4 +855,67 @@ fn err_json(status: StatusCode, message: impl Into<String>) -> (StatusCode, Json
         status,
         Json(json!({ "ok": false, "error": message.into() })),
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::{classify_udf_outcome, UdfOutcome};
+    use serde_json::json;
+
+    fn failure_reason(out: UdfOutcome) -> Option<serde_json::Value> {
+        match out {
+            UdfOutcome::Failure(reason) => Some(reason),
+            UdfOutcome::Success(_) => None,
+        }
+    }
+
+    #[test]
+    fn error_null_is_not_a_failure() {
+        // {"error": null} 是合法成功(null 不是错误信息)
+        let out = classify_udf_outcome(json!({ "error": null }));
+        assert!(failure_reason(out).is_none());
+    }
+
+    #[test]
+    fn error_like_field_names_are_untouched() {
+        // error_rate/error_count 等业务字段名不命中(顶层精确匹配 "error")
+        let out = classify_udf_outcome(json!({ "error_rate": 0.05, "error_count": 0 }));
+        assert!(failure_reason(out).is_none());
+    }
+
+    #[test]
+    fn legacy_error_string_still_fails() {
+        // 存量回落:顶层非 null "error" ⇒ 业务失败(约定不变)
+        let reason = failure_reason(classify_udf_outcome(json!({ "error": "boom" })));
+        assert_eq!(reason, Some(json!("boom")));
+    }
+
+    #[test]
+    fn explicit_ok_true_wins_over_error_key() {
+        // 显式通道:ok:true ⇒ 成功,即使携带 error 键(新通道的核心价值)
+        let out = classify_udf_outcome(json!({ "ok": true, "error": "not-a-failure" }));
+        assert!(failure_reason(out).is_none());
+    }
+
+    #[test]
+    fn explicit_ok_false_is_failure() {
+        let reason = failure_reason(classify_udf_outcome(
+            json!({ "ok": false, "error": "bad input" }),
+        ));
+        assert_eq!(reason, Some(json!("bad input")));
+    }
+
+    #[test]
+    fn explicit_ok_false_without_error_field() {
+        // ok:false 但未带原因 ⇒ 失败成立,原因为 null(响应形不变)
+        let reason = failure_reason(classify_udf_outcome(json!({ "ok": false })));
+        assert_eq!(reason, Some(serde_json::Value::Null));
+    }
+
+    #[test]
+    fn plain_success_stays_success() {
+        let out = classify_udf_outcome(json!({ "result": 1 }));
+        assert!(failure_reason(out).is_none());
+    }
 }
