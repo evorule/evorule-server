@@ -42,8 +42,10 @@ if (-not $RepoRule) { $RepoRule = Join-Path (Split-Path -Parent $repoRoot) 'evor
 Set-Location $repoRoot
 
 # 插件登记表：id → 执行侧 crate 名（声明 SSOT 均位于 plugins/<id>/official_native_services.json）
+# 自校验（见下方「登记表 ⊇ 插件目录」）：plugins/ 下每个含 SSOT 的目录都必须在此登记
 $plugins = @(
     @{ Id = "demo-services";      Crate = "evorule-demo-services" },
+    @{ Id = "browser-services";   Crate = "evorule-browser-services" },
     @{ Id = "physics-services";   Crate = "evorule-physics-services" },
     @{ Id = "indicator-services"; Crate = "evorule-indicator-services" },
     @{ Id = "template-services";  Crate = "evorule-template-services" },
@@ -64,6 +66,17 @@ $plugins = @(
 )
 
 if (-not (Test-Path (Join-Path $RepoRule "Cargo.toml"))) { Write-Host "[FAIL] 治理仓不存在: $RepoRule" -ForegroundColor Red; exit 1 }
+
+# ── 登记表 ⊇ 插件目录自检：plugins/ 下每个含 SSOT 的目录必须已登记 ──
+# （漏登记 = 该插件全部服务对治理侧不可见——browser-services 45 项漏登事故的机器判据）
+$unregistered = Get-ChildItem (Join-Path $repoRoot "plugins") -Directory |
+    Where-Object { Test-Path (Join-Path $_.FullName "official_native_services.json") } |
+    Where-Object { $plugins.Id -notcontains $_.Name } |
+    ForEach-Object { $_.Name }
+if ($unregistered) {
+    Write-Host ("[FAIL] 以下插件目录含 SSOT 但未登记（治理侧将不可见其服务）: " + ($unregistered -join ", ")) -ForegroundColor Red
+    exit 1
+}
 
 # ── 校验模式（-Verify）：SSOT vs 嵌入副本逐字节对比，漂移即 fail-closed ──
 if ($Verify) {
@@ -109,9 +122,17 @@ $failures = 0
 
 Write-Host "=== [1/2] 执行侧守卫（各插件声明文件 vs NATIVE_SERVICES）===" -ForegroundColor Cyan
 foreach ($p in $plugins) {
-    cargo test -p $p.Crate --lib native_service
-    if ($LASTEXITCODE -ne 0) { $failures++; Write-Host "[FAIL] $($p.Id) 执行侧守卫未通过" -ForegroundColor Red }
-    else { Write-Host "[OK] $($p.Id) 执行侧守卫通过" -ForegroundColor Green }
+    # 零匹配自检（D：cargo 对「过滤无测试」不报错，退出码恒 0——必须解析
+    # 输出确认至少跑了守卫测试，否则守卫形式上绿、实质零覆盖）
+    $output = cargo test -p $p.Crate --lib native_service 2>&1
+    $output | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) { $failures++; Write-Host "[FAIL] $($p.Id) 执行侧守卫未通过" -ForegroundColor Red; continue }
+    if ($output -match "running 0 tests") {
+        $failures++
+        Write-Host "[FAIL] $($p.Id) 守卫过滤器零匹配——形式上绿、实质零覆盖（测试名须含 native_service）" -ForegroundColor Red
+    } else {
+        Write-Host "[OK] $($p.Id) 执行侧守卫通过" -ForegroundColor Green
+    }
 }
 
 Write-Host "=== [2/2] 治理侧守卫（嵌入副本聚合 schema/唯一性/顺序）===" -ForegroundColor Cyan

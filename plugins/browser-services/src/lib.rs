@@ -1541,7 +1541,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_table_matches_declaration_file() -> Result<(), String> {
+    fn test_native_service_table_matches_declaration_file() -> Result<(), String> {
         let raw = include_str!("../official_native_services.json");
         let file: serde_json::Value =
             serde_json::from_str(raw).map_err(|e| format!("声明文件非法 JSON: {e}"))?;
@@ -1578,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_table_names_unique_and_make_callable() {
+    fn test_native_service_table_names_unique_and_make_callable() {
         let mut names: Vec<&str> = NATIVE_SERVICES.iter().map(|d| d.name).collect();
         let n = names.len();
         names.sort_unstable();
@@ -1593,7 +1593,7 @@ mod tests {
     /// 需要本机 Edge 可用；失败会如实报错（不静默）。
     #[ignore = "真实浏览器 e2e：需本机 Edge；CI runner 不具备，本地 cargo test -- --ignored 执行"]
     #[test]
-    fn test_real_edge_e2e() {
+    fn test_native_service_real_edge_e2e() {
         // navigate
         BrowserNavigate
             .execute(&JsonValue::object_from_pairs(&[(
