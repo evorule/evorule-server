@@ -190,6 +190,32 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi 
         .register(IoType::new("acc_echo_v1"), svc_handler.clone())
         .register(IoType::call_external(), svc_handler)
         .build();
+    // 权限缺省 fail-closed 后（human 缺省 Deny，宽松=显式经账本声明），生产组装在
+    // 启动期幂等播种 human×io:* 放行条目（main.rs 同款 id/结构）；本测试组装不经
+    // 启动流程，按生产同口径补种——否则声明 human 的会话分发被缺省拒绝，
+    // echo 回写断言只能等到超时。
+    let shared_facts = evorule_governance::shared_facts_log::SharedFactsLog::new();
+    {
+        use evorule_governance::permission::{
+            Effect, PermissionEntry, PermissionState, Resource, ResourceType, Subject, SubjectType,
+        };
+        let mut entry = PermissionEntry::new(
+            "default-human-allow-io",
+            Subject {
+                subject_type: SubjectType::User,
+                id: "human".to_string(),
+            },
+            Resource {
+                resource_type: ResourceType::IoAction,
+                path: "io:*".to_string(),
+            },
+            Effect::Allow,
+        );
+        entry.state = PermissionState::Active;
+        entry.updated_by = "bootstrap".to_string();
+        evorule_governance::permission::PermissionTable::store_entry(&shared_facts, &entry, 0)
+            .expect("seed default-human-allow-io (same as production bootstrap)");
+    }
     SessionApi::new_with_full_config(
         // 装载防线整改方案 C：构造传真实宪法（空 vec 会使导入期前置预判基线播种
         // zip 截断为空 → io 重叠预判 fail-open，已登记整改）
@@ -210,6 +236,7 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: &str) -> SessionApi 
     )
     .with_workspace_db(ws_db)
     .with_dispatcher(dispatcher)
+    .with_shared_facts(shared_facts)
     .with_bound_services([SVC.to_string()])
     .with_registry_services([ServiceMeta {
         name: SVC.to_string(),
