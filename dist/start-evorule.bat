@@ -19,9 +19,26 @@ if "%PORT_IN_USE%"=="1" (
 )
 echo.
 echo [1/3] Starting governance service (evorule-rule-serve, port 18081)...
-start "evorule-rule" /min cmd /c "evorule-rule-serve.exe --db .\data\rule.db --port 18081 --secret evorule-demo-secret-2026 --admin-user admin --admin-password evorule-demo --allowed-origins http://localhost:18080,http://127.0.0.1:18080 2>>data\rule-serve-stderr.log"
+rem --- Governance credentials: generated once per machine into data\ (gitignored),
+rem --- never hardcoded in the repository. Delete the file to regenerate.
+if not exist "data\governance-credentials.env" (
+  powershell -NoProfile -Command "$s='evorule-' + [guid]::NewGuid().ToString('N').Substring(0,24); $p=[guid]::NewGuid().ToString('N').Substring(0,16); Set-Content -Path 'data\governance-credentials.env' -Value ('SECRET=' + $s + [Environment]::NewLine + 'ADMIN_PASSWORD=' + $p) -Encoding Ascii"
+)
+set GOV_SECRET=
+set GOV_ADMIN_PASSWORD=
+for /f "usebackq tokens=1,* delims==" %%a in (`powershell -NoProfile -Command "Get-Content 'data\governance-credentials.env'"`) do (
+  if /i "%%a"=="SECRET" set GOV_SECRET=%%b
+  if /i "%%a"=="ADMIN_PASSWORD" set GOV_ADMIN_PASSWORD=%%b
+)
+if "%GOV_SECRET%"=="" (
+  echo [!] Failed to prepare governance credentials ^(data\governance-credentials.env^).
+  pause
+  exit /b 1
+)
+echo     Governance admin credentials: data\governance-credentials.env ^(keep private^)
+start "evorule-rule" /min cmd /c "evorule-rule-serve.exe --db .\data\rule.db --port 18081 --secret %GOV_SECRET% --admin-user admin --admin-password %GOV_ADMIN_PASSWORD% --allowed-origins http://localhost:18080,http://127.0.0.1:18080 2>>data\rule-serve-stderr.log"
 echo [2/3] Starting main service (evorule-server, port 18080)...
-start "evorule-server" /min cmd /c "evorule-server.exe --addr 127.0.0.1:18080 --web-dir web --rules-dir rules --service-registry service_registry.json --core-eval resources\server_eval.json --wal-dir .\data\wal --wal-fsync --plugins plugin_manifest.json --workspace-db .\data\workspace.db --insecure-serve 2>>data\server-stderr.log"
+start "evorule-server" /min cmd /c "evorule-server.exe --addr 127.0.0.1:18080 --web-dir web --rules-dir rules --service-registry service_registry.json --core-eval resources\server_eval.json --wal-dir .\data\wal --wal-fsync --plugins plugin_manifest.json --workspace-db .\data\workspace.db 2>>data\server-stderr.log"
 rem [Optional] ai-plugin: start automatically only when its config file exists
 if exist "plugins\ai-plugin\ai-plugin.json" (
   echo [+] ai-plugin config found, starting ai-plugin (port 9130)...
