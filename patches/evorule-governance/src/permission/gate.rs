@@ -177,7 +177,45 @@ mod tests {
     fn resolver_overrides_caller_role_and_changes_verdict() {
         let mut ctx = IoCallContext::new(FactId(1), 0, None);
         let gate = empty_gate().with_caller_role_resolver(Arc::new(|_| CallerRole::Human));
-        // resolver 返回 Human → 空表走 default_policy.human = Allow
+        // resolver 返回 Human → 空表走 default_policy.human = Deny（fail-closed：
+        // 未播种人类权限条目时不做隐式放行，部署面须显式 seed）
+        assert_eq!(gate.check(&mut ctx, "fake_call", None), Verdict::Deny);
+    }
+
+    #[test]
+    fn human_default_deny_is_fail_closed() {
+        // 缺省策略三腿全 Deny：任何角色在空表上都不可隐式放行
+        use crate::permission::{DefaultPolicy, Effect};
+        let dp = DefaultPolicy::default();
+        assert_eq!(dp.human, Effect::Deny);
+        assert_eq!(dp.llm, Effect::Deny);
+        assert_eq!(dp.unknown, Effect::Deny);
+    }
+
+    #[test]
+    fn explicit_human_seed_still_allows() {
+        // 正向对照：显式播种 human Allow 条目后，human 判定放行（种子语义不受
+        // 缺省策略收紧影响）
+        use crate::permission::{
+            DefaultPolicy, Effect, PermissionEntry, PermissionState, Resource, ResourceType,
+            Subject,
+        };
+        let log = Arc::new(SharedFactsLog::new());
+        let mut entry = PermissionEntry::new(
+            "seed-human-fake-call",
+            Subject::human("human"),
+            Resource {
+                resource_type: ResourceType::IoAction,
+                path: "io:fake_call".to_string(),
+            },
+            Effect::Allow,
+        );
+        entry.state = PermissionState::Active;
+        PermissionTable::store_entry(&log, &entry, 0).expect("store entry");
+
+        let gate = PermissionGate::new(log)
+            .with_caller_role_resolver(Arc::new(|_| CallerRole::Human));
+        let mut ctx = IoCallContext::new(FactId(1), 0, None);
         assert_eq!(gate.check(&mut ctx, "fake_call", None), Verdict::Allow);
     }
 

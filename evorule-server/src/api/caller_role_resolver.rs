@@ -271,8 +271,9 @@ mod tests {
         assert_eq!(resolve_caller_role(&log, &ctx_for(io2)), CallerRole::Llm);
     }
 
-    /// 矩阵 6（gate 级）：resolver 覆盖后判定——human 走默认策略 Allow、
-    /// llm Deny、未知 Deny（空权限表走 DefaultPolicy 语义）。
+    /// 矩阵 6（gate 级）：resolver 覆盖后判定——human/llm/未知三角色在
+    /// 空权限表上全部走 DefaultPolicy Deny（缺省策略 fail-closed：不 seeding
+    /// 不放行，宽松须显式经账本声明）。
     #[test]
     fn o179_res_6_gate_check_applies_resolver_verdict() {
         use evorule_governance::permission::PermissionGate;
@@ -280,14 +281,14 @@ mod tests {
 
         let gate = PermissionGate::new(std::sync::Arc::new(SharedFactsLog::new()));
 
-        // human 链 → Allow（DefaultPolicy.human=Allow，无条目匹配路径）
+        // human 链 → Deny（DefaultPolicy.human=Deny，空表不做隐式放行）
         let (log, io) = chain(Some("human"));
         let resolver = session_caller_role_resolver(log);
         let gate_h = gate.clone().with_caller_role_resolver(resolver);
         let mut ctx = ctx_for(io);
         assert_eq!(
             gate_h.check(&mut ctx, "call_service", None),
-            evorule_governance::permission::Verdict::Allow
+            evorule_governance::permission::Verdict::Deny
         );
         assert_eq!(ctx.caller_role, CallerRole::Human);
 

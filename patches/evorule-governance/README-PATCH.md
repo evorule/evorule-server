@@ -26,8 +26,9 @@
 | `session.rs` | +499/−143 | **G6 规则集锚定族**（`with_ruleset_version`/`set_ruleset_version`/`append_ruleset_anchor`/`ruleset_version_anchored_into_chain`）+ **rehydrate 族**（`rehydrate_session_from_wal` + `auditor_from_config` + 4 测试）+ **tick 步进族**（`tick_instruction`/`submit_tick`/`wait_version_stable`）；消费方=server checkpoint/规则集锚定/会话恢复 |
 | `auditor.rs` | +184/−2 | **锚点持久化族**（`persist_anchor`/`load_anchor_log`/`with_anchor_persisted`/`with_anchor_impl`）+ import_compressed 解压限额与口径 doc |
 | `shared_facts_log.rs` | +14/−0 | recover 前置链三查 + 共享账本 ed25519 锚点链（载荷含 metadata 摘要）+ 锚点持久化入 metadata |
-| `io_subscriber.rs` | +5/−109 | deny 回写 route 段；大幅收缩为 SG-2 后形态 |
-| `permission/gate.rs` | +9/−34 | SG-2 静态层接线（`check_routed` 裁决序） |
+| `io_subscriber.rs` | +51/−115 | deny 回写 route 段（SG-2 收缩形态）+ **权限门未装配 fail-closed**（原 warn 后照发改为拒绝分发并回写错误 IoResponse，2026-10-24 安全收紧，主仓同日同改） |
+| `permission/gate.rs` | +48/−35 | SG-2 静态层接线（`check_routed` 裁决序）+ **缺省策略 human=Deny 配套测试**（空表三角色全 Deny/正向对照=显式播种仍放行，2026-10-24 主仓同日同改） |
+| `permission/table.rs` | +15/−10 | **缺省策略 human=Allow→Deny（fail-closed）**：未播种人类权限条目不隐式放行，宽松须显式经账本声明（`DEFAULT_POLICY_PATH`）；部署面已播种 io:* 者行为不变；2026-10-24 安全收紧，主仓同日同改 |
 | `circuit_breaker.rs` | +4/−10 | 收敛 |
 | `permission/route_policy.rs` | +3/−12 | 微调 |
 | `anchor.rs` | +15/−2 | 锚点链配合 G6 |

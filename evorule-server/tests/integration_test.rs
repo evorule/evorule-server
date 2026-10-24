@@ -37,6 +37,30 @@ use evorule_rule_loader::serde_to_tcb;
 /// T8 迁出后 core_eval.json 为最小评估集(原子+控制流+兜底)。本测试为验证
 /// IoSubscriber/IoDispatcher 机制层行为,附加旧指令(save_memory/query_db/http_get)
 /// 与 call_service 的应用剧本形态 transform 规则——运行宪法由消费方自持(属地原则)。
+
+/// 测试辅助：全放行权限门（io:* × 任意主体 Allow）——权限门未装配的订阅者
+/// 现按 fail-closed 拒绝分发，本 helper 供仅需 exercising 分发/重试/持久化
+/// 语义的测试挂一个显式宽松门。
+fn allow_all_gate() -> evorule_governance::permission::PermissionGate {
+    use evorule_governance::permission::{
+        Effect, PermissionEntry, PermissionState, Resource, ResourceType, Subject,
+    };
+    let log = std::sync::Arc::new(evorule_governance::shared_facts_log::SharedFactsLog::new());
+    let mut entry = PermissionEntry::new(
+        "test-allow-all",
+        Subject::any(),
+        Resource {
+            resource_type: ResourceType::IoAction,
+            path: "io:*".to_string(),
+        },
+        Effect::Allow,
+    );
+    entry.state = PermissionState::Active;
+    evorule_governance::permission::PermissionTable::store_entry(&log, &entry, 0)
+        .expect("seed allow-all gate");
+    evorule_governance::permission::PermissionGate::new(log)
+}
+
 fn load_core_eval() -> Vec<JsonValue> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let core_eval_path = manifest_dir.join("../resources/server_eval.json");
@@ -258,7 +282,7 @@ async fn test_end_to_end_io_subscriber_with_save_memory() {
     std::fs::create_dir_all(&temp_dir).ok();
 
     let dispatcher = create_test_dispatcher(&temp_dir).await;
-    let subscriber = IoSubscriber::new(dispatcher);
+    let subscriber = IoSubscriber::new(dispatcher).with_permission_gate(allow_all_gate());
 
     let reactor = Reactor::builder(core_eval).max_rounds(100).build();
     let (tx, mut rx, event_tx, _handle, facts_log) = reactor.spawn();
@@ -313,7 +337,7 @@ async fn test_end_to_end_save_memory_writes_file() {
     std::fs::create_dir_all(&temp_dir).ok();
 
     let dispatcher = create_test_dispatcher(&temp_dir).await;
-    let subscriber = IoSubscriber::new(dispatcher);
+    let subscriber = IoSubscriber::new(dispatcher).with_permission_gate(allow_all_gate());
 
     let reactor = Reactor::builder(core_eval).max_rounds(100).build();
     let (tx, mut rx, event_tx, _handle, facts_log) = reactor.spawn();
@@ -361,7 +385,7 @@ async fn test_io_subscriber_handles_errors() {
     std::fs::create_dir_all(&temp_dir).ok();
 
     let dispatcher = create_test_dispatcher(&temp_dir).await;
-    let subscriber = IoSubscriber::new(dispatcher);
+    let subscriber = IoSubscriber::new(dispatcher).with_permission_gate(allow_all_gate());
 
     let reactor = Reactor::builder(core_eval).max_rounds(100).build();
     let (tx, mut rx, event_tx, _handle, facts_log) = reactor.spawn();
@@ -405,7 +429,7 @@ async fn test_multiple_io_requests_sequence() {
     std::fs::create_dir_all(&temp_dir).ok();
 
     let dispatcher = create_test_dispatcher(&temp_dir).await;
-    let subscriber = IoSubscriber::new(dispatcher);
+    let subscriber = IoSubscriber::new(dispatcher).with_permission_gate(allow_all_gate());
 
     let reactor = Reactor::builder(core_eval).max_rounds(200).build();
     let (tx, mut rx, event_tx, _handle, facts_log) = reactor.spawn();
@@ -459,7 +483,7 @@ async fn test_auditor_records_facts_log() {
     std::fs::create_dir_all(&temp_dir).ok();
 
     let dispatcher = create_test_dispatcher(&temp_dir).await;
-    let subscriber = IoSubscriber::new(dispatcher);
+    let subscriber = IoSubscriber::new(dispatcher).with_permission_gate(allow_all_gate());
 
     let reactor = Reactor::builder(core_eval).max_rounds(100).build();
     let (tx, _rx, _event_tx, _handle, facts_log) = reactor.spawn();
