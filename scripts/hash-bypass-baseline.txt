@@ -1,0 +1,37 @@
+# hash-bypass ratchet baseline
+# 存量冻结（2026-10-24 生成）：本文件行 = 已知豁免命中；新绕行不入列即 CI 红。
+# 收缩：修复后用 `python scripts/hash_bypass_scan.py --dump` 重生成，禁手工增列。
+
+H1|evorule-server/Cargo.toml|56d3a05df961dec34b9915dc29deff59
+H1|patches/evorule-governance/Cargo.toml|c0f7a5acec056445a92da093a5cfd0e8
+H1|patches/evorule-reactor/Cargo.toml|56d3a05df961dec34b9915dc29deff59
+H1|plugins/physics-services/Cargo.toml|56d3a05df961dec34b9915dc29deff59
+H1|plugins/wasm-host/Cargo.toml|56d3a05df961dec34b9915dc29deff59
+H2|evorule-server/src/api/audit_archive.rs|0074bcb5187aaca2f90b2944ce61d2f5
+H2|evorule-server/src/api/audit_archive.rs|a74ce53e2b5cbdcc99f223e5c0486c6b
+H2|evorule-server/src/api/hit_stats.rs|25966d02fcda64208261e404d396fac4
+H2|evorule-server/src/api/marketplace.rs|13c908631397e0110eea56ceea5b4591
+H2|evorule-server/src/api/marketplace.rs|26590a56c06080119f546d91136cea8d
+H2|evorule-server/src/api/marketplace.rs|37a52f34eb0217919c93b0ccf7a109be
+H2|evorule-server/src/api/marketplace.rs|3a1005a0906c88ddb46d72d7fe2ed248
+H2|evorule-server/src/api/marketplace.rs|4f0e48a99d6059794e7515ad987ec21c
+H2|evorule-server/src/api/marketplace.rs|599115364b06d7d1ae8cb53622ad5aa3
+H2|evorule-server/src/api/marketplace.rs|b118cbdd623244985b943202ebab5f82
+H2|evorule-server/src/api/marketplace.rs|e8acb74c3245c47b865bc6bd83b66548
+H2|evorule-server/src/api/platform_auth.rs|448fdbca2f29b2081e22e9dcb52e6e84
+H2|evorule-server/src/api/platform_auth.rs|5d1d52cea4c4e151c495370942385114
+H2|evorule-server/src/api/platform_auth.rs|94db6aebf535f79f1f1f8498ff33debc
+H2|evorule-server/tests/golden_hash_cross_repo.rs|72fec0befbd555ca01526a56808ae1ac
+H2|evorule-server/tests/session_integration_test.rs|f10210793ec753f11f56329eec45f006
+H2|patches/evorule-governance/examples/bench_blake3.rs|448fdbca2f29b2081e22e9dcb52e6e84
+H2|patches/evorule-governance/src/anchor.rs|874cb8604267ff3c0e8e034690a39bf4
+H2|patches/evorule-governance/src/session.rs|33acba0c977f2666c1384631e5f8f6a4
+H2|patches/evorule-governance/src/session.rs|ae804da7f0d0dbedbcdee525b9162ba9
+H2|patches/evorule-governance/src/session.rs|bd0c31957d7bb3f41b73717b76beddf4
+H2|patches/evorule-governance/src/shared_facts_log.rs|821379729b65ef04ef870be3e73b910b
+H2|patches/evorule-governance/src/shared_facts_log.rs|f106d38552dc16dfbe6e16acffde199b
+H2|patches/evorule-governance/tests/end_to_end_audit_chain.rs|678a44a3988e5bf5c0d18177968745bf
+H2|patches/evorule-reactor/src/hash.rs|821379729b65ef04ef870be3e73b910b
+H2|patches/evorule-reactor/src/hash.rs|fca496d5168ed1efe060afd539735a94
+H2|plugins/physics-services/tests/test_thermal_determinism.rs|99daa152c38b80180463b6e8588387eb
+H2|plugins/wasm-host/src/integrity.rs|2774198da1fe5aba3e3e70a68e5ae662

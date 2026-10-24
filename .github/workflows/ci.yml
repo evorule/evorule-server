@@ -345,3 +345,18 @@ jobs:
 
       - name: 公开面矩阵扫描 (AI 身份 + 内部编号阻断)
         run: python3 scripts/scan_public_face.py --fail-on A1 --fail-on B
+
+  # ==========================================================================
+  # hash-bypass-scan：哈希口径反绕行棘轮扫描 (B 族 blocking)。
+  # 只准经 evorule-hash 单一真相源做 BLAKE3 内容哈希——拦截私接 blake3
+  # 直连依赖（含 [patch] 换源）与源码私写哈希路径两类旁路；
+  # baseline 存量冻结、新增即红（与 public-face-scan 棘轮同型）。
+  # ==========================================================================
+  hash-bypass-scan:
+    name: hash bypass scan (B blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 哈希口径反绕行棘轮扫描
+        run: python3 scripts/hash_bypass_scan.py --ratchet scripts/hash-bypass-baseline.txt
