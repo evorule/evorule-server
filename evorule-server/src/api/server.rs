@@ -13942,7 +13942,39 @@ mod tests {
             let dispatcher = IoDispatcher::builder()
                 .register(IoType::call_service(), Arc::new(EchoHandler))
                 .build();
-            let api = SessionApi::new(make_io_core_eval(), 100).with_dispatcher(dispatcher);
+            // 权限缺省 fail-closed 后（human 缺省 Deny，宽松=显式经账本声明），
+            // 生产组装在启动期幂等播种 human×io:* 放行条目；本测试按生产同口径
+            // 补种——本探针验证的是 fork 角色继承下的分发机制，不是缺省策略。
+            let shared_facts = evorule_governance::shared_facts_log::SharedFactsLog::new();
+            {
+                use evorule_governance::permission::{
+                    Effect, PermissionEntry, PermissionState, Resource, ResourceType, Subject,
+                    SubjectType,
+                };
+                let mut entry = PermissionEntry::new(
+                    "default-human-allow-io",
+                    Subject {
+                        subject_type: SubjectType::User,
+                        id: "human".to_string(),
+                    },
+                    Resource {
+                        resource_type: ResourceType::IoAction,
+                        path: "io:*".to_string(),
+                    },
+                    Effect::Allow,
+                );
+                entry.state = PermissionState::Active;
+                entry.updated_by = "bootstrap".to_string();
+                evorule_governance::permission::PermissionTable::store_entry(
+                    &shared_facts,
+                    &entry,
+                    0,
+                )
+                .expect("seed default-human-allow-io (same as production bootstrap)");
+            }
+            let api = SessionApi::new(make_io_core_eval(), 100)
+                .with_dispatcher(dispatcher)
+                .with_shared_facts(shared_facts);
 
             // 父会话声明 human（等价于经 /api/sessions 带 caller_role 创建）
             let parent = api.sessions.lock().await.create_session().unwrap();
@@ -13980,7 +14012,7 @@ mod tests {
                 })
                 .unwrap();
 
-            // 子会话 io 被应答分发（非 60s 超时）：human 声明 + 默认策略 Allow
+            // 子会话 io 被应答分发（非 60s 超时）：human 声明 + 启动期同款放行种子
             let (error, result) =
                 wait_io_response(&session, std::time::Duration::from_secs(5)).await;
             assert!(
