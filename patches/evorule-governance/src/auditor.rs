@@ -1466,7 +1466,9 @@ impl Auditor {
 ///
 /// P0-02：对齐 evorule-reactor/src/fact.rs::Fact::type_name()（7 种）。
 /// 修前缺 `Stable`（终止事实，WAL 重载被映射为 Unknown、丢失类型语义）、
-/// 多 `ControlSignal`（Fact 枚举无此变体）。`Unknown` 保留作导入 fallback 表项。
+/// 多 `ControlSignal`（Fact 枚举无此变体）。
+/// 又补 `TransitionTrace`/`Violation`（记录性事实，此前 fact_type 退化
+/// 为 Unknown，审计展示丢失类型语义）。`Unknown` 保留作导入 fallback 表项。
 const FACT_TYPE_STATIC_TABLE: &[&str] = &[
     "Command",
     "PayloadUpdate",
@@ -1475,6 +1477,8 @@ const FACT_TYPE_STATIC_TABLE: &[&str] = &[
     "IoResponse",
     "Stable",
     "Error",
+    "TransitionTrace",
+    "Violation",
     "Unknown",
 ];
 
@@ -1751,6 +1755,63 @@ mod tests {
             auditor.load_from_tier1_wal(&tmp).expect("load tier1 wal");
             assert_eq!(auditor.entries().len(), 2);
             assert!(auditor.verify());
+        }
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// 正向锚：TransitionTrace/Violation 落 WAL 后 fact_type 不得退化为
+    /// Unknown（记录性事实的审计展示语义；类型表缺变体时此测试红）。
+    #[test]
+    fn test_load_from_tier1_wal_fact_type_trace_and_violation() {
+        let tmp = std::env::temp_dir()
+            .join(format!("auditor_facttype_test_{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        {
+            let log = FactsLog::with_wal(&tmp).expect("create wal");
+            log.append(Fact::StateTransition {
+                id: FactId(1),
+                cause: FactId(1),
+                new_payload: JsonValue::empty_object(),
+                new_queue: vec![],
+            })
+            .unwrap();
+            log.append(Fact::TransitionTrace {
+                id: FactId(2),
+                cause: FactId(1),
+                rule_hits: vec![],
+            })
+            .unwrap();
+            log.append(Fact::Violation {
+                id: FactId(3),
+                cause: FactId(1),
+                rule_index: 0,
+                reason: "enforced".into(),
+                instruction: JsonValue::empty_object(),
+            })
+            .unwrap();
+        }
+
+        {
+            let log = make_facts_log();
+            let mut auditor = Auditor::new(log);
+            auditor.load_from_tier1_wal(&tmp).expect("load tier1 wal");
+            assert_eq!(auditor.entries().len(), 3);
+            let types: Vec<&'static str> =
+                auditor.entries().iter().map(|e| e.fact_type).collect();
+            assert!(
+                types.contains(&"TransitionTrace"),
+                "TransitionTrace fact_type 退化为 Unknown: {types:?}"
+            );
+            assert!(
+                types.contains(&"Violation"),
+                "Violation fact_type 退化为 Unknown: {types:?}"
+            );
+            assert!(
+                !types.contains(&"Unknown"),
+                "出现 Unknown 即类型表缺变体: {types:?}"
+            );
         }
 
         let _ = std::fs::remove_file(&tmp);
