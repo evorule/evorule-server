@@ -420,7 +420,7 @@ mod tests {
 
     /// SSOT 守卫：声明表 vs official_native_services.json（三字段+顺序，漂移即红）
     #[test]
-    fn ssot_declaration_matches_json() {
+    fn native_service_declaration_matches_json() {
         let doc: serde_json::Value =
             serde_json::from_str(include_str!("../official_native_services.json")).unwrap();
         let svcs = doc["services"].as_array().unwrap();
