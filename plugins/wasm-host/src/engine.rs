@@ -74,7 +74,11 @@ impl UdfRuntime {
     /// fuel 限的是**指令步数**，部署性能差异会让同一 fuel 预算对应很不一样的
     /// 墙钟占用；墙钟预算独立兜底「每步都快但总时长失控」的 guest，
     /// 到期以 epoch trap 截断（错误归类点名「墙钟」，审计可辨）。
-    pub fn new(fuel_budget: u64, max_memory_bytes: usize, wall_clock_secs: u64) -> Result<Self, String> {
+    pub fn new(
+        fuel_budget: u64,
+        max_memory_bytes: usize,
+        wall_clock_secs: u64,
+    ) -> Result<Self, String> {
         let mut config = Config::new();
         // fuel：执行步数预算（防死循环 / 恶意计算）
         config.consume_fuel(true);
