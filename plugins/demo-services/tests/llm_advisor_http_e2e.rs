@@ -18,7 +18,9 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use evorule_demo_services::llm_advisor::{LlmAdvisor, LLM_API_KEY_ENV, LLM_ENDPOINT_ENV, LLM_TIMEOUT_MS_ENV};
+use evorule_demo_services::llm_advisor::{
+    LlmAdvisor, LLM_API_KEY_ENV, LLM_ENDPOINT_ENV, LLM_TIMEOUT_MS_ENV,
+};
 use evorule_demo_services::NativeService;
 use evorule_tcb::JsonValue;
 
@@ -71,7 +73,9 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// 读完整 HTTP 请求（头 + Content-Length 指定的体）
 fn read_request(stream: &mut TcpStream) -> Option<Captured> {
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .ok()?;
     let mut raw: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
     let header_end = loop {
@@ -128,7 +132,10 @@ async fn e2e_real_endpoint_round_trip_is_marked_as_real_llm() {
     let stub = spawn_stub(
         r#"{"id":"chatcmpl-1","model":"stub-reported-model","choices":[{"index":0,"message":{"role":"assistant","content":"STUB_REPLY 建议：检查量纲一致性"},"finish_reason":"stop"}]}"#,
     );
-    std::env::set_var(LLM_ENDPOINT_ENV, format!("http://127.0.0.1:{}/v1", stub.port));
+    std::env::set_var(
+        LLM_ENDPOINT_ENV,
+        format!("http://127.0.0.1:{}/v1", stub.port),
+    );
     std::env::set_var(LLM_API_KEY_ENV, "probe-secret-9f3a");
     std::env::set_var(LLM_TIMEOUT_MS_ENV, "5000");
 
@@ -175,7 +182,10 @@ async fn e2e_real_endpoint_round_trip_is_marked_as_real_llm() {
         captured.body
     );
     // 请求体带模型 / 系统提示 / 渲染后的 prompt
-    assert_eq!(body.get("model").and_then(|v| v.as_str()), Some("gpt-4o-mini"));
+    assert_eq!(
+        body.get("model").and_then(|v| v.as_str()),
+        Some("gpt-4o-mini")
+    );
     let msgs = body
         .get("messages")
         .and_then(|v| v.as_array())
@@ -259,7 +269,10 @@ async fn e2e_non_2xx_fails_visible_not_mock() {
         .await
         .expect_err("非 2xx 必须报错");
     assert!(err.contains("500"), "错误消息应含 HTTP 状态码: {err}");
-    assert!(!err.contains("probe-secret-9f3a"), "错误消息不得含凭据: {err}");
+    assert!(
+        !err.contains("probe-secret-9f3a"),
+        "错误消息不得含凭据: {err}"
+    );
     assert!(
         !err.contains(&format!("127.0.0.1:{port}")),
         "上游回显的端点 URL 必须被脱敏: {err}"
@@ -274,7 +287,10 @@ async fn e2e_non_2xx_fails_visible_not_mock() {
 async fn e2e_response_without_choices_content_fails_visible() {
     let _guard = env_guard();
     let stub = spawn_stub(r#"{"id":"chatcmpl-2","model":"m","choices":[]}"#);
-    std::env::set_var(LLM_ENDPOINT_ENV, format!("http://127.0.0.1:{}/v1", stub.port));
+    std::env::set_var(
+        LLM_ENDPOINT_ENV,
+        format!("http://127.0.0.1:{}/v1", stub.port),
+    );
     std::env::set_var(LLM_API_KEY_ENV, "probe-secret-9f3a");
     std::env::set_var(LLM_TIMEOUT_MS_ENV, "5000");
 
@@ -283,11 +299,11 @@ async fn e2e_response_without_choices_content_fails_visible() {
         .execute_async(&probe_args())
         .await
         .expect_err("响应缺 choices[0].message.content 必须报错");
+    assert!(err.contains("choices"), "错误消息应指明响应形状要求: {err}");
     assert!(
-        err.contains("choices"),
-        "错误消息应指明响应形状要求: {err}"
+        !err.contains("probe-secret-9f3a"),
+        "错误消息不得含凭据: {err}"
     );
-    assert!(!err.contains("probe-secret-9f3a"), "错误消息不得含凭据: {err}");
 }
 
 #[tokio::test]
@@ -301,8 +317,14 @@ async fn e2e_offline_mode_is_explicitly_marked_as_mock() {
         .execute_async(&probe_args())
         .await
         .expect("未配置端点应走离线替身");
-    assert_eq!(r.get("provider").and_then(|v| v.as_str()), Some("offline_mock"));
+    assert_eq!(
+        r.get("provider").and_then(|v| v.as_str()),
+        Some("offline_mock")
+    );
     assert_eq!(r.get("real_llm").and_then(|v| v.as_bool()), Some(false));
     let suggestion = r.get("suggestion").and_then(|v| v.as_str()).unwrap_or("");
-    assert!(suggestion.contains("Offline-Mock"), "离线建议须自报家门: {suggestion}");
+    assert!(
+        suggestion.contains("Offline-Mock"),
+        "离线建议须自报家门: {suggestion}"
+    );
 }

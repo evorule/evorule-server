@@ -166,9 +166,9 @@ fn configured_endpoint() -> Option<String> {
 /// 端点归一：空路径 → `/v1/chat/completions`；`/v1` → 拼 `/chat/completions`；其余原样
 fn resolve_endpoint(raw: &str) -> Result<String, String> {
     let s = raw.trim().trim_end_matches('/');
-    let (scheme, rest) = s
-        .split_once("://")
-        .ok_or_else(|| "端点须为 http(s) 绝对 URL（如 https://host/v1/chat/completions）".to_string())?;
+    let (scheme, rest) = s.split_once("://").ok_or_else(|| {
+        "端点须为 http(s) 绝对 URL（如 https://host/v1/chat/completions）".to_string()
+    })?;
     if scheme != "http" && scheme != "https" {
         return Err("端点协议仅支持 http / https".to_string());
     }
@@ -232,7 +232,12 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 /// 构造 OpenAI 兼容 chat completions 请求体
-fn build_request_body(args: &JsonValue, prompt: &str, system: &str, model: &str) -> serde_json::Value {
+fn build_request_body(
+    args: &JsonValue,
+    prompt: &str,
+    system: &str,
+    model: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "model": model,
         "messages": [
@@ -289,8 +294,8 @@ async fn call_remote(
             truncate(&redact(&text, &url, &api_key), 200)
         ));
     }
-    let v: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("LLM 端点响应非合法 JSON: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("LLM 端点响应非合法 JSON: {e}"))?;
     let content = v
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
@@ -333,11 +338,9 @@ impl NativeService for LlmAdvisor {
     /// 不得在不知情下拿到假建议。
     fn execute(&self, args: &JsonValue) -> evorule_reactor::IoResult {
         if configured_endpoint().is_some() {
-            return Err(
-                "llm_advisor 同步入口无外部出口能力，但已配置 LLM 端点 — \
+            return Err("llm_advisor 同步入口无外部出口能力，但已配置 LLM 端点 — \
                  自诊断指引: 经 IoDispatcher 的 call_service 路由调用（走异步出网路径）"
-                    .to_string(),
-            );
+                .to_string());
         }
         Ok(LlmAdvisor::offline_result(args))
     }
@@ -355,8 +358,7 @@ impl NativeService for LlmAdvisor {
             let prompt = render_prompt(args);
             let system = arg_str(args, "system", "你是一名资深的机器人系统可靠性工程师。");
             let model = arg_str(args, "model", "gpt-4o-mini");
-            let (suggestion, reported_model) =
-                call_remote(args, &prompt, &system, &model).await?;
+            let (suggestion, reported_model) = call_remote(args, &prompt, &system, &model).await?;
             Ok(obj(vec![
                 ("suggestion", JsonValue::string(suggestion)),
                 ("model", JsonValue::string(reported_model)),
@@ -464,10 +466,7 @@ mod tests {
         let _guard = env_guard();
         std::env::remove_var(LLM_ENDPOINT_ENV);
         let svc = LlmAdvisor;
-        let r = svc
-            .execute_async(&JsonValue::empty_object())
-            .await
-            .unwrap();
+        let r = svc.execute_async(&JsonValue::empty_object()).await.unwrap();
         assert_eq!(
             r.get("provider").and_then(|v| v.as_str()),
             Some("offline_mock")
@@ -487,10 +486,7 @@ mod tests {
         std::env::remove_var(LLM_TIMEOUT_MS_ENV);
         std::env::remove_var(LLM_ENDPOINT_ENV);
         let err = r.unwrap_err();
-        assert!(
-            err.contains("LLM 端点"),
-            "端点不可达须显式报错: {err}"
-        );
+        assert!(err.contains("LLM 端点"), "端点不可达须显式报错: {err}");
         assert!(
             !err.contains("offline_mock"),
             "失败消息不得出现替身来源: {err}"

@@ -36,12 +36,18 @@ use evorule_server::api::server::SessionApi;
 
 /// rpsm 形态场景领域 schema（测试替身：领域 schema 归 rpsm 仓所有，
 /// 此处模拟治理侧与执行侧各注册一份同源 schema）。
+/// 须过 domain schema 运行时元校验：$id 为 domain 命名域形态 +
+/// version/owner/reviewed_by/consumer 四件元字段，否则 resolver 未命中即拒绝。
 /// 注意：用 const 而非返回 `&'static str` 的函数——server build.rs 门禁的
 /// 花括号状态机不感知生命周期撇号（对 src/ 内嵌测试生效；tests/ 目录
 /// 不在门禁扫描范围，但保持同一纪律，防经验漂移）。
 const SCENARIO_SCHEMA: &str = r#"{
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://rpsm.evorule.org/schemas/scenario/v1.0.json",
+    "$id": "https://evorule.org/schemas/domain/rpsm/scenario/v1.0.json",
+    "version": "1.0",
+    "owner": "rpsm",
+    "reviewed_by": "governor",
+    "consumer": "execution",
     "type": "object",
     "required": ["scenario_id", "gravity", "bodies"],
     "properties": {
@@ -134,7 +140,7 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         domain: "rpsm".into(),
         tags: vec![],
         payload: scenario_payload.clone(),
-        schema_ref: "https://rpsm.evorule.org/schemas/scenario/v1.0.json".into(),
+        schema_ref: "https://evorule.org/schemas/domain/rpsm/scenario/v1.0.json".into(),
         governance: None,
         // 知识资产化 A 批：知识条目治理字段（本 e2e 不携带，None=旧格式字节兼容）
         knowledge_kind: None,
@@ -288,7 +294,7 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
     assert_eq!(rec.payload["bodies"][0]["mass"], 1.5);
     assert_eq!(
         rec.schema_ref.as_deref(),
-        Some("https://rpsm.evorule.org/schemas/scenario/v1.0.json")
+        Some("https://evorule.org/schemas/domain/rpsm/scenario/v1.0.json")
     );
     assert_eq!(rec.bundle_id, "bundle-ds-rpsm-assets-v1");
     assert_eq!(rec.source_version, "v1");

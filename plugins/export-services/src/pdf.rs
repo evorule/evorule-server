@@ -911,6 +911,8 @@ fn encode_text(text: &str, metrics: &GlyphMetrics, remapper: &subsetter::GlyphRe
 
 #[cfg(test)]
 mod tests {
+    // 测试面保留 unwrap/expect 惯例（deny 仅约束生产代码，与其他测试文件一致）
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// 请求体便捷构造
