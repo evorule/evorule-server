@@ -213,8 +213,8 @@ mod tests {
         entry.state = PermissionState::Active;
         PermissionTable::store_entry(&log, &entry, 0).expect("store entry");
 
-        let gate = PermissionGate::new(log)
-            .with_caller_role_resolver(Arc::new(|_| CallerRole::Human));
+        let gate =
+            PermissionGate::new(log).with_caller_role_resolver(Arc::new(|_| CallerRole::Human));
         let mut ctx = IoCallContext::new(FactId(1), 0, None);
         assert_eq!(gate.check(&mut ctx, "fake_call", None), Verdict::Allow);
     }
@@ -413,7 +413,11 @@ mod tests {
         ctx.caller_role = CallerRole::Llm;
         let (verdict, route) = gate.check_routed(&mut ctx, "call_external", None);
         assert_eq!(verdict, Verdict::Deny);
-        assert_eq!(route, Some("ask-fallback"), "ask 无人值守回退必须给出 ask-fallback 语义");
+        assert_eq!(
+            route,
+            Some("ask-fallback"),
+            "ask 无人值守回退必须给出 ask-fallback 语义"
+        );
 
         // unknown 同属无人值守
         let mut ctx = IoCallContext::new(FactId(1), 0, None);
@@ -429,7 +433,11 @@ mod tests {
         let mut ctx = IoCallContext::new(FactId(1), 0, None);
         ctx.caller_role = CallerRole::Human;
         let (verdict, route) = gate.check_routed(&mut ctx, "call_external", None);
-        assert_eq!(verdict, Verdict::Allow, "ask+human 必须落动态表（种子 Allow 放行）");
+        assert_eq!(
+            verdict,
+            Verdict::Allow,
+            "ask+human 必须落动态表（种子 Allow 放行）"
+        );
         assert_eq!(route, None, "落动态表的决策不携带静态 route 语义");
     }
 
@@ -440,16 +448,29 @@ mod tests {
         let mut ctx = IoCallContext::new(FactId(1), 0, None);
         ctx.caller_role = CallerRole::Llm;
         // llm + http_get + target 不匹配 deny 规则 → 静态 allow → 落动态表 → llm 无条目 Deny
-        let (verdict, route) =
-            gate.check_routed(&mut ctx, "http_get", Some(&params_with_target("other.example")));
-        assert_eq!(verdict, Verdict::Deny, "静态 allow 绝不产生放行权（审批流权威）");
-        assert_eq!(route, None, "落动态表的 Deny 不携带静态 route 语义（区别于静态 deny）");
+        let (verdict, route) = gate.check_routed(
+            &mut ctx,
+            "http_get",
+            Some(&params_with_target("other.example")),
+        );
+        assert_eq!(
+            verdict,
+            Verdict::Deny,
+            "静态 allow 绝不产生放行权（审批流权威）"
+        );
+        assert_eq!(
+            route, None,
+            "落动态表的 Deny 不携带静态 route 语义（区别于静态 deny）"
+        );
 
         // llm + http_get + target 命中 deny 规则 → 静态终局 deny
         let mut ctx = IoCallContext::new(FactId(1), 0, None);
         ctx.caller_role = CallerRole::Llm;
-        let (verdict, route) = gate
-            .check_routed(&mut ctx, "http_get", Some(&params_with_target("api.internal:8080/x")));
+        let (verdict, route) = gate.check_routed(
+            &mut ctx,
+            "http_get",
+            Some(&params_with_target("api.internal:8080/x")),
+        );
         assert_eq!((verdict, route), (Verdict::Deny, Some("deny")));
     }
 
@@ -484,7 +505,11 @@ mod tests {
             };
             let first = run();
             for _ in 0..3 {
-                assert_eq!(run(), first, "check_routed 必须确定性：{role:?}/{io}/{target:?}");
+                assert_eq!(
+                    run(),
+                    first,
+                    "check_routed 必须确定性：{role:?}/{io}/{target:?}"
+                );
             }
         }
     }

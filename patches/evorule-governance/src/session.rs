@@ -650,7 +650,7 @@ impl SessionManager {
     /// 注入规则集版本哈希（G6 最小修）：此后创建的会话在审计链落
     /// `__ruleset__.version` 锚定事实——TraceHit/Violation 的规则下标
     /// 可取该版本规则集确定性重放解释
-    pub fn with_ruleset_version(mut self, version: String) -> Self {
+    pub fn with_ruleset_version(self, version: String) -> Self {
         let _ = self.ruleset_version.set(version);
         self
     }
@@ -697,9 +697,10 @@ impl SessionManager {
                 //（session_{id}.anchors.jsonl；append-only，每封一锚追加一行，
                 // auditor open 时读回续链）。wal_dir 未配置=纯内存模式，退回
                 // with_anchor（无持久化，行为同旧版）。
-                let anchor_log = self.wal_dir.as_ref().map(|dir| {
-                    dir.join(format!("session_{}.anchors.jsonl", session_id))
-                });
+                let anchor_log = self
+                    .wal_dir
+                    .as_ref()
+                    .map(|dir| dir.join(format!("session_{}.anchors.jsonl", session_id)));
                 match anchor_log {
                     Some(path) => auditor.with_anchor_persisted(
                         crate::signing::AuditSigner::from_bytes(cfg.signer_seed),
@@ -2773,9 +2774,8 @@ mod tests {
     #[tokio::test]
     async fn ruleset_version_anchored_into_chain() {
         let core_eval = make_core_eval();
-        let mgr = SessionManager::new(core_eval.clone(), 100).with_ruleset_version(
-            "blake3:ruleset-v7".into(),
-        );
+        let mgr = SessionManager::new(core_eval.clone(), 100)
+            .with_ruleset_version("blake3:ruleset-v7".into());
         let sid = mgr.create_session().map_err(|e| format!("{e:?}")).unwrap();
         let session = mgr.get_session(sid).unwrap();
         let hits: Vec<_> = session
@@ -2783,9 +2783,7 @@ mod tests {
             .history()
             .iter()
             .filter_map(|f| match f {
-                Fact::PayloadUpdate { path, value, .. }
-                    if path == "__ruleset__.version" =>
-                {
+                Fact::PayloadUpdate { path, value, .. } if path == "__ruleset__.version" => {
                     Some(value.clone())
                 }
                 _ => None,
@@ -2806,9 +2804,10 @@ mod tests {
             .facts_log
             .history()
             .iter()
-            .filter(|f| matches!(f, Fact::PayloadUpdate { path, .. } if path == "__ruleset__.version"))
+            .filter(
+                |f| matches!(f, Fact::PayloadUpdate { path, .. } if path == "__ruleset__.version"),
+            )
             .count();
         assert_eq!(hits2, 0, "未注入时零锚定事实（行为与旧版一致）");
     }
-
 }

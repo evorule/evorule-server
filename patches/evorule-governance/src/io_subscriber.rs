@@ -476,9 +476,9 @@ impl IoSubscriber {
                         .to_string(),
                 ),
             };
-            return command_tx.send(response).map_err(|_| {
-                IoSubscriberError::CommandClosed(format!("request_id={request_id}"))
-            });
+            return command_tx
+                .send(response)
+                .map_err(|_| IoSubscriberError::CommandClosed(format!("request_id={request_id}")));
         }
 
         // 记录整体 I/O 耗时（包含重试）。通过 trait object 分发，
@@ -855,8 +855,8 @@ mod tests {
         entry.state = PermissionState::Active;
         crate::permission::PermissionTable::store_entry(&log, &entry, 0).expect("store entry");
 
-        let gate = PermissionGate::new(log)
-            .with_caller_role_resolver(StdArc::new(|_| CallerRole::Human));
+        let gate =
+            PermissionGate::new(log).with_caller_role_resolver(StdArc::new(|_| CallerRole::Human));
         let mut subscriber =
             IoSubscriber::new(IoDispatcher::builder().build()).with_permission_gate(gate);
 

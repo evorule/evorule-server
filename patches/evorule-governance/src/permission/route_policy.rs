@@ -290,10 +290,19 @@ mod tests {
             RouteDecision::Deny
         );
         // rule[0] target 不匹配 → 落 default.llm = allow
-        assert_eq!(p.decide("llm", "http_get", "other.example"), RouteDecision::Allow);
+        assert_eq!(
+            p.decide("llm", "http_get", "other.example"),
+            RouteDecision::Allow
+        );
         // rule[1]：任意角色 + call_external → ask（rule[0] io_type 不匹配跳过）
-        assert_eq!(p.decide("human", "call_external", "anything"), RouteDecision::Ask);
-        assert_eq!(p.decide("llm", "call_external", "anything"), RouteDecision::Ask);
+        assert_eq!(
+            p.decide("human", "call_external", "anything"),
+            RouteDecision::Ask
+        );
+        assert_eq!(
+            p.decide("llm", "call_external", "anything"),
+            RouteDecision::Ask
+        );
         // 未命中任何 rule → default 按角色
         assert_eq!(p.decide("human", "query_db", "x"), RouteDecision::Allow);
         assert_eq!(p.decide("unknown", "query_db", "x"), RouteDecision::Allow);

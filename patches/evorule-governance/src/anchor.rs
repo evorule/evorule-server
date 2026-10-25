@@ -347,7 +347,12 @@ impl AnchorChainBuilder {
 
     /// 锚点身份四元组只读访问（持久化恢复重建 builder 用）
     pub fn identity(&self) -> (&AuditSigner, &str, &str, &str) {
-        (&self.signer, &self.key_id, &self.engine_id, &self.session_id)
+        (
+            &self.signer,
+            &self.key_id,
+            &self.engine_id,
+            &self.session_id,
+        )
     }
 
     /// 从既有链状态续建（密钥轮换/进程重启恢复用）

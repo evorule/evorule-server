@@ -194,11 +194,17 @@ mod tests {
         let JsonValue::Object(ref map) = signal else {
             panic!("信号必须是对象");
         };
-        assert_eq!(map.get("family").and_then(|v| v.as_str()), Some("off_allowlist_anchors"));
+        assert_eq!(
+            map.get("family").and_then(|v| v.as_str()),
+            Some("off_allowlist_anchors")
+        );
         assert_eq!(map.get("count").and_then(|v| v.as_i64()), Some(3));
         assert_eq!(map.get("threshold").and_then(|v| v.as_i64()), Some(3));
         assert_eq!(map.get("window_secs").and_then(|v| v.as_i64()), Some(60));
-        assert!(s.is_tripped(t0 + Duration::from_secs(3)), "跳闸态内必须拒绝");
+        assert!(
+            s.is_tripped(t0 + Duration::from_secs(3)),
+            "跳闸态内必须拒绝"
+        );
     }
 
     #[test]
