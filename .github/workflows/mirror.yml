@@ -52,21 +52,31 @@ jobs:
         run: |
           git fetch gitee --tags --prune --force
 
-      # 容错逐 ref 推送: 单个 ref 被拒(如 ref 含 workflow 文件变更而
-      # GITHUB_TOKEN 无 workflows 权限——GitHub 限制, 见上方陷阱记录)
-      # 只记 warning 跳过, 不阻塞其余 ref 的镜像。
-      - name: Mirror branches to GitHub (逐分支容错)
+      # 逐 ref 推送: 其余分支容错跳过 (如 ref 含 workflow 文件变更而
+      # GITHUB_TOKEN 无 workflows 权限——GitHub 限制, 见上方陷阱记录);
+      # 默认分支(main/master)拒推 = 镜像断链, 须 fail job 告警——
+      # 曾被容错吞成 warning, run 假报 success 而默认分支实际未同步
+      # (2026-10-25 实证), 断链静默无告警。
+      - name: Mirror branches to GitHub (默认分支拒推即红, 其余容错)
         run: |
           failed=0
+          default_failed=0
           for branch in $(git for-each-ref --format='%(refname:strip=3)' refs/remotes/gitee/); do
             [ -z "$branch" ] && continue
             [ "$branch" = "HEAD" ] && continue
-            if ! git push origin "refs/remotes/gitee/$branch:refs/heads/$branch" --force; then
-              echo "::warning:: 分支 $branch 推送被拒, 跳过 (常见原因: 含 workflow 文件变更)"
-              failed=$((failed+1))
+            if ! out=$(git push origin "refs/remotes/gitee/$branch:refs/heads/$branch" --force 2>&1); then
+              echo "$out"
+              if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+                echo "::error:: 默认分支 $branch 推送被拒——镜像断链, 按推送管线补齐后复跑 (拒因见上方输出)"
+                default_failed=$((default_failed+1))
+              else
+                echo "::warning:: 分支 $branch 推送被拒, 跳过 (常见原因: 含 workflow 文件变更)"
+                failed=$((failed+1))
+              fi
             fi
           done
-          echo "分支镜像完成: 失败 $failed 个"
+          echo "分支镜像完成: 容错跳过 $failed 个, 默认分支失败 $default_failed 个"
+          [ "$default_failed" -eq 0 ] || exit 1
 
       - name: Mirror tags to GitHub (逐 tag 容错, v* 白名单)
         run: |
