@@ -63,7 +63,18 @@ yanked = "warn"
 # bare-metal 已弃用归档（RUSTSEC-2026-0110，unmaintained 类）：cortex-m 0.7 生态
 # 传递依赖，无安全升级路径（官方迁移指引 critical-section 属 cortex-m 大版本
 # 迁移范畴）；当前仅 evorule-mcu 仿真固件 dev/示例链引入，非生产服务面，豁免。
-ignore = ["RUSTSEC-2026-0110"]
+# ttf-parser 0.25（RUSTSEC-2026-0192，unmaintained 类）：export-services 直依赖，
+# 官方迁移指引 skrifa 属字体解析栈代码改造范畴，另批处理，豁免。
+# zip 2/3/8（RUSTSEC-2026-0367/0368/0369）：修复版 9.0.0 属大版本，依赖方
+# rust_xlsxwriter / zendriver / utoipa-swagger-ui / docx-rs 上游未跟进，本地无
+# 升级路径；抽取 API 未在服务面使用，待上游跟进后随版解除，豁免。
+ignore = [
+    "RUSTSEC-2026-0110",
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+]
 
 # ---------------------------------------------------------------------------
 # 依赖关系: 重复版本警告；通配符依赖拒绝

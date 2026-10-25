@@ -48,6 +48,11 @@ SKIP_FILE_NAMES = {
     'poetry.lock', 'go.sum', 'gradlew', 'gradlew.bat',
 }
 
+# vendored 第三方上游代码：按原样引入供运行时使用，非本生态作者面，
+# 其内容不适用本生态公开面纪律（与 node_modules/锁文件同理）。
+# 按目录段匹配（路径任意层级的该目录名命中即豁免，目录内全部文件不扫描）。
+SKIP_DIR_SEGMENTS = ('vendor',)
+
 # 仓库注册表文件：按既有词表规则，注册表「可见性」列允许提及各仓仓名
 # （同 check_doc_safety.py E 类黑名单注释的注册表例外），整文件豁免 C 类。
 REGISTRY_FILES = {
@@ -272,6 +277,8 @@ def scan_repo(root: Path, allowlist: dict = None):
         if rel in WORDLIST_CARRIER_FILES:
             continue
         if Path(rel).name in SKIP_FILE_NAMES:
+            continue
+        if any(seg in SKIP_DIR_SEGMENTS for seg in rel.split('/')[:-1]):
             continue
         fpath = root / rel
         try:
