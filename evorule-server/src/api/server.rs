@@ -7975,16 +7975,24 @@ fn anchor_to_json(a: evorule_governance::anchor::AuditAnchor) -> serde_json::Val
 async fn session_anchor_seal(
     State(api): State<SessionApi>,
     Path(session_id): Path<u64>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
     let sessions = api.sessions.lock().await;
     sessions.touch_session(session_id);
     let session = sessions
         .get_session(session_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or((StatusCode::NOT_FOUND, axum::Json(serde_json::json!({"error": "session not found"}))))?;
     let _new_count = session.audit_new();
     let anchor = session.seal_anchor_now().map_err(|e| {
         tracing::warn!(session_id, "anchor seal unavailable: {e}");
-        StatusCode::CONFLICT
+        // 409 响应体携带具体 AnchorError 与启用指引，
+        // 不再丢弃错误信息（此前排障只能看到裸 409）
+        (
+            StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({
+                "error": e.to_string(),
+                "hint": "anchor chain not enabled: set EVORULE_ANCHOR_SEED (64-hex ed25519 seed) and restart",
+            })),
+        )
     })?;
     let anchor_json = anchor_to_json(anchor);
     drop(sessions);
