@@ -29,7 +29,7 @@ let isInitializedLib = false;
 
 async function loadCodeGraph() {
   if (isInitializedLib) return;
-  const mod = await import('@colbymchenry/codegraph');
+  const mod = await import('./vendor/codegraph/dist/index.js');
   // CJS/ESM interop: tsc emits `exports.default = CodeGraph`; Node wraps it
   // as mod.default.default. Some builds also attach named exports directly.
   CodeGraph = mod.default?.default || mod.default || mod.CodeGraph;

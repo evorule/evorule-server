@@ -1,0 +1,8 @@
+{
+  "name": "@colbymchenry/codegraph-vendored",
+  "version": "0.9.4",
+  "private": true,
+  "description": "Vendored build of @colbymchenry/codegraph (MIT, see LICENSE). Nested package.json resets module scope to CommonJS for the tsc-emitted dist under this plugin's \"type\": \"module\".",
+  "main": "dist/index.js",
+  "type": "commonjs"
+}

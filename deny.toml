@@ -70,7 +70,9 @@ ignore = ["RUSTSEC-2026-0110"]
 # ---------------------------------------------------------------------------
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# 本仓工作区内部服务 crate 以 path 依赖（无 version）互连，属标准 workspace
+# 形态；git tag pin 依赖同为无 semver 约束的正当形态——降为 warn 保留信号不阻塞
+wildcards = "warn"
 
 # ---------------------------------------------------------------------------
 # 来源: 仅允许 crates.io
