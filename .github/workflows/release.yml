@@ -405,7 +405,7 @@ jobs:
   # ==========================================================================
   release:
     name: release
-    needs: [bundle, sign]
+    needs: [dist-gate, bundle, sign]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -457,7 +457,7 @@ jobs:
   # ==========================================================================
   attach-gitee:
     name: attach-all-to-gitee
-    needs: [bundle, sign]
+    needs: [dist-gate, bundle, sign]
     runs-on: ubuntu-latest
     # 防御:gitee 上传偶发挂死(历史已知问题),整体限时防无限占用
     timeout-minutes: 20
@@ -518,3 +518,12 @@ jobs:
             echo ""
           done
           echo "DONE: https://gitee.com/${REPO}/releases/tag/${TAG}"
+
+  # Distribution-compliance gate (reusable workflow, pinned to root-repo commit)
+  dist-gate:
+    name: dist compliance gate
+    permissions:
+      contents: read
+    uses: evorule/evorule/.github/workflows/dist-gate.yml@a3aa299151fa3cfbf0d9fe6b659b5f91cb909807
+    with:
+      repo: evorule-server
