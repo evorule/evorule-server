@@ -25,6 +25,18 @@
 
 ---
 
+## [Unreleased]
+
+### 🆕 新增
+
+- 🆕 **审计导出 EVID 字段 `fact_json_stable`**：`Auditor::export()` 每条目内嵌 content_hash 的原字节输入（fact_to_stable_json 紧凑序列化，string 类型）——第三方/移动端验证器对字符串值按 UTF-8 取字节直接算 blake3 即可逐条重算 content_hash，零重序列化、零字段序假设；原文缺失（旧 WAL/旧导出兼容）时为 null，验证器退化为仅链折叠验证；`import()` 对该字段与 fact 原文逐字节深比，漂移即篡改信号 fail-fast 拒收
+
+### 🧪 测试
+
+- 🧪 审计导出黄金向量双端闸：server 侧 vendored governance 自证闸（live export == 冻结向量，11 样本与 Fact 契约闸同构，CI vendored patches golden gates job 承载）+ integration-tests 侧 SSOT 复算对账闸（include_str! 读同一向量，EVID 三步判定——逐条重算 content_hash / 原文深比 / genesis 链折叠——的零知识预演）
+
+---
+
 ## [0.10.0] - 2026-10-17
 
 ### 🆕 新增

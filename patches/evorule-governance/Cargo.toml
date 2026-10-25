@@ -128,5 +128,11 @@ persistence = ["evorule-reactor/persistence"]
 # 本仓 vendored 兄弟目录，独立 `cargo test` 同样对齐（如 rotate_wal 等
 # vendored-only 原语仅存在于 vendored 实例，注册表 0.8.5 尚未发版）。
 # path 补丁仅在声明它的 workspace 根生效，不随 publish 传播，对注册表消费方无影响。
+# evorule-tcb 同机制重定向：独立测试态下 tcb 按纯 version req 解析注册表
+# 0.8.3——缺 u64 全域通道（U64 变体），vendored reactor 源码（fact_to_stable_json
+# 事实展示面）编译不通过；重定向到仓内 vendored 副本 ../evorule-tcb
+# （0.8.4 + u64 通道 + in 域）。被根仓 [patch.crates-io] 以本目录为补丁源
+# 消费时本节不生效（patch 不嵌套）。
 [patch.crates-io]
 evorule-reactor = { path = "../evorule-reactor" }
+evorule-tcb = { path = "../evorule-tcb" }

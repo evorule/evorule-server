@@ -617,7 +617,7 @@ impl Auditor {
     /// - `session_id`：会话标识
     /// - `interval`：自动封条间隔（条）；0=仅手动
     pub fn with_anchor(
-        mut self,
+        self,
         signer: crate::signing::AuditSigner,
         key_id: String,
         engine_id: String,
@@ -630,7 +630,7 @@ impl Auditor {
     /// 同 [`with_anchor`]，另指定锚点持久化日志（P0-1/G1：append-only JSONL，
     /// 每封一锚追加一行；恢复时读回——进程重启后历史锚点仍可验）
     pub fn with_anchor_persisted(
-        mut self,
+        self,
         signer: crate::signing::AuditSigner,
         key_id: String,
         engine_id: String,
@@ -1213,9 +1213,17 @@ impl Auditor {
     ///   "last_hash": "<末尾链哈希>",
     ///   "last_audited_version": <已审计版本>,
     ///   "entry_count": <条目数>,
-    ///   "entries": [ { ...AuditEntry }, ... ]
+    ///   "entries": [ { "fact_id": ..., "fact": ..., "fact_json_stable": "...", ... }, ... ]
     /// }
     /// ```
+    ///
+    /// # EVID：fact_json_stable（移动端/第三方离线验证器字段）
+    ///
+    /// `fact_json_stable` = `fact_to_stable_json(fact)` 的**紧凑序列化原字节**
+    /// （string 类型），即 `content_hash = blake3(fact_json_stable)` 的哈希输入
+    /// 本身。验证器对字符串值按 UTF-8 取字节直接算 blake3 即可重算
+    /// content_hash，零重序列化、零字段序假设。原文缺失（旧 WAL/旧导出兼容）
+    /// 时为 `null`，验证器退化为仅链折叠验证。
     ///
     /// # 安全说明
     /// 导出数据包含完整的哈希链信息，可作为审计证据。
@@ -1227,6 +1235,16 @@ impl Auditor {
             .entries
             .iter()
             .map(|e| {
+                // EVID：fact_json 与 content_hash 同源（fact_to_stable_json 产物，
+                // serde_json::Map 字母序），其紧凑序列化即哈希原字节；本侧无法
+                // 重序列化（理论上不可能）时退化为 null，不产伪证据。
+                let fact_json_stable = if e.fact_json.is_null() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::to_string(&e.fact_json)
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null)
+                };
                 serde_json::json!({
                     "fact_id": e.fact_id.0,
                     "fact_type": e.fact_type,
@@ -1235,6 +1253,7 @@ impl Auditor {
                     "prev_hash": e.prev_hash,
                     "cause": e.cause.map(|c| c.0),
                     "fact": e.fact_json,
+                    "fact_json_stable": fact_json_stable,
                 })
             })
             .collect();
@@ -1324,6 +1343,29 @@ impl Auditor {
                 .find(|t| *t == fact_type_str)
                 .unwrap_or("Unknown");
 
+            // 旧导出（无 fact 字段）兼容：原文缺失置 Null，链折叠验证不受影响
+            let fact_json = entry_val
+                .get("fact")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+
+            // EVID 深比对（篡改信号）：fact_json_stable 是 content_hash 的原字节
+            // 输入，与 fact 原文（stable 形态）必须逐字节一致；漂移即导出物被
+            // 篡改或序列化面漂移——fail-fast 拒绝导入，不静默收下自相矛盾的
+            // 审计证据。旧导出（无该字段）与原文缺失（null）兼容跳过。
+            if !fact_json.is_null() {
+                if let Some(stable) = entry_val.get("fact_json_stable").and_then(|v| v.as_str()) {
+                    let live = serde_json::to_string(&fact_json)
+                        .map_err(|e| format!("Entry {}: fact 原文重序列化失败: {}", idx, e))?;
+                    if live != stable {
+                        return Err(format!(
+                            "Entry {}: fact_json_stable 与 fact 原文不一致（篡改信号或格式漂移）",
+                            idx
+                        ));
+                    }
+                }
+            }
+
             let entry = AuditEntry {
                 fact_id: FactId(fact_id_num),
                 fact_type,
@@ -1331,11 +1373,7 @@ impl Auditor {
                 content_hash,
                 prev_hash,
                 cause,
-                // 旧导出（无 fact 字段）兼容：原文缺失置 Null，链折叠验证不受影响
-                fact_json: entry_val
-                    .get("fact")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null),
+                fact_json,
             };
 
             self.index.insert(entry.fact_id, idx);
@@ -2364,6 +2402,95 @@ mod tests {
         assert_eq!(e0["fact_type"], "PayloadUpdate");
         assert_eq!(e0["prev_hash"], "genesis");
         assert!(e0["cause"].is_null());
+        // EVID：每条目携带 fact_json_stable 原字节（字符串），与 fact 原文同源
+        assert!(e0["fact_json_stable"].is_string());
+        assert_eq!(
+            e0["fact_json_stable"].as_str().unwrap(),
+            serde_json::to_string(&e0["fact"]).unwrap()
+        );
+    }
+
+    // ===== EVID：fact_json_stable（移动端离线验证器）测试 =====
+
+    #[test]
+    fn test_export_fact_json_stable_is_content_hash_input() {
+        let facts = vec![
+            Fact::PayloadUpdate {
+                id: FactId(10),
+                path: "__ruleset__.version".into(),
+                value: JsonValue::empty_object(),
+            },
+            Fact::IoResponse {
+                id: FactId(11),
+                request_id: FactId(10),
+                result: JsonValue::empty_object(),
+                error: None,
+            },
+        ];
+        let log = make_facts_log();
+        for f in &facts {
+            log.append(f.clone()).unwrap();
+        }
+        let mut auditor = Auditor::new(log);
+        auditor.audit_new();
+
+        let parsed: serde_json::Value = serde_json::from_str(&auditor.export().unwrap()).unwrap();
+        let entries = parsed["entries"].as_array().unwrap();
+
+        // 移动端判定预演①：fact_json_stable == 哈希原字节（fact_to_stable_json
+        // 紧凑序列化，经 SSOT hash 面比对），且重算 content_hash 一致
+        for (entry, fact) in entries.iter().zip(facts.iter()) {
+            let stable = entry["fact_json_stable"]
+                .as_str()
+                .expect("fact_json_stable 须为字符串");
+            let expect = serde_json::to_string(&hash::fact_to_stable_json(fact).unwrap())
+                .expect("紧凑序列化不得失败");
+            assert_eq!(stable, expect, "fact_json_stable 与哈希原字节不一致");
+            assert_eq!(
+                entry["content_hash"].as_str().unwrap(),
+                hash::fact_hash(fact).unwrap(),
+                "content_hash 与原字节哈希不一致"
+            );
+        }
+
+        // 移动端判定预演②：链折叠 genesis → … == last_hash（仅需导出物字符串
+        // 字段，零 Fact 类型知识）。语义与 verify() 一致：prev_hash 是先验链接
+        // （须等于当前链头），chain_step 结果即该条目链哈希（下一条目的先验）。
+        let mut prev = String::from("genesis");
+        for entry in entries {
+            assert_eq!(
+                entry["prev_hash"].as_str().unwrap(),
+                prev,
+                "fact_id={} 链接断裂",
+                entry["fact_id"]
+            );
+            prev = hash::chain_step(prev.as_str(), entry["content_hash"].as_str().unwrap());
+        }
+        assert_eq!(prev, parsed["last_hash"].as_str().unwrap());
+    }
+
+    #[test]
+    fn test_import_rejects_tampered_fact_json_stable() {
+        let auditor = build_auditor_with_entries();
+        let export_str = auditor.export().expect("export 序列化不应失败");
+
+        // 篡改首个条目的 fact_json_stable 原字节（等价于改了哈希输入原文，
+        // 与 fact 原文深比对必不一致）
+        let mut parsed: serde_json::Value = serde_json::from_str(&export_str).unwrap();
+        let tampered = format!(
+            "{}-tampered",
+            parsed["entries"][0]["fact_json_stable"].as_str().unwrap()
+        );
+        parsed["entries"][0]["fact_json_stable"] = serde_json::Value::String(tampered);
+        let tampered_str = serde_json::to_string(&parsed).unwrap();
+
+        let log = make_facts_log();
+        let mut importer = Auditor::new(log);
+        let err = importer.import(&tampered_str).unwrap_err();
+        assert!(
+            err.contains("fact_json_stable"),
+            "篡改应触发 fact_json_stable 深比对报错: {err}"
+        );
     }
 
     #[test]
