@@ -27,7 +27,7 @@ Git 语义中，**committer（提交者）**表示「将该提交放入仓库的
 | `EvoRuleLab <evorulelab@gmail.com>` | 项目发布与自动化流水线的机器身份 |
 | `evorule` | 镜像推送通道的机器身份（Gitee / GitHub 双端镜像同步产物） |
 | `GitHub <noreply@github.com>` | 平台合并产物（PR 按钮合并时由 GitHub 平台默认署名） |
-| `TheEquation Project` | 项目早期历史身份（v0.2.0 时代，author 与 committer 同名完整署名） |
+| `TheEquation Project` | 项目早期历史身份（author 与 committer 同名完整署名） |
 
 内容作者的署名以 **author** 字段为准，全仓统一为 `Mr.Damu Zheng`。历史提交中 committer 身份的差异属于上述认可口径，无需整改；新增提交请以维护者身份署名。
 
