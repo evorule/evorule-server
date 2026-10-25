@@ -7,6 +7,7 @@
 
 stages:
   - validate
+  - license
   - lint
   - test
   - build
@@ -113,4 +114,20 @@ docker:
         - "evorule-server/**"
         - "core/**"
         - "resources/**"
+        - ".gitee-ci/**"
+
+# === Ecosystem license gate (parity with GitHub license-gate.yml @ pinned root commit) ===
+license:
+  stage: license
+  image: rust:1.98.1-slim
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends curl
+    # cargo-deny pinned 0.20.2 (verified against root deny.toml); fallback to cargo install on download failure
+    - curl -sSfL https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin --strip-components=1 || cargo install cargo-deny --locked --version 0.20.2
+    - cargo deny check
+  rules:
+    - changes:
+        - "**/Cargo.toml"
+        - "**/Cargo.lock"
+        - "deny.toml"
         - ".gitee-ci/**"

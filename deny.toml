@@ -1,0 +1,81 @@
+# cargo-deny 配置（依赖供应链门禁：许可合规 + CVE 咨询 + 重复依赖）
+#
+# 执行: cargo deny check（CI: ci.yml deny job，EmbarkStudios/cargo-deny-action@v2）
+# 原则: evorule-tcb 零依赖（本文件不约束其），其余 crate 的依赖许可必须
+#       与 AGPL-3.0-or-later 兼容；新依赖引入新许可时需在此显式登记并说明理由。
+
+[graph]
+all-features = true
+
+# ---------------------------------------------------------------------------
+# 许可合规: AGPL-3.0-or-later（本项目）+ 常见宽松许可（依赖项）
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+allow = [
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "Unlicense",
+    "BSL-1.0",
+    "NCSA",
+    "CDLA-Permissive-2.0",
+    "BlueOak-1.0.0",
+    "OFL-1.1",
+]
+confidence-threshold = 0.93
+# 2026-10-24 生态级许可审计（13 在役仓 / 2613 条依赖记录）新增登记，理由逐项如下：
+#   MIT-0              borrow-or-share（server）、@csstools/*（agent/console-cloud）
+#                      MIT 的零归属变体，义务低于 MIT。
+#   BSD-1-Clause       fiat-crypto（OR 分支）——更宽松的 BSD 变体。
+#   0BSD / Unlicense   纯宽松 / 公共领域贡献，无附加义务。
+#   BSL-1.0            clipboard-win、error-code（agent）——Boost 宽松许可。
+#   NCSA               libfuzzer-sys（agent，dev 依赖）：表达式为
+#                      (MIT OR Apache-2.0) AND NCSA，NCSA 是 AND 强制项，
+#                      不能靠 OR 分支规避，故必须显式登记。
+#   CDLA-Permissive-2.0 webpki-roots / webpki-root-certs（server、agent）——
+#                      单一许可（无 OR 备选），不登记则 cargo-deny 判红。
+#   BlueOak-1.0.0     lru-cache（agent）——宽松但非 OSI 认证，按宽松许可处理。
+#   OFL-1.1            字体许可（生态当前无字体依赖，登记以备）。
+# 说明：LGPL-2.1-or-later 未登记——r-efi 等 11 项的表达式均为
+#   "MIT OR Apache-2.0 OR LGPL-2.1-or-later"，生态统一选择 MIT/Apache 分支，
+#   不触发 LGPL 的动态链接与可替换性要求；不整体放行 LGPL 是刻意的。
+# 正文归档见 LICENSES/third-party/，总声明见 THIRD-PARTY-NOTICES.md。
+
+# ---------------------------------------------------------------------------
+# 安全咨询: RUSTSEC 数据库；漏洞默认拒绝，yanked 仅警告（避免历史噪音）
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+yanked = "warn"
+# bare-metal 已弃用归档（RUSTSEC-2026-0110，unmaintained 类）：cortex-m 0.7 生态
+# 传递依赖，无安全升级路径（官方迁移指引 critical-section 属 cortex-m 大版本
+# 迁移范畴）；当前仅 evorule-mcu 仿真固件 dev/示例链引入，非生产服务面，豁免。
+ignore = ["RUSTSEC-2026-0110"]
+
+# ---------------------------------------------------------------------------
+# 依赖关系: 重复版本警告；通配符依赖拒绝
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# ---------------------------------------------------------------------------
+# 来源: 仅允许 crates.io
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

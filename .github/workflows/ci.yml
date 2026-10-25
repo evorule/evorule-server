@@ -400,3 +400,11 @@ jobs:
 
       - name: 哈希口径反绕行棘轮扫描
         run: python3 scripts/hash_bypass_scan.py --ratchet scripts/hash-bypass-baseline.txt
+
+  # Ecosystem license gate (reusable workflow, pinned to root-repo commit)
+  license-gate:
+    name: license gate
+    permissions:
+      contents: read
+    uses: evorule/evorule/.github/workflows/license-gate.yml@9d0e4fdbb28cfd0db1051c9014149f198b290e6b
+
