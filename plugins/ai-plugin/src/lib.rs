@@ -155,6 +155,10 @@ pub struct PluginConfig {
     pub llm_temperature: f64,
     /// LLM 请求超时（毫秒）
     pub llm_timeout_ms: u64,
+    /// 单回输出上限 tokens（可选；None = 不发送 max_tokens，走 provider 默认。
+    /// 推理模型（M3 系）的推理计入输出配额，provider 默认 4096 会被纯推理
+    /// 吃满导致 content 截断为空、回合被误判完成——桥接长回合建议 ≥32768）
+    pub llm_max_tokens: Option<u64>,
     /// 已启用只读工具（回归验证；`tools.enabled` 配置，只能引用代码级
     /// 白名单 `TOOLS` 内的工具名——配置不可注入新工具；空 = 工具面关闭，
     /// 行为与 回归验证 单轮回路完全一致）
@@ -394,6 +398,12 @@ impl PluginConfig {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .or_else(|| optional_str(v, "brave_api_key"));
+        let llm_max_tokens = match v.get("llm_max_tokens") {
+            None | Some(Value::Null) => None,
+            Some(x) => Some(x.as_u64().ok_or_else(|| {
+                PluginError::Config("字段 'llm_max_tokens' 须为非负整数".to_string())
+            })?),
+        };
         Ok(Self {
             listen_addr: listen_addr.to_string(),
             server_base_url,
@@ -404,6 +414,7 @@ impl PluginConfig {
             llm_model,
             llm_temperature,
             llm_timeout_ms,
+            llm_max_tokens,
             tools_enabled,
             llm_execute_url,
             model_allowlist_path,
@@ -1069,6 +1080,14 @@ pub async fn call_llm(
         cfg.llm_endpoint.trim_end_matches('/')
     );
     let body = json!({ "model": model, "messages": messages, "temperature": temperature });
+    let body = match cfg.llm_max_tokens {
+        Some(mt) => {
+            let mut b = body;
+            b["max_tokens"] = json!(mt);
+            b
+        }
+        None => body,
+    };
     let resp = http
         .post(&url)
         .bearer_auth(&cfg.llm_api_key)

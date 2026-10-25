@@ -13,5 +13,6 @@
   "model_allowlist_path": "data/agent-governance/rules/00_constraint_model_allowlist.json",
   "_web_search_说明": "批K 段2 web_search 中继（POST /tools/web_search）：web_search_provider 不填 = 端点未启用（请求 500 自诊断）；provider 白名单现仅 brave。Brave API key 推荐设环境变量 EVORULE_AI_PLUGIN_BRAVE_API_KEY（不落盘，优先于本文件 brave_api_key）；key 仅本插件侧持有，evo-agent 进程零密钥",
   "web_search_provider": "brave",
-  "brave_api_key": ""
+  "brave_api_key": "",
+  "llm_max_tokens": 32768
 }
