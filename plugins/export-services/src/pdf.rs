@@ -696,11 +696,6 @@ fn write_pdf(
         .descendant_font(cid_id)
         .to_unicode(tounicode_id);
 
-    let hhea = metrics
-        .face
-        .hhea()
-        .map_err(|e| format!("字体缺 hhea 表（升降部度量不可得）: {e:?}"))?;
-
     // /W 宽度表先收集（cid → 1000 空间宽度，升序），随后与 CIDFont 一次性写入
     // （pdf-writer 禁止对同一 Ref 写两次对象，之前两段式写法会 panic）
     let mut width_entries: Vec<(u16, f32)> = Vec::new();
