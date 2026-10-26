@@ -1,0 +1,5 @@
+Source: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+Retrieved: 2026-10-24
+Reason: r-efi and 10 other crates declare 'MIT OR Apache-2.0 OR LGPL-2.1-or-later'.
+        The upstream crate ships no LGPL text. EvoRule elects the MIT/Apache
+        branch, so LGPL is archived for reference only (no LGPL obligations apply).

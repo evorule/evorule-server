@@ -1,0 +1,3683 @@
+{
+  "licenses": {
+    "MIT": {
+      "file": "LICENSE",
+      "copyright": "Copyright (c) 2022 sarah",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "Apache-2.0": {
+      "file": "LICENSE",
+      "copyright": "",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "Unicode-3.0": {
+      "file": "LICENSE",
+      "copyright": "COPYRIGHT AND PERMISSION NOTICE",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "Apache-2.0-WITH-LLVM-exception": {
+      "file": "LICENSE",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "Zlib": {
+      "file": "LICENSE",
+      "copyright": "Copyright (c) 2024 Orson Peters",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "ISC": {
+      "file": "LICENSE.txt",
+      "copyright": "Copyright (c) 2021, EasyPost <oss@easypost.com>",
+      "files": [
+        "LICENSE.txt"
+      ],
+      "status": "archived"
+    },
+    "Unlicense": {
+      "file": "UNLICENSE",
+      "copyright": "copyright laws, the author or authors",
+      "files": [
+        "UNLICENSE"
+      ],
+      "status": "archived"
+    },
+    "BSD-3-Clause": {
+      "file": "LICENSE",
+      "copyright": "Copyright (c) 2016 Dropbox, Inc.",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "CC0-1.0": {
+      "file": "LICENSE.txt",
+      "copyright": "",
+      "files": [
+        "LICENSE.txt"
+      ],
+      "status": "archived"
+    },
+    "BSD-2-Clause": {
+      "file": "LICENSE",
+      "copyright": "Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu>",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "BSL-1.0": {
+      "file": "LICENSE",
+      "copyright": "copyright notices in the Software and this entire statement, including",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "LGPL-2.1-or-later": {
+      "file": "LICENSE-LGPL-2.1",
+      "copyright": "Copyright (C) 1991, 1999 Free Software Foundation, Inc.",
+      "status": "archived",
+      "files": [
+        "LICENSE-LGPL-2.1"
+      ]
+    },
+    "MIT-0": {
+      "file": "LICENSE",
+      "copyright": "Copyright 2024 Scallop Ye",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "BSD-1-Clause": {
+      "file": "LICENSE-BSD-1",
+      "copyright": "Copyright (c) 2015-2020 the fiat-crypto authors (see the AUTHORS file)",
+      "files": [
+        "LICENSE-BSD-1"
+      ],
+      "status": "archived"
+    },
+    "MPL-2.0": {
+      "file": "LICENSE",
+      "copyright": "",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "CDLA-Permissive-2.0": {
+      "file": "LICENSE",
+      "copyright": "",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "AGPL-3.0-or-later": {
+      "file": "LICENSE",
+      "copyright": "Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>",
+      "files": [
+        "LICENSE"
+      ],
+      "status": "archived"
+    },
+    "0BSD": {
+      "file": "LICENSE-0BSD.txt",
+      "copyright": "Copyright (C) 2017 whitequark@whitequark.org",
+      "files": [
+        "LICENSE-0BSD.txt"
+      ],
+      "status": "archived"
+    }
+  },
+  "dependencies": [
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "adler2",
+      "version": "2.0.1",
+      "license": "0BSD OR MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ahash",
+      "version": "0.8.12",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "aho-corasick",
+      "version": "1.1.4",
+      "license": "Unlicense OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "allocator-api2",
+      "version": "0.2.21",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "android_system_properties",
+      "version": "0.1.5",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "anstream",
+      "version": "1.0.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "anstyle",
+      "version": "1.0.14",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "anstyle-parse",
+      "version": "1.0.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "anstyle-query",
+      "version": "1.1.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "anstyle-wincon",
+      "version": "3.0.11",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "anyhow",
+      "version": "1.0.104",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "arbitrary",
+      "version": "1.4.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "argon2",
+      "version": "0.5.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "arrayref",
+      "version": "0.3.9",
+      "license": "BSD-2-Clause"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "arrayvec",
+      "version": "0.7.8",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "assert-json-diff",
+      "version": "2.0.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "async-stream",
+      "version": "0.3.6",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "async-stream-impl",
+      "version": "0.3.6",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "async-trait",
+      "version": "0.1.91",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "atoi",
+      "version": "2.0.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "atomic-waker",
+      "version": "1.1.2",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "autocfg",
+      "version": "1.5.1",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "axum",
+      "version": "0.8.9",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "axum-core",
+      "version": "0.5.6",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "axum-macros",
+      "version": "0.5.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "base64",
+      "version": "0.22.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "base64ct",
+      "version": "1.8.3",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bit-set",
+      "version": "0.5.3",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bit-set",
+      "version": "0.11.1",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bit-vec",
+      "version": "0.6.3",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bit-vec",
+      "version": "0.10.1",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bitflags",
+      "version": "1.3.2",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bitflags",
+      "version": "2.13.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "blake2",
+      "version": "0.10.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "blake3",
+      "version": "1.8.5",
+      "license": "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "block-buffer",
+      "version": "0.10.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "block-buffer",
+      "version": "0.12.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "borrow-or-share",
+      "version": "0.2.4",
+      "license": "MIT-0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "borsh",
+      "version": "1.8.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "borsh-derive",
+      "version": "1.8.1",
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bumpalo",
+      "version": "3.20.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bytecount",
+      "version": "0.6.9",
+      "license": "Apache-2.0/MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bytemuck",
+      "version": "1.25.2",
+      "license": "Zlib OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bytemuck_derive",
+      "version": "1.12.0",
+      "license": "Zlib OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "byteorder",
+      "version": "1.5.0",
+      "license": "Unlicense OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "byteorder-lite",
+      "version": "0.1.0",
+      "license": "Unlicense OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "bytes",
+      "version": "1.12.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "cc",
+      "version": "1.4.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "cfg-if",
+      "version": "1.0.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "cfg_aliases",
+      "version": "0.2.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "chacha20",
+      "version": "0.10.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "chromiumoxide_cdp",
+      "version": "0.7.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "chromiumoxide_pdl",
+      "version": "0.7.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "chromiumoxide_types",
+      "version": "0.7.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "chrono",
+      "version": "0.4.45",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "clap",
+      "version": "4.6.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "clap_builder",
+      "version": "4.6.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "clap_derive",
+      "version": "4.6.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "clap_lex",
+      "version": "1.1.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "color_quant",
+      "version": "1.1.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "colorchoice",
+      "version": "1.0.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "colored",
+      "version": "3.1.1",
+      "license": "MPL-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "const-oid",
+      "version": "0.9.6",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "const-oid",
+      "version": "0.10.2",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "constant_time_eq",
+      "version": "0.4.2",
+      "license": "CC0-1.0 OR MIT-0 OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "core-foundation-sys",
+      "version": "0.8.7",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "core_detect",
+      "version": "1.0.0",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "cpufeatures",
+      "version": "0.2.17",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "cpufeatures",
+      "version": "0.3.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crc",
+      "version": "3.4.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crc-catalog",
+      "version": "2.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crc32fast",
+      "version": "1.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crossbeam-channel",
+      "version": "0.5.16",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crossbeam-queue",
+      "version": "0.3.13",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crossbeam-utils",
+      "version": "0.8.22",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crunchy",
+      "version": "0.2.4",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crypto-common",
+      "version": "0.1.7",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "crypto-common",
+      "version": "0.2.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "curve25519-dalek",
+      "version": "4.1.3",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "curve25519-dalek-derive",
+      "version": "0.1.1",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "dashmap",
+      "version": "6.2.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "data-encoding",
+      "version": "2.11.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "der",
+      "version": "0.7.10",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "deranged",
+      "version": "0.5.8",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "derive_arbitrary",
+      "version": "1.4.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "digest",
+      "version": "0.10.7",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "digest",
+      "version": "0.11.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "displaydoc",
+      "version": "0.2.7",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "docx-rs",
+      "version": "0.4.22",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "dotenvy",
+      "version": "0.15.7",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ed25519",
+      "version": "2.2.3",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ed25519-dalek",
+      "version": "2.2.0",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "either",
+      "version": "1.17.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "encoding_rs",
+      "version": "0.8.35",
+      "license": "(Apache-2.0 OR MIT) AND BSD-3-Clause"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "equivalent",
+      "version": "1.0.2",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "errno",
+      "version": "0.3.14",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "etcetera",
+      "version": "0.8.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "euclid",
+      "version": "0.22.14",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "event-listener",
+      "version": "5.4.2",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "evorule-discipline",
+      "version": "0.8.0",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "evorule-hash",
+      "version": "0.1.4",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fallible-iterator",
+      "version": "0.3.0",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fallible-streaming-iterator",
+      "version": "0.1.9",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fancy-regex",
+      "version": "0.13.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fastrand",
+      "version": "2.5.0",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fax",
+      "version": "0.2.7",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fdeflate",
+      "version": "0.3.7",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fiat-crypto",
+      "version": "0.2.9",
+      "license": "MIT OR Apache-2.0 OR BSD-1-Clause"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "filetime",
+      "version": "0.2.29",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "find-msvc-tools",
+      "version": "0.1.9",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "flate2",
+      "version": "1.1.9",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fluent-uri",
+      "version": "0.3.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "flume",
+      "version": "0.11.1",
+      "license": "Apache-2.0/MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fnv",
+      "version": "1.0.7",
+      "license": "Apache-2.0 / MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "foldhash",
+      "version": "0.1.5",
+      "license": "Zlib"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "foldhash",
+      "version": "0.2.0",
+      "license": "Zlib"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "font-types",
+      "version": "0.11.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "form_urlencoded",
+      "version": "1.2.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "forwarded-header-value",
+      "version": "0.1.1",
+      "license": "ISC"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fraction",
+      "version": "0.15.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fs4",
+      "version": "0.13.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "fsevent-sys",
+      "version": "4.1.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-channel",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-core",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-executor",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-intrusive",
+      "version": "0.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-io",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-macro",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-sink",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-task",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-timer",
+      "version": "3.0.4",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "futures-util",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "generic-array",
+      "version": "0.14.7",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "getrandom",
+      "version": "0.2.17",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "getrandom",
+      "version": "0.3.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "getrandom",
+      "version": "0.4.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "gif",
+      "version": "0.14.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "glob",
+      "version": "0.3.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "governor",
+      "version": "0.10.4",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "h2",
+      "version": "0.4.19",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "half",
+      "version": "2.7.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hashbrown",
+      "version": "0.14.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hashbrown",
+      "version": "0.15.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hashbrown",
+      "version": "0.16.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hashlink",
+      "version": "0.9.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hashlink",
+      "version": "0.10.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "heck",
+      "version": "0.4.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "heck",
+      "version": "0.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hermit-abi",
+      "version": "0.5.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hex",
+      "version": "0.4.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hkdf",
+      "version": "0.12.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hmac",
+      "version": "0.12.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "home",
+      "version": "0.5.12",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "http",
+      "version": "1.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "http-body",
+      "version": "1.1.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "http-body-util",
+      "version": "0.1.4",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "http-range-header",
+      "version": "0.4.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "httparse",
+      "version": "1.10.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "httpdate",
+      "version": "1.0.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hybrid-array",
+      "version": "0.4.14",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hyper",
+      "version": "1.11.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hyper-rustls",
+      "version": "0.27.9",
+      "license": "Apache-2.0 OR ISC OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hyper-timeout",
+      "version": "0.5.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "hyper-util",
+      "version": "0.1.20",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "iana-time-zone",
+      "version": "0.1.65",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "iana-time-zone-haiku",
+      "version": "0.1.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "icu_collections",
+      "version": "2.2.0",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "icu_locale_core",
+      "version": "2.2.0",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "icu_normalizer",
+      "version": "2.2.0",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "icu_normalizer_data",
+      "version": "2.2.0",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "icu_properties",
+      "version": "2.2.0",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "icu_properties_data",
+      "version": "2.2.0",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "icu_provider",
+      "version": "2.2.0",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "idna",
+      "version": "1.1.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "idna_adapter",
+      "version": "1.2.2",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "image",
+      "version": "0.25.10",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "indexmap",
+      "version": "2.14.0",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "inotify",
+      "version": "0.9.6",
+      "license": "ISC"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "inotify-sys",
+      "version": "0.1.8",
+      "license": "ISC"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ipnet",
+      "version": "2.12.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "is_terminal_polyfill",
+      "version": "1.70.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "iso8601",
+      "version": "0.6.5",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "itoa",
+      "version": "1.0.18",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "js-sys",
+      "version": "0.3.103",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "jsonschema",
+      "version": "0.21.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "kqueue",
+      "version": "1.2.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "kqueue-sys",
+      "version": "1.1.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "kurbo",
+      "version": "0.13.1",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "lazy_static",
+      "version": "1.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "libc",
+      "version": "0.2.189",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "libm",
+      "version": "0.2.16",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "libredox",
+      "version": "0.1.18",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "libsqlite3-sys",
+      "version": "0.30.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "linux-raw-sys",
+      "version": "0.12.1",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "litemap",
+      "version": "0.8.2",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "lock_api",
+      "version": "0.4.14",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "log",
+      "version": "0.4.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "lru-slab",
+      "version": "0.1.2",
+      "license": "MIT OR Apache-2.0 OR Zlib"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "matchers",
+      "version": "0.2.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "matchit",
+      "version": "0.8.4",
+      "license": "MIT AND BSD-3-Clause"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "md-5",
+      "version": "0.10.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "memchr",
+      "version": "2.8.3",
+      "license": "Unlicense OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "mime",
+      "version": "0.3.17",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "mime_guess",
+      "version": "2.0.5",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "miniz_oxide",
+      "version": "0.8.9",
+      "license": "MIT OR Zlib OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "mio",
+      "version": "0.8.11",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "mio",
+      "version": "1.2.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "mockito",
+      "version": "1.7.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "moxcms",
+      "version": "0.8.1",
+      "license": "BSD-3-Clause OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "multer",
+      "version": "3.1.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "nom",
+      "version": "8.0.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "nonempty",
+      "version": "0.7.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "nonzero_ext",
+      "version": "0.3.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "notify",
+      "version": "6.1.1",
+      "license": "CC0-1.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ntapi",
+      "version": "0.4.3",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "nu-ansi-term",
+      "version": "0.50.3",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num",
+      "version": "0.4.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-bigint",
+      "version": "0.4.8",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-bigint-dig",
+      "version": "0.8.6",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-cmp",
+      "version": "0.1.0",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-complex",
+      "version": "0.4.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-conv",
+      "version": "0.2.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-integer",
+      "version": "0.1.46",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-iter",
+      "version": "0.1.46",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-rational",
+      "version": "0.4.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num-traits",
+      "version": "0.2.19",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "num_cpus",
+      "version": "1.17.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "once_cell",
+      "version": "1.21.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "once_cell_polyfill",
+      "version": "1.70.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "outref",
+      "version": "0.5.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "parking",
+      "version": "2.2.1",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "parking_lot",
+      "version": "0.12.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "parking_lot_core",
+      "version": "0.9.12",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "password-hash",
+      "version": "0.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pdf-writer",
+      "version": "0.15.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pem-rfc7468",
+      "version": "0.7.0",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pin-project",
+      "version": "1.1.13",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pin-project-internal",
+      "version": "1.1.13",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pin-project-lite",
+      "version": "0.2.17",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pkcs1",
+      "version": "0.7.5",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pkcs8",
+      "version": "0.10.2",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pkg-config",
+      "version": "0.3.33",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "plain",
+      "version": "0.2.3",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "png",
+      "version": "0.18.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "polycool",
+      "version": "0.4.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "portable-atomic",
+      "version": "1.14.0",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "potential_utf",
+      "version": "0.1.5",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "powerfmt",
+      "version": "0.2.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ppv-lite86",
+      "version": "0.2.21",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "proc-macro-crate",
+      "version": "3.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "proc-macro2",
+      "version": "1.0.107",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "prometheus",
+      "version": "0.14.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "proptest",
+      "version": "1.12.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "protobuf",
+      "version": "3.7.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "protobuf-support",
+      "version": "3.7.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "pxfm",
+      "version": "0.1.30",
+      "license": "BSD-3-Clause OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "quanta",
+      "version": "0.12.6",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "quick-error",
+      "version": "1.2.3",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "quick-error",
+      "version": "2.0.1",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "quick-xml",
+      "version": "0.41.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "quinn",
+      "version": "0.11.11",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "quinn-proto",
+      "version": "0.11.16",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "quinn-udp",
+      "version": "0.5.15",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "quote",
+      "version": "1.0.47",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "r-efi",
+      "version": "5.3.0",
+      "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "r-efi",
+      "version": "6.0.0",
+      "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand",
+      "version": "0.8.7",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand",
+      "version": "0.9.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand",
+      "version": "0.10.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand_chacha",
+      "version": "0.3.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand_chacha",
+      "version": "0.9.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand_core",
+      "version": "0.6.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand_core",
+      "version": "0.9.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand_core",
+      "version": "0.10.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand_pcg",
+      "version": "0.10.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rand_xorshift",
+      "version": "0.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "raw-cpuid",
+      "version": "11.6.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "read-fonts",
+      "version": "0.39.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "redox_syscall",
+      "version": "0.5.18",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "redox_syscall",
+      "version": "0.9.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ref-cast",
+      "version": "1.0.27",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ref-cast-impl",
+      "version": "1.0.27",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "referencing",
+      "version": "0.21.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "regex",
+      "version": "1.13.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "regex-automata",
+      "version": "0.4.16",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "regex-syntax",
+      "version": "0.8.11",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "reqwest",
+      "version": "0.12.28",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ring",
+      "version": "0.17.14",
+      "license": "Apache-2.0 AND ISC"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rsa",
+      "version": "0.9.10",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rusqlite",
+      "version": "0.32.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rust-embed",
+      "version": "8.12.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rust-embed-impl",
+      "version": "8.12.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rust-embed-utils",
+      "version": "8.12.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rust_xlsxwriter",
+      "version": "0.79.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rustc-hash",
+      "version": "2.1.3",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rustc_version",
+      "version": "0.4.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rustix",
+      "version": "1.1.4",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rustls",
+      "version": "0.23.43",
+      "license": "Apache-2.0 OR ISC OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rustls-pki-types",
+      "version": "1.15.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rustls-webpki",
+      "version": "0.103.13",
+      "license": "ISC"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rustversion",
+      "version": "1.0.23",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "rusty-fork",
+      "version": "0.3.1",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ryu",
+      "version": "1.0.23",
+      "license": "Apache-2.0 OR BSL-1.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "same-file",
+      "version": "1.0.6",
+      "license": "Unlicense/MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "semver",
+      "version": "1.0.28",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "serde",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "serde_core",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "serde_derive",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "serde_json",
+      "version": "1.0.151",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "serde_path_to_error",
+      "version": "0.1.20",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "serde_urlencoded",
+      "version": "0.7.1",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sha1",
+      "version": "0.10.7",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sha2",
+      "version": "0.10.9",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sha2",
+      "version": "0.11.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sharded-slab",
+      "version": "0.1.7",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "shlex",
+      "version": "2.0.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "signal-hook-registry",
+      "version": "1.4.8",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "signature",
+      "version": "2.2.0",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "simd-adler32",
+      "version": "0.3.10",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "similar",
+      "version": "2.7.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "skrifa",
+      "version": "0.42.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "slab",
+      "version": "0.4.12",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "smallvec",
+      "version": "1.15.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "socket2",
+      "version": "0.6.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "spin",
+      "version": "0.9.9",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "spinning_top",
+      "version": "0.3.0",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "spki",
+      "version": "0.7.3",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sqlx",
+      "version": "0.8.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sqlx-core",
+      "version": "0.8.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sqlx-macros",
+      "version": "0.8.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sqlx-macros-core",
+      "version": "0.8.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sqlx-mysql",
+      "version": "0.8.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sqlx-postgres",
+      "version": "0.8.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sqlx-sqlite",
+      "version": "0.8.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "stable_deref_trait",
+      "version": "1.2.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "stringprep",
+      "version": "0.1.5",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "strsim",
+      "version": "0.11.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "subsetter",
+      "version": "0.2.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "subtle",
+      "version": "2.6.1",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "symlink",
+      "version": "0.1.0",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "syn",
+      "version": "2.0.119",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "syn",
+      "version": "3.0.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sync_wrapper",
+      "version": "1.0.2",
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "synstructure",
+      "version": "0.13.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "sysinfo",
+      "version": "0.32.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tempfile",
+      "version": "3.27.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "thiserror",
+      "version": "1.0.69",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "thiserror",
+      "version": "2.0.19",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "thiserror-impl",
+      "version": "1.0.69",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "thiserror-impl",
+      "version": "2.0.19",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "thread_local",
+      "version": "1.1.10",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tiff",
+      "version": "0.11.3",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "time",
+      "version": "0.3.54",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "time-core",
+      "version": "0.1.9",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "time-macros",
+      "version": "0.2.32",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tinystr",
+      "version": "0.8.3",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tinyvec",
+      "version": "1.12.0",
+      "license": "Zlib OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tinyvec_macros",
+      "version": "0.1.1",
+      "license": "MIT OR Apache-2.0 OR Zlib"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tokio",
+      "version": "1.53.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tokio-macros",
+      "version": "2.7.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tokio-rustls",
+      "version": "0.26.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tokio-stream",
+      "version": "0.1.19",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tokio-tungstenite",
+      "version": "0.24.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tokio-util",
+      "version": "0.7.19",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "toml_datetime",
+      "version": "1.1.2+spec-1.1.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "toml_edit",
+      "version": "0.25.17+spec-1.1.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "toml_parser",
+      "version": "1.1.5+spec-1.1.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tonic",
+      "version": "0.14.6",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tower",
+      "version": "0.5.3",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tower-http",
+      "version": "0.6.11",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tower-layer",
+      "version": "0.3.3",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tower-service",
+      "version": "0.3.3",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tower_governor",
+      "version": "0.8.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tracing",
+      "version": "0.1.44",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tracing-appender",
+      "version": "0.2.5",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tracing-attributes",
+      "version": "0.1.31",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tracing-core",
+      "version": "0.1.36",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tracing-log",
+      "version": "0.2.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tracing-serde",
+      "version": "0.2.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tracing-subscriber",
+      "version": "0.3.23",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "try-lock",
+      "version": "0.2.5",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ttf-parser",
+      "version": "0.25.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "tungstenite",
+      "version": "0.24.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "typed-path",
+      "version": "0.12.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "typenum",
+      "version": "1.20.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ulid",
+      "version": "1.2.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "unarray",
+      "version": "0.1.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "unicase",
+      "version": "2.9.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "unicode-bidi",
+      "version": "0.3.18",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "unicode-ident",
+      "version": "1.0.24",
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "unicode-normalization",
+      "version": "0.1.25",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "unicode-properties",
+      "version": "0.1.4",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "unicode-segmentation",
+      "version": "1.13.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "untrusted",
+      "version": "0.9.0",
+      "license": "ISC"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "ureq",
+      "version": "2.12.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "url",
+      "version": "2.5.8",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "utf-8",
+      "version": "0.7.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "utf8_iter",
+      "version": "1.0.4",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "utf8parse",
+      "version": "0.2.2",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "utoipa",
+      "version": "5.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "utoipa-gen",
+      "version": "5.5.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "utoipa-swagger-ui",
+      "version": "9.0.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "uuid",
+      "version": "1.25.0",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "uuid-simd",
+      "version": "0.8.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "valuable",
+      "version": "0.1.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "version_check",
+      "version": "0.9.5",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "vsimd",
+      "version": "0.8.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wait-timeout",
+      "version": "0.2.1",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "walkdir",
+      "version": "2.5.0",
+      "license": "Unlicense/MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "want",
+      "version": "0.3.1",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wasi",
+      "version": "0.11.1+wasi-snapshot-preview1",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wasip2",
+      "version": "1.0.4+wasi-0.2.12",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wasite",
+      "version": "0.1.0",
+      "license": "Apache-2.0 OR BSL-1.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wasm-bindgen",
+      "version": "0.2.126",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wasm-bindgen-futures",
+      "version": "0.4.76",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wasm-bindgen-macro",
+      "version": "0.2.126",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wasm-bindgen-macro-support",
+      "version": "0.2.126",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wasm-bindgen-shared",
+      "version": "0.2.126",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "web-sys",
+      "version": "0.3.103",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "web-time",
+      "version": "1.1.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "webpki-roots",
+      "version": "0.26.11",
+      "license": "CDLA-Permissive-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "webpki-roots",
+      "version": "1.0.9",
+      "license": "CDLA-Permissive-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "weezl",
+      "version": "0.1.12",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "whoami",
+      "version": "1.6.1",
+      "license": "Apache-2.0 OR BSL-1.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "win32job",
+      "version": "2.0.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "winapi",
+      "version": "0.3.9",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "winapi-i686-pc-windows-gnu",
+      "version": "0.4.0",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "winapi-util",
+      "version": "0.1.11",
+      "license": "Unlicense OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "winapi-x86_64-pc-windows-gnu",
+      "version": "0.4.0",
+      "license": "MIT/Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows",
+      "version": "0.57.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows",
+      "version": "0.61.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-collections",
+      "version": "0.2.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-core",
+      "version": "0.57.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-core",
+      "version": "0.61.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-core",
+      "version": "0.62.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-future",
+      "version": "0.2.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-implement",
+      "version": "0.57.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-implement",
+      "version": "0.60.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-interface",
+      "version": "0.57.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-interface",
+      "version": "0.59.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-link",
+      "version": "0.1.3",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-link",
+      "version": "0.2.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-numerics",
+      "version": "0.2.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-result",
+      "version": "0.1.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-result",
+      "version": "0.3.4",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-result",
+      "version": "0.4.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-strings",
+      "version": "0.4.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-strings",
+      "version": "0.5.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-sys",
+      "version": "0.48.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-sys",
+      "version": "0.52.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-sys",
+      "version": "0.59.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-sys",
+      "version": "0.61.2",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-targets",
+      "version": "0.48.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-targets",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows-threading",
+      "version": "0.1.0",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_aarch64_gnullvm",
+      "version": "0.48.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_aarch64_gnullvm",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_aarch64_msvc",
+      "version": "0.48.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_aarch64_msvc",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_i686_gnu",
+      "version": "0.48.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_i686_gnu",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_i686_gnullvm",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_i686_msvc",
+      "version": "0.48.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_i686_msvc",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_x86_64_gnu",
+      "version": "0.48.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_x86_64_gnu",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_x86_64_gnullvm",
+      "version": "0.48.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_x86_64_gnullvm",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_x86_64_msvc",
+      "version": "0.48.5",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "windows_x86_64_msvc",
+      "version": "0.52.6",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "winnow",
+      "version": "1.0.4",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "wit-bindgen",
+      "version": "0.57.1",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "write-fonts",
+      "version": "0.48.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "writeable",
+      "version": "0.6.3",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "yoke",
+      "version": "0.8.3",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "yoke-derive",
+      "version": "0.8.2",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zendriver",
+      "version": "0.5.28",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zendriver-interception",
+      "version": "0.3.20",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zendriver-stealth",
+      "version": "0.12.7",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zendriver-transport",
+      "version": "0.3.1",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zerocopy",
+      "version": "0.8.55",
+      "license": "BSD-2-Clause OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zerocopy-derive",
+      "version": "0.8.55",
+      "license": "BSD-2-Clause OR Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zerofrom",
+      "version": "0.1.8",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zerofrom-derive",
+      "version": "0.1.7",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zeroize",
+      "version": "1.9.0",
+      "license": "Apache-2.0 OR MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zerotrie",
+      "version": "0.2.4",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zerovec",
+      "version": "0.11.6",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zerovec-derive",
+      "version": "0.11.3",
+      "license": "Unicode-3.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zip",
+      "version": "2.4.2",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zip",
+      "version": "3.0.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zip",
+      "version": "8.6.0",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zlib-rs",
+      "version": "0.6.7",
+      "license": "Zlib"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zmij",
+      "version": "1.0.23",
+      "license": "MIT"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zopfli",
+      "version": "0.8.3",
+      "license": "Apache-2.0"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zune-core",
+      "version": "0.5.3",
+      "license": "MIT OR Apache-2.0 OR Zlib"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "cargo",
+      "name": "zune-jpeg",
+      "version": "0.5.15",
+      "license": "MIT OR Apache-2.0 OR Zlib"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "npm",
+      "name": "evorule-codegraph-bridge",
+      "version": "0.2.0",
+      "license": "AGPL-3.0-or-later",
+      "scope": "prod",
+      "own": true,
+      "lockfile": "plugins/codegraph-bridge/package-lock.json"
+    },
+    {
+      "repo": "evorule-server",
+      "ecosystem": "npm",
+      "name": "@colbymchenry/codegraph",
+      "version": "0.9.4",
+      "license": "MIT",
+      "scope": "prod",
+      "vendored": "plugins/codegraph-bridge/vendor/codegraph/"
+    }
+  ],
+  "_meta": {
+    "generated": "2026-10-26",
+    "ecosystem": "evorule-server",
+    "repos_covered": 1,
+    "baseline": "cargo 依赖记录继承生态清单（主仓 LICENSES/third-party/manifest.json）2026-10-24 扫描的 evorule-server 子集（501 条）；版本号随 Cargo.lock 演进以生态下轮重扫为准，许可证集合层面不受补丁升版影响",
+    "npm_note": "npm 面按仓内实测修正（2026-10-26）：evorule-codegraph-bridge 以 plugins/codegraph-bridge/package.json 为准（0.2.0，AGPL-3.0-or-later，private）；@colbymchenry/codegraph 已 vendoring（dist 入仓 + MIT 正文随附，同版钉 0.9.4），替换生态清单中的过期 UNLICENSED/UNDECLARED 记录",
+    "note": "licence texts copied verbatim from the evorule repo LICENSES/third-party/ archive (originally from the cargo registry cache, the npm registry tarball, or OSI/gnu.org for NCSA/LGPL-2.1)"
+  }
+}
