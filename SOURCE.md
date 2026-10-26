@@ -12,10 +12,10 @@
 
 | 字段 | 值 |
 |---|---|
-| 版本 | v0.9.2 |
-| 发布 tag | `v0.9.2` |
-| 源码归档（Gitee） | <https://gitee.com/evorule/evorule-server/repository/archive/v0.9.2.zip> |
-| 源码归档（GitHub 镜像） | <https://github.com/evorule/evorule-server/archive/refs/tags/v0.9.2.tar.gz> |
+| 版本 | v0.10.0 |
+| 发布 tag | `v0.10.0`（随下个发布打 tag；打包时以本次发布对应的值覆盖） |
+| 源码归档（Gitee，main 分支） | <https://gitee.com/evorule/evorule-server/repository/archive/main.zip> |
+| 源码归档（GitHub 镜像，main 分支） | <https://github.com/evorule/evorule-server/archive/refs/heads/main.tar.gz> |
 | 源码 tarball SHA256 | 见发布 Release 说明的 `sha256-checks.txt` |
 
 > 每次发版时更新本表；打包流程须以**本次发布对应的值**覆盖后随包分发，禁止携带未填写的占位值。
