@@ -7,5 +7,6 @@
   "llm_temperature": 0.2,
   "llm_timeout_ms": 60000,
   "llm_execute_url": "https://api.minimaxi.com/v1/text/chatcompletion_v2",
+  "llm_max_tokens": 32768,
   "model_allowlist_path": "data/agent-governance/rules/00_constraint_model_allowlist.json"
 }
