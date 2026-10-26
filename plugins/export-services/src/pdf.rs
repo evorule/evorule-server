@@ -21,6 +21,8 @@ use pdf_writer::types::{CidFontType, FontFlags, SystemInfo};
 use pdf_writer::{Content, Name, Pdf, Rect, Ref, Str};
 use serde::Deserialize;
 use serde_json::Value;
+use skrifa::raw::TableProvider;
+use skrifa::{instance::LocationRef, instance::Size, MetadataProvider};
 use std::path::PathBuf;
 
 /// 单节数据行渲染上限（超出截断 + 显式省略标记，不静默）
@@ -227,17 +229,23 @@ enum Op {
     Rule { x0: f32, x1: f32, y: f32 },
 }
 
-/// 字形度量（从 ttf-parser Face 提取；upem 归一化的字符宽度查询）
+/// 字形度量（从 skrifa FontRef 提取；upem 归一化的字符宽度查询）
 struct GlyphMetrics<'a> {
-    face: ttf_parser::Face<'a>,
+    face: skrifa::FontRef<'a>,
 }
 
 impl GlyphMetrics<'_> {
     /// 字符宽度（pt）：advance / upem × size；无字形返回 None（缺字检查用）
     fn char_width(&self, c: char, size: f32) -> Option<f32> {
-        let gid = self.face.glyph_index(c)?;
-        let advance = self.face.glyph_hor_advance(gid)?;
-        Some(advance as f32 / self.face.units_per_em() as f32 * size)
+        let m = skrifa::metrics::GlyphMetrics::new(
+            &self.face,
+            Size::unscaled(),
+            LocationRef::default(),
+        );
+        let gid = self.face.charmap().map(c)?;
+        let advance = m.advance_width(gid)?;
+        let upem = self.face.head().map(|h| h.units_per_em()).unwrap_or(1000) as f32;
+        Some(advance / upem * size)
     }
 }
 
@@ -382,7 +390,7 @@ pub fn render_pdf(req: &PdfExportRequest) -> Result<Vec<u8>, String> {
 
     // ① 字体（探测 + 解析）
     let font = find_cjk_font(FONT_OVERRIDE.get().and_then(|o| o.as_deref()))?;
-    let face = ttf_parser::Face::parse(&font.data, font.index).map_err(|e| {
+    let face = skrifa::FontRef::from_index(&font.data, font.index).map_err(|e| {
         format!(
             "解析字体失败（来源 {}）: {e:?}。指引：换用标准 TTF/OTF/TTC 字体文件",
             font.origin
@@ -405,8 +413,8 @@ pub fn render_pdf(req: &PdfExportRequest) -> Result<Vec<u8>, String> {
             Op::Rule { .. } => None,
         })
         .flatten()
-        .filter_map(|c| metrics.face.glyph_index(c))
-        .map(|g| g.0)
+        .filter_map(|c| metrics.face.charmap().map(c))
+        .map(|g| g.to_u32() as u16)
         .collect();
     used.sort_unstable();
     used.dedup();
@@ -625,7 +633,7 @@ fn check_missing_glyphs(pages: &[Vec<Op>], metrics: &GlyphMetrics) -> Result<(),
                 if c.is_control() || c == ' ' {
                     continue;
                 }
-                if metrics.face.glyph_index(c).is_none() && !missing.contains(&c) {
+                if metrics.face.charmap().map(c).is_none() && !missing.contains(&c) {
                     missing.push(c);
                 }
             }
@@ -675,7 +683,11 @@ fn write_pdf(
     );
 
     // --- 字体对象族 ---
-    let upem = metrics.face.units_per_em() as f32;
+    let head = metrics
+        .face
+        .head()
+        .map_err(|e| format!("字体缺 head 表（全局包围盒不可得）: {e:?}"))?;
+    let upem = head.units_per_em() as f32;
     let to_em = |v: f32| v / upem * 1000.0;
 
     pdf.type0_font(type0_id)
@@ -684,7 +696,10 @@ fn write_pdf(
         .descendant_font(cid_id)
         .to_unicode(tounicode_id);
 
-    let bbox = metrics.face.global_bounding_box();
+    let hhea = metrics
+        .face
+        .hhea()
+        .map_err(|e| format!("字体缺 hhea 表（升降部度量不可得）: {e:?}"))?;
 
     // /W 宽度表先收集（cid → 1000 空间宽度，升序），随后与 CIDFont 一次性写入
     // （pdf-writer 禁止对同一 Ref 写两次对象，之前两段式写法会 panic）
@@ -713,19 +728,23 @@ fn write_pdf(
     }
     drop(cid_font);
 
+    let hhea = metrics
+        .face
+        .hhea()
+        .map_err(|e| format!("字体缺 hhea 表（升降部度量不可得）: {e:?}"))?;
     pdf.font_descriptor(desc_id)
         .name(Name(b"EvoruleCJK"))
         .flags(FontFlags::SYMBOLIC)
         .italic_angle(0.0)
-        .ascent(to_em(metrics.face.ascender() as f32))
-        .descent(to_em(metrics.face.descender() as f32))
-        .cap_height(to_em(metrics.face.ascender() as f32))
+        .ascent(to_em(hhea.ascender().to_i16() as f32))
+        .descent(to_em(hhea.descender().to_i16() as f32))
+        .cap_height(to_em(hhea.ascender().to_i16() as f32))
         .stem_v(80.0)
         .bbox(Rect::new(
-            to_em(bbox.x_min as f32),
-            to_em(bbox.y_min as f32),
-            to_em(bbox.x_max as f32),
-            to_em(bbox.y_max as f32),
+            to_em(head.x_min() as f32),
+            to_em(head.y_min() as f32),
+            to_em(head.x_max() as f32),
+            to_em(head.y_max() as f32),
         ))
         .font_file2(file2_id);
 
@@ -772,8 +791,8 @@ fn write_pdf(
                     // Identity-H：CID 两字节大端（CID = remapped GID）
                     let mut bytes = Vec::with_capacity(text.len() * 2);
                     for c in text.chars() {
-                        let old = metrics.face.glyph_index(c);
-                        if let Some(g) = old.and_then(|g| remapper.get(g.0)) {
+                        let old = metrics.face.charmap().map(c);
+                        if let Some(g) = old.and_then(|g| remapper.get(g.to_u32() as u16)) {
                             bytes.push((g >> 8) as u8);
                             bytes.push((g & 0xFF) as u8);
                         }
@@ -833,12 +852,18 @@ fn collect_widths(
     remapper: &subsetter::GlyphRemapper,
     out: &mut Vec<(u16, f32)>,
 ) {
-    let upem = metrics.face.units_per_em() as f32;
+    let gm =
+        skrifa::metrics::GlyphMetrics::new(&metrics.face, Size::unscaled(), LocationRef::default());
+    let upem = metrics
+        .face
+        .head()
+        .map(|h| h.units_per_em())
+        .unwrap_or(1000) as f32;
     let mut push_char = |c: char| {
-        if let Some(g) = metrics.face.glyph_index(c) {
-            if let (Some(cid), Some(adv)) = (remapper.get(g.0), metrics.face.glyph_hor_advance(g)) {
+        if let Some(g) = metrics.face.charmap().map(c) {
+            if let (Some(cid), Some(adv)) = (remapper.get(g.to_u32() as u16), gm.advance_width(g)) {
                 if !out.iter().any(|(c2, _)| *c2 == cid) {
-                    out.push((cid, adv as f32 / upem * 1000.0));
+                    out.push((cid, adv / upem * 1000.0));
                 }
             }
         }
@@ -867,8 +892,8 @@ fn write_tounicode_pairs(
 ) {
     let mut done: Vec<(u16, char)> = Vec::new();
     let mut push = |c: char| {
-        if let Some(g) = metrics.face.glyph_index(c) {
-            if let Some(cid) = remapper.get(g.0) {
+        if let Some(g) = metrics.face.charmap().map(c) {
+            if let Some(cid) = remapper.get(g.to_u32() as u16) {
                 if !done.iter().any(|(c2, _)| *c2 == cid) {
                     done.push((cid, c));
                 }
@@ -895,8 +920,8 @@ fn write_tounicode_pairs(
 fn encode_text(text: &str, metrics: &GlyphMetrics, remapper: &subsetter::GlyphRemapper) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(text.len() * 2);
     for c in text.chars() {
-        if let Some(g) = metrics.face.glyph_index(c) {
-            if let Some(cid) = remapper.get(g.0) {
+        if let Some(g) = metrics.face.charmap().map(c) {
+            if let Some(cid) = remapper.get(g.to_u32() as u16) {
                 bytes.push((cid >> 8) as u8);
                 bytes.push((cid & 0xFF) as u8);
             }
@@ -983,7 +1008,8 @@ mod tests {
                 return;
             }
         };
-        let face = ttf_parser::Face::parse(&font.data, font.index).expect("探测到的字体应可解析");
+        let face =
+            skrifa::FontRef::from_index(&font.data, font.index).expect("探测到的字体应可解析");
         // 罕见码点候选（古文字/盲文图案/甲骨文扩展等，常规中文字体基本不覆盖）
         let candidates = [
             '\u{1018A}', // 古希腊零号记号
@@ -992,7 +1018,10 @@ mod tests {
             '\u{2CEB0}', // CJK 扩展 G（极罕用）
             '\u{1E900}', // Adlam 字母（西非文字）
         ];
-        let Some(missing) = candidates.iter().find(|c| face.glyph_index(**c).is_none()) else {
+        let Some(missing) = candidates
+            .iter()
+            .find(|c| face.charmap().map(**c).is_none())
+        else {
             eprintln!("SKIP missing_glyph_fails_fast: 本机字体覆盖了全部候选码点");
             return;
         };
@@ -1037,7 +1066,7 @@ mod tests {
                 return;
             }
         };
-        let face = ttf_parser::Face::parse(&font.data, font.index).expect("字体应可解析");
+        let face = skrifa::FontRef::from_index(&font.data, font.index).expect("字体应可解析");
         let metrics = GlyphMetrics { face };
 
         // 触发条件：① 行内空格（英文整词断行入口）② 空格后跟多字节字符
