@@ -46,9 +46,10 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use evorule_ai_plugin::{
-    build_http_client, build_llm_execute_client, call_llm_ext, call_llm_ext_stream,
-    load_model_allowlist_file, run_audited_chat, web_search_relay, ChatRequest, PluginConfig,
-    PluginError, WebSearchError, WEB_SEARCH_DEFAULT_COUNT, WEB_SEARCH_MAX_COUNT,
+    build_http_client, build_llm_execute_client, build_model_routes, call_llm_ext,
+    call_llm_ext_stream, load_model_allowlist_file, run_audited_chat, web_search_relay,
+    ChatRequest, ModelRoutes, PluginConfig, PluginError, WebSearchError, WEB_SEARCH_DEFAULT_COUNT,
+    WEB_SEARCH_MAX_COUNT,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -63,6 +64,9 @@ struct PluginState {
     execute_http: std::sync::Arc<reqwest::Client>,
     /// 模型准入白名单（None = 扩展执行体未就绪，/llm/execute 显式拒绝）
     allowlist: Arc<Option<BTreeSet<String>>>,
+    /// 多 provider 路由表（None = 未启用 llm_providers，/llm/execute 走单一
+    /// llm_execute_url；Some = 路由模式，按模型解析端点/凭据，未命中显式拒）
+    routes: Option<Arc<ModelRoutes>>,
     /// 调用方令牌（Some = /llm/execute 校验 Authorization;None = 不鉴权）
     caller_token: Option<String>,
 }
@@ -130,14 +134,15 @@ fn main() {
     );
 
     let listen_addr = cfg.listen_addr.clone();
-    // 扩展执行体就绪判定（SG-1 件1）：llm_execute_url 配置即要求白名单物料
-    // 可加载——加载失败仅降级为「/llm/execute 全拒」（fail-closed，自诊断
-    // 留痕），不阻断既有 /services/ai_plugin_chat 通道启动。
-    let allowlist = if cfg.llm_execute_url.is_some() {
+    // 扩展执行体就绪判定（SG-1 件1）：llm_execute_url 或 llm_providers 任一
+    // 配置即要求白名单物料可加载——加载失败仅降级为「/llm/execute 全拒」
+    // （fail-closed，自诊断留痕），不阻断既有 /services/ai_plugin_chat 通道启动。
+    let routing_mode = cfg.llm_providers.as_ref().is_some_and(|p| !p.is_empty());
+    let allowlist = if cfg.llm_execute_url.is_some() || routing_mode {
         match cfg.model_allowlist_path.as_deref() {
             None => {
                 tracing::warn!(
-                    "llm_execute_url 已配置但 model_allowlist_path 缺失: /llm/execute 将以\
+                    "扩展执行体已配置但 model_allowlist_path 缺失: /llm/execute 将以\
                      自诊断消息拒绝所有请求（fail-closed）"
                 );
                 None
@@ -159,6 +164,33 @@ fn main() {
     } else {
         None
     };
+    // 多 provider 路由装配（可选 llm_providers 配置节）：模型 ⊆ 白名单物料 +
+    // 凭据环境变量在位才装载；部分/全部未就绪只降级自诊断留痕，不阻断启动，
+    // 且绝不回落单端点路径（fail-closed）。
+    let (routes, route_diags) =
+        build_model_routes(&cfg, allowlist.as_ref(), &|name| std::env::var(name).ok());
+    for d in &route_diags {
+        tracing::warn!("{d}");
+    }
+    match routes.as_ref() {
+        Some(r) if !r.is_empty() => tracing::info!(
+            "多 provider 路由装载完成: {} 个模型可达（providers: {}）",
+            r.routed_models().count(),
+            cfg.llm_providers
+                .as_ref()
+                .map(|ps| ps
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "))
+                .unwrap_or_default()
+        ),
+        Some(_) => tracing::warn!(
+            "多 provider 路由已配置但无一 provider 就绪: /llm/execute 将拒绝所有请求\
+             （fail-closed，见上方诊断）"
+        ),
+        None => {}
+    }
     let caller_token = cfg.caller_token.clone();
     let state = PluginState {
         cfg: Arc::new(cfg),
@@ -177,6 +209,7 @@ fn main() {
             }
         }),
         allowlist: Arc::new(allowlist),
+        routes: routes.map(Arc::new),
         caller_token,
     };
 
@@ -280,7 +313,9 @@ fn require_ext_gate<'a>(
     match st.allowlist.as_ref() {
         Some(allowlist) => Ok(allowlist),
         None => {
-            let diag = if st.cfg.llm_execute_url.is_some() {
+            let ext_configured = st.cfg.llm_execute_url.is_some()
+                || st.cfg.llm_providers.as_ref().is_some_and(|p| !p.is_empty());
+            let diag = if ext_configured {
                 "扩展执行体未就绪: model_allowlist_path 未配置或白名单物料装载失败\
                  （见启动日志；物料 = 00_constraint_model_allowlist.json server 侧副本）"
                     .to_string()
@@ -310,7 +345,15 @@ async fn llm_execute(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    match call_llm_ext(&st.cfg, &st.execute_http, allowlist, &body).await {
+    match call_llm_ext(
+        &st.cfg,
+        &st.execute_http,
+        allowlist,
+        st.routes.as_deref(),
+        &body,
+    )
+    .await
+    {
         Ok(v) => Json(v).into_response(),
         Err(e) => {
             tracing::warn!("llm/execute 失败: {e}");
@@ -332,7 +375,15 @@ async fn llm_execute_stream(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    match call_llm_ext_stream(&st.cfg, &st.execute_http, allowlist, &body).await {
+    match call_llm_ext_stream(
+        &st.cfg,
+        &st.execute_http,
+        allowlist,
+        st.routes.as_deref(),
+        &body,
+    )
+    .await
+    {
         Ok(frames) => match axum::http::Response::builder()
             .status(StatusCode::OK)
             .header(axum::http::header::CONTENT_TYPE, "text/event-stream")
@@ -376,10 +427,46 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
             "note": "扩展执行体未就绪: 白名单物料未配置或装载失败（见启动日志）"
         }))
         .into_response(),
-        Some(set) => {
-            let models: Vec<&String> = set.iter().collect();
-            Json(json!({ "ready": true, "models": models })).into_response()
-        }
+        Some(set) => match st.routes.as_ref() {
+            // 未启用多 provider 路由：清单=白名单全量（既有行为零变化）
+            None => {
+                let models: Vec<&String> = set.iter().collect();
+                Json(json!({ "ready": true, "models": models })).into_response()
+            }
+            // 路由模式：清单=白名单 ∩ 已装载路由（视图过滤，正源仍是物料；
+            // 未路由模型随 note 显式可见，不在可选清单里出现坏选项）
+            Some(routes) => {
+                let models: Vec<&String> =
+                    set.iter().filter(|m| routes.resolve(m).is_some()).collect();
+                let unrouted: Vec<&str> = set
+                    .iter()
+                    .filter(|m| routes.resolve(m).is_none())
+                    .map(String::as_str)
+                    .collect();
+                if models.is_empty() {
+                    Json(json!({
+                        "ready": false,
+                        "models": [],
+                        "note": "已配置多 provider 路由但无一 provider 就绪\
+                                 （凭据环境变量缺失或模型超出白名单，见启动日志）"
+                    }))
+                    .into_response()
+                } else if unrouted.is_empty() {
+                    Json(json!({ "ready": true, "models": models })).into_response()
+                } else {
+                    Json(json!({
+                        "ready": true,
+                        "models": models,
+                        "note": format!(
+                            "{} 个白名单模型未配置已就绪 provider 路由，暂不可选: {}",
+                            unrouted.len(),
+                            unrouted.join(", ")
+                        ),
+                    }))
+                    .into_response()
+                }
+            }
+        },
     }
 }
 
@@ -527,6 +614,7 @@ mod tests {
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(reqwest::Client::new()),
             allowlist: Arc::new(allowlist),
+            routes: None,
             caller_token,
         }
     }
@@ -588,6 +676,244 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    // ---------- 多 provider 路由（llm_providers 可选配置节） ----------
+
+    /// 路由模式 PluginState：providers 配置与装配产物同源（build_model_routes
+    /// 真装配路径），env 闭包注入测试凭据（隔离宿主真实环境变量）。
+    fn routed_state(
+        providers: Value,
+        allowlist: BTreeSet<String>,
+        env_key: &'static str,
+        caller_token: Option<String>,
+    ) -> PluginState {
+        let cfg = PluginConfig::from_value_with_env(
+            &json!({
+                "listen_addr": "127.0.0.1:0",
+                "server_base_url": "http://127.0.0.1:18080",
+                "llm_endpoint": "https://example.invalid/v1",
+                "llm_api_key": "legacy-unused",
+                "llm_model": "test-model",
+                "tools_enabled": [],
+                "llm_providers": providers
+            }),
+            &|k: &str| {
+                if k == env_key {
+                    Some("routed-key".to_string())
+                } else {
+                    None
+                }
+            },
+        )
+        .expect("test config");
+        let (routes, diags) = build_model_routes(&cfg, Some(&allowlist), &|k: &str| {
+            if k == env_key {
+                Some("routed-key".to_string())
+            } else {
+                None
+            }
+        });
+        assert!(diags.is_empty(), "{diags:?}");
+        PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(build_llm_execute_client().expect("execute client")),
+            allowlist: Arc::new(Some(allowlist)),
+            routes: routes.map(Arc::new),
+            caller_token,
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_models_routing_mode_filters_unrouted_models_with_note() {
+        let providers = json!([{
+            "name": "p1",
+            "execute_url": "http://127.0.0.1:1/v1",
+            "api_key_env": "K_ROUTE",
+            "models": ["m-b", "m-a"]
+        }]);
+        let st = routed_state(
+            providers,
+            BTreeSet::from(["m-a".to_string(), "m-b".to_string(), "m-c".to_string()]),
+            "K_ROUTE",
+            None,
+        );
+        let resp = llm_models(State(st), axum::http::HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["ready"], serde_json::json!(true));
+        assert_eq!(v["models"], serde_json::json!(["m-a", "m-b"]));
+        assert!(
+            v["note"].as_str().unwrap().contains("m-c"),
+            "未路由模型随 note 显式可见"
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_models_routing_mode_all_unarmed_reports_not_ready() {
+        // 凭据 env 缺失 → provider 全部未装载 → ready=false + 自诊断（不静默出空清单）
+        let cfg = PluginConfig::from_value_with_env(
+            &json!({
+                "listen_addr": "127.0.0.1:0",
+                "server_base_url": "http://127.0.0.1:18080",
+                "llm_endpoint": "https://example.invalid/v1",
+                "llm_api_key": "legacy-unused",
+                "llm_model": "test-model",
+                "tools_enabled": [],
+                "llm_providers": [{
+                    "name": "p1",
+                    "execute_url": "http://127.0.0.1:1/v1",
+                    "api_key_env": "K_MISSING",
+                    "models": ["m-a"]
+                }]
+            }),
+            &|_| None::<String>,
+        )
+        .expect("test config");
+        let set = BTreeSet::from(["m-a".to_string()]);
+        let (routes, _) = build_model_routes(&cfg, Some(&set), &|_| None::<String>);
+        let st = PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(reqwest::Client::new()),
+            allowlist: Arc::new(Some(set)),
+            routes: routes.map(Arc::new),
+            caller_token: None,
+        };
+        let resp = llm_models(State(st), axum::http::HeaderMap::new()).await;
+        let v = body_json(resp).await;
+        assert_eq!(v["ready"], serde_json::json!(false));
+        assert!(v["note"].as_str().unwrap().contains("无一 provider 就绪"));
+    }
+
+    #[tokio::test]
+    async fn llm_execute_routes_to_provider_upstream_with_default_params() {
+        let captured: Arc<std::sync::Mutex<Option<(String, Value)>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let cap = captured.clone();
+        let app = Router::new().route(
+            "/v1/chat",
+            post(
+                move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                    let cap = cap.clone();
+                    async move {
+                        let auth = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        *cap.lock().unwrap() = Some((auth, body));
+                        Json(json!({ "choices": [{ "message": { "content": "route-ok" } }] }))
+                    }
+                },
+            ),
+        );
+        let addr = spawn_provider(app).await;
+        let providers = json!([{
+            "name": "p1",
+            "execute_url": format!("http://{addr}/v1/chat"),
+            "api_key_env": "K_ROUTE",
+            "models": ["m-a"],
+            "default_params": { "temperature": 0.9, "max_tokens": 111 }
+        }]);
+        let st = routed_state(
+            providers,
+            BTreeSet::from(["m-a".to_string()]),
+            "K_ROUTE",
+            None,
+        );
+        let resp = llm_execute(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({ "model": "m-a", "messages": [{ "role": "user", "content": "hi" }] })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["content"], "route-ok");
+        let (auth, body) = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(auth, "Bearer routed-key", "凭据来自 provider 专属 env");
+        assert_eq!(
+            body["temperature"],
+            serde_json::json!(0.9),
+            "provider 缺省参数打底"
+        );
+        assert_eq!(body["max_tokens"], serde_json::json!(111));
+        assert_eq!(body["model"], "m-a");
+    }
+
+    #[tokio::test]
+    async fn llm_execute_body_fields_override_provider_default_params() {
+        let captured: Arc<std::sync::Mutex<Option<Value>>> = Arc::new(std::sync::Mutex::new(None));
+        let cap = captured.clone();
+        let app = Router::new().route(
+            "/v1/chat",
+            post(move |Json(body): Json<Value>| {
+                let cap = cap.clone();
+                async move {
+                    *cap.lock().unwrap() = Some(body);
+                    Json(json!({ "choices": [{ "message": { "content": "ok" } }] }))
+                }
+            }),
+        );
+        let addr = spawn_provider(app).await;
+        let providers = json!([{
+            "name": "p1",
+            "execute_url": format!("http://{addr}/v1/chat"),
+            "api_key_env": "K_ROUTE",
+            "models": ["m-a"],
+            "default_params": { "temperature": 0.9 }
+        }]);
+        let st = routed_state(
+            providers,
+            BTreeSet::from(["m-a".to_string()]),
+            "K_ROUTE",
+            None,
+        );
+        let resp = llm_execute(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({ "model": "m-a", "messages": [], "temperature": 0.1 })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            body["temperature"],
+            serde_json::json!(0.1),
+            "请求体同键字段优先"
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_execute_rejects_model_without_route_in_routing_mode() {
+        let providers = json!([{
+            "name": "p1",
+            "execute_url": "http://127.0.0.1:1/v1",
+            "api_key_env": "K_ROUTE",
+            "models": ["m-a"]
+        }]);
+        let st = routed_state(
+            providers,
+            BTreeSet::from(["m-a".to_string(), "m-b".to_string()]),
+            "K_ROUTE",
+            None,
+        );
+        let resp = llm_execute(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(json!({ "model": "m-b", "messages": [] })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let v = body_json(resp).await;
+        let err = v["error"].as_str().unwrap();
+        assert!(err.contains("provider 路由"), "{err}");
+        assert!(
+            !err.contains("legacy-unused"),
+            "错误消息不泄露任何凭据形态字段"
+        );
+    }
+
     // ---------- /llm/execute-stream 真流式端点（与 /llm/execute 同门禁面） ----------
 
     /// 构造带/不带 llm_execute_url 的 PluginState（env 闭包恒 None——隔离宿主
@@ -615,12 +941,15 @@ mod tests {
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(build_llm_execute_client().expect("execute client")),
             allowlist: Arc::new(allowlist),
+            routes: None,
             caller_token,
         }
     }
 
     async fn spawn_provider(app: Router) -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let addr = listener.local_addr().expect("addr");
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve");
@@ -693,8 +1022,7 @@ mod tests {
             .uri("/llm/execute-stream")
             .header("content-type", "application/json")
             .body(axum::body::Body::from(
-                json!({"model": "m1", "messages": [{"role": "user", "content": "hi"}]})
-                    .to_string(),
+                json!({"model": "m1", "messages": [{"role": "user", "content": "hi"}]}).to_string(),
             ))
             .expect("request");
         let resp = router.oneshot(req).await.expect("oneshot");
@@ -713,7 +1041,11 @@ mod tests {
             .split("\n\n")
             .filter(|f| f.starts_with("data: "))
             .collect();
-        assert_eq!(lines.len(), 4, "三归一帧 + done 帧 + [DONE]（共 4 data 行）");
+        assert_eq!(
+            lines.len(),
+            4,
+            "三归一帧 + done 帧 + [DONE]（共 4 data 行）"
+        );
         let f0: Value = serde_json::from_str(lines[0].trim_start_matches("data: ")).unwrap();
         assert_eq!(f0["type"], "reasoning");
         assert_eq!(f0["text"], "思");
@@ -759,6 +1091,7 @@ mod tests {
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(reqwest::Client::new()),
             allowlist: Arc::new(None),
+            routes: None,
             caller_token,
         }
     }

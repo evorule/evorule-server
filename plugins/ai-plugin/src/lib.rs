@@ -172,6 +172,11 @@ pub struct PluginConfig {
     /// `llm_execute_url` 配置后为 fail-closed 执法面：物料缺失/解析空集 →
     /// 扩展执行体拒绝所有 /llm/execute 请求（显式自诊断，绝不静默放行）。
     pub model_allowlist_path: Option<String>,
+    /// 多 provider 路由表（可选 `llm_providers` 配置节）。None = 未启用，
+    /// /llm/execute 走单一 `llm_execute_url`（既有行为零变化）。启用后按
+    /// 请求 `model` 路由到对应 provider 的端点与凭据；各 provider 的 models
+    /// 须 ⊆ 白名单物料（启动执法），同一模型只能归属一个 provider。
+    pub llm_providers: Option<Vec<ProviderRouteConfig>>,
     /// 调用方令牌（Some = /llm/execute 要求 Authorization: Bearer 匹配，
     /// 本机其他进程无令牌即 401；None = 不鉴权，dev 兼容形态）。
     /// 来源：env `EVORULE_AI_PLUGIN_CALLER_TOKEN` > 配置 `caller_token`。
@@ -184,6 +189,24 @@ pub struct PluginConfig {
     /// 配置 `brave_api_key`；None = /tools/web_search 显式 500 自诊断，
     /// fail-visible 不静默）。凭据纪律同 llm_api_key：不进日志/错误消息。
     pub brave_api_key: Option<String>,
+}
+
+/// 多 provider 路由的单条 provider 声明（`llm_providers` 配置节数组元素）。
+///
+/// 凭据纪律：本结构只保存凭据的**环境变量名**（`api_key_env`），不保存
+/// 凭据本体——key 在启动装配期从环境解析，不落盘、不进日志/错误消息。
+#[derive(Clone, Debug)]
+pub struct ProviderRouteConfig {
+    /// provider 名（配置内唯一；自诊断与路由日志用）
+    pub name: String,
+    /// 上游 provider 全 URL（POST 出站；全 URL 形态，不做路径拼接）
+    pub execute_url: String,
+    /// 该 provider API key 所在的环境变量名
+    pub api_key_env: String,
+    /// 该 provider 可达的模型名（须 ⊆ 白名单物料；全局不可与其他 provider 重复）
+    pub models: Vec<String>,
+    /// 出站请求体缺省参数（可选；请求体同键字段优先，见 `merge_default_params`）
+    pub default_params: serde_json::Map<String, Value>,
 }
 
 fn require_str(v: &Value, key: &str) -> Result<String, PluginError> {
@@ -229,6 +252,14 @@ impl std::fmt::Debug for PluginConfig {
             .field("tools_enabled", &self.tools_enabled)
             .field("llm_execute_url", &self.llm_execute_url)
             .field("model_allowlist_path", &self.model_allowlist_path)
+            .field(
+                "llm_providers",
+                &self.llm_providers.as_ref().map(|ps| {
+                    ps.iter()
+                        .map(|p| (p.name.as_str(), p.models.len()))
+                        .collect::<Vec<_>>()
+                }),
+            )
             .field(
                 "caller_token",
                 &self.caller_token.as_ref().map(|_| "[REDACTED]"),
@@ -378,6 +409,7 @@ impl PluginConfig {
             require_http(u, "llm_execute_url")?;
         }
         let model_allowlist_path = optional_str(v, "model_allowlist_path");
+        let llm_providers = parse_provider_route_configs(v)?;
         // 调用方令牌:env 优先 > 配置文件;None = /llm/execute 不鉴权(dev 兼容)。
         let caller_token = std::env::var("EVORULE_AI_PLUGIN_CALLER_TOKEN")
             .ok()
@@ -418,6 +450,7 @@ impl PluginConfig {
             tools_enabled,
             llm_execute_url,
             model_allowlist_path,
+            llm_providers,
             caller_token,
             web_search_provider,
             brave_api_key,
@@ -429,6 +462,98 @@ impl PluginConfig {
             .map_err(|e| PluginError::Config(format!("配置 JSON 非法: {e}")))?;
         Self::from_value(&v)
     }
+}
+
+/// 解析可选 `llm_providers` 配置节（多 provider 路由声明）。
+///
+/// 形状：`[{name, execute_url, api_key_env, models[], default_params?}]`。
+/// 缺失/null/空数组 → None（未启用，行为与单端点形态零差异）；任何条目
+/// 形状非法 → fail-fast（附条目下标自诊断）。provider 名全局唯一；同一条目
+/// 内 models 不得重复（跨条目重复在装配期整表拒绝，见 `build_model_routes`）。
+fn parse_provider_route_configs(
+    v: &Value,
+) -> Result<Option<Vec<ProviderRouteConfig>>, PluginError> {
+    let arr = match v.get("llm_providers") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(a)) => a,
+        Some(_) => {
+            return Err(PluginError::Config(
+                "字段 'llm_providers' 须为数组（元素形状见 config.example.json 说明）".to_string(),
+            ))
+        }
+    };
+    if arr.is_empty() {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    for (i, item) in arr.iter().enumerate() {
+        let at = |msg: String| PluginError::Config(format!("llm_providers[{i}]: {msg}"));
+        let obj = item.as_object().ok_or_else(|| at("须为对象".to_string()))?;
+        let name = obj
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| at("缺少非空字符串 'name'".to_string()))?;
+        let execute_url = obj
+            .get("execute_url")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| at("缺少非空字符串 'execute_url'".to_string()))?;
+        require_http(execute_url, "execute_url")?;
+        let api_key_env = obj
+            .get("api_key_env")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                at("缺少非空字符串 'api_key_env'（凭据只存环境变量名，不落盘）".to_string())
+            })?;
+        let models_arr = obj
+            .get("models")
+            .and_then(Value::as_array)
+            .ok_or_else(|| at("缺少数组 'models'".to_string()))?;
+        if models_arr.is_empty() {
+            return Err(at("'models' 不得为空数组".to_string()));
+        }
+        let mut models = Vec::new();
+        for m in models_arr {
+            let m = m
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| at("'models' 须为非空字符串数组".to_string()))?;
+            if models.iter().any(|e: &String| e == m) {
+                return Err(at(format!("模型 '{m}' 在同一 provider 内重复声明")));
+            }
+            models.push(m.to_string());
+        }
+        let default_params = match obj.get("default_params") {
+            None | Some(Value::Null) => serde_json::Map::new(),
+            Some(m) => match m.as_object() {
+                Some(o) => o.clone(),
+                None => return Err(at("'default_params' 须为对象".to_string())),
+            },
+        };
+        out.push(ProviderRouteConfig {
+            name: name.to_string(),
+            execute_url: execute_url.to_string(),
+            api_key_env: api_key_env.to_string(),
+            models,
+            default_params,
+        });
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for p in &out {
+        if !names.insert(p.name.as_str()) {
+            return Err(PluginError::Config(format!(
+                "字段 'llm_providers' 内 provider 名重复: '{}'",
+                p.name
+            )));
+        }
+    }
+    Ok(Some(out))
 }
 
 /// 服务端点请求体：`{messages, model?, temperature?, audit_purpose?}`。
@@ -1235,11 +1360,186 @@ pub fn build_llm_execute_client() -> Result<reqwest::Client, PluginError> {
         .map_err(|e| PluginError::Config(format!("扩展执行体 HTTP 客户端构建失败: {e}")))
 }
 
+// ---------------------------------------------------------------------------
+// 多 provider 路由（可选 llm_providers 配置节）
+//
+// 准入与路由分权：模型**准入**（哪些模型允许发起会话）正源唯一 = 白名单
+// 物料（治理规则）；模型**路由**（该模型打到哪家上游端点/凭据）= 本部署
+// 配置。启动装配执法「路由 ⊆ 准入」，路由面永不放大准入面。
+// ---------------------------------------------------------------------------
+
+/// 路由表条目：某模型的出站端点 + 凭据 + 缺省参数（启动装配期产物）。
+#[derive(Clone)]
+pub struct ProviderRoute {
+    /// 来源 provider 名（诊断与日志用）
+    pub provider: String,
+    /// 上游全 URL
+    pub execute_url: String,
+    /// 该 provider 的 API key（装配期自环境解析；Debug 全程脱敏）
+    pub api_key: String,
+    /// 出站请求体缺省参数（请求体同键字段优先）
+    pub default_params: serde_json::Map<String, Value>,
+}
+
+impl std::fmt::Debug for ProviderRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderRoute")
+            .field("provider", &self.provider)
+            .field("execute_url", &self.execute_url)
+            .field("api_key", &"[REDACTED]")
+            .field(
+                "default_params_keys",
+                &self.default_params.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+/// 已装载 provider 的按模型路由表（启动装配期构建，运行期只读）。
+#[derive(Clone, Default)]
+pub struct ModelRoutes {
+    by_model: std::collections::BTreeMap<String, ProviderRoute>,
+}
+
+impl std::fmt::Debug for ModelRoutes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(self.by_model.iter().map(|(k, v)| (k, &v.provider)))
+            .finish()
+    }
+}
+
+impl ModelRoutes {
+    /// 按模型解析路由；None = 该模型没有已装载 provider（调用方显式拒，
+    /// 绝不回落其他 provider 或单端点路径）。
+    pub fn resolve(&self, model: &str) -> Option<&ProviderRoute> {
+        self.by_model.get(model)
+    }
+
+    /// 已装载模型名（排序输出；/llm/models 过滤面用）。
+    pub fn routed_models(&self) -> impl Iterator<Item = &String> {
+        self.by_model.keys()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_model.is_empty()
+    }
+}
+
+/// 启动装配期构建多 provider 路由表。
+///
+/// 执法（fail-closed，违者只降级自诊断、不阻断启动）：
+/// - 白名单物料未就绪 → 整表拒绝装载（空表）；
+/// - 同一模型跨 provider 重复声明 → 整表拒绝装载（同模型双上游歧义）；
+/// - 某 provider 的 models ⊄ 白名单物料 → 该 provider 拒绝装载；
+/// - 某 provider 凭据环境变量缺失/空白 → 该 provider 拒绝装载。
+///
+/// 返回 `(路由表, 自诊断消息列表)`。路由表 `None` = 配置未启用多 provider
+/// 路由（/llm/execute 走单一 `llm_execute_url` 既有路径）；`Some(空表)` =
+/// 已启用但无一 provider 就绪（/llm/execute 全拒，**绝不回落**单端点路径）。
+pub fn build_model_routes(
+    cfg: &PluginConfig,
+    allowlist: Option<&BTreeSet<String>>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> (Option<ModelRoutes>, Vec<String>) {
+    let Some(providers) = cfg.llm_providers.as_ref().filter(|p| !p.is_empty()) else {
+        return (None, Vec::new());
+    };
+    let mut diags = Vec::new();
+    let Some(allowlist) = allowlist else {
+        diags.push(
+            "多 provider 路由未装载: 白名单物料未就绪（model_allowlist_path 缺失或装载失败）"
+                .to_string(),
+        );
+        return (Some(ModelRoutes::default()), diags);
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut duplicate: Option<&str> = None;
+    'outer: for p in providers {
+        for m in &p.models {
+            if !seen.insert(m.as_str()) {
+                duplicate = Some(m);
+                break 'outer;
+            }
+        }
+    }
+    if let Some(m) = duplicate {
+        diags.push(format!(
+            "多 provider 路由未装载: 模型 '{m}' 在多家 provider 重复声明（同一模型只能归属一个 provider）"
+        ));
+        return (Some(ModelRoutes::default()), diags);
+    }
+    let mut routes = ModelRoutes::default();
+    for p in providers {
+        let out_of_list: Vec<&str> = p
+            .models
+            .iter()
+            .map(String::as_str)
+            .filter(|m| !allowlist.contains(*m))
+            .collect();
+        if !out_of_list.is_empty() {
+            diags.push(format!(
+                "provider '{}' 未装载: 模型不在白名单物料内（{}）",
+                p.name,
+                out_of_list.join(", ")
+            ));
+            continue;
+        }
+        let key = env(&p.api_key_env)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let Some(key) = key else {
+            diags.push(format!(
+                "provider '{}' 未装载: 凭据环境变量 {} 未设置或为空",
+                p.name, p.api_key_env
+            ));
+            continue;
+        };
+        for m in &p.models {
+            routes.by_model.insert(
+                m.clone(),
+                ProviderRoute {
+                    provider: p.name.clone(),
+                    execute_url: p.execute_url.clone(),
+                    api_key: key.clone(),
+                    default_params: p.default_params.clone(),
+                },
+            );
+        }
+    }
+    (Some(routes), diags)
+}
+
+/// 请求体缺省参数合并：provider `default_params` 打底，请求体同键字段优先。
+/// 无缺省参数（或请求体非对象）时原样返回请求体（零行为变化路径）。
+fn merge_default_params(body: &Value, defaults: &serde_json::Map<String, Value>) -> Value {
+    if defaults.is_empty() {
+        return body.clone();
+    }
+    let Some(obj) = body.as_object() else {
+        return body.clone();
+    };
+    let mut merged = defaults.clone();
+    for (k, v) in obj {
+        merged.insert(k.clone(), v.clone());
+    }
+    Value::Object(merged)
+}
+
+/// 出站上游解析产物：本次调用要打的端点、凭据与缺省参数。
+struct LlmUpstream {
+    execute_url: String,
+    api_key: String,
+    default_params: serde_json::Map<String, Value>,
+}
+
 /// 扩展执行体 LLM 调用 —— /llm/execute 端点的唯一出站路径。
 ///
-/// - 请求：`body` 原样透传到 provider（全量透传，不裁剪任何键）；
-///   provider URL 取配置键 `llm_execute_url`（全 URL 形态）；
-///   凭据复用 `llm_api_key`（环境变量 `EVORULE_AI_PLUGIN_LLM_API_KEY` 优先）。
+/// - 请求：`body` 透传到 provider（全量透传，不裁剪任何键；多 provider
+///   路由模式下 provider `default_params` 以请求体同键字段优先的方式打底）；
+///   provider URL/凭据由 `routes` 决定——`Some` = 多 provider 路由模式，
+///   按模型解析（未命中显式拒）；`None` = 单端点模式，取配置键
+///   `llm_execute_url`（全 URL 形态），凭据复用 `llm_api_key`。
 /// - 白名单执法：`body.model` 必须在 `allowlist` 内，违者显式拒 + warn 留痕
 ///   （网络入口执法，先于任何出站流量）。
 /// - 响应：非流式解析 OpenAI 兼容 JSON；流式（`stream:true`）按 SSE 聚合。
@@ -1251,18 +1551,23 @@ pub async fn call_llm_ext(
     cfg: &PluginConfig,
     http: &reqwest::Client,
     allowlist: &BTreeSet<String>,
+    routes: Option<&ModelRoutes>,
     body: &Value,
 ) -> Result<Value, PluginError> {
-    let url = llm_ext_entry_checks(cfg, allowlist, body)?;
-    let is_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let upstream = llm_ext_entry_checks(cfg, allowlist, routes, body)?;
+    let merged = merge_default_params(body, &upstream.default_params);
+    let is_stream = merged
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let resp = http
-        .post(url)
-        .bearer_auth(&cfg.llm_api_key)
-        .json(body)
+        .post(&upstream.execute_url)
+        .bearer_auth(&upstream.api_key)
+        .json(&merged)
         .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
         .send()
         .await
-        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({url}): {e}")))?;
+        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({}): {e}", upstream.execute_url)))?;
     let resp = check_llm_ext_response(resp).await?;
     if is_stream {
         let resp = check_sse_content_type(resp).await?;
@@ -1276,20 +1581,15 @@ pub async fn call_llm_ext(
     }
 }
 
-/// 出站前执法段（/llm/execute 与 /llm/execute-stream 共用）：provider URL
-/// 解析 + model 非空 + 白名单执法（网络入口执法，先于任何出站流量）。
-fn llm_ext_entry_checks<'a>(
-    cfg: &'a PluginConfig,
+/// 出站前执法段（/llm/execute 与 /llm/execute-stream 共用）：model 非空 +
+/// 白名单执法（网络入口执法，先于任何出站流量）+ 上游解析（多 provider
+/// 路由模式按 model 定端点/凭据/缺省参数；单端点模式回落既有配置键）。
+fn llm_ext_entry_checks(
+    cfg: &PluginConfig,
     allowlist: &BTreeSet<String>,
+    routes: Option<&ModelRoutes>,
     body: &Value,
-) -> Result<&'a str, PluginError> {
-    let Some(url) = cfg.llm_execute_url.as_deref() else {
-        return Err(PluginError::Config(
-            "配置键 'llm_execute_url' 未填写（provider 全 URL 形态，如 \
-             https://api.minimaxi.com/v1/text/chatcompletion_v2）"
-                .to_string(),
-        ));
-    };
+) -> Result<LlmUpstream, PluginError> {
     let model = body.get("model").and_then(Value::as_str).map(str::trim);
     let model = match model {
         Some(m) if !m.is_empty() => m,
@@ -1310,7 +1610,31 @@ fn llm_ext_entry_checks<'a>(
              见 00_constraint_model_allowlist）"
         )));
     }
-    Ok(url)
+    if let Some(routes) = routes {
+        let route = routes.resolve(model).ok_or_else(|| {
+            PluginError::Llm(format!(
+                "模型 '{model}' 在白名单内但未配置任何已就绪 provider 路由\
+                 （llm_providers 装载诊断见插件启动日志）"
+            ))
+        })?;
+        return Ok(LlmUpstream {
+            execute_url: route.execute_url.clone(),
+            api_key: route.api_key.clone(),
+            default_params: route.default_params.clone(),
+        });
+    }
+    let url = cfg.llm_execute_url.as_deref().ok_or_else(|| {
+        PluginError::Config(
+            "配置键 'llm_execute_url' 未填写（provider 全 URL 形态，如 \
+             https://api.minimaxi.com/v1/text/chatcompletion_v2）"
+                .to_string(),
+        )
+    })?;
+    Ok(LlmUpstream {
+        execute_url: url.to_string(),
+        api_key: cfg.llm_api_key.clone(),
+        default_params: serde_json::Map::new(),
+    })
 }
 
 /// provider 响应状态门（共用）：非 2xx 显式转错（含 401/429 分类）。
@@ -1801,8 +2125,7 @@ impl StreamRelayState {
                 done["reasoning"] = json!(self.reasoning_acc.clone());
             }
             self.push_frame(done);
-            self.pending
-                .push_back("data: [DONE]\n\n".to_string());
+            self.pending.push_back("data: [DONE]\n\n".to_string());
         }
     }
 }
@@ -1858,22 +2181,25 @@ pub async fn call_llm_ext_stream(
     cfg: &PluginConfig,
     http: &reqwest::Client,
     allowlist: &BTreeSet<String>,
+    routes: Option<&ModelRoutes>,
     body: &Value,
-) -> Result<impl futures_util::Stream<Item = Result<String, PluginError>> + Send + 'static, PluginError>
-{
-    let url = llm_ext_entry_checks(cfg, allowlist, body)?.to_string();
-    let mut req_body = body.clone();
+) -> Result<
+    impl futures_util::Stream<Item = Result<String, PluginError>> + Send + 'static,
+    PluginError,
+> {
+    let upstream = llm_ext_entry_checks(cfg, allowlist, routes, body)?;
+    let mut req_body = merge_default_params(body, &upstream.default_params);
     if let Some(obj) = req_body.as_object_mut() {
         obj.insert("stream".to_string(), Value::Bool(true));
     }
     let resp = http
-        .post(&url)
-        .bearer_auth(&cfg.llm_api_key)
+        .post(&upstream.execute_url)
+        .bearer_auth(&upstream.api_key)
         .json(&req_body)
         .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
         .send()
         .await
-        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({url}): {e}")))?;
+        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({}): {e}", upstream.execute_url)))?;
     let resp = check_llm_ext_response(resp).await?;
     let resp = check_sse_content_type(resp).await?;
     Ok(llm_ext_stream_frames(resp))
@@ -2377,8 +2703,11 @@ mod tests {
         // fail-fast(env 优先级高于配置文件,from_json_str 口径会被真机
         // key 洗成 Ok,无法验证缺 key 报错路径)
         let deny = &|_: &str| None::<String>;
-        let err = PluginConfig::from_value_with_env(&serde_json::json!({"llm_endpoint":"http://x"}), deny)
-            .unwrap_err();
+        let err = PluginConfig::from_value_with_env(
+            &serde_json::json!({"llm_endpoint":"http://x"}),
+            deny,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("缺少必填字段 'server_base_url'"));
         let err = PluginConfig::from_value_with_env(
             &serde_json::json!({"server_base_url":"http://x","llm_endpoint":"http://x","llm_model":"m"}),
@@ -2695,6 +3024,187 @@ mod tests {
         BTreeSet::from([model.to_string()])
     }
 
+    fn providers_cfg(providers: Value) -> PluginConfig {
+        PluginConfig::from_value_with_env(
+            &serde_json::json!({
+                "server_base_url":"http://x","llm_endpoint":"http://x",
+                "llm_api_key":"legacy-key","llm_model":"m",
+                "llm_execute_url":"http://127.0.0.1:1/legacy",
+                "llm_providers": providers
+            }),
+            &|_| None::<String>,
+        )
+        .unwrap()
+    }
+
+    fn allow_set(models: &[&str]) -> BTreeSet<String> {
+        models.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn config_llm_providers_parse_happy_and_defaults() {
+        let cfg = providers_cfg(json!([
+            {"name":"p1","execute_url":"https://api.example.com/v1/chat/completions",
+             "api_key_env":"K_P1","models":["m-a","m-b"]},
+            {"name":"p2","execute_url":"http://127.0.0.1:9/v1","api_key_env":"K_P2",
+             "models":["m-c"],"default_params":{"temperature":0.9,"max_tokens":111}}
+        ]));
+        let ps = cfg.llm_providers.as_ref().unwrap();
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].models, vec!["m-a", "m-b"]);
+        assert!(ps[0].default_params.is_empty());
+        assert_eq!(ps[1].default_params.get("temperature"), Some(&json!(0.9)));
+        assert_eq!(ps[1].default_params.get("max_tokens"), Some(&json!(111)));
+    }
+
+    #[test]
+    fn config_llm_providers_rejects_bad_shapes() {
+        // （坏形状, 预期错误子串）逐例锚定 fail-fast 面
+        let bad = [
+            (
+                json!([{"name":"","execute_url":"http://x","api_key_env":"K","models":["m"]}]),
+                "'name'",
+            ),
+            (
+                json!([{"name":"p","execute_url":"ftp://x","api_key_env":"K","models":["m"]}]),
+                "仅支持 http/https",
+            ),
+            (
+                json!([{"name":"p","execute_url":"http://x","api_key_env":"","models":["m"]}]),
+                "api_key_env",
+            ),
+            (
+                json!([{"name":"p","execute_url":"http://x","api_key_env":"K","models":[]}]),
+                "不得为空数组",
+            ),
+            (
+                json!([{"name":"p","execute_url":"http://x","api_key_env":"K","models":["m"],"default_params":"x"}]),
+                "default_params",
+            ),
+            (
+                json!([{"name":"p","execute_url":"http://x","api_key_env":"K","models":["m","m"]}]),
+                "重复声明",
+            ),
+            (
+                json!([
+                    {"name":"p","execute_url":"http://x","api_key_env":"K","models":["m"]},
+                    {"name":"p","execute_url":"http://y","api_key_env":"K","models":["n"]}
+                ]),
+                "provider 名重复",
+            ),
+        ];
+        for (i, (b, expect)) in bad.iter().enumerate() {
+            let cfg_value = json!({
+                "server_base_url":"http://x","llm_endpoint":"http://x",
+                "llm_api_key":"k","llm_model":"m","llm_providers": b
+            });
+            let err =
+                PluginConfig::from_value_with_env(&cfg_value, &|_| None::<String>).unwrap_err();
+            assert!(err.to_string().contains(*expect), "case {i}: {err}");
+        }
+    }
+
+    #[test]
+    fn routes_absent_when_not_configured() {
+        let cfg = ext_cfg("http://127.0.0.1:1/x");
+        let set = allowlist_one("m-a");
+        let (routes, diags) = build_model_routes(&cfg, Some(&set), &|_| None::<String>);
+        assert!(routes.is_none());
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn routes_all_rejected_when_allowlist_missing() {
+        let cfg = providers_cfg(
+            json!([{"name":"p","execute_url":"http://x","api_key_env":"K","models":["m-a"]}]),
+        );
+        let (routes, diags) = build_model_routes(&cfg, None, &|_| None::<String>);
+        assert!(matches!(routes, Some(ref r) if r.is_empty()));
+        assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn routes_provider_rejected_when_model_outside_allowlist() {
+        let cfg = providers_cfg(json!([
+            {"name":"good","execute_url":"http://x","api_key_env":"K1","models":["m-a"]},
+            {"name":"bad","execute_url":"http://y","api_key_env":"K2","models":["m-b","m-evil"]}
+        ]));
+        let set = allow_set(&["m-a", "m-b"]);
+        let (routes, diags) = build_model_routes(&cfg, Some(&set), &|k| Some(format!("key-{k}")));
+        let r = routes.unwrap();
+        assert!(r.resolve("m-a").is_some(), "合规 provider 保持装载");
+        assert!(r.resolve("m-b").is_none(), "越界 provider 整体拒绝装载");
+        assert!(r.resolve("m-evil").is_none());
+        assert!(diags
+            .iter()
+            .any(|d| d.contains("bad") && d.contains("m-evil")));
+    }
+
+    #[test]
+    fn routes_global_reject_on_cross_provider_duplicate_model() {
+        let cfg = providers_cfg(json!([
+            {"name":"p1","execute_url":"http://x","api_key_env":"K1","models":["m-a"]},
+            {"name":"p2","execute_url":"http://y","api_key_env":"K2","models":["m-a","m-b"]}
+        ]));
+        let set = allow_set(&["m-a", "m-b"]);
+        let (routes, diags) = build_model_routes(&cfg, Some(&set), &|k| Some(format!("key-{k}")));
+        assert!(
+            matches!(routes, Some(ref r) if r.is_empty()),
+            "重复模型=整表拒绝"
+        );
+        assert!(diags
+            .iter()
+            .any(|d| d.contains("m-a") && d.contains("重复")));
+    }
+
+    #[test]
+    fn routes_provider_rejected_when_key_env_missing() {
+        let cfg = providers_cfg(json!([
+            {"name":"withkey","execute_url":"http://x","api_key_env":"K_HAVE","models":["m-a"]},
+            {"name":"nokey","execute_url":"http://y","api_key_env":"K_MISS","models":["m-b"]}
+        ]));
+        let set = allow_set(&["m-a", "m-b"]);
+        let (routes, diags) = build_model_routes(&cfg, Some(&set), &|k| {
+            if k == "K_HAVE" {
+                Some("kv".to_string())
+            } else {
+                None
+            }
+        });
+        let r = routes.unwrap();
+        assert!(r.resolve("m-a").is_some());
+        assert!(r.resolve("m-b").is_none());
+        assert!(diags.iter().any(|d| d.contains("K_MISS")));
+    }
+
+    #[test]
+    fn routes_resolve_maps_model_to_provider() {
+        let cfg = providers_cfg(json!([
+            {"name":"p1","execute_url":"http://x/a","api_key_env":"K1","models":["m-a"]},
+            {"name":"p2","execute_url":"http://y/b","api_key_env":"K2","models":["m-b"]}
+        ]));
+        let set = allow_set(&["m-a", "m-b"]);
+        let (routes, _) = build_model_routes(&cfg, Some(&set), &|k| Some(format!("key-{k}")));
+        let r = routes.unwrap();
+        assert_eq!(r.resolve("m-a").unwrap().provider, "p1");
+        assert_eq!(r.resolve("m-a").unwrap().execute_url, "http://x/a");
+        assert_eq!(r.resolve("m-b").unwrap().provider, "p2");
+        assert_eq!(r.routed_models().count(), 2);
+    }
+
+    #[test]
+    fn merge_default_params_body_wins_and_passthrough_when_empty() {
+        let body = json!({"model":"m","temperature":0.1});
+        assert_eq!(merge_default_params(&body, &serde_json::Map::new()), body);
+        let mut defaults = serde_json::Map::new();
+        defaults.insert("temperature".into(), json!(0.9));
+        defaults.insert("max_tokens".into(), json!(111));
+        let merged = merge_default_params(&body, &defaults);
+        assert_eq!(merged["temperature"], json!(0.1), "请求体同键字段优先");
+        assert_eq!(merged["max_tokens"], json!(111));
+        assert_eq!(merged["model"], json!("m"));
+    }
+
     #[test]
     fn config_llm_execute_url_optional_and_scheme_checked() {
         let plain = PluginConfig::from_json_str(
@@ -2849,6 +3359,7 @@ mod tests {
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &request_body,
         )
         .await
@@ -2907,6 +3418,7 @@ mod tests {
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &body,
         )
         .await
@@ -2947,6 +3459,7 @@ mod tests {
             &cfg,
             &http,
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"model": "evil-m", "messages": []}),
         )
         .await
@@ -2957,6 +3470,7 @@ mod tests {
             &cfg,
             &http,
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"messages": []}),
         )
         .await
@@ -2984,6 +3498,7 @@ mod tests {
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
         )
         .await
@@ -3003,6 +3518,7 @@ mod tests {
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"model": "MiniMax-M2.5", "messages": []}),
         )
         .await
@@ -3027,6 +3543,7 @@ mod tests {
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
         )
         .await
@@ -3089,6 +3606,7 @@ mod tests {
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
         )
         .await
@@ -3119,6 +3637,7 @@ mod tests {
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
         )
         .await
@@ -3138,7 +3657,7 @@ mod tests {
     ) -> Vec<String> {
         use futures_util::StreamExt;
         // impl Stream 不实现 Debug，不能用 unwrap——显式 match 转测试失败
-        let stream = match call_llm_ext_stream(cfg, http, allowlist, body).await {
+        let stream = match call_llm_ext_stream(cfg, http, allowlist, None, body).await {
             Ok(s) => s,
             Err(e) => panic!("call_llm_ext_stream failed: {e}"),
         };
@@ -3177,19 +3696,17 @@ mod tests {
         let cap = captured.clone();
         let app = Router::new().route(
             "/v1/text/chatcompletion_v2",
-            post(
-                move |Json(body): Json<Value>| {
-                    let cap = cap.clone();
-                    let sse = sse.clone();
-                    async move {
-                        *cap.lock().unwrap() = Some(body);
-                        (
-                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
-                            sse,
-                        )
-                    }
-                },
-            ),
+            post(move |Json(body): Json<Value>| {
+                let cap = cap.clone();
+                let sse = sse.clone();
+                async move {
+                    *cap.lock().unwrap() = Some(body);
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        sse,
+                    )
+                }
+            }),
         );
         let addr = spawn_app(app).await;
         let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
@@ -3317,11 +3834,9 @@ mod tests {
         assert_eq!(frames.len(), 1, "空流仅一行 error 帧");
         let err_frame: Value = serde_json::from_str(&frame_payload(&frames[0])).unwrap();
         assert_eq!(err_frame["type"], "error");
-        assert!(
-            err_frame["error"]
-                .as_str()
-                .is_some_and(|s| s.contains("data 帧"))
-        );
+        assert!(err_frame["error"]
+            .as_str()
+            .is_some_and(|s| s.contains("data 帧")));
     }
 
     #[tokio::test]
@@ -3343,6 +3858,7 @@ mod tests {
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"model": "MiniMax-M2.5", "messages": []}),
         )
         .await
