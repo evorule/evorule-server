@@ -62,13 +62,77 @@ struct PluginState {
     http: std::sync::Arc<reqwest::Client>,
     /// 扩展执行体出站客户端（重定向禁令 + connect 超时；独立于 sidecar 回路客户端）
     execute_http: std::sync::Arc<reqwest::Client>,
-    /// 模型准入白名单（None = 扩展执行体未就绪，/llm/execute 显式拒绝）
-    allowlist: Arc<Option<BTreeSet<String>>>,
+    /// 模型准入白名单（None = 扩展执行体未就绪，/llm/execute 显式拒绝；
+    /// 内层 Arc 槽支持物料热重载——读侧零锁拷贝，写侧整槽替换）
+    allowlist: AllowlistHot,
     /// 多 provider 路由表（None = 未启用 llm_providers，/llm/execute 走单一
     /// llm_execute_url；Some = 路由模式，按模型解析端点/凭据，未命中显式拒）
     routes: Option<Arc<ModelRoutes>>,
     /// 调用方令牌（Some = /llm/execute 校验 Authorization;None = 不鉴权）
     caller_token: Option<String>,
+}
+
+/// 可热换的白名单槽：Arc<RwLock<Arc<BTreeSet>>>——读侧 clone Arc（无锁宽临界
+/// 区），热重载写侧整槽替换；None = 未就绪（fail-closed）。物料文件 mtime
+/// 轮询触发重载，重载失败保留旧表并 warn 留痕（不降级、不断服）。
+#[derive(Clone)]
+struct AllowlistHot {
+    path: Option<String>,
+    state: Arc<std::sync::RwLock<Option<Arc<BTreeSet<String>>>>>,
+}
+
+impl AllowlistHot {
+    fn unready() -> Self {
+        Self {
+            path: None,
+            state: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    fn ready(path: String, set: BTreeSet<String>) -> Self {
+        Self {
+            path: Some(path),
+            state: Arc::new(std::sync::RwLock::new(Some(Arc::new(set)))),
+        }
+    }
+
+    fn get(&self) -> Option<Arc<BTreeSet<String>>> {
+        // 锁中毒（写侧 panic 残留）按未就绪处理：fail-closed 拒绝，不扩散 panic
+        self.state.read().ok().and_then(|g| g.clone())
+    }
+
+    fn swap(&self, set: BTreeSet<String>) {
+        if let Ok(mut g) = self.state.write() {
+            *g = Some(Arc::new(set));
+        } else {
+            tracing::error!("allowlist 槽锁中毒，热重载写入被拒（fail-closed 保留执法现状）");
+        }
+    }
+}
+
+/// 物料热重载任务：mtime 轮询（10s）驱动；文件 mtime 变化才重载。
+async fn allowlist_hot_reload_task(path: String, hot: AllowlistHot) {
+    let mut last = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok());
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        let current = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        if current.is_some() && current != last {
+            last = current;
+            match load_model_allowlist_file(&path) {
+                Ok(set) => {
+                    tracing::info!("白名单物料热重载成功: {path}（{} 个模型）", set.len());
+                    hot.swap(set);
+                }
+                Err(e) => {
+                    tracing::warn!("白名单物料热重载失败，保留旧表（fail-visible 不断服）: {e}");
+                }
+            }
+        }
+    }
 }
 
 fn main() {
@@ -192,6 +256,10 @@ fn main() {
         None => {}
     }
     let caller_token = cfg.caller_token.clone();
+    let allowlist_hot = match (allowlist, cfg.model_allowlist_path.clone()) {
+        (Some(set), Some(path)) => AllowlistHot::ready(path, set),
+        _ => AllowlistHot::unready(),
+    };
     let state = PluginState {
         cfg: Arc::new(cfg),
         http: std::sync::Arc::new(match build_http_client() {
@@ -208,7 +276,7 @@ fn main() {
                 std::process::exit(1);
             }
         }),
-        allowlist: Arc::new(allowlist),
+        allowlist: allowlist_hot.clone(),
         routes: routes.map(Arc::new),
         caller_token,
     };
@@ -223,6 +291,12 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // 物料热重载哨兵：mtime 轮询驱动准入清单热生效（翻译器/配置面改文件
+    // 即可，无需重启插件；重载失败保留旧表，fail-visible 不断服）
+    if let Some(path) = state.allowlist.path.clone() {
+        let hot = state.allowlist.clone();
+        runtime.spawn(allowlist_hot_reload_task(path, hot));
+    }
     runtime.block_on(async move {
         let app = Router::new()
             .route("/services/ai_plugin_chat", post(ai_plugin_chat))
@@ -292,10 +366,10 @@ async fn health() -> Json<Value> {
 /// 扩展执行体门禁（/llm/execute 与 /llm/execute-stream 共用）：调用方令牌
 /// 校验（配置后启用）+ 白名单就绪校验（fail-closed）。通过返回白名单引用，
 /// 否则返回已构造的错误响应。
-fn require_ext_gate<'a>(
-    st: &'a PluginState,
+fn require_ext_gate(
+    st: &PluginState,
     headers: &axum::http::HeaderMap,
-) -> Result<&'a BTreeSet<String>, Response> {
+) -> Result<std::sync::Arc<BTreeSet<String>>, Response> {
     // 调用方令牌校验(配置后启用)——本机其他进程无令牌即 401,
     // 防烧用户配额;浏览器侧被 JSON preflight 天然阻断。
     if let Some(expected) = st.caller_token.as_deref() {
@@ -310,7 +384,7 @@ fn require_ext_gate<'a>(
                 .into_response());
         }
     }
-    match st.allowlist.as_ref() {
+    match st.allowlist.get() {
         Some(allowlist) => Ok(allowlist),
         None => {
             let ext_configured = st.cfg.llm_execute_url.is_some()
@@ -348,7 +422,7 @@ async fn llm_execute(
     match call_llm_ext(
         &st.cfg,
         &st.execute_http,
-        allowlist,
+        &allowlist,
         st.routes.as_deref(),
         &body,
     )
@@ -378,7 +452,7 @@ async fn llm_execute_stream(
     match call_llm_ext_stream(
         &st.cfg,
         &st.execute_http,
-        allowlist,
+        &allowlist,
         st.routes.as_deref(),
         &body,
     )
@@ -420,7 +494,8 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
                 .into_response();
         }
     }
-    match st.allowlist.as_ref() {
+    let hot = st.allowlist.get();
+    match hot.as_ref() {
         None => Json(json!({
             "ready": false,
             "models": [],
@@ -613,7 +688,10 @@ mod tests {
             cfg: Arc::new(cfg),
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(reqwest::Client::new()),
-            allowlist: Arc::new(allowlist),
+            allowlist: match allowlist {
+                Some(set) => AllowlistHot::ready("test-material.json".to_string(), set),
+                None => AllowlistHot::unready(),
+            },
             routes: None,
             caller_token,
         }
@@ -717,10 +795,23 @@ mod tests {
             cfg: Arc::new(cfg),
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(build_llm_execute_client().expect("execute client")),
-            allowlist: Arc::new(Some(allowlist)),
+            allowlist: AllowlistHot::ready("test-material.json".to_string(), allowlist),
             routes: routes.map(Arc::new),
             caller_token,
         }
+    }
+
+    #[tokio::test]
+    async fn allowlist_hot_slot_swaps_atomically() {
+        let hot = AllowlistHot::ready("m.json".to_string(), BTreeSet::from(["a".to_string()]));
+        assert!(hot.get().expect("ready slot").contains("a"));
+        hot.swap(BTreeSet::from(["b".to_string()]));
+        let cur = hot.get().expect("ready slot");
+        assert!(
+            cur.contains("b") && !cur.contains("a"),
+            "swap replaces whole set"
+        );
+        assert!(AllowlistHot::unready().get().is_none());
     }
 
     #[tokio::test]
@@ -775,7 +866,7 @@ mod tests {
             cfg: Arc::new(cfg),
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(reqwest::Client::new()),
-            allowlist: Arc::new(Some(set)),
+            allowlist: AllowlistHot::ready("test-material.json".to_string(), set),
             routes: routes.map(Arc::new),
             caller_token: None,
         };
@@ -940,7 +1031,10 @@ mod tests {
             cfg: Arc::new(cfg),
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(build_llm_execute_client().expect("execute client")),
-            allowlist: Arc::new(allowlist),
+            allowlist: match allowlist {
+                Some(set) => AllowlistHot::ready("test-material.json".to_string(), set),
+                None => AllowlistHot::unready(),
+            },
             routes: None,
             caller_token,
         }
@@ -1090,7 +1184,7 @@ mod tests {
             cfg: Arc::new(cfg),
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(reqwest::Client::new()),
-            allowlist: Arc::new(None),
+            allowlist: AllowlistHot::unready(),
             routes: None,
             caller_token,
         }
