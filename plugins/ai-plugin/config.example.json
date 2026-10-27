@@ -11,7 +11,7 @@
   "llm_execute_url": "https://api.minimaxi.com/v1/text/chatcompletion_v2",
   "_model_allowlist_path_说明": "llm_execute_url 配置后必填（fail-closed 执法面）：模型准入白名单物料 00_constraint_model_allowlist.json 的 server 侧副本路径；缺失/装载失败 = /llm/execute 拒绝所有请求。llm_providers 启用时同为必填（路由 ⊆ 准入执法）",
   "model_allowlist_path": "data/agent-governance/rules/00_constraint_model_allowlist.json",
-  "_llm_providers_说明": "可选多 provider 路由（POST /llm/execute 按请求 model 路由）：models 须 ⊆ 白名单物料（违者该 provider 拒绝装载），同一模型只能归属一个 provider（重复=整表拒绝）；api_key_env 只填环境变量名（key 不落盘，缺失=该 provider 拒绝装载）；default_params 打底出站请求体，请求体同键字段优先。不填 = 单端点模式（llm_execute_url 既有行为零变化）；填了 = 路由模式（llm_execute_url 对 /llm/execute 不再生效，绝不回落单端点）",
+  "_llm_providers_说明": "可选多 provider 路由（POST /llm/execute 按请求 model 路由）：models 须 ⊆ 白名单物料（违者该 provider 拒绝装载），同一模型只能归属一个 provider（重复=整表拒绝）；凭据解析顺序 = 环境变量 api_key_env（推荐，不落盘）> 配置 api_key（明文落盘需自管文件权限，供无 env 注入的部署形态），皆缺 = 该 provider 拒绝装载；default_params 打底出站请求体，请求体同键字段优先。不填 = 单端点模式（llm_execute_url 既有行为零变化）；填了 = 路由模式（llm_execute_url 对 /llm/execute 不再生效，绝不回落单端点）",
   "llm_providers": [
     {
       "name": "minimax",

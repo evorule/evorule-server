@@ -193,16 +193,20 @@ pub struct PluginConfig {
 
 /// 多 provider 路由的单条 provider 声明（`llm_providers` 配置节数组元素）。
 ///
-/// 凭据纪律：本结构只保存凭据的**环境变量名**（`api_key_env`），不保存
-/// 凭据本体——key 在启动装配期从环境解析，不落盘、不进日志/错误消息。
+/// 凭据纪律：凭据解析顺序 = 环境变量 `api_key_env`（推荐，不落盘）> 配置
+/// 字段 `api_key`（明文落盘，部署方自管文件权限——与既有单端点
+/// `llm_api_key` 内联形态同信任级别，供无 env 注入的部署形态）；两者皆缺
+/// → 该 provider 拒绝装载。key 不进日志/错误消息。
 #[derive(Clone, Debug)]
 pub struct ProviderRouteConfig {
     /// provider 名（配置内唯一；自诊断与路由日志用）
     pub name: String,
     /// 上游 provider 全 URL（POST 出站；全 URL 形态，不做路径拼接）
     pub execute_url: String,
-    /// 该 provider API key 所在的环境变量名
+    /// 该 provider API key 所在的环境变量名（推荐凭据载体）
     pub api_key_env: String,
+    /// 该 provider API key 的配置文件兜底（可选；明文落盘需自管文件权限）
+    pub api_key: Option<String>,
     /// 该 provider 可达的模型名（须 ⊆ 白名单物料；全局不可与其他 provider 重复）
     pub models: Vec<String>,
     /// 出站请求体缺省参数（可选；请求体同键字段优先，见 `merge_default_params`）
@@ -508,8 +512,14 @@ fn parse_provider_route_configs(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                at("缺少非空字符串 'api_key_env'（凭据只存环境变量名，不落盘）".to_string())
+                at("缺少非空字符串 'api_key_env'（凭据载体名；推荐环境变量）".to_string())
             })?;
+        let api_key = item
+            .get("api_key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let models_arr = obj
             .get("models")
             .and_then(Value::as_array)
@@ -540,6 +550,7 @@ fn parse_provider_route_configs(
             name: name.to_string(),
             execute_url: execute_url.to_string(),
             api_key_env: api_key_env.to_string(),
+            api_key,
             models,
             default_params,
         });
@@ -1485,12 +1496,20 @@ pub fn build_model_routes(
             ));
             continue;
         }
+        // 凭据解析：env（推荐，不落盘）> 配置 api_key 兜底（明文落盘需自管
+        // 权限）；皆缺 → 该 provider 拒绝装载（fail-closed，诊断留痕）
         let key = env(&p.api_key_env)
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                p.api_key
+                    .clone()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            });
         let Some(key) = key else {
             diags.push(format!(
-                "provider '{}' 未装载: 凭据环境变量 {} 未设置或为空",
+                "provider '{}' 未装载: 凭据未配置（环境变量 {} 与配置 api_key 皆空）",
                 p.name, p.api_key_env
             ));
             continue;
@@ -3190,6 +3209,38 @@ mod tests {
         assert_eq!(r.resolve("m-a").unwrap().execute_url, "http://x/a");
         assert_eq!(r.resolve("m-b").unwrap().provider, "p2");
         assert_eq!(r.routed_models().count(), 2);
+    }
+
+    #[test]
+    fn routes_key_resolution_env_wins_over_config_fallback() {
+        let cfg = providers_cfg(json!([
+            {"name":"envkey","execute_url":"http://x","api_key_env":"K_HAVE","models":["m-a"],"api_key":"cfg-k"},
+            {"name":"cfgkey","execute_url":"http://y","api_key_env":"K_MISS","models":["m-b"],"api_key":"cfg-k2"},
+            {"name":"nokey","execute_url":"http://z","api_key_env":"K_NONE","models":["m-c"]}
+        ]));
+        let set = allow_set(&["m-a", "m-b", "m-c"]);
+        let (routes, diags) = build_model_routes(&cfg, Some(&set), &|k| {
+            if k == "K_HAVE" {
+                Some("env-k".to_string())
+            } else {
+                None
+            }
+        });
+        let r = routes.unwrap();
+        assert_eq!(
+            r.resolve("m-a").unwrap().api_key,
+            "env-k",
+            "env 优先于配置兜底"
+        );
+        assert_eq!(
+            r.resolve("m-b").unwrap().api_key,
+            "cfg-k2",
+            "无 env 时配置 api_key 兜底"
+        );
+        assert!(r.resolve("m-c").is_none(), "两者皆缺=拒绝装载");
+        assert!(diags
+            .iter()
+            .any(|d| d.contains("nokey") && d.contains("皆空")));
     }
 
     #[test]
