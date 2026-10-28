@@ -1640,3 +1640,138 @@ async fn counterfactual_sweep_e2e_missing_param_path_fails_fast() {
         .await;
     assert!(r.is_err(), "缺 param_path 必须 fail-fast");
 }
+
+// ===== o15：五项服务补同输入逐位一致断言 =====
+//
+// 背景：对外「bitwise 可重放」主张要求每项服务都有显式的同输入双跑断言。
+// 下列五项此前只有功能 e2e（单跑），无逐位断言 ⇒ 对外只能按 9/14 口径说。
+// 断言口径与既有 `same_input_bit_identical_results` 完全一致：
+// 同一份 params 连跑两次，比 `to_string()` 逐字节相等。
+// 本段只动测试面，不改任何生产代码。
+
+#[tokio::test]
+async fn dimension_from_unit_bit_identical_double_run() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let params = svc_params(
+        "inference_dimension_from_unit",
+        JsonValue::object_from_pairs(&[(
+            "units",
+            JsonValue::Array(vec![str_val("m"), str_val("kg"), str_val("s")]),
+        )]),
+    );
+    let r1 = router.execute(&params).await.unwrap();
+    let r2 = router.execute(&params).await.unwrap();
+    assert_eq!(
+        r1.to_string(),
+        r2.to_string(),
+        "inference_dimension_from_unit 同输入两次执行必须逐位一致"
+    );
+}
+
+#[tokio::test]
+async fn dimension_compare_units_bit_identical_double_run() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let params = svc_params(
+        "inference_dimension_compare_units",
+        JsonValue::object_from_pairs(&[(
+            "pairs",
+            JsonValue::Array(vec![
+                JsonValue::Array(vec![str_val("N"), str_val("kg·m/s²")]), // 等价
+                JsonValue::Array(vec![str_val("m"), str_val("kg")]),      // 不等价
+                JsonValue::Array(vec![str_val("m"), str_val("xyz")]),     // 右侧未知
+            ]),
+        )]),
+    );
+    let r1 = router.execute(&params).await.unwrap();
+    let r2 = router.execute(&params).await.unwrap();
+    assert_eq!(
+        r1.to_string(),
+        r2.to_string(),
+        "inference_dimension_compare_units 同输入两次执行必须逐位一致"
+    );
+}
+
+#[tokio::test]
+async fn equivalence_probe_bit_identical_double_run() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let (rules1, sources1) = stage4_set_rules(1);
+    let (rules2, sources2) = stage4_set_rules(2);
+    let params = svc_params(
+        "inference_equivalence_probe",
+        JsonValue::object_from_pairs(&[
+            ("rules1", JsonValue::Array(rules1.clone())),
+            ("sources1", JsonValue::Array(sources1.clone())),
+            ("rules2", JsonValue::Array(rules2.clone())),
+            ("sources2", JsonValue::Array(sources2.clone())),
+            ("probe_inputs", JsonValue::Array(vec![stage4_doc(true)])),
+        ]),
+    );
+    let r1 = router.execute(&params).await.unwrap();
+    let r2 = router.execute(&params).await.unwrap();
+    assert_eq!(
+        r1.to_string(),
+        r2.to_string(),
+        "inference_equivalence_probe 同输入两次执行必须逐位一致"
+    );
+}
+
+#[tokio::test]
+async fn differential_diff_bit_identical_double_run() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let mk_set = |attr: &str| {
+        JsonValue::object_from_pairs(&[
+            ("type", str_val("set")),
+            (
+                "params",
+                JsonValue::object_from_pairs(&[
+                    ("attr", str_val(attr)),
+                    ("operation", str_val("set")),
+                    ("value", JsonValue::Integer(1)),
+                ]),
+            ),
+        ])
+    };
+    let src = JsonValue::Array(vec![str_val("rules/a.json")]);
+    let params = svc_params(
+        "inference_differential_diff",
+        JsonValue::object_from_pairs(&[
+            ("rules1", JsonValue::Array(vec![mk_set("x")])),
+            ("sources1", src.clone()),
+            ("rules2", JsonValue::Array(vec![mk_set("y")])),
+            ("sources2", src.clone()),
+        ]),
+    );
+    let r1 = router.execute(&params).await.unwrap();
+    let r2 = router.execute(&params).await.unwrap();
+    assert_eq!(
+        r1.to_string(),
+        r2.to_string(),
+        "inference_differential_diff 同输入两次执行必须逐位一致"
+    );
+}
+
+#[tokio::test]
+async fn counterfactual_sweep_bit_identical_double_run() {
+    let router = InferenceServiceRouter::new(noop_fallback());
+    let params = svc_params(
+        "inference_counterfactual_sweep",
+        JsonValue::object_from_pairs(&[
+            ("rules", JsonValue::Array(stage3_rules())),
+            ("sources", JsonValue::Array(stage3_sources())),
+            ("document", stage3_doc()),
+            ("param_path", str_val("payload.flag")),
+            (
+                "values",
+                JsonValue::Array(vec![JsonValue::Bool(true), JsonValue::Bool(false)]),
+            ),
+            ("max_steps", JsonValue::Integer(16)),
+        ]),
+    );
+    let r1 = router.execute(&params).await.unwrap();
+    let r2 = router.execute(&params).await.unwrap();
+    assert_eq!(
+        r1.to_string(),
+        r2.to_string(),
+        "inference_counterfactual_sweep 同输入两次执行必须逐位一致"
+    );
+}
