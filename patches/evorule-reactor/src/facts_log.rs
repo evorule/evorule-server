@@ -170,6 +170,118 @@ struct FactsLogInner {
 
     /// 压缩快照（A-3：手动调用 compact() 后填充，None = 未压缩）
     compacted_snapshot: Option<CompactedSnapshot>,
+    /// fork/派生基态锚定事实的 id 分配器（M-4；独立于常规 FactId 流）
+    next_anchor_id: u64,
+}
+
+/// 将一条 Fact 的效果应用到内存状态（快照/队列/版本/last_stable）
+///
+/// [`FactsLog::append`]（进程内追加）与 WAL 重放（`replay_wal_records` /
+/// `recover_with_options`）的**单一事实应用点**：两条路径的版本推进与
+/// 快照更新语义由本函数构造性保证一致。历史教训：双份实现曾漂移导致
+/// WAL 重放不推进版本（与 append 不一致），此后收敛为单点。
+///
+/// 版本规则：StateTransition / IoResponse / PayloadUpdate 推进 +1；
+/// Stable 记录 last_stable；Command / IoRequest / Error / TransitionTrace /
+/// Violation 为记录性或触发事实，不改快照不推进版本。
+///
+/// Kani 模式：简化为仅 version / last_stable 推进（跳过 FixedMap/Vec
+/// 路径的快照更新——CBMC 状态爆炸；哈希链正确性由既有 proof 覆盖，
+/// 快照路径不在证明范围）。
+fn apply_fact_to_state(inner: &mut FactsLogInner, fact: &Fact) -> Result<(), FactsLogError> {
+    #[cfg(kani)]
+    {
+        match fact {
+            Fact::StateTransition { .. } | Fact::IoResponse { .. } | Fact::PayloadUpdate { .. } => {
+                inner.version = inner
+                    .version
+                    .checked_add(1)
+                    .ok_or(FactsLogError::VersionOverflow)?;
+            }
+            Fact::Stable { .. } => {
+                inner.last_stable_version = inner.version;
+            }
+            // 显式匹配剩余变体（门禁禁止 Fact match 通配符 _）
+            Fact::Command { .. }
+            | Fact::IoRequest { .. }
+            | Fact::Error { .. }
+            | Fact::TransitionTrace { .. }
+            | Fact::Violation { .. } => {}
+        }
+        return Ok(());
+    }
+    #[cfg(not(kani))]
+    match fact {
+        Fact::StateTransition {
+            new_payload,
+            new_queue,
+            ..
+        } => {
+            inner.current_snapshot = new_payload.clone();
+            inner.current_queue = new_queue.clone();
+            inner.version = inner
+                .version
+                .checked_add(1)
+                .ok_or(FactsLogError::VersionOverflow)?;
+        }
+        Fact::IoResponse { .. } => {
+            inner.version = inner
+                .version
+                .checked_add(1)
+                .ok_or(FactsLogError::VersionOverflow)?;
+        }
+        Fact::Stable { .. } => {
+            inner.last_stable_version = inner.version;
+        }
+        Fact::PayloadUpdate { path, value, .. } => {
+            if let Some(target) = resolve_path_mut(&mut inner.current_snapshot, path) {
+                *target = value.clone();
+            } else {
+                let parts: Vec<&str> = path.split('.').collect();
+                if !parts.is_empty() {
+                    if parts.len() == 1 && !path.contains('[') {
+                        if let JsonValue::Object(map) = &mut inner.current_snapshot {
+                            map.insert(path.clone(), value.clone());
+                        }
+                    } else {
+                        let mut current = &mut inner.current_snapshot;
+                        for (i, &part) in parts.iter().enumerate() {
+                            if i == parts.len() - 1 {
+                                if let JsonValue::Object(map) = current {
+                                    map.insert(part.to_string(), value.clone());
+                                }
+                            } else if let JsonValue::Object(map) = current {
+                                if !map.contains_key(part) {
+                                    map.insert(part.to_string(), JsonValue::empty_object());
+                                }
+                                if let Some(next) = map.get_mut(part) {
+                                    current = next;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            inner.version = inner
+                .version
+                .checked_add(1)
+                .ok_or(FactsLogError::VersionOverflow)?;
+        }
+        // 记录性事实与触发事实：不修改快照，版本号不变
+        Fact::Command { .. } | Fact::IoRequest { .. } | Fact::Error { .. } => {}
+        Fact::TransitionTrace { .. } => {
+            // 记录性事实，不修改快照，版本号不变（与 Command 同类）
+        }
+        Fact::Violation { .. } => {
+            // 违规拦截事实：记录性事实，不修改快照，版本号不变
+            // （违规动作被拒，payload/queue 保持原样，与 TransitionTrace 同类）
+        }
+    }
+    Ok(())
 }
 
 /// 内部锁包装器
@@ -217,6 +329,60 @@ impl FactsLogLock {
     fn write(&self) -> std::cell::RefMut<'_, FactsLogInner> {
         self.0.borrow_mut()
     }
+}
+
+/// 从 WAL 记录序列重放构建纯内存 FactsLog（无文件系统、无写句柄挂载）
+///
+/// `FactsLog::recover_with_options` 的纯核心，也是离线重放/验证的共用入口：
+/// 事实应用语义与进程内 [`FactsLog::append`] 由 [`apply_fact_to_state`] 单点
+/// 保证一致。哈希链恢复口径与挂载版 recover 一致：新格式（含 chain_hash
+/// 字段）取尾条 chain_hash；旧格式或混合格式全链重算。
+#[cfg(feature = "persistence")]
+pub fn replay_wal_records(records: &[crate::wal::WalRecord]) -> Result<FactsLog, FactsLogError> {
+    let log = FactsLog::new();
+    {
+        let mut inner = log.inner.write();
+
+        // 跟踪是否有任何记录带哈希字段
+        let mut has_hash_records = false;
+
+        for record in records {
+            let version_before = record.version_before;
+            let fact = &record.fact;
+
+            if record.chain_hash.is_some() {
+                has_hash_records = true;
+            }
+
+            inner.history.push((version_before, fact.clone()));
+            // A-3：重建索引
+            let idx = inner.history.len() - 1;
+            inner.version_index.entry(version_before).or_insert(idx);
+            inner.fact_id_index.insert(fact.id(), idx);
+            if let Fact::PayloadUpdate { path, .. } = fact {
+                inner.path_index.entry(path.clone()).or_default().push(idx);
+            }
+            apply_fact_to_state(&mut inner, fact)?;
+        }
+
+        // 恢复审计链哈希：新格式取尾条 chain_hash；旧格式/混合格式全链重算
+        if has_hash_records {
+            if let Some(last_record) = records.last() {
+                if let Some(chain_hash) = &last_record.chain_hash {
+                    inner.last_hash = chain_hash.clone();
+                } else {
+                    let facts: Vec<Fact> = records.iter().map(|r| r.fact.clone()).collect();
+                    inner.last_hash = crate::hash::compute_chain_hash(&facts)
+                        .map_err(|e| FactsLogError::WalError(format!("hash recover error: {e}")))?;
+                }
+            }
+        } else {
+            let facts: Vec<Fact> = records.iter().map(|r| r.fact.clone()).collect();
+            inner.last_hash = crate::hash::compute_chain_hash(&facts)
+                .map_err(|e| FactsLogError::WalError(format!("hash recover error: {e}")))?;
+        }
+    }
+    Ok(log)
 }
 
 /// Append-Only 事实审计链
@@ -312,6 +478,7 @@ impl FactsLog {
             fact_id_index: BTreeMap::new(),
             path_index: BTreeMap::new(),
             compacted_snapshot: None,
+            next_anchor_id: 1_000_000_000,
         })
     }
 
@@ -351,6 +518,24 @@ impl FactsLog {
     /// 设置初始 payload 和版本号，但不增加版本计数。
     /// 这用于从父会话 fork 时继承状态。
     pub fn set_initial_state(&self, payload: JsonValue, version: u64) {
+        let mut inner = self.inner.write();
+        // M-4：fork/派生基态 digest 锚定入链（血统可审：篡改基态即链失配；
+        // 全文经 digest 引用不膨胀链——由快照 API 消息，信息零丢失）
+        let digest = crate::hash::content_hash(&payload).unwrap_or_default();
+        let anchor_value = JsonValue::object_from_pairs(&[
+            ("digest", JsonValue::string(digest)),
+            ("version", JsonValue::integer(version as i64)),
+        ]);
+        let anchor_id = FactId(inner.next_anchor_id);
+        inner.next_anchor_id = inner.next_anchor_id.saturating_add(1);
+        let fact = Fact::PayloadUpdate {
+            id: anchor_id,
+            path: "__fork__.initial_state".to_string(),
+            value: anchor_value,
+        };
+        // 先写 WAL 再改内存（write-ahead 语义）
+        drop(inner);
+        let _ = self.append(fact); // best-effort：失败由调用方 WAL 机制处理
         let mut inner = self.inner.write();
         inner.current_snapshot = payload;
         inner.version = version;
@@ -418,6 +603,7 @@ impl FactsLog {
             fact_id_index: BTreeMap::new(),
             path_index: BTreeMap::new(),
             compacted_snapshot: None,
+            next_anchor_id: 1_000_000_000,
         }))
     }
 
@@ -447,6 +633,7 @@ impl FactsLog {
             fact_id_index: BTreeMap::new(),
             path_index: BTreeMap::new(),
             compacted_snapshot: None,
+            next_anchor_id: 1_000_000_000,
         })
     }
 
@@ -508,9 +695,10 @@ impl FactsLog {
     /// # 错误
     /// - `WalError`：WAL 读取失败或重放完成后挂载失败
     /// - `VersionOverflow`：重放过程中版本号溢出
-    // 109 行: WAL 重放 + mount + 哈希链恢复必须保持单函数原子语义
-    // 拆函数会让 4 阶段 (load/replay/mount/hash-chain) 状态传递出错
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// 薄壳三段：read（含轮换分片合并）→ [`replay_wal_records`]（纯重放）
+    /// → mount（append 模式挂载）。事实应用与哈希恢复语义在
+    /// replay_wal_records / apply_fact_to_state 单点维护。
     pub fn recover_with_options<P: AsRef<std::path::Path>>(
         path: P,
         max_wal_size_bytes: u64,
@@ -520,125 +708,9 @@ impl FactsLog {
 
         let records =
             read_wal_with_hash(&path).map_err(|e| FactsLogError::WalError(e.to_string()))?;
-        let log = Self::new();
+        let log = replay_wal_records(&records)?;
         {
             let mut inner = log.inner.write();
-
-            // 跟踪是否有任何记录带哈希字段
-            let mut has_hash_records = false;
-
-            for record in &records {
-                let version_before = record.version_before;
-                let fact = &record.fact;
-
-                // 检查是否为带哈希的新格式记录
-                if record.chain_hash.is_some() {
-                    has_hash_records = true;
-                }
-
-                inner.history.push((version_before, fact.clone()));
-                // A-3：重建索引
-                let idx = inner.history.len() - 1;
-                inner.version_index.entry(version_before).or_insert(idx);
-                inner.fact_id_index.insert(fact.id(), idx);
-                if let Fact::PayloadUpdate { path, .. } = fact {
-                    inner.path_index.entry(path.clone()).or_default().push(idx);
-                }
-                match fact {
-                    Fact::StateTransition {
-                        new_payload,
-                        new_queue,
-                        ..
-                    } => {
-                        inner.current_snapshot = new_payload.clone();
-                        inner.current_queue = new_queue.clone();
-                        inner.version = inner
-                            .version
-                            .checked_add(1)
-                            .ok_or(FactsLogError::VersionOverflow)?;
-                    }
-                    Fact::IoResponse { .. } => {
-                        inner.version = inner
-                            .version
-                            .checked_add(1)
-                            .ok_or(FactsLogError::VersionOverflow)?;
-                    }
-                    Fact::Stable { .. } => {
-                        inner.last_stable_version = inner.version;
-                    }
-                    Fact::PayloadUpdate { path, value, .. } => {
-                        if let Some(target) = resolve_path_mut(&mut inner.current_snapshot, path) {
-                            *target = value.clone();
-                        } else {
-                            let parts: Vec<&str> = path.split('.').collect();
-                            if !parts.is_empty() {
-                                if parts.len() == 1 && !path.contains('[') {
-                                    if let JsonValue::Object(map) = &mut inner.current_snapshot {
-                                        map.insert(path.clone(), value.clone());
-                                    }
-                                } else {
-                                    let mut current = &mut inner.current_snapshot;
-                                    for (i, &part) in parts.iter().enumerate() {
-                                        if i == parts.len() - 1 {
-                                            if let JsonValue::Object(map) = current {
-                                                map.insert(part.to_string(), value.clone());
-                                            }
-                                        } else if let JsonValue::Object(map) = current {
-                                            if !map.contains_key(part) {
-                                                map.insert(
-                                                    part.to_string(),
-                                                    JsonValue::empty_object(),
-                                                );
-                                            }
-                                            if let Some(next) = map.get_mut(part) {
-                                                current = next;
-                                            } else {
-                                                break;
-                                            }
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // 断点 11 修复：WAL 重放也必须递增 version（与 append 一致）
-                        inner.version = inner
-                            .version
-                            .checked_add(1)
-                            .ok_or(FactsLogError::VersionOverflow)?;
-                    }
-                    // TransitionTrace / Violation：记录性事实，不更新快照、不推进版本
-                    // （与 Command/IoRequest/Error 同类；Violation 为 enforce 拦截事实）
-                    Fact::Command { .. }
-                    | Fact::IoRequest { .. }
-                    | Fact::Error { .. }
-                    | Fact::TransitionTrace { .. }
-                    | Fact::Violation { .. } => {}
-                }
-            }
-
-            // 恢复审计链哈希
-            if has_hash_records {
-                // 新格式：使用最后一条记录的 chain_hash
-                if let Some(last_record) = records.last() {
-                    if let Some(chain_hash) = &last_record.chain_hash {
-                        inner.last_hash = chain_hash.clone();
-                    } else {
-                        // 最后一条记录无哈希（混合格式），重新计算
-                        let facts: Vec<Fact> = records.iter().map(|r| r.fact.clone()).collect();
-                        inner.last_hash = crate::hash::compute_chain_hash(&facts).map_err(|e| {
-                            FactsLogError::WalError(format!("hash recover error: {e}"))
-                        })?;
-                    }
-                }
-            } else {
-                // 旧格式：重新计算哈希链
-                let facts: Vec<Fact> = records.iter().map(|r| r.fact.clone()).collect();
-                inner.last_hash = crate::hash::compute_chain_hash(&facts)
-                    .map_err(|e| FactsLogError::WalError(format!("hash recover error: {e}")))?;
-            }
-
             // 重放完成，挂载 WAL 继续追加
             let wal = WalWriter::append_with_options(path, max_wal_size_bytes, fsync)
                 .map_err(|e| FactsLogError::WalError(e.to_string()))?;
@@ -669,45 +741,21 @@ impl FactsLog {
     /// 若挂载了 WAL，则先 write-ahead 写入磁盘（含哈希字段）并 flush，再更新内存状态。
     /// WAL 写失败时内存尚未更新，返回 `WalError` 让调用方决定是否终止反应器，
     /// 避免内存与磁盘状态分叉。
-    // 115 行: Kani 简化路径 + 非 Kani 完整路径 (哈希链 + WAL 写 + 内存更新) 必须
-    // 保持单函数原子语义, 拆函数会让 #[cfg(kani)] 分支 + 错误处理链断裂
-    #[allow(clippy::too_many_lines)]
+    // WAL write-ahead 原子序（哈希链计算 → 先写磁盘 → 后更新内存）必须保持
+    // 单函数；事实应用细节已提取至 apply_fact_to_state（与重放路径共用单点）
     pub fn append(&self, fact: Fact) -> Result<u64, FactsLogError> {
         let mut inner = self.inner.write();
 
         let version_before = inner.version;
 
-        // === Kani 模式：简化 append，跳过 FixedMap/Vec/String 复杂路径 ===
-        // Kani 对 FixedMap clone/insert、Vec 动态分配、String 比较的建模能力有限，
-        // 会导致 CBMC 状态爆炸/OOM。Kani 模式下只保留结构性不变量验证：
-        // - history push（history_len 递增）
-        // - version 递增（StateTransition/IoResponse/PayloadUpdate +1）
-        // - last_stable_version 更新（Stable 时）
-        // 跳过 last_hash 更新（String 分配导致 OOM，哈希链正确性由 C1-2 覆盖）
-        // 跳过 current_snapshot/current_queue 更新（FixedMap/Vec 路径）。
+        // === Kani 模式：简化 append ===
+        // 事实应用走 apply_fact_to_state 的 Kani 简化分支（跳过 FixedMap/Vec/
+        // String 复杂路径——CBMC 状态爆炸/OOM；只保留结构性不变量：history
+        // push、version 递增、last_stable 更新；跳过 last_hash 更新与快照更新，
+        // 哈希链正确性由既有 proof 覆盖）。
         #[cfg(kani)]
         {
-            match &fact {
-                Fact::StateTransition { .. }
-                | Fact::IoResponse { .. }
-                | Fact::PayloadUpdate { .. } => {
-                    inner.version = inner
-                        .version
-                        .checked_add(1)
-                        .ok_or(FactsLogError::VersionOverflow)?;
-                }
-                Fact::Stable { .. } => {
-                    inner.last_stable_version = inner.version;
-                }
-                // 显式匹配剩余变体（门禁禁止 Fact match 通配符 _）
-                // TransitionTrace / Violation：记录性事实，不更新快照、不推进版本
-                // （与 Command/IoRequest/Error 同类；Violation 为 enforce 原语拦截事实）
-                Fact::Command { .. }
-                | Fact::IoRequest { .. }
-                | Fact::Error { .. }
-                | Fact::TransitionTrace { .. }
-                | Fact::Violation { .. } => {}
-            }
+            apply_fact_to_state(&mut inner, &fact)?;
             inner.history.push((version_before, fact));
             return Ok(inner.version);
         }
@@ -769,78 +817,8 @@ impl FactsLog {
         // 更新哈希链末尾
         inner.last_hash = chain_hash;
 
-        // 更新内存状态
-        match &fact {
-            Fact::StateTransition {
-                new_payload,
-                new_queue,
-                ..
-            } => {
-                inner.current_snapshot = new_payload.clone();
-                inner.current_queue = new_queue.clone();
-                inner.version = inner
-                    .version
-                    .checked_add(1)
-                    .ok_or(FactsLogError::VersionOverflow)?;
-            }
-            Fact::IoResponse { .. } => {
-                inner.version = inner
-                    .version
-                    .checked_add(1)
-                    .ok_or(FactsLogError::VersionOverflow)?;
-            }
-            Fact::Stable { .. } => {
-                inner.last_stable_version = inner.version;
-            }
-            Fact::PayloadUpdate { path, value, .. } => {
-                if let Some(target) = resolve_path_mut(&mut inner.current_snapshot, path) {
-                    *target = value.clone();
-                } else {
-                    let parts: Vec<&str> = path.split('.').collect();
-                    if !parts.is_empty() {
-                        if parts.len() == 1 && !path.contains('[') {
-                            if let JsonValue::Object(map) = &mut inner.current_snapshot {
-                                map.insert(path.clone(), value.clone());
-                            }
-                        } else {
-                            let mut current = &mut inner.current_snapshot;
-                            for (i, &part) in parts.iter().enumerate() {
-                                if i == parts.len() - 1 {
-                                    if let JsonValue::Object(map) = current {
-                                        map.insert(part.to_string(), value.clone());
-                                    }
-                                } else if let JsonValue::Object(map) = current {
-                                    if !map.contains_key(part) {
-                                        map.insert(part.to_string(), JsonValue::empty_object());
-                                    }
-                                    if let Some(next) = map.get_mut(part) {
-                                        current = next;
-                                    } else {
-                                        break;
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                inner.version = inner
-                    .version
-                    .checked_add(1)
-                    .ok_or(FactsLogError::VersionOverflow)?;
-            }
-            Fact::Command { .. } | Fact::IoRequest { .. } | Fact::Error { .. } => {
-                // 这些事实不直接修改快照，版本号不变
-            }
-            Fact::TransitionTrace { .. } => {
-                // 记录性事实，不修改快照，版本号不变（与 Command 同类）
-            }
-            Fact::Violation { .. } => {
-                // 违规拦截事实（回归验证）：记录性事实，不修改快照，版本号不变
-                // —— 违规动作被拒，payload/queue 保持原样（与 TransitionTrace 同类）
-            }
-        }
+        // 更新内存状态（事实应用单点：与 WAL 重放路径语义由构造保证一致）
+        apply_fact_to_state(&mut inner, &fact)?;
 
         // 记录索引信息（fact 即将被 move 到 history）
         let fact_id = fact.id();
@@ -1166,7 +1144,8 @@ impl FactsLog {
 
     /// 轮换 WAL 文件（干预原语 wal.force_rotate 通路）
     ///
-    /// 文件后端：切新分片（纯追加切换，崩溃安全，不影响链内容与可回放性）；
+    /// 文件后端：切新分片（序号 +1 开新文件，旧分片保持完整——纯追加切换，
+    /// 崩溃安全，不影响链内容与可回放性），返回 `Ok(true)`；
     /// 纯内存模式 / 无可轮换后端：`Ok(false)`。轮换不经过 `fact` 通道、
     /// 不产生事实——它是存储层操作，与审计链内容无关。
     #[cfg(feature = "persistence")]
@@ -1191,6 +1170,84 @@ mod tests {
     #![allow(clippy::panic, clippy::expect_used, clippy::indexing_slicing)]
     use super::*;
     use crate::fact::{FactId, IoType};
+
+    /// 纯重放入口直测：append 路径与 replay_wal_records 路径的终态一致性
+    /// （快照/队列/版本/链尾哈希/历史长度/稳定版本六元组全等）
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn test_replay_wal_records_matches_append_path() {
+        use crate::wal::MemoryWalStore;
+
+        let store = MemoryWalStore::new();
+        let log = FactsLog::with_wal_store(Box::new(store.clone()));
+        let facts = vec![
+            Fact::Command {
+                id: FactId(1),
+                instruction: JsonValue::empty_object(),
+            },
+            Fact::StateTransition {
+                id: FactId(2),
+                cause: FactId(1),
+                new_payload: JsonValue::object_from_pairs(&[("x", JsonValue::Integer(1))]),
+                new_queue: vec![],
+            },
+            Fact::PayloadUpdate {
+                id: FactId(3),
+                path: "y.z".into(),
+                value: JsonValue::string("v"),
+            },
+            Fact::Stable {
+                id: FactId(4),
+                version: 2,
+            },
+        ];
+        for f in facts {
+            log.append(f).expect("append ok");
+        }
+        let (snap_a, queue_a, ver_a) = log.snapshot();
+        let hash_a = log.last_hash();
+
+        let records = store.records();
+        let replayed = replay_wal_records(&records).unwrap();
+        let (snap_b, queue_b, ver_b) = replayed.snapshot();
+        assert_eq!(ver_a, ver_b, "版本推进必须一致");
+        assert_eq!(snap_a, snap_b, "快照必须一致");
+        assert_eq!(queue_a, queue_b, "队列必须一致");
+        assert_eq!(hash_a, replayed.last_hash(), "链尾哈希必须一致");
+        assert_eq!(log.history_len(), replayed.history_len());
+        assert_eq!(replayed.last_stable_version(), 2);
+    }
+
+    /// 空记录与旧格式（无哈希字段）记录的重放边界：genesis 链尾 / 全链重算
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn test_replay_wal_records_empty_and_legacy() {
+        use crate::wal::WalRecord;
+
+        let empty = replay_wal_records(&[]).unwrap();
+        assert_eq!(empty.last_hash(), "genesis");
+        assert_eq!(empty.version(), 0);
+        assert_eq!(empty.history_len(), 0);
+
+        let legacy_fact = Fact::Command {
+            id: FactId(1),
+            instruction: JsonValue::empty_object(),
+        };
+        let legacy = vec![WalRecord {
+            version_before: 0,
+            fact: legacy_fact.clone(),
+            content_hash: None,
+            prev_hash: None,
+            chain_hash: None,
+        }];
+        let log = replay_wal_records(&legacy).unwrap();
+        assert_eq!(
+            log.last_hash(),
+            crate::hash::compute_chain_hash(&[legacy_fact]).unwrap(),
+            "旧格式（无哈希字段）必须全链重算"
+        );
+        assert_eq!(log.history_len(), 1);
+    }
 
     #[test]
     fn test_new_facts_log() {
@@ -1684,6 +1741,38 @@ mod tests {
     }
 
     #[cfg(feature = "persistence")]
+    #[test]
+    fn test_rotate_wal_memory_mode_returns_false() {
+        let log = FactsLog::new();
+        assert!(
+            !log.rotate_wal().unwrap(),
+            "纯内存模式（无 WAL 后端）轮换必须返回 false"
+        );
+    }
+
+    #[test]
+    fn test_rotate_wal_file_backend_rotates_shard() {
+        let path = temp_wal_path("rotate_shard");
+
+        let log = FactsLog::with_wal(&path).unwrap();
+        log.append(Fact::Command {
+            id: FactId(1),
+            instruction: JsonValue::object_from_pairs(&[("type", JsonValue::string("increment"))]),
+        })
+        .unwrap();
+        assert!(log.rotate_wal().unwrap(), "文件后端轮换必须返回 true");
+        // 轮换后继续追加：新分片续写，旧分片保持完整；全量重放内容不丢
+        log.append(Fact::Command {
+            id: FactId(2),
+            instruction: JsonValue::object_from_pairs(&[("type", JsonValue::string("increment"))]),
+        })
+        .unwrap();
+        drop(log);
+
+        let recovered = FactsLog::recover(&path).unwrap();
+        assert_eq!(recovered.history().len(), 2, "轮换后旧分片内容必须可重放");
+    }
+
     #[test]
     fn test_wal_persists_facts_across_drop() {
         let path = temp_wal_path("persist_drop");
@@ -2368,7 +2457,7 @@ mod tests {
     #[test]
     fn test_file_backend_via_trait_unchanged_roundtrip() {
         // 默认文件后端经 trait 对象分发,行为与直挂 WalWriter 一致(回归锁)
-        let path = temp_wal_path("reg_file_trait_roundtrip");
+        let path = temp_wal_path("reg026_file_trait");
         let log = FactsLog::with_wal(&path).unwrap();
         log.append(Fact::PayloadUpdate {
             id: FactId(1),

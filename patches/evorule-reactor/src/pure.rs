@@ -295,9 +295,6 @@ fn inject_io_result(
 ///
 /// 此函数是 invariants::check_invariants 的重新导出，
 /// 方便从 pure 模块统一访问所有可验证的纯逻辑。
-///
-/// 公开导出（干预端点 invariants/scan 通路）：外部可对快照重建的状态
-/// 或经由 `ReactorHandle::latest_invariant_scan` 的引擎自检报告做按需核查。
 pub fn check_invariants(state: &ReactorState, steps: usize) -> Vec<InvariantViolation> {
     crate::invariants::check_invariants(state, steps)
 }

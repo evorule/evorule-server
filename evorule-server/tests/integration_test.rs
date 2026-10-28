@@ -20,9 +20,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use evorule_governance::{
-    auditor::Auditor, clock::LogicalClock, hash, io_dispatcher::IoDispatcher,
-    io_subscriber::IoSubscriber,
+    clock::LogicalClock, hash, io_dispatcher::IoDispatcher, io_subscriber::IoSubscriber,
 };
+use evorule_governance_host::Auditor;
 use evorule_io_handlers::{DbHandler, HttpHandler, MemoryHandler};
 use evorule_reactor::{Fact, FactId, IoType, Reactor};
 use evorule_tcb::JsonValue;

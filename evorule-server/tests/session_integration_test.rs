@@ -23,9 +23,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use evorule_governance::auditor::Auditor;
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
+use evorule_governance_host::Auditor;
 use evorule_reactor::Reactor;
 use evorule_server::api::server::{AppState, GovernanceApi, GovernanceServer, SessionApi};
 use evorule_server::input_sanitizer::InputSanitizer;
@@ -630,8 +630,8 @@ async fn test_session_rule_hot_reload() {
         1,                 // auto_verify_interval
         core_eval_path.clone(),
         rules_dir.clone(),
-        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,
         None, // anchor_config: 默认关闭
     );
@@ -820,8 +820,8 @@ async fn test_audit_archive_replay_after_close_and_restart() {
         1,
         core_eval_path.clone(),
         rules_dir.clone(),
-        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,
         None, // anchor_config: 默认关闭
     );
@@ -867,8 +867,8 @@ async fn test_audit_archive_replay_after_close_and_restart() {
         1,
         core_eval_path,
         rules_dir,
-        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,
         None, // anchor_config: 默认关闭
     );
@@ -1233,8 +1233,8 @@ async fn boot_session_then_restart_simulated(attr: &str, value: i64) -> Rehydrat
             1,
             core_eval_path.clone(),
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,
             None, // anchor_config: 默认关闭
         );
@@ -1285,8 +1285,8 @@ fn boot_second_state(fx: &RehydrateFixture, rehydrate: Option<bool>) -> AppState
         1,
         fx.core_eval_path.clone(),
         fx.rules_dir.clone(),
-        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,
         None, // anchor_config: 默认关闭
     );

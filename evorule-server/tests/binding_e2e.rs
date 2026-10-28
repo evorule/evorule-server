@@ -376,8 +376,8 @@ fn build_session_api(rules_dir: &std::path::Path, echo_url: Option<&str>) -> Ses
         1,
         core_eval_path,
         rules_dir.to_path_buf(),
-        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,    // 0=引擎缺省 TTL
         None, // 锚点链：测试构造不启用
     )

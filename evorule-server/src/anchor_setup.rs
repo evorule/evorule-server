@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 
-use evorule_governance::SessionAnchorConfig;
+use evorule_governance_host::SessionAnchorConfig;
 
 /// 从环境变量解析锚点配置；未配置 seed 时返回 None（锚点关）
 pub fn anchor_config_from_env() -> Option<SessionAnchorConfig> {

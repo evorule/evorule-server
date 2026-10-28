@@ -151,14 +151,26 @@ impl SandboxService {
             "Sandbox session forked from production with draft rules injected"
         );
 
-        // 探针（断链复发探测器）：fork 继承的是状态快照而非事实历史，
-        // 沙盒事实链应从零起步。非空 = fork 语义漂移（如未来 fork 开始复制
-        // 事实历史），报告按 Command 归组将错位——fail-fast 暴露，不静默。
+        // 探针（断链复发探测器）：fork 继承的是状态快照而非事实历史，沙盒
+        // 事实链除良性血统锚外应从零起步。2026-10-28 换基主仓 0.10.0 起正本
+        // 语义（M-4）：fork 基态 digest 锚定入链（`__fork__.initial_state`，
+        // 血统可审）；G6 规则集锚（`__ruleset__.version`）在 ruleset_version
+        // 已注入时同样落链。二者皆合成锚事实（PayloadUpdate），报告按
+        // Command 归组时落入首 Command 前的噪声组，判定面不错位。除此之外
+        // 的任何前导事实（尤其 Command/StateTransition）= fork 开始复制事实
+        // 历史的语义漂移——fail-fast 暴露，不静默。
         let initial_facts = self.session_ops.get_facts(tcb_session_id).await?;
-        if !initial_facts.is_empty() {
+        let is_benign_anchor = |f: &Value| {
+            f.get("type").and_then(|v| v.as_str()) == Some("PayloadUpdate")
+                && matches!(
+                    f.get("path").and_then(|v| v.as_str()),
+                    Some("__fork__.initial_state") | Some("__ruleset__.version")
+                )
+        };
+        if initial_facts.iter().any(|f| !is_benign_anchor(f)) {
             let _ = self.session_ops.close_session(tcb_session_id).await;
             return Err(WorkspaceError::internal(format!(
-                "fork 语义漂移: 沙盒事实链非空（{} 条初始事实），测试报告判定面将错位",
+                "fork 语义漂移: 沙盒事实链含非锚初始事实（{} 条），测试报告判定面将错位",
                 initial_facts.len()
             )));
         }

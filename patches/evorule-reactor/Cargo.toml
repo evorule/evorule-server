@@ -1,7 +1,7 @@
 [package]
 name = "evorule-reactor"
-# vendored patch 基线 v0.8.4（主仓 e489a66）；删除条件见 README-PATCH.md
-version = "0.8.4"
+# vendored patch 基线 v0.10.0（主仓 2026-10-28 换基重铸）；差异面与删除条件见 README-PATCH.md
+version = "0.10.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 authors = ["EvoRule Project"]
@@ -33,7 +33,10 @@ exclude = [
 
 
 [dependencies]
-evorule-tcb = { version = "0.8.3" }
+evorule-tcb = { version = "0.10.0" }
+# SC3-a 方案乙：主仓 0.10.0 的 fact.rs/hash.rs 是 audit-chain 薄转发层，
+# 本 vendored 基线随迁（audit-chain 0.10.0 已发布注册表，直接 version 解析）
+evorule-audit-chain = { version = "0.10.0" }
 tracing = "0.1"
 serde_json = "1.0" # P0-1: WAL 持久化序列化（Fact ↔ JSON）
 # 审计链哈希（两套 WAL 合并：哈希链提升到 tier1）
@@ -49,10 +52,10 @@ async-trait = "0.1"
 tokio = { version = "1.0", features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
 
 # wasm32 块（2026-09-14 复核更正，TB-WASM-004）：
-# - `time` 必须保留，不是可裁剪项。生产代码 src/reactor.rs:486 在主循环 `Reactor::run`
+# - `time` 必须保留，不是可裁剪项。生产代码 src/reactor.rs 主循环 `Reactor::run`
 #   中使用 `tokio::time::timeout(self.io_timeout_check_interval, cmd_rx.recv())`，
 #   该调用点无 wasm32 门控，移除 feature 会在 wasm32 直接编译失败：
-#     error[E0433]: cannot find `time` in `tokio`  --> src/reactor.rs:486:41
+#     error[E0433]: cannot find `time` in `tokio`
 #   （实测命令：删掉 "time" 后跑
 #    `cargo build -p evorule-reactor --target wasm32-unknown-unknown --release`）
 # - 保留 `time` 只是"让不可达路径能编过"，不代表它在 wasm32 可用：
@@ -129,8 +132,10 @@ path = "verification/differential_test.rs"
 name = "ssot_fact_contract_gate"
 
 # 独立测试态 tcb 源重定向：本目录自测（空 workspace 表 + 独立 lock）下
-# `evorule-tcb` 按纯 version req 解析注册表 0.8.4——缺 u64 全域通道（U64 变体）
-# 编译不通过；重定向到仓内 vendored 副本 ../evorule-tcb（0.8.4 + u64 通道）。
+# `evorule-tcb` 按纯 version req "0.10.0" 解析注册表 0.10.0 亦可编译（reactor
+# 自测不触 in 域——in 域在 tcb dispatch 层，reactor 不消费）；但为与根仓消费
+# 形态对齐（根仓 [patch.crates-io] 同时重定向 tcb 到 ../evorule-tcb 副本），
+# 独立自测态同样指向仓内 vendored 副本，保证自测所见 = 根仓运行所见。
 # 被根仓 [patch.crates-io] 以本目录为补丁源消费时本节不生效（patch 不嵌套）。
 [patch.crates-io]
 evorule-tcb = { path = "../evorule-tcb" }

@@ -14,8 +14,8 @@ publish = false
 workspace = true
 
 [dependencies]
-evorule-tcb = { version = "0.8" }
-evorule-reactor = { version = "0.8" }
+evorule-tcb = { version = "0.10" }
+evorule-reactor = { version = "0.10" }
 evorule-plugin-kit = { path = "../../core/plugin-kit" }
 
 serde_json = "1"

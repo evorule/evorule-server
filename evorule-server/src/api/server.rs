@@ -37,11 +37,11 @@ use axum::Extension;
 use evorule_demo_services::DemoServiceRouter;
 use evorule_io_handlers::ServiceMeta;
 
-use evorule_governance::auditor::Auditor;
+use evorule_governance_host::Auditor;
 
 use evorule_governance::metrics::SharedMetrics;
 
-use evorule_governance::session;
+use evorule_governance_host::session;
 
 use evorule_governance::shared_facts_log::SharedFactsLog;
 
@@ -1511,7 +1511,8 @@ impl SessionApi {
         };
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(evorule_governance::session::REAPER_INTERVAL);
+            let mut interval =
+                tokio::time::interval(evorule_governance_host::session::REAPER_INTERVAL);
 
             interval.tick().await; // 跳过第一次立即触发
 
@@ -3608,11 +3609,11 @@ impl evorule_workspace::SessionOps for SessionApi {
                 Ok(id)
             }
 
-            Err(evorule_governance::session::SessionError::NotFound { id }) => Err(
+            Err(evorule_governance_host::session::SessionError::NotFound { id }) => Err(
                 evorule_workspace::WorkspaceError::not_found("session", id.to_string()),
             ),
 
-            Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => {
+            Err(evorule_governance_host::session::SessionError::LimitExceeded { current, max }) => {
                 Err(evorule_workspace::WorkspaceError::internal(format!(
                     "session limit exceeded: {current}/{max}"
                 )))
@@ -3749,10 +3750,10 @@ impl evorule_workspace::SessionOps for SessionApi {
                 self.spawn_writeback_forwarder(id);
                 Ok(id)
             }
-            Err(evorule_governance::session::SessionError::NotFound { id }) => Err(
+            Err(evorule_governance_host::session::SessionError::NotFound { id }) => Err(
                 evorule_workspace::WorkspaceError::not_found("session", id.to_string()),
             ),
-            Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => {
+            Err(evorule_governance_host::session::SessionError::LimitExceeded { current, max }) => {
                 Err(evorule_workspace::WorkspaceError::internal(format!(
                     "session limit exceeded: {current}/{max}"
                 )))
@@ -4873,7 +4874,7 @@ pub struct ReactorStatus {
 /// 审计条目（与 core AuditEntry 字段一致，用于 OpenAPI 强类型标注）
 ///
 ///
-/// 对应 evorule_governance::auditor::AuditEntry，
+/// 对应 evorule_governance_host::auditor::AuditEntry，
 ///
 /// 运行时通过 Auditor::report 序列化产出，字段语义完全一致。
 ///
@@ -6490,13 +6491,16 @@ async fn create_session(
             })))
         }
 
-        Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => {
+        Err(evorule_governance_host::session::SessionError::LimitExceeded { current, max }) => {
             tracing::warn!(current, max, "Session creation rejected: limit exceeded");
 
             Err(StatusCode::TOO_MANY_REQUESTS)
         }
 
-        Err(evorule_governance::session::SessionError::WalUnavailable { session_id, source }) => {
+        Err(evorule_governance_host::session::SessionError::WalUnavailable {
+            session_id,
+            source,
+        }) => {
             tracing::error!(
                 session_id,
                 error = %source,
@@ -6588,10 +6592,10 @@ async fn session_metadata(
         initial_content_hash: session.initial_content_hash().map(String::from),
 
         content_hash_scheme: match session.content_hash_scheme() {
-            evorule_governance::session::ContentHashScheme::AuditChainCompact => {
+            evorule_governance_host::session::ContentHashScheme::AuditChainCompact => {
                 Some("audit_chain_compact")
             }
-            evorule_governance::session::ContentHashScheme::TcbDisplay => Some("tcb_display"),
+            evorule_governance_host::session::ContentHashScheme::TcbDisplay => Some("tcb_display"),
         },
 
         idle_secs: session.last_activity().elapsed().as_secs_f64(),
@@ -6788,11 +6792,11 @@ async fn create_session_from_parent(
     //（读 WAL → 全链校验重放 → create_session_from_initial_state）。
     // 归档也不存在（NoArchive）则回落到既有 NotFound → 404 分支。
     let (result, archive_version) = match result {
-        Err(evorule_governance::session::SessionError::NotFound { .. }) => {
+        Err(evorule_governance_host::session::SessionError::NotFound { .. }) => {
             match fork_from_archive(&api, parent_id, params.version).await {
                 Ok((id, forked_version)) => (Ok(id), Some(forked_version)),
                 Err(ArchiveForkRejection::NoArchive) => (
-                    Err(evorule_governance::session::SessionError::NotFound { id: parent_id }),
+                    Err(evorule_governance_host::session::SessionError::NotFound { id: parent_id }),
                     None,
                 ),
                 Err(rej) => {
@@ -6843,25 +6847,28 @@ async fn create_session_from_parent(
             Ok(Json(body))
         }
 
-        Err(evorule_governance::session::SessionError::NotFound { id }) => {
+        Err(evorule_governance_host::session::SessionError::NotFound { id }) => {
             tracing::warn!(parent_id = id, "Parent session not found");
 
             Err(StatusCode::NOT_FOUND)
         }
 
-        Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => {
+        Err(evorule_governance_host::session::SessionError::LimitExceeded { current, max }) => {
             tracing::warn!(current, max, "Session creation rejected: limit exceeded");
 
             Err(StatusCode::TOO_MANY_REQUESTS)
         }
 
-        Err(evorule_governance::session::SessionError::InvalidVersion { version }) => {
+        Err(evorule_governance_host::session::SessionError::InvalidVersion { version }) => {
             tracing::warn!(version, "Invalid version for session fork");
 
             Err(StatusCode::BAD_REQUEST)
         }
 
-        Err(evorule_governance::session::SessionError::WalUnavailable { session_id, source }) => {
+        Err(evorule_governance_host::session::SessionError::WalUnavailable {
+            session_id,
+            source,
+        }) => {
             tracing::error!(
                 session_id,
                 error = %source,
@@ -6874,7 +6881,7 @@ async fn create_session_from_parent(
         // 归档链完整性失败 → 500（fail-closed，原因入 error 日志）。
         // ArchiveCorrupted 变体随 evorule 0.4.3 发布（fork-from-archive 原语），
         // 2026-09-09 联动升级由 catch-all 桥接改为显式命名分支。
-        Err(evorule_governance::session::SessionError::ArchiveCorrupted { reason }) => {
+        Err(evorule_governance_host::session::SessionError::ArchiveCorrupted { reason }) => {
             tracing::error!(
                 reason,
                 "Session creation rejected: archive corrupted (fail-closed)"
@@ -6947,11 +6954,11 @@ async fn create_session_fork(
     //（读 WAL → 全链校验重放 → create_session_from_initial_state）。
     // 归档也不存在（NoArchive）则回落到既有 NotFound → 404 分支。
     let (result, archive_version) = match result {
-        Err(evorule_governance::session::SessionError::NotFound { .. }) => {
+        Err(evorule_governance_host::session::SessionError::NotFound { .. }) => {
             match fork_from_archive(&api, parent_id, Some(version)).await {
                 Ok((id, forked_version)) => (Ok(id), Some(forked_version)),
                 Err(ArchiveForkRejection::NoArchive) => (
-                    Err(evorule_governance::session::SessionError::NotFound { id: parent_id }),
+                    Err(evorule_governance_host::session::SessionError::NotFound { id: parent_id }),
                     None,
                 ),
                 Err(rej) => {
@@ -6998,25 +7005,28 @@ async fn create_session_fork(
             Ok(Json(body))
         }
 
-        Err(evorule_governance::session::SessionError::NotFound { id }) => {
+        Err(evorule_governance_host::session::SessionError::NotFound { id }) => {
             tracing::warn!(parent_id = id, "Parent session not found for fork");
 
             Err(StatusCode::NOT_FOUND)
         }
 
-        Err(evorule_governance::session::SessionError::LimitExceeded { current, max }) => {
+        Err(evorule_governance_host::session::SessionError::LimitExceeded { current, max }) => {
             tracing::warn!(current, max, "Session fork rejected: limit exceeded");
 
             Err(StatusCode::TOO_MANY_REQUESTS)
         }
 
-        Err(evorule_governance::session::SessionError::InvalidVersion { version }) => {
+        Err(evorule_governance_host::session::SessionError::InvalidVersion { version }) => {
             tracing::warn!(version, "Invalid version for session fork");
 
             Err(StatusCode::BAD_REQUEST)
         }
 
-        Err(evorule_governance::session::SessionError::WalUnavailable { session_id, source }) => {
+        Err(evorule_governance_host::session::SessionError::WalUnavailable {
+            session_id,
+            source,
+        }) => {
             tracing::error!(
                 session_id,
                 error = %source,
@@ -7028,7 +7038,7 @@ async fn create_session_fork(
 
         // 同 create_session：ArchiveCorrupted（归档校验失败拒绝 fork）→ 500 fail-closed。
         // 2026-09-09 联动升级由 catch-all 桥接改为显式命名分支。
-        Err(evorule_governance::session::SessionError::ArchiveCorrupted { reason }) => {
+        Err(evorule_governance_host::session::SessionError::ArchiveCorrupted { reason }) => {
             tracing::error!(
                 reason,
                 "Session fork rejected: archive corrupted (fail-closed)"
@@ -13923,7 +13933,7 @@ mod tests {
 
         /// 时限内轮询会话事实链，等待首个 IoResponse，返回 (error, result)
         async fn wait_io_response(
-            session: &evorule_governance::session::Session,
+            session: &evorule_governance_host::session::Session,
             deadline: std::time::Duration,
         ) -> (Option<String>, JsonValue) {
             let start = tokio::time::Instant::now();
@@ -16075,8 +16085,9 @@ mod tests {
     /// fork_session_with_rules 三件机制契约（沙盒编排断链修复回归锚）：
     /// ①权利面冲突 fail-fast 拒启（草稿 io_type 与宪法冲突）；②无冲突草稿
     /// fork 成功且全局 core_eval 全程不变（草稿经 override 仅进沙盒
-    /// Reactor）；③fork 后沙盒事实链为空（状态快照非事实历史，报告判定
-    /// 面前提）。
+    /// Reactor）；③fork 后沙盒事实链只含 M-4 基态血统锚（0.10.0 正本语义：
+    /// fork 基态 digest 锚定入链；测试管理器未注入 ruleset_version 故无 G6
+    /// 锚）——状态快照仍非事实历史，报告判定面前提=前导锚落入噪声组。
     #[tokio::test]
     async fn fork_with_rules_conflict_reject_and_restore() {
         use evorule_workspace::{DraftRulesProvenance, SessionOps as _};
@@ -16121,8 +16132,10 @@ mod tests {
         let after = api.sessions.lock().await.core_eval().to_vec();
         assert_eq!(before, after, "正统 API 挂载，全局 core_eval 全程不变");
 
-        // ③ fork 后事实链为空（探针契约）
-        assert!(api.get_facts(sandbox).await.unwrap().is_empty());
+        // ③ fork 后事实链只含 M-4 基态血统锚（探针契约；0.10.0 正本语义）
+        let facts = api.get_facts(sandbox).await.unwrap();
+        assert_eq!(facts.len(), 1, "fork 链应只含 M-4 基态锚: {facts:?}");
+        assert_eq!(facts[0]["path"], "__fork__.initial_state");
     }
 
     /// 宪法不容替换（SR-03 契约锚）：fork 注入 override 必须=全局规则集（含宪法）
@@ -19151,8 +19164,8 @@ mod tests {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../resources/server_eval.json"),
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         );
@@ -19452,8 +19465,8 @@ mod tests {
             1,
             core_eval_path.clone(),
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         )
@@ -19532,8 +19545,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         );
@@ -19603,8 +19616,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         );
@@ -19657,8 +19670,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         )
@@ -19713,8 +19726,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         );
@@ -19768,8 +19781,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         )
@@ -19881,8 +19894,8 @@ mod tests {
             1,
             core_eval_path,
             rules_dir.clone(),
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试构造不启用
         );

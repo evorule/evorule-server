@@ -2423,6 +2423,50 @@ mod tests {
 
     // ===== P0 级高风险边界测试（2026-08-18 补充） =====
 
+    /// 可达性哨兵：无 params 的直接规则在执行阶段即失败，静默失败检测的
+    /// 直接规则分支（`rule_type == instruction_type`）对此形态不可达。
+    ///
+    /// # 背景（o01 残留 MISSED 突变归因）
+    ///
+    /// 静默失败检测含一条直接规则分支：规则无 params（或 params 非对象）且
+    /// type ∈ {set, increment, decrement, branch} 时，按
+    /// `rule_type == instruction_type` 判定宪法规则匹配。该分支的
+    /// `==`→`!=` 突变在 cargo-mutants 中存活（等价突变）——归因：
+    /// 执行器 dispatch 只认 5 种元指令类型（set/push/branch/io_request/
+    /// enforce），increment/decrement 属用户指令类型；而无 params 的
+    /// set/branch 在 exec 层即报缺字段错误。任何能通过执行阶段到达
+    /// 匹配检测的规则必然带 params 对象（进 domain 分支）——直接规则
+    /// 分支在当前执行器语义下不可触达，突变无法用行为测试杀灭。
+    ///
+    /// # 本测试锁定的契约
+    ///
+    /// 四种白名单类型的无 params 裸规则在执行阶段一律 Err——未来若执行器
+    /// 放宽（如 increment/decrement 收编为元指令，或 exec 容忍缺 params），
+    /// 本测试红，维护者须回到匹配检测分支补对应匹配/不匹配行为测试
+    /// （届时该分支变为可达，`==` 突变可杀）。
+    #[test]
+    fn test_bare_direct_rules_fail_before_match_detection() {
+        let instr = make_instruction(
+            "increment",
+            &[
+                ("attr", JsonValue::string("counter")),
+                ("delta", JsonValue::Integer(1)),
+            ],
+        );
+        let payload = JsonValue::object_from_pairs(&[("counter", JsonValue::Integer(0))]);
+
+        for bare_type in ["set", "increment", "decrement", "branch"] {
+            let rule = JsonValue::object_from_pairs(&[("type", JsonValue::string(bare_type))]);
+            let result = execute_transition(&[rule], &instr, &payload, &[]);
+            assert!(
+                result.is_err(),
+                "无 params 的裸 '{bare_type}' 规则应在执行阶段报错（静默失败检测的\
+                 直接规则分支对其不可达的前提）；实际: {:?}",
+                result
+            );
+        }
+    }
+
     /// B3 场景：all 兜底规则不应被视为业务规则
     ///
     /// # 风险说明

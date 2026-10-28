@@ -6,7 +6,7 @@
 //! HTTP API + 认证 + 会话 HTTP 路由
 //!
 //! H6 架构合规整改：从 evorule-governance/src/api/ 迁移到应用层。
-//! SessionManager 本身保留在 evorule_governance::session（机制层），
+//! SessionManager 本身保留在 evorule_governance_host::session（机制层），
 //! 此处仅包含 HTTP 路由处理（应用层策略）。
 
 pub mod app_quota;

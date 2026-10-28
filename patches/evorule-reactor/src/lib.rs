@@ -33,6 +33,7 @@
 //! - `hash` — BLAKE3 哈希链算法（单一真相源）
 //! - `wal` — WAL 读写（JSONL 格式，含哈希字段）
 //! - `pure` — 纯逻辑模块，Kani 形式化验证准备
+//! - `runtime` — 运行时抽象（时钟缝：宿主能力隔离到 trait 之后）
 //! - `ffi` — C FFI 接口（feature = "ffi"）
 //! - `error` — 错误类型定义
 //! - `phase` — 反应器阶段定义
@@ -77,6 +78,7 @@
 #![deny(clippy::panic)]
 
 mod channel;
+mod channel_local;
 mod error;
 mod fact;
 mod facts_log;
@@ -95,15 +97,21 @@ mod phase;
 #[allow(dead_code)]
 mod pure;
 mod reactor;
+mod runtime;
 mod stable_detector;
 mod state;
 #[cfg(feature = "persistence")]
 mod wal;
 
 pub use channel::{ChannelPair, EventReceiver, EventSender, FactReceiver, FactSender};
+pub use channel_local::{
+    local_broadcaster, local_pair, LocalEventReceiver, LocalEventSender, LocalReceiver, LocalSender,
+};
 pub use error::ReactorError;
 pub use fact::{ControlFlowType, Fact, FactId, FactIdGenerator, IoType, TraceHit};
 // H5: IoHandler/IoResult 从 evorule-governance 下沉,供应用层 crate 使用
+#[cfg(feature = "persistence")]
+pub use facts_log::replay_wal_records;
 pub use facts_log::{FactsLog, FactsLogError};
 pub use hash::{
     chain_step, compute_chain_hash, content_hash, fact_hash, fact_to_stable_json, HashError,
@@ -117,9 +125,10 @@ pub use reactor::{
     InvariantScanReport, PendingIoEntry, Reactor, ReactorBuilder, ReactorHandle,
     ReactorStateSnapshot,
 };
+pub use runtime::{ClockHandle, FixedClock, RuntimeClock, SystemClock};
 pub use stable_detector::StableDetector;
 #[cfg(feature = "persistence")]
 pub use wal::{
-    fact_from_json, fact_to_json, read_wal, read_wal_with_hash, serde_to_tcb, tcb_to_serde,
-    FactWalStore, MemoryWalStore, WalError, WalRecord, WalWriter,
+    fact_from_json, fact_to_json, parse_wal_records, read_wal, read_wal_with_hash, serde_to_tcb,
+    tcb_to_serde, FactWalStore, MemoryWalStore, WalError, WalRecord, WalWriter,
 };

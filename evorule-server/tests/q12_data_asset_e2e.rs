@@ -253,8 +253,8 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
         1,
         core_eval_path.clone(),
         rules_dir.clone(),
-        evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-        evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
         0,    // 0=引擎缺省 TTL
         None, // 锚点链：测试构造不启用
     )

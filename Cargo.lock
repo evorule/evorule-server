@@ -935,6 +935,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-audit-chain"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0ee9fea62d91497312e48a03c17fd1c9e1bce042d1c94a06f53896d2b48ae6f"
+dependencies = [
+ "blake3",
+ "evorule-tcb",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "evorule-auth"
 version = "0.10.0"
 dependencies = [
@@ -970,6 +982,8 @@ dependencies = [
 [[package]]
 name = "evorule-bundle"
 version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "011c267087f45c12f7aa20351386dfa130478bd12ed4265f51ef2e3c98d8daff"
 dependencies = [
  "evorule-hash",
  "jsonschema",
@@ -1044,9 +1058,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-discipline"
-version = "0.8.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58a764c5f3082e34f62cb853b19f066e9d069b3a9f0f79ed1bfb5a5b8a4e3ee4"
+checksum = "45fdf81481ef0e0a8563c5c742d0839875a53efec295fc80b719a72a857421bd"
 dependencies = [
  "evorule-reactor",
  "evorule-tcb",
@@ -1132,7 +1146,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-governance"
-version = "0.8.5"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27d5377c3a939233d4fa81b46aed7b50729828810301145a55b0e4b7ee8b409a"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -1143,6 +1159,22 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "evorule-governance-host"
+version = "0.10.0"
+dependencies = [
+ "blake3",
+ "evorule-governance",
+ "evorule-reactor",
+ "evorule-tcb",
+ "flate2",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]
@@ -1363,10 +1395,11 @@ dependencies = [
 
 [[package]]
 name = "evorule-reactor"
-version = "0.8.4"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "evorule-audit-chain",
  "evorule-tcb",
  "serde_json",
  "tokio",
@@ -1483,6 +1516,7 @@ dependencies = [
  "evorule-gnss-services",
  "evorule-gov-services",
  "evorule-governance",
+ "evorule-governance-host",
  "evorule-grav-services",
  "evorule-hash",
  "evorule-indicator-services",
@@ -1530,7 +1564,7 @@ version = "0.10.0"
 
 [[package]]
 name = "evorule-tcb"
-version = "0.8.4"
+version = "0.10.0"
 
 [[package]]
 name = "evorule-template-services"

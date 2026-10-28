@@ -43,7 +43,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use evorule_tcb::JsonValue;
@@ -116,7 +116,7 @@ fn detect_format_downgrade(path: &Path) -> Result<(), WalError> {
         let mut r = reader;
         r.read_line(&mut first_line)?;
     }
-    if !is_format_header(&first_line.trim_end()) {
+    if !is_format_header(first_line.trim_end()) {
         return Ok(()); // 无头=旧文件，兼容
     }
     // 有头：检查文件内是否至少有一条哈希记录（文件有其他记录时）
@@ -191,10 +191,12 @@ pub trait FactWalStore: Send + Sync {
         chain_hash: &str,
     ) -> Result<(), WalError>;
 
-    /// 轮换底层存储（干预原语：文件后端切新分片）
+    /// 轮换 WAL 后端的物理存储（干预原语 wal.force_rotate 通路）
     ///
-    /// 返回 `Ok(true)` = 实际发生轮换；`Ok(false)` = 本后端无可轮换面
-    /// （内存后端等）。默认无操作。
+    /// 文件后端：切新分片（序号 +1 开新文件，旧分片保持完整——纯追加切换，
+    /// 崩溃安全，不影响链内容与可回放性），返回 `Ok(true)`；
+    /// 无可轮换物理后端（如纯内存 [`MemoryWalStore`]）默认 `Ok(false)`。
+    /// 轮换不经过 `fact` 通道、不产生事实——它是存储层操作，与审计链内容无关。
     fn rotate(&mut self) -> Result<bool, WalError> {
         let _ = self;
         Ok(false)
@@ -222,8 +224,8 @@ impl FactWalStore for WalWriter {
     }
 
     fn rotate(&mut self) -> Result<bool, WalError> {
-        // 纯委托：切新分片，旧分片保持完整（崩溃安全）
-        WalWriter::rotate(self).map(|()| true)
+        // 纯委托固有轮换：序号 +1 开新分片，旧分片保持完整（崩溃安全）
+        Self::rotate(self).map(|_| true)
     }
 }
 
@@ -542,9 +544,9 @@ pub fn fact_from_json(v: &serde_json::Value) -> Result<Fact, WalError> {
         .get("type")
         .and_then(|t| t.as_str())
         .ok_or_else(|| WalError::InvalidFact("missing 'type' field".into()))?;
-    // FactId 为 u64 全域：G6 规则集锚定事实用 u64::MAX-1 哨兵 id（session.rs
-    // 落链 __ruleset__.version），as_i64 对 u64 高位返回 None 会误报
-    // missing/invalid 'id'——必须按无符号解析。
+    // FactId 为 u64 全域：规则集锚定事实用 u64::MAX-1 哨兵 id（__ruleset__.version
+    // 落链），as_i64 对 u64 高位返回 None 会误报 missing/invalid 'id'——必须按
+    // 无符号解析。
     let id_raw = obj
         .get("id")
         .and_then(|i| i.as_u64())
@@ -853,7 +855,7 @@ impl WalWriter {
     /// - `fsync`: 是否在每次 flush 后执行 fsync
     pub fn create_with_options<P: AsRef<Path>>(
         path: P,
-        max_size_bytes: u64,
+        max_wal_size_bytes: u64,
         fsync: bool,
     ) -> Result<Self, WalError> {
         let path_buf = path.as_ref().to_path_buf();
@@ -863,7 +865,7 @@ impl WalWriter {
         Ok(Self {
             writer: BufWriter::new(file),
             path: path_buf,
-            max_size_bytes,
+            max_size_bytes: max_wal_size_bytes,
             current_size_bytes: 0,
             fsync_on_flush: fsync,
             file_sequence: 0,
@@ -928,11 +930,7 @@ impl WalWriter {
         })
     }
 
-    /// 轮换到新分片文件（干预原语 wal.force_rotate 通路）
-    ///
-    /// 纯追加式切换：序号 +1 并打开新文件，旧分片保持完整——崩溃安全，
-    /// 不影响链内容与可回放性（recover 按序读全部分片）。
-    pub fn rotate(&mut self) -> Result<(), WalError> {
+    fn rotate(&mut self) -> Result<(), WalError> {
         self.file_sequence += 1;
         let (file, _) = Self::open_file(&self.path, self.file_sequence, true)?;
         self.writer = BufWriter::new(file);
@@ -1040,85 +1038,121 @@ impl WalWriter {
     }
 }
 
-fn read_wal_file_with_hash<P: AsRef<Path>>(
-    path: P,
+/// 从字节流解析 WAL 记录行（存储读缝的解析原语）
+///
+/// 行格式与错误语义与路径版逐字一致（字节等价铁律）：空行跳过；JSON 解析
+/// 失败 / 字段缺失 → [`WalError::InvalidFact`]（错误串含 1 起始行号前缀，
+/// 行号 = `base_line_no + 行偏移`）。
+///
+/// 路径版 [`read_wal_file_with_hash`] 是它的一层文件系统薄壳——非 fs 宿主
+/// （嵌入式同步执行器等）经此原语直供字节流即可复用全部解析语义，与
+/// 写侧 [`FactWalStore`] trait 对偶，存储缝读写两侧自此闭合。
+/// 单行解析（计数核心与公开入口共用；`line_no` 用于错误定位）
+fn parse_wal_line(line: &str, line_no: usize) -> Result<WalRecord, WalError> {
+    let value: serde_json::Value = serde_json::from_str(line)
+        .map_err(|e| WalError::InvalidFact(format!("line {line_no}: JSON parse error: {e}")))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| WalError::InvalidFact(format!("line {line_no}: not an object")))?;
+    let version_before = obj
+        .get("version_before")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| WalError::InvalidFact(format!("line {line_no}: missing version_before")))?;
+    let fact_value = obj
+        .get("fact")
+        .ok_or_else(|| WalError::InvalidFact(format!("line {line_no}: missing fact")))?;
+    let fact = fact_from_json(fact_value)?;
+    // 旧格式容错():≤0.3.x 的 Stable 无 version 字段,
+    // 以外层 version_before 兜底(状态重建不读此字段,仅供审计/展示)
+    let fact = match fact {
+        Fact::Stable { id, version: 0 } if fact_value.get("version").is_none() => Fact::Stable {
+            id,
+            version: version_before,
+        },
+        f => f,
+    };
+
+    // 可选哈希字段（新格式有，旧格式无）
+    let content_hash = obj
+        .get("content_hash")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let prev_hash = obj
+        .get("prev_hash")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let chain_hash = obj
+        .get("chain_hash")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    Ok(WalRecord {
+        version_before,
+        fact,
+        content_hash,
+        prev_hash,
+        chain_hash,
+    })
+}
+
+/// 从任意 `BufRead` 流解析 WAL 记录（JSONL，每行一条，空行跳过）
+///
+/// 行号语义：`base_line_no + 当前行序`，供多文件轮换读取跨文件连续定位。
+/// 返回不含行数计数；需要行数的读方（轮换合并）用内部计数核心。
+pub fn parse_wal_records<R: std::io::BufRead>(
+    reader: R,
     base_line_no: usize,
 ) -> Result<Vec<WalRecord>, WalError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    parse_wal_records_counted(reader, base_line_no).map(|(records, _)| records)
+}
+
+/// 计数核心：解析并返回 (记录, 消费总行数)
+///
+/// 行数供多文件轮换读取累计 `base_line_no`（错误定位行号跨文件连续），
+/// 读方不再为计数二次通读文件。
+fn parse_wal_records_counted<R: std::io::BufRead>(
+    reader: R,
+    base_line_no: usize,
+) -> Result<(Vec<WalRecord>, usize), WalError> {
     let mut records = Vec::new();
-    for (line_idx, line) in reader.lines().enumerate() {
-        let line_no = base_line_no + line_idx;
+    let mut total_lines = 0usize;
+    for (idx, line) in reader.lines().enumerate() {
+        total_lines = idx + 1;
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
         // M-1：首行若是格式头则跳过（不产生记录，后续记录行号不受影响——
-        // 头行占位使后续行的实际偏移 = base_line_no + line_idx 已含头行占位，语义不变）
-        if line_idx == 0 && is_format_header(&line) {
+        // 头行占位使后续行的实际偏移 = base_line_no + idx 已含头行占位，语义不变）
+        if idx == 0 && is_format_header(&line) {
             continue;
         }
-        let value: serde_json::Value = serde_json::from_str(&line)
-            .map_err(|e| WalError::InvalidFact(format!("line {line_no}: JSON parse error: {e}")))?;
-        let obj = value
-            .as_object()
-            .ok_or_else(|| WalError::InvalidFact(format!("line {line_no}: not an object")))?;
-        let version_before = obj
-            .get("version_before")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| {
-                WalError::InvalidFact(format!("line {line_no}: missing version_before"))
-            })?;
-        let fact_value = obj
-            .get("fact")
-            .ok_or_else(|| WalError::InvalidFact(format!("line {line_no}: missing fact")))?;
-        let fact = fact_from_json(fact_value)?;
-        // 旧格式容错():≤0.3.x 的 Stable 无 version 字段,
-        // 以外层 version_before 兜底(状态重建不读此字段,仅供审计/展示)
-        let fact = match fact {
-            Fact::Stable { id, version: 0 } if fact_value.get("version").is_none() => {
-                Fact::Stable {
-                    id,
-                    version: version_before,
-                }
-            }
-            f => f,
-        };
-
-        // 可选哈希字段（新格式有，旧格式无）
-        let content_hash = obj
-            .get("content_hash")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let prev_hash = obj
-            .get("prev_hash")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let chain_hash = obj
-            .get("chain_hash")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-
-        records.push(WalRecord {
-            version_before,
-            fact,
-            content_hash,
-            prev_hash,
-            chain_hash,
-        });
+        records.push(parse_wal_line(&line, base_line_no + idx)?);
     }
-    Ok(records)
+    Ok((records, total_lines))
+}
+
+fn read_wal_file_with_hash<P: AsRef<Path>>(
+    path: P,
+    base_line_no: usize,
+) -> Result<(Vec<WalRecord>, usize), WalError> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    parse_wal_records_counted(reader, base_line_no)
 }
 
 fn read_wal_file<P: AsRef<Path>>(
     path: P,
     base_line_no: usize,
-) -> Result<Vec<(u64, Fact)>, WalError> {
-    let records = read_wal_file_with_hash(path, base_line_no)?;
-    Ok(records
-        .into_iter()
-        .map(|r| (r.version_before, r.fact))
-        .collect())
+) -> Result<(Vec<(u64, Fact)>, usize), WalError> {
+    let (records, lines) = read_wal_file_with_hash(path, base_line_no)?;
+    Ok((
+        records
+            .into_iter()
+            .map(|r| (r.version_before, r.fact))
+            .collect(),
+        lines,
+    ))
 }
 
 /// 读取 WAL 文件，返回所有 (version_before, Fact) 记录
@@ -1147,10 +1181,9 @@ pub fn read_wal<P: AsRef<Path>>(path: P) -> Result<Vec<(u64, Fact)>, WalError> {
     let mut found_any_file = false;
 
     if path_buf.exists() {
-        records.extend(read_wal_file(&path_buf, line_no)?);
-        line_no += std::fs::read_to_string(&path_buf)
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
+        let (recs, lines) = read_wal_file(&path_buf, line_no)?;
+        records.extend(recs);
+        line_no += lines;
         found_any_file = true;
     }
 
@@ -1178,10 +1211,9 @@ pub fn read_wal<P: AsRef<Path>>(path: P) -> Result<Vec<(u64, Fact)>, WalError> {
             break;
         }
 
-        records.extend(read_wal_file(&rotated_path, line_no)?);
-        line_no += std::fs::read_to_string(&rotated_path)
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
+        let (recs, lines) = read_wal_file(&rotated_path, line_no)?;
+        records.extend(recs);
+        line_no += lines;
         found_any_file = true;
         sequence += 1;
     }
@@ -1220,10 +1252,9 @@ pub fn read_wal_with_hash<P: AsRef<Path>>(path: P) -> Result<Vec<WalRecord>, Wal
     if path_buf.exists() {
         // M-1 降级检测：主文件首行是格式头但全文件无任何哈希字段 → 降级/损坏
         detect_format_downgrade(&path_buf)?;
-        records.extend(read_wal_file_with_hash(&path_buf, line_no)?);
-        line_no += std::fs::read_to_string(&path_buf)
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
+        let (recs, lines) = read_wal_file_with_hash(&path_buf, line_no)?;
+        records.extend(recs);
+        line_no += lines;
         found_any_file = true;
     }
 
@@ -1251,10 +1282,9 @@ pub fn read_wal_with_hash<P: AsRef<Path>>(path: P) -> Result<Vec<WalRecord>, Wal
             break;
         }
 
-        records.extend(read_wal_file_with_hash(&rotated_path, line_no)?);
-        line_no += std::fs::read_to_string(&rotated_path)
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
+        let (recs, lines) = read_wal_file_with_hash(&rotated_path, line_no)?;
+        records.extend(recs);
+        line_no += lines;
         found_any_file = true;
         sequence += 1;
     }
@@ -1270,6 +1300,7 @@ pub fn read_wal_with_hash<P: AsRef<Path>>(path: P) -> Result<Vec<WalRecord>, Wal
 mod tests {
     #![allow(clippy::unwrap_used)]
     #![allow(clippy::panic, clippy::expect_used)]
+    #![allow(clippy::indexing_slicing)]
     use super::*;
     use crate::fact::{Fact, FactId, IoType};
     use evorule_tcb::JsonValue;
@@ -1337,17 +1368,6 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_to_tcb_float_becomes_string() {
-        // tier0 无 Float，浮点数应转为字符串保留精度
-        let s: serde_json::Value = serde_json::from_str("3.14").unwrap();
-        let tcb = serde_to_tcb(&s);
-        match tcb {
-            JsonValue::String(ref _str) => {}
-            ref other => panic!("expected String for float, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn test_tcb_serde_u64_roundtrip() {
         // u64 全域通道（v0.9.0）：超 i64 范围值正程/回程双向无损。
         // （边界）serde_json Number 无 tag：i64 范围内的 U64 经 serde 往返后
@@ -1358,6 +1378,17 @@ mod tests {
             let s = tcb_to_serde(&v);
             assert_eq!(s.as_u64(), Some(u));
             assert_eq!(serde_to_tcb(&s), v);
+        }
+    }
+
+    #[test]
+    fn test_serde_to_tcb_float_becomes_string() {
+        // tier0 无 Float，浮点数应转为字符串保留精度
+        let s: serde_json::Value = serde_json::from_str("3.14").unwrap();
+        let tcb = serde_to_tcb(&s);
+        match tcb {
+            JsonValue::String(ref _str) => {}
+            ref other => panic!("expected String for float, got {other:?}"),
         }
     }
 
@@ -1613,12 +1644,11 @@ mod tests {
         assert!(matches!(result, Err(WalError::InvalidFact(_))));
     }
 
-    // === u64 全域 FactId 哨兵解析专项（G6 规则集锚定事实回归）===
+    // === u64 全域 FactId 哨兵解析专项（规则集锚定事实回归）===
 
-    /// G6 规则集锚定事实以 u64::MAX-1 哨兵 id 落链（session.rs
-    /// `__ruleset__.version`）。此前 as_i64 解析对 u64 高位返回 None，
-    /// WAL 回读报「missing/invalid 'id' field」并连锁拒绝复活——
-    /// u64 全域 id/cause/request_id 必须可往返。
+    /// 规则集锚定事实以 u64::MAX-1 哨兵 id 落链（`__ruleset__.version`）。
+    /// 此前 as_i64 解析对 u64 高位返回 None，WAL 回读报「missing/invalid
+    /// 'id' field」并连锁拒绝复活——u64 全域 id/cause/request_id 必须可往返。
     #[test]
     fn test_fact_sentinel_id_roundtrip() {
         let fact = Fact::PayloadUpdate {
@@ -1631,7 +1661,7 @@ mod tests {
 
     #[test]
     fn test_read_wal_sentinel_id_end_to_end() {
-        // 真机 319B 引导 WAL 形态：单条哨兵 id PayloadUpdate 记录
+        // 规则集锚定 WAL 形态：单条哨兵 id PayloadUpdate 记录
         let path = temp_wal_path("sentinel_id");
         let mut w = WalWriter::create(&path).unwrap();
         w.append_record(
@@ -1653,6 +1683,94 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // === Fact JSON 契约 parity 锚（WAL 读写面 ↔ SSOT 稳定序列化）===
+
+    /// 全变体契约等价锚：WAL 写侧 `fact_to_json` 与 SSOT
+    /// `fact_to_stable_json`（哈希口径输入）对同一样本必须产出逐字段
+    /// 相同的 JSON，且 `fact_from_json` 可无损往返。漂移即红——读侧
+    /// 工具（哨兵/verify-chain）与哈希口径共享此契约，双侧任一独立
+    /// 演化都会造成审计链口径分叉。
+    #[test]
+    fn test_fact_json_contract_parity_with_ssot() {
+        use crate::hash::fact_to_stable_json;
+
+        let samples: Vec<Fact> = vec![
+            Fact::Command {
+                id: FactId(1),
+                instruction: JsonValue::object_from_pairs(&[("type", JsonValue::string("noop"))]),
+            },
+            // 哨兵 id：u64 高位必须全链路无损（含哈希序列化面）
+            Fact::PayloadUpdate {
+                id: FactId(u64::MAX - 1),
+                path: "__ruleset__.version".into(),
+                value: JsonValue::String("c7b6fab66f0ea645".into()),
+            },
+            Fact::StateTransition {
+                id: FactId(u64::MAX - 2),
+                cause: FactId(1),
+                new_payload: JsonValue::empty_object(),
+                new_queue: vec![],
+            },
+            Fact::IoRequest {
+                id: FactId(4),
+                cause: FactId(1),
+                io_type: IoType::call_external(),
+                params: JsonValue::empty_object(),
+            },
+            Fact::IoResponse {
+                id: FactId(5),
+                request_id: FactId(4),
+                result: JsonValue::empty_object(),
+                error: None,
+            },
+            Fact::IoResponse {
+                id: FactId(6),
+                request_id: FactId(4),
+                result: JsonValue::empty_object(),
+                error: Some("io failed".into()),
+            },
+            Fact::Stable {
+                id: FactId(7),
+                version: 3,
+            },
+            Fact::Error {
+                id: FactId(8),
+                message: "timeout".into(),
+            },
+            Fact::TransitionTrace {
+                id: FactId(9),
+                cause: FactId(u64::MAX - 2),
+                rule_hits: vec![],
+            },
+            Fact::Violation {
+                id: FactId(10),
+                cause: FactId(1),
+                rule_index: 2,
+                reason: "enforced".into(),
+                instruction: JsonValue::empty_object(),
+            },
+        ];
+
+        for fact in &samples {
+            let wal_json = fact_to_json(fact);
+            let stable_json = fact_to_stable_json(fact).expect("SSOT 稳定序列化不得失败");
+            assert_eq!(
+                wal_json,
+                stable_json,
+                "Fact JSON 契约漂移（{}）：WAL 写侧与 SSOT 稳定序列化输出不一致",
+                fact.type_name()
+            );
+            let round = fact_from_json(&wal_json)
+                .unwrap_or_else(|e| panic!("契约样本回读失败（{}）: {e}", fact.type_name()));
+            assert_eq!(
+                &round,
+                fact,
+                "Fact JSON 契约漂移（{}）：往返不等值",
+                fact.type_name()
+            );
+        }
     }
 
     // === 旧格式 WAL(≤0.3.x 含 final_snapshot)兼容专项 ===
@@ -1857,11 +1975,50 @@ mod tests {
         assert!(format!("{e}").contains("missing"));
     }
 
-    // === M-1 WAL 头格式版本戳（防全链降级） ===
+    // === parse_wal_records（存储读缝解析原语）===
 
+    /// 字节流原语与路径壳结果逐条等价（含哈希字段的新格式）
     #[test]
-    fn test_wal_format_header_written_on_create_and_skipped_by_read() {
-        let path = temp_wal_path("format_header");
+    fn parse_wal_records_matches_path_wrapper_byte_equivalent() {
+        let path = temp_wal_path("parse_primitive_equiv");
+        let mut w = WalWriter::create(&path).unwrap();
+        for id in 1..=3u64 {
+            w.append_record_with_hash(
+                0,
+                &Fact::Command {
+                    id: FactId(id),
+                    instruction: JsonValue::empty_object(),
+                },
+                "content-hash-x",
+                "prev-hash-x",
+                "chain-hash-x",
+            )
+            .unwrap();
+        }
+        drop(w);
+
+        let via_path = read_wal_with_hash(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let via_cursor = parse_wal_records(std::io::Cursor::new(bytes), 0).unwrap();
+
+        assert_eq!(via_path.len(), 3);
+        assert_eq!(via_cursor.len(), via_path.len());
+        for (a, b) in via_path.iter().zip(via_cursor.iter()) {
+            assert_eq!(a.version_before, b.version_before);
+            assert_eq!(a.fact, b.fact);
+            assert_eq!(a.content_hash, b.content_hash);
+            assert_eq!(a.prev_hash, b.prev_hash);
+            assert_eq!(a.chain_hash, b.chain_hash);
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 基准行号偏移与错误语义：坏行报错行号 = base + 实际偏移
+    #[test]
+    fn parse_wal_records_line_no_offset_and_corrupt_error() {
+        // 经 WalWriter 产出一条合法 WAL 行（避免手工拼 Fact JSON）
+        let path = temp_wal_path("parse_line_offset");
         let mut w = WalWriter::create(&path).unwrap();
         w.append_record(
             0,
@@ -1872,52 +2029,21 @@ mod tests {
         )
         .unwrap();
         drop(w);
-
-        // 新建 WAL 首行必须是格式版本戳
-        let content = std::fs::read_to_string(&path).unwrap();
-        let first_line = content.lines().next().unwrap();
-        assert_eq!(first_line, WAL_FORMAT_HEADER, "新建 WAL 首行必须是格式头");
-
-        // 读取侧跳过格式头，仅得 1 条记录
-        let records = read_wal(&path).unwrap();
-        assert_eq!(records.len(), 1);
-
+        // 文件=[格式头, 记录行]——取末行作为合法行（M-1 头行不参与 parse 测试）
+        let good_line = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty() && !is_format_header(l))
+            .unwrap()
+            .to_string();
         let _ = std::fs::remove_file(&path);
-    }
 
-    #[test]
-    fn test_wal_format_downgrade_detected_fail_visible() {
-        let path = temp_wal_path("downgrade");
-        // 头行在但记录行被剥掉全部哈希字段——全链降级形态，fail-visible 拒绝
-        let body = format!(
-            "{}\n{}\n",
-            WAL_FORMAT_HEADER,
-            r#"{"version_before":0,"fact":{"type":"Stable","id":1,"version":1}}"#
-        );
-        std::fs::write(&path, body).unwrap();
-
-        let err = read_wal_with_hash(&path).unwrap_err();
-        assert!(
-            format!("{err}").contains("downgrade"),
-            "必须报降级（fail-visible），实际: {err}"
-        );
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_wal_headerless_old_file_still_readable() {
-        let path = temp_wal_path("headerless");
-        // 无头旧文件：兼容读取，不得误报降级
-        std::fs::write(
-            &path,
-            r#"{"version_before":0,"fact":{"type":"Stable","id":1,"version":1}}"#,
-        )
-        .unwrap();
-
-        let records = read_wal_with_hash(&path).unwrap();
-        assert_eq!(records.len(), 1);
-
-        let _ = std::fs::remove_file(&path);
+        // 输入布局：空行(idx0) + 合法行(idx1) + 坏行(idx2)
+        let input = format!("\n{good_line}\nnot-json\n");
+        let err = parse_wal_records(std::io::Cursor::new(input.clone()), 0).unwrap_err();
+        assert!(err.to_string().contains("line 2"), "got: {err}");
+        let err = parse_wal_records(std::io::Cursor::new(input), 100).unwrap_err();
+        assert!(err.to_string().contains("line 102"), "got: {err}");
     }
 }

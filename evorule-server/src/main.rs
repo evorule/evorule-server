@@ -38,7 +38,7 @@ use evorule_reactor::{FactsLog, IoType, Reactor};
 use evorule_tcb::JsonValue;
 use std::time::Instant;
 // H6: AuthConfig 和 API server 从 lib 导入（应用层模块已迁至 src/lib.rs）
-use evorule_governance::auditor::Auditor;
+use evorule_governance_host::Auditor;
 use evorule_server::api::server::{
     set_wal_verify_reactor, set_wal_verify_shared_facts, AppState, GovernanceApi, GovernanceServer,
     SessionApi, WAL_VERIFY_FAILED, WAL_VERIFY_OK,

@@ -1,0 +1,195 @@
+{
+  "contract": "Audit export golden: auditor.export() payload frozen verbatim; per-entry fact_json_stable is the verbatim byte input of content_hash (blake3), chain folded from genesis equals last_hash",
+  "export": {
+    "entries": [
+      {
+        "cause": null,
+        "content_hash": "0a48f87253c8b50fa8e075b846f0dd06a9c2b83f39cbb331e205b09c8545a6b8",
+        "fact": {
+          "id": 1,
+          "instruction": {
+            "type": "noop"
+          },
+          "type": "Command"
+        },
+        "fact_id": 1,
+        "fact_json_stable": "{\"id\":1,\"instruction\":{\"type\":\"noop\"},\"type\":\"Command\"}",
+        "fact_type": "Command",
+        "logical_time": 1,
+        "prev_hash": "genesis"
+      },
+      {
+        "cause": null,
+        "content_hash": "ede09ab56c9b1da4f52ee9cb3e040af22a7125fab8138f4b96ffcc5f9a5d7be6",
+        "fact": {
+          "id": 18446744073709551614,
+          "path": "__ruleset__.version",
+          "type": "PayloadUpdate",
+          "value": "c7b6fab66f0ea645"
+        },
+        "fact_id": 18446744073709551614,
+        "fact_json_stable": "{\"id\":18446744073709551614,\"path\":\"__ruleset__.version\",\"type\":\"PayloadUpdate\",\"value\":\"c7b6fab66f0ea645\"}",
+        "fact_type": "PayloadUpdate",
+        "logical_time": 2,
+        "prev_hash": "b266225234eece0802a8370f2f685d64f7d7b8b26b6c128285bdb29f26d36242"
+      },
+      {
+        "cause": null,
+        "content_hash": "3cdb3c76705ab7b7b88abeb1f8bfa7433d770b180400c7876dd08289c4f7ebf7",
+        "fact": {
+          "id": 11,
+          "path": "__ruleset__.anchor",
+          "type": "PayloadUpdate",
+          "value": 18446744073709551612
+        },
+        "fact_id": 11,
+        "fact_json_stable": "{\"id\":11,\"path\":\"__ruleset__.anchor\",\"type\":\"PayloadUpdate\",\"value\":18446744073709551612}",
+        "fact_type": "PayloadUpdate",
+        "logical_time": 3,
+        "prev_hash": "2adf8a6855ff35e9f8800737e19acb94096ce7153434520d691e10080c1f2695"
+      },
+      {
+        "cause": 1,
+        "content_hash": "7ac6daea07bf0e84b622f09ea2962ce94e7b556590d04e934f556cad2cfb83a9",
+        "fact": {
+          "cause": 1,
+          "id": 18446744073709551613,
+          "new_payload": {},
+          "new_queue": [],
+          "type": "StateTransition"
+        },
+        "fact_id": 18446744073709551613,
+        "fact_json_stable": "{\"cause\":1,\"id\":18446744073709551613,\"new_payload\":{},\"new_queue\":[],\"type\":\"StateTransition\"}",
+        "fact_type": "StateTransition",
+        "logical_time": 4,
+        "prev_hash": "1ac27f90a1fbd778350f011ee49681f5e17aef72409c8e44e13a2d8bdff35aaf"
+      },
+      {
+        "cause": 1,
+        "content_hash": "7f079aa236e41c2872aaef3a762b16ec716f8a7a61b6d5532be9226a2d9677a1",
+        "fact": {
+          "cause": 1,
+          "id": 4,
+          "io_type": "call_external",
+          "params": {},
+          "type": "IoRequest"
+        },
+        "fact_id": 4,
+        "fact_json_stable": "{\"cause\":1,\"id\":4,\"io_type\":\"call_external\",\"params\":{},\"type\":\"IoRequest\"}",
+        "fact_type": "IoRequest",
+        "logical_time": 5,
+        "prev_hash": "ad08df320161b379999eaee9df5ffb37ff0e25bd599785e33e338f3e12f26584"
+      },
+      {
+        "cause": 4,
+        "content_hash": "43f7f2586909ad84909b868befef25b6baf05dde87aeb217f3dd61fcc1bf5a06",
+        "fact": {
+          "error": null,
+          "id": 5,
+          "request_id": 4,
+          "result": {},
+          "type": "IoResponse"
+        },
+        "fact_id": 5,
+        "fact_json_stable": "{\"error\":null,\"id\":5,\"request_id\":4,\"result\":{},\"type\":\"IoResponse\"}",
+        "fact_type": "IoResponse",
+        "logical_time": 6,
+        "prev_hash": "8dc04968e4085a88f53146188d957a0c2e4a20f6185992497babbfcb30b694bf"
+      },
+      {
+        "cause": 4,
+        "content_hash": "634ac0889618e1e3587eeaca0b6538189ae8be2d1eadf63412a56cdad411b66b",
+        "fact": {
+          "error": "io failed",
+          "id": 6,
+          "request_id": 4,
+          "result": {},
+          "type": "IoResponse"
+        },
+        "fact_id": 6,
+        "fact_json_stable": "{\"error\":\"io failed\",\"id\":6,\"request_id\":4,\"result\":{},\"type\":\"IoResponse\"}",
+        "fact_type": "IoResponse",
+        "logical_time": 7,
+        "prev_hash": "b87b5549a9a0cdd6a1674ddda0007ac2d8ebfb3bebd5f04d93e257c2d4f67d67"
+      },
+      {
+        "cause": null,
+        "content_hash": "e67674faebc396251d45d3c982cddd904c8dc3af3d84e34ca7e8808d6300b556",
+        "fact": {
+          "id": 7,
+          "type": "Stable",
+          "version": 3
+        },
+        "fact_id": 7,
+        "fact_json_stable": "{\"id\":7,\"type\":\"Stable\",\"version\":3}",
+        "fact_type": "Stable",
+        "logical_time": 8,
+        "prev_hash": "6c47dbb2df86887e5bcd458c7fcbb2e3181eb00a68765f212b4906eeda3e21d9"
+      },
+      {
+        "cause": null,
+        "content_hash": "752b1b43e262128d42fdabdb43d475a8a6efda94744beeebda9adb662a647d90",
+        "fact": {
+          "id": 8,
+          "message": "timeout",
+          "type": "Error"
+        },
+        "fact_id": 8,
+        "fact_json_stable": "{\"id\":8,\"message\":\"timeout\",\"type\":\"Error\"}",
+        "fact_type": "Error",
+        "logical_time": 9,
+        "prev_hash": "cddf8896261ff5baeae1bde3d02233ed5b7ad936250c7aad39c9aef3413fae0f"
+      },
+      {
+        "cause": null,
+        "content_hash": "cd1382363db5e2902e9774a313124182b95f6bdf30d378ee878f94c18f943196",
+        "fact": {
+          "cause": 18446744073709551613,
+          "id": 9,
+          "rule_hits": [],
+          "type": "TransitionTrace"
+        },
+        "fact_id": 9,
+        "fact_json_stable": "{\"cause\":18446744073709551613,\"id\":9,\"rule_hits\":[],\"type\":\"TransitionTrace\"}",
+        "fact_type": "TransitionTrace",
+        "logical_time": 10,
+        "prev_hash": "4c74b05243a9b59b834e6b47cda7c74f14be9a371feef1c4e62c94358c377f61"
+      },
+      {
+        "cause": null,
+        "content_hash": "feb1e0969715153adb104d98f6cd8ad335f343eaa01c9ae229365cf12020cb02",
+        "fact": {
+          "cause": 1,
+          "id": 10,
+          "instruction": {},
+          "reason": "enforced",
+          "rule_index": 2,
+          "type": "Violation"
+        },
+        "fact_id": 10,
+        "fact_json_stable": "{\"cause\":1,\"id\":10,\"instruction\":{},\"reason\":\"enforced\",\"rule_index\":2,\"type\":\"Violation\"}",
+        "fact_type": "Violation",
+        "logical_time": 11,
+        "prev_hash": "04219fc159413cf2fa15867d0dd59ec7ecf50193311b752aac77f0b6afc1ea92"
+      }
+    ],
+    "entry_count": 11,
+    "last_audited_version": 5,
+    "last_hash": "80f2bfa74cf00f7df98bdc4cb029a941aa1c28a7470a8de38cd8e3a46cb37bdd",
+    "version": "1.0"
+  },
+  "regenerate": "in patches/evorule-governance: cargo test --test audit_export_golden regenerate_export_golden_fixture -- --ignored --nocapture; mirror gate: evorule-integration-tests/tests/audit_export_contract_gate.rs (SSOT live recompute vs this fixture)",
+  "sample_labels": [
+    "Command",
+    "PayloadUpdate(sentinel)",
+    "PayloadUpdate(u64-value)",
+    "StateTransition(sentinel-cause)",
+    "IoRequest",
+    "IoResponse(ok)",
+    "IoResponse(error)",
+    "Stable",
+    "Error",
+    "TransitionTrace",
+    "Violation"
+  ]
+}

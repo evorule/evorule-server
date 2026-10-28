@@ -413,10 +413,20 @@ impl ReactorState {
     /// 幂等：重复注册同一 id 不会增加计数（防止 count 与 set 大小不一致）。
     /// P3-11：同时记录发射时间戳，用于超时检测。
     /// 阶段3-1.4：同时记录 io_type，用于按类型查超时阈值。
+    ///
+    /// 兼容包装：内部取系统时钟。时钟缝见 [`Self::register_io_request_at`]。
     pub fn register_io_request(&mut self, id: FactId, io_type: IoType) {
+        self.register_io_request_at(id, io_type, Instant::now());
+    }
+
+    /// [`Self::register_io_request`] 的时间注入变体（时钟缝）
+    ///
+    /// 时间以数据进入状态层，调用方持有 [`crate::runtime::RuntimeClock`]。
+    /// 行为与包装版逐字一致（仅时间来源不同）。
+    pub fn register_io_request_at(&mut self, id: FactId, io_type: IoType, now: Instant) {
         if self.pending_requests.insert(id) {
             self.pending_io_count += 1;
-            self.pending_io_timestamps.insert(id, Instant::now());
+            self.pending_io_timestamps.insert(id, now);
             self.pending_io_types.insert(id, io_type);
         }
     }
@@ -453,7 +463,19 @@ impl ReactorState {
         warn_timeout: Duration,
         error_timeout: Duration,
     ) -> (Vec<FactId>, Vec<FactId>) {
-        let now = Instant::now();
+        self.scan_io_timeouts_at(Instant::now(), warn_timeout, error_timeout)
+    }
+
+    /// [`Self::scan_io_timeouts`] 的时间注入变体（时钟缝）
+    ///
+    /// `now` 由调用方的 [`crate::runtime::RuntimeClock`] 提供。
+    /// 判定逻辑与包装版逐字一致。
+    pub fn scan_io_timeouts_at(
+        &self,
+        now: Instant,
+        warn_timeout: Duration,
+        error_timeout: Duration,
+    ) -> (Vec<FactId>, Vec<FactId>) {
         let mut warn_ids = Vec::new();
         let mut error_ids = Vec::new();
         // 用 .iter() 兼容 BTreeMap 和 KIdMap（Kani 模式）

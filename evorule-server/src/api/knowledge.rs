@@ -204,8 +204,8 @@ mod tests {
             0,
             core_eval_path,
             rules_dir,
-            evorule_governance::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
-            evorule_governance::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+            evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
             0,    // 0=引擎缺省 TTL
             None, // 锚点链：测试/旁路构造不启用
         )

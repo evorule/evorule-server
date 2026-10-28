@@ -17,7 +17,7 @@
 //!
 //! # 豁免
 //!
-//! - `#[cfg(test)] mod <ident>` 任意命名测试模块 
+//! - `#[cfg(test)] mod <ident>` 任意命名测试模块
 //! - 注释 (`//`, `///`, `//!`, `/* */`)
 //! - `src/fact.rs` (G8/§5.2 模式) — IoType/ControlFlowType 枚举映射的唯一真值来源
 //! - T10 文件级: `ffi.rs` / `facts_log.rs` (T10_FILE_EXEMPT, 有 gate 保护的 unsafe)
@@ -436,7 +436,7 @@ fn has_wildcard_arrow(line: &str) -> bool {
 
 /// 从源码中剥离 `#[cfg(test)] mod tests { ... }` 块体。
 ///
-/// 通过花括号计数 (感知字符串/字符/注释), 使测试内的 G8/G1/§5.2 模式
+/// 通过花括号计数 (感知字符串/字符/注释), 使测试内的字面量门禁模式
 /// 不触发误报。
 fn strip_test_mod(src: &str) -> String {
     let bytes = src.as_bytes();
@@ -1201,7 +1201,7 @@ mod tests {
 
     #[test]
     fn test_squeeze_ws_catches_whitespace_bypass() {
-        // 插空写法原文未命中、去空白命中 → 拦截 
+        // 插空写法原文未命中、去空白命中 → 拦截
         let bypass = "let x = v.unwrap ();";
         assert!(!bypass.contains(".unwrap("));
         assert!(squeeze_ws(bypass).contains(".unwrap("));
@@ -1213,7 +1213,7 @@ mod tests {
 
     #[test]
     fn test_strip_leading_attr() {
-        // 纯属性行剥离后为空 → 不误报 
+        // 纯属性行剥离后为空 → 不误报
         assert_eq!(strip_leading_attr("#[forbid(unsafe_code)]"), Some(""));
         assert_eq!(strip_leading_attr("#![deny(unsafe_code)]"), Some(""));
         assert_eq!(
@@ -1234,7 +1234,7 @@ mod tests {
 
     #[test]
     fn test_strip_inline_block_comments() {
-        // 同行自闭合块注释 → 剥离, 注释内示例文字不再误报 
+        // 同行自闭合块注释 → 剥离, 注释内示例文字不再误报
         let s = strip_inline_block_comments("let x = 1; /* conditional */ let y = 2;");
         assert!(!s.contains("conditional"), "got: {}", s);
         assert!(s.contains("let y = 2;"));
@@ -1271,7 +1271,7 @@ mod tests {
 
     #[test]
     fn test_bare_word_hit() {
-        // 裸词词界: "asynchronous"/"awaiting" 不再误命中 
+        // 裸词词界: "asynchronous"/"awaiting" 不再误命中
         assert!(!bare_word_hit("this is asynchronous work", "async"));
         assert!(!bare_word_hit("awaiting result", "await"));
         // 真实关键字形态照常命中 (含 .await 后缀形式)

@@ -1988,6 +1988,60 @@ mod tests {
         assert!(matches!(result, Err(TcbError::NestingTooDeep { .. })));
     }
 
+    /// branch 递归深度必须沿调用链逐层传递：65 层嵌套 branch（经
+    /// `depth + 1` 递归传入）在子层触顶报错。直接以 depth=MAX 调
+    /// `exec_branch` 只覆盖门检查本身，测不到传递链——若深度增量丢失
+    /// （恒为同层），超深嵌套会静默执行到底。
+    #[test]
+    fn test_branch_recursion_depth_via_nested_branches() {
+        let domain = JsonValue::object_from_pairs(&[
+            ("type", JsonValue::string("exists")),
+            ("path", JsonValue::string("__exec__.payload.x")),
+        ]);
+        let make_branch = |inner: JsonValue| {
+            JsonValue::object_from_pairs(&[
+                ("type", JsonValue::string("branch")),
+                (
+                    "params",
+                    JsonValue::object_from_pairs(&[
+                        ("domain", domain.clone()),
+                        ("on_true", JsonValue::array(vec![inner])),
+                    ]),
+                ),
+            ])
+        };
+
+        let state = make_exec_state("branch", make_payload(1), vec![]);
+        let mut instr = make_instruction_simple("set", 1);
+        for _ in 0..65 {
+            instr = make_branch(instr);
+        }
+
+        let mut budget = MAX_TOTAL_META_INSTRUCTIONS;
+        let mut hit = false;
+        let result =
+            execute_meta_instruction_budgeted(&instr, state, 0, &mut budget, &mut hit, &mut None);
+        assert!(matches!(result, Err(TcbError::NestingTooDeep { .. })));
+    }
+
+    /// `resolve_instructions_list` 元素级路径引用的形态判别：`__` 前缀
+    /// 字符串解析为状态引用，普通字符串必须原样保留（误当路径解析即
+    /// PathResolutionFailed，push 的字面指令清单从此无法携带普通字符串）
+    #[test]
+    fn test_resolve_instructions_list_plain_strings_verbatim() {
+        let state = make_exec_state("push", make_payload(7), vec![]);
+        let instrs = JsonValue::array(vec![
+            JsonValue::string("__exec__.payload.x"),
+            JsonValue::string("plain_literal"),
+        ]);
+
+        let resolved = resolve_instructions_list(&state, Some(&instrs)).unwrap();
+        assert_eq!(
+            resolved,
+            vec![JsonValue::Integer(7), JsonValue::string("plain_literal"),]
+        );
+    }
+
     // ===== M6 元指令执行总数预算测试 =====
 
     #[test]
