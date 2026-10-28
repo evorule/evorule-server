@@ -1312,9 +1312,14 @@ mod tests {
         assert!(v.is_u64());
         assert!(!v.is_integer());
         assert_eq!(v.as_u64(), Some(u64::MAX - 1));
-        // 形态严格对称：as_i64 只认 Integer，as_u64 只认 U64
+        // 形态严格对称：as_i64 只认 Integer，as_u64 只认 U64；
+        // is_u64 同样只认 U64——Integer/Bool 等 non-U64 一律 false
+        // （is_u64 恒 true 突变的负向杀灭断言）
         assert_eq!(v.as_i64(), None);
         assert_eq!(JsonValue::Integer(5).as_u64(), None);
+        assert!(!JsonValue::Integer(5).is_u64());
+        assert!(!JsonValue::Bool(true).is_u64());
+        assert!(!JsonValue::Null.is_u64());
 
         let from_trait: JsonValue = 42u64.into();
         assert_eq!(from_trait, JsonValue::u64(42));

@@ -50,9 +50,12 @@
 | `src/permission/mod.rs` | `tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载，不经 i64 cast） |
 | `src/time_machine.rs` | `json_value_to_serde` 补 `JsonValue::U64` 分支（同上） |
 
-> 独立自测注记（同 evorule-reactor 补丁 v0.9.0 注记）：本副本已引用 `JsonValue::U64`，
-> 独立构建时 `evorule-tcb` 按纯 version 解析 crates.io 0.8.4（无 U64）→ 编译不通过，
-> 过渡期由 server workspace 全量测试覆盖（[patch.crates-io] 全局替换）。
+> 独立自测现状（M-1 随行批实测）：独立自测**可用**——本目录 Cargo.toml
+> `[patch.crates-io]` 将 `evorule-reactor` / `evorule-tcb` 重定向至仓内 vendored
+> 兄弟副本（与根仓消费态同实例，独立自测与消费态同构）；
+> `cargo test --lib --features persistence` **217 passed / 0 failed**。
+> 版本 req 保持 0.8.3 不上调（vendored tcb 声明 0.8.4，上调 0.9.0 即破根仓
+> 消费态解析）。
 
 ## vendored 化机械差异（非语义）
 

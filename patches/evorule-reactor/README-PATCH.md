@@ -19,7 +19,7 @@ crates.io 注册表实例（全局单实例替换，无双实例类型冲突；0
 | 文件 | 改动 |
 |---|---|
 | `src/pure.rs` | `check_invariants` `pub(crate)` → `pub`（可见性提升） |
-| `src/wal.rs` | `WalWriter::rotate` 提 `pub`；`FactWalStore` trait 增 `rotate`（默认无操作返回 `Ok(false)`）；`WalWriter` 实现（委托具体方法，返回 `Ok(true)`）；v0.9.0 同步另增：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载）+ `serde_to_tcb` 回程超 i64 范围 u64 由转字符串改为 `U64` 变体无损承载（WAL 展示面往返保形，回放重算 fact_hash 不失配；小值 U64 经 serde 往返退化为 Integer 属 serde_json Number 无 tag 固有约束，数值无损） |
+| `src/wal.rs` | `WalWriter::rotate` 提 `pub`；`FactWalStore` trait 增 `rotate`（默认无操作返回 `Ok(false)`）；`WalWriter` 实现（委托具体方法，返回 `Ok(true)`）；v0.9.0 同步另增：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载）+ `serde_to_tcb` 回程超 i64 范围 u64 由转字符串改为 `U64` 变体无损承载（WAL 展示面往返保形，回放重算 fact_hash 不失配；小值 U64 经 serde 往返退化为 Integer 属 serde_json Number 无 tag 固有约束，数值无损）；v0.9.0 随行再补：主仓 M-1 WAL 头格式版本戳（`WAL_FORMAT_HEADER` 常量 + 新建 WAL 首行写 `{"format":"evorule-wal/2"}` + 读侧首行头跳过 + 头存在而记录零哈希字段 fail-visible 降级拒绝 + 无头旧文件兼容）——防全链降级防线与主仓 0.9.0 WAL 文件面对齐，测试增 3 件（头写/头跳读/降级拒绝/无头兼容覆盖） |
 | `src/facts_log.rs` | 增 `FactsLog::rotate_wal()`（persistence 门控；写锁透传 trait rotate；错误映射 `WalError` → `FactsLogError::WalError`） |
 | `src/fact.rs` | v0.9.0 主仓同步（u64 全域无损）：`to_json` 17 处 `as i64` cast → `JsonValue::u64()`（展示面 FactId/cause/request_id/version/index/rule_index 高位值不再回绕为负；哈希输入 `fact_to_stable_json` 不经本函数，哈希口径零扰动）+ doc u64 无损注记 + 哨兵 id 无损回归测试 |
 | `src/hash.rs` | v0.9.0 主仓同步：`tcb_to_serde` 补 `JsonValue::U64` 分支（serde Number 无损承载，不经 i64 cast）+ u64 无损回归测试 |
@@ -36,9 +36,11 @@ governance 不打补丁：`Session.handle` / `Session.facts_log` 均为 pub，se
   在本目录独立跑：`cargo test --lib`（自带空 workspace 表 + 独立 lock）。
 - **独立自测恢复（跨仓契约闸批次）**：
   - tcb 源：本目录 `[patch.crates-io]` 将 `evorule-tcb` 重定向至仓内 vendored
-    副本 `../evorule-tcb`（0.8.4 + u64 全域通道；注册表 0.8.4 缺 `U64` 变体
-    编译不通过）。被根仓 `[patch.crates-io]` 以本目录为补丁源消费时本节不
-    生效（patch 不嵌套），两态互不干扰。
+    副本 `../evorule-tcb`（0.8.4 + u64 全域通道 + in 域；与根仓消费态同一 tcb
+    实例，独立自测与消费态同构）。注册表 0.9.0 已含 `U64` 变体，但重定向仍
+    保留——版本 req 保持 `0.8.3`（vendored 副本声明 0.8.4，消费态要求 req 可
+    被补丁实例满足，上调 0.9.0 即破根仓解析）。被根仓 `[patch.crates-io]`
+    以本目录为补丁源消费时本节不生效（patch 不嵌套），两态互不干扰。
   - **Fact 契约黄金向量闸门**（v0.9.0 起在役）：`tests/ssot_fact_contract_gate.rs`
     断言副本 live 哈希契约 == 冻结向量 `tests/fixtures/ssot_fact_contract_golden.json`
     （11 样本：9 Fact 变体 + u64::MAX-1 哨兵 id + u64 值通道；断言面仅
@@ -53,6 +55,8 @@ governance 不打补丁：`Session.handle` / `Session.facts_log` 均为 pub，se
   （`pure::tests::test_next_step_*`）为环境性缺夹具（读 sibling 路径
   `../evorule-tcb/core_eval.json`，仅主仓布局存在），非补丁引入；主仓内同测试
   基线绿。新增测试 1 件绿。
+- 现行基线（M-1 随行批实测）：**lib 143 passed / 0 failed**（0.8.4 时代 3 件
+  环境性失败在 server 布局下不复现）+ 契约黄金向量闸 `fact_contract_matches_frozen_golden_fixture` 绿。
 - server 侧消费端点另有集成测试（`intervention_*` 5 件）覆盖门控/语义/404 面。
 
 ## 删除条件（硬性）
