@@ -1564,7 +1564,7 @@ struct LlmUpstream {
 /// - 响应：非流式解析 OpenAI 兼容 JSON；流式（`stream:true`）按 SSE 聚合。
 ///   两者统一输出 agent `LlmResponse` 同构四键：
 ///   `{content, tool_calls:[{tool_name,args}]|null, finish_reason, token_usage}`。
-/// - 超时：总 300s + connect 10s（客户端层）；失败分类与 `call_llm` 同风格，
+/// - 超时：总 `LLM_EXECUTE_TIMEOUT_SECS`（1800s）+ connect 10s（客户端层）；失败分类与 `call_llm` 同风格，
 ///   错误消息不含 key。
 pub async fn call_llm_ext(
     cfg: &PluginConfig,
