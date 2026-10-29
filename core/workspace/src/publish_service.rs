@@ -2116,7 +2116,10 @@ mod tests {
         let bundle_no_ev = build_publish_bundle(&rules, &make_item(None), 1, "admin-1");
         assert!(bundle_no_ev.tests.subset.is_empty());
         // verdict 由证据派生:无 id ⇒ 如实 Fail(旧形态无 id 也写 Pass,依赖导入闸兜底)
-        assert_eq!(bundle_no_ev.tests.verdict, evorule_bundle::TestVerdict::Fail);
+        assert_eq!(
+            bundle_no_ev.tests.verdict,
+            evorule_bundle::TestVerdict::Fail
+        );
     }
 
     #[test]
