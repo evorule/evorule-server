@@ -1164,6 +1164,10 @@ impl SessionManager {
     /// - `Err(SessionError::NotFound)`：纯内存模式（无 WAL）或归档文件不存在
     /// - `Err(SessionError::LimitExceeded)`：超过最大会话数限制
     /// - `Err(SessionError::WalUnavailable)`：WAL 重放/挂载失败（fail-closed，绝不静默降级）
+    // 认知复杂度豁免:WAL 复活是恢复主链的单一编排点(校验/重放/注册/计数器
+    // resume 各段顺序耦合,拆分会把不变量切散到多个入口)——复杂度来源是
+    // 业务的分支事实,不是实现瑕疵;重构留待专批
+    #[allow(clippy::cognitive_complexity)]
     pub fn rehydrate_session_from_wal(
         &self,
         session_id: SessionId,
