@@ -67,7 +67,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "有理数表达式精确求值(整数与四则/整数幂,支持 vars 变量绑定,既约分数输出,确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"expr":{"type":"string","description":"整数有理表达式,如 1/3 + 1/6、(2+3)*4、2^-2"}},"required":["expr"]}"#,
+            r#"{"type":"object","properties":{"expr":{"type":"string","description":"整数有理表达式,如 1/3 + 1/6、(2+3)*4、2^-2"},"vars":{"type":"object","description":"可选变量绑定: 变量名 → 整数或 a/b 分数字符串(实现读取;表达式标识符按此解析)","additionalProperties":{"type":"string"}}},"required":["expr"]}"#,
         ),
         make: mk_rational_eval,
     },

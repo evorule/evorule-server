@@ -62,7 +62,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description: "期间届日计算(日起算不含当日/周月年按历法对应日,对应日不存在取当月末;节假日表与周末顺延显式入参,法定休假数据不内置如实声明;确定性)",
         parameters: Some(
-            r#"{"type":"object","properties":{"start_date":{"type":"string","description":"起算日(YYYY-MM-DD)"},"period_days":{"type":"integer","description":"期间天数(正整数;周=7/月=当月实际天数/年=当年实际天数的历法等价由 unit 表达)"},"unit":{"type":"string","enum":["day","week","month","year"]},"defer_weekends":{"type":"boolean","description":"届日遇周末是否顺延(默认 false;法定休假日恒顺延)"},"holidays":{"type":"array","items":{"type":"string"},"description":"法定休假日表(YYYY-MM-DD 数组,显式入参不内置)"},"scale":{"type":"integer"},"rounding":{"type":"string","enum":["half_even","half_up","floor","trunc"]}},"required":["start_date","period_days","unit","scale","rounding"]}"#,
+            r#"{"type":"object","properties":{"start_date":{"type":"string","description":"起算日(YYYY-MM-DD)"},"period_days":{"type":"integer","description":"期间天数(正整数;周=7/月=当月实际天数/年=当年实际天数的历法等价由 unit 表达)"},"unit":{"type":"string","enum":["day","week","month","year"]},"defer_weekends":{"type":"boolean","description":"届日遇周末是否顺延(默认 false;法定休假日恒顺延)"},"holidays":{"type":"array","items":{"type":"string"},"description":"法定休假日表(YYYY-MM-DD 数组,显式入参不内置)"}},"required":["start_date","period_days","unit"]}"#,
         ),
         make: mk_deadline,
     },
