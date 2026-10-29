@@ -1441,7 +1441,9 @@ impl ModelRoutes {
 ///
 /// 执法（fail-closed，违者只降级自诊断、不阻断启动）：
 /// - 白名单物料未就绪 → 整表拒绝装载（空表）；
-/// - 同一模型跨 provider 重复声明 → 整表拒绝装载（同模型双上游歧义）；
+/// - 同一模型跨 provider 重复声明 → 先声明者保留，后到 provider 整体
+///   拒绝装载（同模型双上游=凭据串号歧义，零容忍；冲突不放大成整表
+///   拒绝——单一配置失误不应导致全局 LLM 不可用）；
 /// - 某 provider 的 models ⊄ 白名单物料 → 该 provider 拒绝装载；
 /// - 某 provider 凭据环境变量缺失/空白 → 该 provider 拒绝装载。
 ///
@@ -1464,24 +1466,41 @@ pub fn build_model_routes(
         );
         return (Some(ModelRoutes::default()), diags);
     };
-    let mut seen = std::collections::BTreeSet::new();
-    let mut duplicate: Option<&str> = None;
-    'outer: for p in providers {
+    // 跨 provider 模型声明唯一性执法：先声明者优先，冲突 provider 整体
+    // 隔离（其全部声明一并失效——被隔离者的独占模型不阻断后到 provider，
+    // 隔离=整体退出而非半装载）。同 provider 内重复声明在配置装载期已
+    // 拒绝，此处只需辨跨 provider 冲突。
+    let mut claims: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut isolated: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for p in providers {
+        let mut conflict: Option<(&str, &str)> = None;
         for m in &p.models {
-            if !seen.insert(m.as_str()) {
-                duplicate = Some(m);
-                break 'outer;
+            if let Some(owner) = claims.get(m.as_str()) {
+                conflict = Some((m.as_str(), owner));
+                break;
+            }
+        }
+        match conflict {
+            Some((m, owner)) => {
+                isolated.insert(p.name.as_str());
+                diags.push(format!(
+                    "provider '{}' 未装载: 模型 '{}' 已由 provider '{}' 声明\
+                     （先声明者优先，冲突 provider 整体隔离）",
+                    p.name, m, owner
+                ));
+            }
+            None => {
+                for m in &p.models {
+                    claims.insert(m.as_str(), p.name.as_str());
+                }
             }
         }
     }
-    if let Some(m) = duplicate {
-        diags.push(format!(
-            "多 provider 路由未装载: 模型 '{m}' 在多家 provider 重复声明（同一模型只能归属一个 provider）"
-        ));
-        return (Some(ModelRoutes::default()), diags);
-    }
     let mut routes = ModelRoutes::default();
     for p in providers {
+        if isolated.contains(p.name.as_str()) {
+            continue;
+        }
         let out_of_list: Vec<&str> = p
             .models
             .iter()
@@ -1630,12 +1649,21 @@ fn llm_ext_entry_checks(
         )));
     }
     if let Some(routes) = routes {
-        let route = routes.resolve(model).ok_or_else(|| {
-            PluginError::Llm(format!(
-                "模型 '{model}' 在白名单内但未配置任何已就绪 provider 路由\
-                 （llm_providers 装载诊断见插件启动日志）"
-            ))
-        })?;
+        let route = match routes.resolve(model) {
+            Some(r) => r,
+            None => {
+                tracing::warn!(
+                    model,
+                    "llm/execute: 模型在白名单内但 provider 路由未命中\
+                     （多 provider 路由已启用）; 常见根因: provider 未就绪\
+                     （凭据缺失/白名单越界/声明冲突被隔离），装载诊断见插件启动日志"
+                );
+                return Err(PluginError::Llm(format!(
+                    "模型 '{model}' 在白名单内但未配置任何已就绪 provider 路由\
+                     （llm_providers 装载诊断见插件启动日志）"
+                )));
+            }
+        };
         return Ok(LlmUpstream {
             execute_url: route.execute_url.clone(),
             api_key: route.api_key.clone(),
@@ -3160,20 +3188,42 @@ mod tests {
     }
 
     #[test]
-    fn routes_global_reject_on_cross_provider_duplicate_model() {
+    fn routes_first_declarer_wins_conflicting_provider_isolated() {
+        // 跨 provider 模型冲突：先声明者保留；后到 provider 整体隔离
+        // （其全部模型退出路由表，防凭据串号的半装载歧义）——整表拒绝
+        // 会把单一配置失误放大成全局不可用，不再采用。
         let cfg = providers_cfg(json!([
             {"name":"p1","execute_url":"http://x","api_key_env":"K1","models":["m-a"]},
             {"name":"p2","execute_url":"http://y","api_key_env":"K2","models":["m-a","m-b"]}
         ]));
         let set = allow_set(&["m-a", "m-b"]);
         let (routes, diags) = build_model_routes(&cfg, Some(&set), &|k| Some(format!("key-{k}")));
-        assert!(
-            matches!(routes, Some(ref r) if r.is_empty()),
-            "重复模型=整表拒绝"
-        );
+        let r = routes.expect("合规 provider 仍装载");
+        assert_eq!(r.resolve("m-a").unwrap().provider, "p1", "先声明者优先");
+        assert!(r.resolve("m-b").is_none(), "冲突 provider 整体隔离");
         assert!(diags
             .iter()
-            .any(|d| d.contains("m-a") && d.contains("重复")));
+            .any(|d| d.contains("p2") && d.contains("m-a") && d.contains("p1")));
+    }
+
+    #[test]
+    fn routes_isolated_provider_claims_do_not_block_later_providers() {
+        // 冲突 provider 被隔离后，其独占模型的声明一并失效——后到 provider
+        // 声明同一模型不受影响（隔离=整体退出，非半装载）
+        let cfg = providers_cfg(json!([
+            {"name":"p1","execute_url":"http://x","api_key_env":"K1","models":["m-a"]},
+            {"name":"p2","execute_url":"http://y","api_key_env":"K2","models":["m-a","m-b"]},
+            {"name":"p3","execute_url":"http://z","api_key_env":"K3","models":["m-b"]}
+        ]));
+        let set = allow_set(&["m-a", "m-b"]);
+        let (routes, _) = build_model_routes(&cfg, Some(&set), &|k| Some(format!("key-{k}")));
+        let r = routes.unwrap();
+        assert_eq!(r.resolve("m-a").unwrap().provider, "p1");
+        assert_eq!(
+            r.resolve("m-b").unwrap().provider,
+            "p3",
+            "被隔离者的声明不阻断后到者"
+        );
     }
 
     #[test]
