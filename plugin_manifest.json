@@ -10,6 +10,40 @@
     "ai-plugin": { "enabled": true, "manifest": "plugins/ai-plugin/plugin.json" },
     "wasm-host": { "enabled": true, "manifest": "plugins/wasm-host/plugin.json" },
     "evorule-context-inspector": { "enabled": false, "manifest": "plugins/evorule-context-inspector/plugin.json" },
-    "codegraph-bridge": { "enabled": true, "manifest": "plugins/codegraph-bridge/plugin.json" }
+    "codegraph-bridge": { "enabled": true, "manifest": "plugins/codegraph-bridge/plugin.json" },
+
+    "checksum-services": { "enabled": true },
+
+    "cny-services": { "enabled": true },
+
+    "export-services": { "enabled": true },
+
+    "finance-config": { "enabled": true, "manifest": "plugins/finance-config/plugin.json" },
+
+    "flow-studio": { "enabled": true },
+
+    "fluid-services": { "enabled": true },
+
+    "geometry-services": { "enabled": true },
+
+    "gnss-services": { "enabled": true },
+
+    "gov-services": { "enabled": true },
+
+    "grav-services": { "enabled": true },
+
+    "inference-services": { "enabled": true },
+
+    "legal-services": { "enabled": true },
+
+    "mechanics-services": { "enabled": true },
+
+    "metrology-services": { "enabled": true },
+
+    "numeric-services": { "enabled": true },
+
+    "quantum-services": { "enabled": true }
+
   }
+
 }
