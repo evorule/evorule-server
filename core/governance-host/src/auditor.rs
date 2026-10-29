@@ -522,7 +522,9 @@ impl Auditor {
             return false;
         }
         if self.auto_verify_interval > 1
-            && self.audit_new_count % (self.auto_verify_interval as u64) != 0
+            && !self
+                .audit_new_count
+                .is_multiple_of(self.auto_verify_interval as u64)
         {
             self.auto_verify_skip_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
