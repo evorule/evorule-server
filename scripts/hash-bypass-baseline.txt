@@ -1,17 +1,12 @@
-# hash-bypass ratchet baseline
-# 存量冻结（2026-10-24 生成）：本文件行 = 已知豁免命中；新绕行不入列即 CI 红。
-# 收缩：修复后用 `python scripts/hash_bypass_scan.py --dump` 重生成，禁手工增列。
-# 复核（2026-10-24 哈希域复核批）：全部 33 处逐域判定合法——审计链事实哈希域 10、
-# 会话锚域 4、市场资产内容哈希 8、平台 token 库存哈希 3、wasm 分发完整性 1、
-# 测试确定性快照 1、规则集版本哈希 1（源码引用 28）+ 依赖声明 5；零迁移零收缩。
-# 自本日起本文件语义升级为「复核后白名单」（域注册表见 evorule-hash README）；
-# 增列禁令与棘轮语义不变，新增绕行仍即红。
-
+H1|core/governance-host/Cargo.toml|56d3a05df961dec34b9915dc29deff59
 H1|evorule-server/Cargo.toml|56d3a05df961dec34b9915dc29deff59
 H1|patches/evorule-governance/Cargo.toml|c0f7a5acec056445a92da093a5cfd0e8
 H1|patches/evorule-reactor/Cargo.toml|56d3a05df961dec34b9915dc29deff59
 H1|plugins/physics-services/Cargo.toml|56d3a05df961dec34b9915dc29deff59
 H1|plugins/wasm-host/Cargo.toml|56d3a05df961dec34b9915dc29deff59
+H2|core/governance-host/src/session.rs|33acba0c977f2666c1384631e5f8f6a4
+H2|core/governance-host/src/session.rs|ae804da7f0d0dbedbcdee525b9162ba9
+H2|core/governance-host/src/session.rs|bd0c31957d7bb3f41b73717b76beddf4
 H2|evorule-server/src/api/audit_archive.rs|0074bcb5187aaca2f90b2944ce61d2f5
 H2|evorule-server/src/api/audit_archive.rs|a74ce53e2b5cbdcc99f223e5c0486c6b
 H2|evorule-server/src/api/hit_stats.rs|25966d02fcda64208261e404d396fac4
@@ -36,7 +31,5 @@ H2|patches/evorule-governance/src/session.rs|bd0c31957d7bb3f41b73717b76beddf4
 H2|patches/evorule-governance/src/shared_facts_log.rs|821379729b65ef04ef870be3e73b910b
 H2|patches/evorule-governance/src/shared_facts_log.rs|f106d38552dc16dfbe6e16acffde199b
 H2|patches/evorule-governance/tests/end_to_end_audit_chain.rs|678a44a3988e5bf5c0d18177968745bf
-H2|patches/evorule-reactor/src/hash.rs|821379729b65ef04ef870be3e73b910b
-H2|patches/evorule-reactor/src/hash.rs|fca496d5168ed1efe060afd539735a94
 H2|plugins/physics-services/tests/test_thermal_determinism.rs|99daa152c38b80180463b6e8588387eb
 H2|plugins/wasm-host/src/integrity.rs|2774198da1fe5aba3e3e70a68e5ae662
