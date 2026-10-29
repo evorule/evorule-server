@@ -98,7 +98,7 @@ mod evidence_fixture {
         ws_db.close_sandbox_session(sid, &export_path).unwrap();
         std::fs::write(
             format!("{report_dir}/report_{facts}"),
-            r#"{"summary": {"total_cases": 1, "passed": 1, "failed": 0, "skipped": 0}}"#,
+            r#"{"draft_ruleset_hash": "hash-evidence-fixture", "summary": {"total_cases": 1, "passed": 1, "failed": 0, "skipped": 0}}"#,
         )
         .unwrap();
         sid

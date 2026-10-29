@@ -61,9 +61,11 @@ pub(crate) fn seed_pass_sandbox(ws_db: &std::sync::Arc<evorule_workspace::Worksp
     // 落盘同构（report_<facts basename>.json），failed=0 使引用可作 pass 证据
     let export_path = format!("{report_dir}/{facts}");
     ws_db.close_sandbox_session(sid, &export_path).unwrap();
+    // 报告与真实 TestReport 序列化同构:含 draft_ruleset_hash(与 db 记录一致,
+    // 报告↔沙盒绑定校验的锚点)——缺该字段的报告会被证据闸判结构异常拒收
     std::fs::write(
         format!("{report_dir}/report_{facts}"),
-        r#"{"summary": {"total_cases": 1, "passed": 1, "failed": 0, "skipped": 0}}"#,
+        r#"{"draft_ruleset_hash": "hash-evidence-fixture", "summary": {"total_cases": 1, "passed": 1, "failed": 0, "skipped": 0}}"#,
     )
     .unwrap();
     sid

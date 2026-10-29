@@ -499,7 +499,10 @@ pub async fn export_bundle_handler(
             ),
         ));
     }
-    // ② 证据形状校验（服务端 enforcement，与治理侧 export_with_tests 双闸同口径）
+    // ② 证据核验（服务端 enforcement，与治理侧 export_with_tests 双闸同口径）。
+    // 产出面 fail-closed:verdict=pass 的每个 sandbox:<id> 都当场核验——沙盒存在、
+    // 已关闭、报告可读且 summary.failed==0;任何一环不满足即拒导出,不把未经
+    // 核验的引用固化成 pass 产物(核验义务不再后置到 import 侧)。
     if req.tests.verdict == evorule_bundle::TestVerdict::Pass {
         let traceable = !req.tests.subset.is_empty()
             && req.tests.subset.iter().all(|s| s.starts_with("sandbox:"));
@@ -511,6 +514,40 @@ pub async fn export_bundle_handler(
                  请从治理域测试工作台导出;verdict=fail 无此要求"
                     .to_string(),
             ));
+        }
+        for ref_item in &req.tests.subset {
+            let Some(sid_str) = ref_item.strip_prefix("sandbox:") else {
+                continue;
+            };
+            let sid: i64 = sid_str.parse().map_err(|_| {
+                export_err(
+                    StatusCode::BAD_REQUEST,
+                    format!("证据校验失败: sandbox 引用格式非法({ref_item}),须为 sandbox:<数字ID>"),
+                )
+            })?;
+            let report = ws
+                .sandbox_service
+                .generate_test_report(sid)
+                .await
+                .map_err(|e| {
+                    export_err(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        format!(
+                            "证据核验失败(产出面不固化未核验引用): sandbox:{sid} 无法核验 —— {e};\
+                             请从治理域测试工作台对本机沙盒重跑测试后导出"
+                        ),
+                    )
+                })?;
+            if report.summary.failed != 0 {
+                return Err(export_err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!(
+                        "证据核验失败: sandbox:{sid} 报告有 {} 个失败用例,\
+                         不得作为 pass 证据导出",
+                        report.summary.failed
+                    ),
+                ));
+            }
         }
     }
     // ③ 数据集存在性（dataset_id = workspace_id；存在性查询失败如实 404 不静默）

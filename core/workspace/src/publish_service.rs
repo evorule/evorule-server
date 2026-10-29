@@ -1104,16 +1104,20 @@ fn build_publish_bundle(
             // 证据如实携带:本段仅在闸门一验证通过后到达(沙盒 closed + 报告
             // failed==0),subset 携带 sandbox:<id> 可追溯标记(旧实现硬编码空
             // subset + Pass,属假证据形态,已修)。
-            // verdict 如实描述:固定 Pass,但**仅在闸门一验证后**到达——无
-            // sandbox id 时为 Pass+空 subset 形态,会被导入侧证据闸拒(fail-
-            // visible 可用面,非假证据)。verdict 由背书派生为后续项
-            // (TestVerdict 缺省收紧批登记;人工背书 human: 信任模型已下线)。
+            // verdict 由证据派生:有沙盒 id ⇒ 闸门一已验证(其通过条件含报告
+            // failed==0),Pass+subset 可追溯;无 id ⇒ 无证据,如实 Fail
+            // (TestVerdict 缺省收紧口径——导入侧证据闸对 Fail 拒收,fail-visible;
+            // 旧形态"无 id 也写 Pass"依赖导入闸兜底,属产出面假声明,已修)。
             subset: item
                 .test_report_sandbox_id
                 .map(|sid| vec![format!("sandbox:{sid}")])
                 .unwrap_or_default(),
             fixtures: Vec::new(),
-            verdict: evorule_bundle::TestVerdict::Pass,
+            verdict: if item.test_report_sandbox_id.is_some() {
+                evorule_bundle::TestVerdict::Pass
+            } else {
+                evorule_bundle::TestVerdict::Fail
+            },
         },
         audit: BundleAudit {
             // exported_at 为管理元数据 (墙钟旁路): 参与 bundle 自身防篡改哈希,
@@ -2107,9 +2111,12 @@ mod tests {
         assert_eq!(bundle.tests.subset, vec!["sandbox:42".to_string()]);
         assert_eq!(bundle.tests.verdict, evorule_bundle::TestVerdict::Pass);
 
-        // 无沙盒证据 → subset 为空 (该形态由闸门一拦截, 走不到 build_publish_bundle)
+        // 无沙盒证据 → subset 为空且 verdict 如实 Fail(证据派生;该形态由
+        // 闸门一拦截, 走不到 build_publish_bundle,断言守的是派生口径本身)
         let bundle_no_ev = build_publish_bundle(&rules, &make_item(None), 1, "admin-1");
         assert!(bundle_no_ev.tests.subset.is_empty());
+        // verdict 由证据派生:无 id ⇒ 如实 Fail(旧形态无 id 也写 Pass,依赖导入闸兜底)
+        assert_eq!(bundle_no_ev.tests.verdict, evorule_bundle::TestVerdict::Fail);
     }
 
     #[test]

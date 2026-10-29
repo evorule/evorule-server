@@ -2982,6 +2982,38 @@ impl SessionApi {
                      不得作为 pass 证据"
                 ));
             }
+            // 报告↔沙盒绑定校验:报告内嵌的草稿规则集指纹必须与沙盒会话记录
+            // 一致——防「报告文件被另一个沙盒的报告顶替」(export_path 指向的
+            // 文件名可被外部改写,此前对报告内容与该沙盒的从属关系零校验)。
+            // 两侧都在场即必须相等;报告侧缺失视为结构异常拒收;沙盒记录侧
+            // 缺失(极老数据)放行并留痕,不做追溯性拒收。
+            let report_ruleset_hash = report
+                .pointer("/draft_ruleset_hash")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let sandbox_ruleset_hash = sb.draft_ruleset_hash.clone();
+            match (report_ruleset_hash, sandbox_ruleset_hash) {
+                (Some(rp), Some(sbh)) if rp != sbh => {
+                    return Err(format!(
+                        "测试证据校验失败（不静默）: 沙盒 #{sid} 报告的规则集指纹与沙盒记录不符\
+                         (报告={rp} 记录={sbh})——报告与沙盒错配,不得作为 pass 证据"
+                    ));
+                }
+                (Some(_), None) => {
+                    tracing::warn!(
+                        sandbox_id = sid,
+                        "sandbox record lacks draft_ruleset_hash (legacy data); \
+                         report-to-sandbox binding check skipped"
+                    );
+                }
+                (None, Some(_)) => {
+                    return Err(format!(
+                        "测试证据校验失败: 沙盒 #{sid} 报告缺少 draft_ruleset_hash(结构异常),\
+                         报告无法锚定到沙盒记录,不得作为 pass 证据"
+                    ));
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -3056,6 +3088,17 @@ impl SessionApi {
         bundle: &evorule_bundle::DatasetBundle,
         dry_run: bool,
     ) -> Result<ImportOutcome, String> {
+        // ⓪-a 条目数上限（与编译链 compile-evopack 的 ≤64 口径对齐）：导入会把
+        // 每个条目展开为规则文件并触发全量重载,无上限时一个 1MiB 包即可制造
+        // 数千文件写入+重发放大。
+        const MAX_IMPORT_ENTRIES: usize = 64;
+        if bundle.entries.len() > MAX_IMPORT_ENTRIES {
+            return Err(format!(
+                "快照包条目数 {} 超过导入上限 {MAX_IMPORT_ENTRIES}（条目展开为规则文件                 并触发全量重载,超大批次请拆包导入）",
+                bundle.entries.len()
+            ));
+        }
+
         // ⓪ Q12 条目类型同质性：Rule 与 Knowledge 不得混装同一 bundle
         // （载荷语义互斥——transform 指令集与领域 payload 的门禁/消费通道完全不同）
         let has_rule = bundle
@@ -19830,7 +19873,7 @@ mod tests {
         // 报告文件(与 generate_test_report 落盘同构:report_<facts basename>)
         std::fs::write(
             format!("{report_dir}/report_{facts_1}"),
-            r#"{"summary": {"total_cases": 9, "passed": 9, "failed": 0, "skipped": 0}}"#,
+            r#"{"draft_ruleset_hash": "hash-importreg", "summary": {"total_cases": 9, "passed": 9, "failed": 0, "skipped": 0}}"#,
         )
         .unwrap();
         std::fs::write(
