@@ -198,15 +198,12 @@ jobs:
         working-directory: patches/evorule-reactor
         run: cargo test --test ssot_fact_contract_gate
 
-      - name: Rust cache (governance)
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: patches/evorule-governance
-          key: vendored-governance-${{ hashFiles('patches/evorule-governance/Cargo.lock') }}
-
-      - name: cargo test (audit export golden gate)
-        working-directory: patches/evorule-governance
-        run: cargo test --test audit_export_golden
+      # The governance vendored patch has been retired into the native
+      # core/governance-host crate; its audit-export golden gate lives on in
+      # that crate's own tests/audit_export_golden.rs (covered by the workspace
+      # test job), so the vendored-directory run below is gone. The directory
+      # itself stays as a reference until the capability-parity review signs
+      # off its removal.
 
   # ===== Rust tests =====
   test:

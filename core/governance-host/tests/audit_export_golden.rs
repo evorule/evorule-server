@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+// 集成测试保留 unwrap/expect 惯例(C5 unwrap/expect/panic = deny 仅约束生产代码)
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! 审计导出黄金向量：自证闸门 + 重生成器（EVID 移动端/第三方离线验证器基座）
 //!
