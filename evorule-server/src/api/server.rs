@@ -1557,10 +1557,11 @@ impl SessionApi {
             usize,
             Vec<RejectedOverlapEntry>,
             Vec<RejectedDomainEntry>,
+            Vec<RejectedGateFileEntry>,
         ),
         String,
     > {
-        let (new_transforms, new_layout, rejected_overlaps, rejected_domains) =
+        let (new_transforms, new_layout, rejected_overlaps, rejected_domains, rejected_gate_files) =
             Self::load_merged_with_layout(&self.core_eval_path, &self.rules_dir)?;
 
         // 装载防线横幅：reload 与启动共用（0 = 干净 info；>0 = 逐条 ERROR + 汇总）
@@ -1613,6 +1614,7 @@ impl SessionApi {
             new_len,
             rejected_overlaps,
             rejected_domains,
+            rejected_gate_files,
         ))
     }
 
@@ -1622,7 +1624,7 @@ impl SessionApi {
 
         rules_dir: &std::path::Path,
     ) -> Result<Vec<JsonValue>, String> {
-        Self::load_merged_with_layout(core_eval_path, rules_dir).map(|(rules, _, _, _)| rules)
+        Self::load_merged_with_layout(core_eval_path, rules_dir).map(|(rules, _, _, _, _)| rules)
     }
 
     /// 合并加载并产出规则集 layout（单一权威装载点）
@@ -1679,7 +1681,8 @@ impl SessionApi {
         // load_rule_set_merged 函数内完成（禁调用方拼装）；各部件以自身
         // ctx 重过四步门（与单件门确定性等判），任一部件失败=整体拒载。
         // io 重叠/domain 防线是生产防线（非三门），仍在本函数后续段执行。
-        let (dir_parts, dir_labels) = Self::load_rules_dir_with_sources(rules_dir);
+        let (dir_parts, dir_labels, rejected_gate_files) =
+            Self::load_rules_dir_with_sources(rules_dir);
         let mut parts = Vec::with_capacity(1 + dir_parts.len());
         parts.push(MergedPart { doc: tcb_json, ctx });
         parts.extend(dir_parts);
@@ -1751,7 +1754,13 @@ impl SessionApi {
 
         let layout = crate::api::hit_stats::RulesetLayout::from_rules(&rules, sources);
 
-        Ok((rules, layout, rejected_overlaps, rejected_domains))
+        Ok((
+            rules,
+            layout,
+            rejected_overlaps,
+            rejected_domains,
+            rejected_gate_files,
+        ))
     }
 
     // =========================================================================
@@ -2333,9 +2342,11 @@ impl SessionApi {
     /// 来源标签 = 相对 rules_dir 的文件路径（`/` 归一化），与部件清单等长；
     /// 规则条数展开由调用方按合并结果的 parts[i].rule_count 完成。
     /// 目录不存在返回空（纯宪法规则集）。
-    fn load_rules_dir_with_sources(rules_dir: &std::path::Path) -> (Vec<MergedPart>, Vec<String>) {
+    fn load_rules_dir_with_sources(
+        rules_dir: &std::path::Path,
+    ) -> (Vec<MergedPart>, Vec<String>, Vec<RejectedGateFileEntry>) {
         if !rules_dir.exists() {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         }
 
         let mut paths: Vec<std::path::PathBuf> = Vec::new();
@@ -2356,6 +2367,8 @@ impl SessionApi {
 
         let mut labels: Vec<String> = Vec::new();
 
+        let mut rejected_gate_files: Vec<RejectedGateFileEntry> = Vec::new();
+
         for p in paths {
             if tampered.contains(&p) {
                 continue; // 复验失配/manifest 非法——收集阶段已 ERROR 留痕
@@ -2363,19 +2376,23 @@ impl SessionApi {
             // R5/[CON-S-005]：返回部件（文档+部件 ctx）而非装载结果——装载与
             // 拼装统一在 load_rule_set_merged 函数内完成（禁调用方拼装）。
             // 标签与部件一一对应，规则条数展开由调用方按 parts[i].rule_count。
-            if let Some((doc, ctx)) = Self::parse_rule_file(&p, rules_dir) {
-                // 来源标签 = 相对 rules_dir 的路径（/ 归一化，URL/标签安全）
-                let rel = p
-                    .strip_prefix(rules_dir)
-                    .unwrap_or(&p)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                labels.push(rel);
-                parts.push(MergedPart { doc, ctx });
+            match Self::parse_rule_file(&p, rules_dir) {
+                Ok(Some((doc, ctx))) => {
+                    // 来源标签 = 相对 rules_dir 的路径（/ 归一化，URL/标签安全）
+                    let rel = p
+                        .strip_prefix(rules_dir)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    labels.push(rel);
+                    parts.push(MergedPart { doc, ctx });
+                }
+                Ok(None) => {}
+                Err(rejected) => rejected_gate_files.push(rejected),
             }
         }
 
-        (parts, labels)
+        (parts, labels, rejected_gate_files)
     }
 
     /// 递归收集规则 .json 文件路径：跳过子目录的 manifest，其余按目录展开
@@ -2644,8 +2661,17 @@ impl SessionApi {
     fn parse_rule_file(
         p: &std::path::Path,
         rules_dir: &std::path::Path,
-    ) -> Option<(serde_json::Value, LoadContext)> {
-        let json = Self::load_rule_doc(p)?;
+    ) -> Result<Option<(serde_json::Value, LoadContext)>, RejectedGateFileEntry> {
+        let rel = p
+            .strip_prefix(rules_dir)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let json = Self::load_rule_doc(p).map_err(|reason| RejectedGateFileEntry {
+            path: rel.clone(),
+            gate: "read".into(),
+            reason,
+        })?;
 
         // 业务/约束文件装载收口（single constitution load path）：
         // L2 身份由调用方按治理事实判定（rules_dir 根目录 00_constraint_*/00_meta_*
@@ -2669,11 +2695,30 @@ impl SessionApi {
         if let Err(e) = evorule_rule_loader::load_rule_set(&json, &ctx) {
             // 门禁拒绝=治理纪律执行（B2 类旁路在此消解）；保留生产 loader 的
             // fail-soft 语义（warn+跳过该文件，其余文件照常装载）+ fail-visible
-            //（拒载明细上浮至合并层，与旧 schema gate 同可查面）
+            //（拒载明细上浮至合并层与 reload 响应，与旧 schema gate 同可查面）
             tracing::warn!("规则文件 {} 装载门禁未过，已拒载: {}", p.display(), e);
-            return None;
+            let gate = if matches!(&e, evorule_rule_loader::ConstitutionError::TierGate(_)) {
+                "tier"
+            } else if matches!(
+                &e,
+                evorule_rule_loader::ConstitutionError::DomainOnMissingGate(_)
+            ) {
+                "domain_on_missing"
+            } else if matches!(
+                &e,
+                evorule_rule_loader::ConstitutionError::DisciplineGate(_)
+            ) {
+                "discipline"
+            } else {
+                "schema"
+            };
+            return Err(RejectedGateFileEntry {
+                path: rel,
+                gate: gate.into(),
+                reason: e.to_string(),
+            });
         }
-        Some((json, ctx))
+        Ok(Some((json, ctx)))
     }
 
     /// 层级门禁判定核心（静默版，加载路径与 tier_inventory 清单共用单一权威实现）。
@@ -2742,24 +2787,24 @@ impl SessionApi {
     }
 
     /// 读取规则文件并解析为 JSON；失败时 warn 并返回 None
-    fn load_rule_doc(p: &std::path::Path) -> Option<serde_json::Value> {
+    fn load_rule_doc(p: &std::path::Path) -> Result<serde_json::Value, String> {
         let raw = match std::fs::read_to_string(p) {
             Ok(s) => s,
 
             Err(e) => {
                 tracing::warn!("读取业务规则文件 {} 失败: {}，已跳过", p.display(), e);
 
-                return None;
+                return Err(format!("读取失败: {e}"));
             }
         };
 
         match serde_json::from_str(&raw) {
-            Ok(v) => Some(v),
+            Ok(v) => Ok(v),
 
             Err(e) => {
                 tracing::warn!("解析业务规则文件 {} 失败: {}，已跳过", p.display(), e);
 
-                None
+                Err(format!("JSON 解析失败: {e}"))
             }
         }
     }
@@ -3248,9 +3293,19 @@ impl SessionApi {
             // 被拒重叠条目软结果透传到响应体（正常为空——③.5 前置预判已拦；
             // 非空=预判与 reload 之间 rules_dir 并发变更，半激活事实显式不静默）。
             // domain 门禁拒载同款透传（③.6 前置预判已拦，正常为空）。
-            let (_, _, rejected, rejected_domains) = self.reload_from_disk().await?;
+            let (_, _, rejected, rejected_domains, rejected_gate_files) =
+                self.reload_from_disk().await?;
             reload_rejected = rejected;
             reload_rejected_domains = rejected_domains;
+            // 门禁拒载文件走日志面(ImportOutcome 契约未含该字段,加字段属
+            // 契约演进;此处不静默——运维可见与 import 响应可见分开)
+            for g in &rejected_gate_files {
+                tracing::warn!(
+                    path = %g.path,
+                    gate = %g.gate,
+                    "bundle 导入触发 reload: 规则文件被门禁拒载"
+                );
+            }
         }
 
         // ⑥ T5 审计溯源：bundle 导入历史写入 workspace 元数据库（bundle_imports 表）。
@@ -13618,14 +13673,28 @@ pub struct RejectedDomainEntry {
     pub violations: Vec<DomainViolation>,
 }
 
-/// 合并装载产出四元组：合并规则列表（引擎输入）+ layout（下标→来源解析）
-/// + 装载防线被拒重叠条目 + domain 门禁被拒条目。
+/// 合并装载产出五元组：合并规则列表（引擎输入）+ layout（下标→来源解析）
+/// + 装载防线被拒重叠条目 + domain 门禁被拒条目 + 四步门被拒文件。
 pub type MergedLoadOutcome = (
     Vec<JsonValue>,
     crate::api::hit_stats::RulesetLayout,
     Vec<RejectedOverlapEntry>,
     Vec<RejectedDomainEntry>,
+    Vec<RejectedGateFileEntry>,
 );
+
+/// 四步门（tier/schema/discipline/domain-on-missing）被拒文件的程序化可查面
+/// （与 rejected_overlaps/rejected_domains 同构：reload 返回 200 时调用方
+/// 可区分「正常重载」与「某文件被门禁剔除」）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RejectedGateFileEntry {
+    /// 来源标签（rules_dir 相对路径，/ 归一化）
+    pub path: String,
+    /// 拒载门（tier / schema / discipline / domain_on_missing）
+    pub gate: String,
+    /// 拒载原因（loader 四部分错误的原文摘要）
+    pub reason: String,
+}
 
 /// bundle 导入结果（运行配置 + reload 期被拒重叠条目）
 ///
@@ -13671,6 +13740,12 @@ pub struct RulesReloadedResponse {
     /// domain 门禁：本次装载被拒载的违规条目（空 = 无违规）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected_domains: Vec<RejectedDomainEntry>,
+
+    /// 四步门：本次装载被拒载的文件（空 = 无文件被门禁剔除；
+    /// 与 rejected_overlaps/rejected_domains 同构，reload 返回 200 时
+    /// 调用方可区分「正常重载」与「某文件被门禁剔除」）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejected_gate_files: Vec<RejectedGateFileEntry>,
 }
 
 /// 规则热重载 handler
@@ -13702,7 +13777,7 @@ async fn reload_rules_handler(
     let old_len = sessions.core_eval_len();
 
     match sessions.reload_from_disk().await {
-        Ok((old, new_len, rejected_overlaps, rejected_domains)) => Ok((
+        Ok((old, new_len, rejected_overlaps, rejected_domains, rejected_gate_files)) => Ok((
             StatusCode::OK,
             Json(RulesReloadedResponse {
                 reload_ok: true,
@@ -13716,6 +13791,8 @@ async fn reload_rules_handler(
                 rejected_overlaps,
 
                 rejected_domains,
+
+                rejected_gate_files,
             }),
         )),
 
@@ -13736,6 +13813,8 @@ async fn reload_rules_handler(
                     rejected_overlaps: Vec::new(),
 
                     rejected_domains: Vec::new(),
+
+                    rejected_gate_files: Vec::new(),
                 }),
             ))
         }
@@ -14369,7 +14448,7 @@ mod tests {
         let core_eval_path = tmp.path().join("server_eval.json");
         std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
 
-        let (rules, _layout, rejected, _rejected_domains) =
+        let (rules, _layout, rejected, _rejected_domains, _gate_files) =
             SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).expect("装载不应失败");
 
         // 宪法 2 条 + e3 文件 2 条 − 拒 1 = 3
@@ -14405,7 +14484,7 @@ mod tests {
         let core_eval_path = tmp.path().join("server_eval.json");
         std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
 
-        let (rules, _layout, rejected, _rejected_domains) =
+        let (rules, _layout, rejected, _rejected_domains, _gate_files) =
             SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).unwrap();
 
         // 宪法 2 条 + t0 1 条 − 拒 1 = 2
@@ -14427,7 +14506,7 @@ mod tests {
         let core_eval_path = tmp.path().join("server_eval.json");
         std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
 
-        let (rules, _layout, rejected, _rejected_domains) =
+        let (rules, _layout, rejected, _rejected_domains, _gate_files) =
             SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).unwrap();
         // 宪法 2 条 + benign 文件 2 条（set + branch，均无 I/O 能力面）
         assert_eq!(rules.len(), 4);
@@ -14587,7 +14666,7 @@ mod tests {
         let core_eval_path = tmp.path().join("server_eval.json");
         std::fs::write(&core_eval_path, O135_CONSTITUTION).unwrap();
 
-        let (rules, _layout, rejected_overlaps, rejected) =
+        let (rules, _layout, rejected_overlaps, rejected, _gate_files) =
             SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).expect("装载不应失败");
 
         assert!(rejected_overlaps.is_empty(), "本样本不涉 I/O 权利面");
@@ -14914,7 +14993,7 @@ mod tests {
             &constraint_body("旧约束", Some("2026-09-21T08:00:00Z")),
         );
 
-        let (parts, sources) = SessionApi::load_rules_dir_with_sources(&dir);
+        let (parts, sources, _gate_files) = SessionApi::load_rules_dir_with_sources(&dir);
 
         let idx = |name: &str| {
             sources
@@ -14959,7 +15038,7 @@ mod tests {
             r#"{"transform":[{"type":"set","params":{"attr":"a","operation":"set","value":"v"}}]}"#,
         );
 
-        let (_, sources) = SessionApi::load_rules_dir_with_sources(&dir);
+        let (_, sources, _gate_files) = SessionApi::load_rules_dir_with_sources(&dir);
 
         let names: Vec<&str> = sources.iter().map(String::as_str).collect();
         assert_eq!(
@@ -14994,7 +15073,7 @@ mod tests {
             r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":"v"}}]}"#,
         );
 
-        let (_, sources) = SessionApi::load_rules_dir_with_sources(&dir);
+        let (_, sources, _gate_files) = SessionApi::load_rules_dir_with_sources(&dir);
 
         let names: Vec<&str> = sources.iter().map(String::as_str).collect();
         assert_eq!(
@@ -20685,5 +20764,49 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_file_rejection_tests {
+    use super::*;
+
+    /// 门禁拒载的文件在 reload 链有程序化可查面——
+    /// parse_rule_file 返回 Err(rejected) 而非静默 None,
+    /// 且 gate 标签按 ConstitutionError 变体归类,全管线五元组携带
+    #[tokio::test]
+    async fn gate_rejected_file_surfaces_in_reload_chain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules_dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        let core_eval_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/server_eval.json");
+
+        // 种子:一个合法业务文件(保底,目录非空)
+        std::fs::write(
+            rules_dir.join("ok_rule.json"),
+            r#"{"metadata":{"title":"ok-rule"},"transform":[]}"#,
+        )
+        .unwrap();
+        // 违规:非 L2 文件携带 tier=constraint(层级伪造,tier 门拒载)
+        std::fs::write(
+            rules_dir.join("fake_l2.json"),
+            r#"{"metadata":{"title":"fake","tier":"constraint"},"transform":[{"type":"set","params":{"attr":"a","operation":"set","value":"v"}}]}"#,
+        )
+        .unwrap();
+
+        let (_rules, _layout, overlaps, domains, gate_files) =
+            SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).unwrap();
+        assert!(overlaps.is_empty() && domains.is_empty());
+        let fake = gate_files
+            .iter()
+            .find(|g| g.path.ends_with("fake_l2.json"))
+            .expect("层级伪造文件应出现在 rejected_gate_files");
+        assert_eq!(fake.gate, "tier");
+        assert!(
+            fake.reason.contains("tier") || fake.reason.contains("L2"),
+            "reason 应点名层级问题: {}",
+            fake.reason
+        );
     }
 }
