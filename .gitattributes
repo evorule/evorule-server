@@ -14,3 +14,8 @@ dist/start-evorule.bat text eol=crlf
 dist/start-watchdog.bat text eol=crlf
 dist/README-STARTUP.txt text eol=crlf
 dist/start-evorule.sh text eol=lf
+
+# wasm-host 分发完整性材料:验签字节敏感(blake3 内容寻址+ed25519 分离签名
+# 对字节签名),CRLF 检出会毁掉验签(fresh-install 冒烟实证),钉 LF。
+plugins/wasm/*.sig text eol=lf
+plugins/wasm/*.plugin-module.json text eol=lf
