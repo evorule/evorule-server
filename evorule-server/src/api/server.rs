@@ -19977,13 +19977,22 @@ mod tests {
         std::fs::create_dir_all(&report_dir).unwrap();
         let facts_1 = format!("audit_sandbox_1_{ts}.json");
         let facts_2 = format!("audit_sandbox_2_{ts}.json");
+        // PASS 沙盒的 draft 快照 = bundle 条目的 rule_body 原文(内容对照的
+        // 数据面:快照含条目内容才放行)
+        let sb_pass_draft = serde_json::json!([{
+            "scenario_id": "spring-single-particle",
+            "gravity": [0.0, -9.81, 0.0],
+            "restitution": 1.0,
+            "bodies": [{"id": "particle-1"}]
+        }])
+        .to_string();
         let sb_pass = ws_db
             .insert_sandbox_session(
                 None,
                 &ws_id,
                 1,
                 Some("hash-importreg"),
-                Some(r#"["patch-1"]"#),
+                Some(&sb_pass_draft),
                 1,
                 "test:importreg",
             )
