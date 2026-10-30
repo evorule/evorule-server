@@ -31,8 +31,9 @@
 //! `call_llm`（sidecar IoRequest 分支专用，见 lib.rs）；②扩展执行体
 //! `call_llm_ext`（POST /llm/execute，模型白名单网络入口执法，prompt 已由
 //! agent 侧命令事实先行入链）。非 LLM 出站仅 web_search 中继一条
-//! （POST /tools/web_search → Brave Search API，key 仅本插件侧持有）；其余
-//! 任何直连禁止；凭据（llm_api_key/brave_api_key）不进日志/错误消息。
+//! （POST /tools/web_search → 搜索 provider，brave/tavily 代码级白名单，
+//! key 仅本插件侧持有）；其余任何直连禁止；凭据（llm_api_key/brave_api_key/
+//! tavily_api_key）不进日志/错误消息。
 //!
 //! 配置：`ai-plugin.json`（--config 指定；缺省依次找 exe 同目录/工作目录）。
 //! 缺文件 fail-fast 自诊断退出——不静默、不带缺省凭据启动（清单缺省禁用，
@@ -545,10 +546,10 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
     }
 }
 
-/// web_search 中继端点（批K 段2）：evo-agent WebSearchTool → Brave Search。
+/// web_search 中继端点（批K 段2）：evo-agent WebSearchTool → 搜索 provider 中继。
 /// 调用方令牌校验与 /llm/execute 同面一致（配置后启用；本机其他进程无令牌
 /// 即 401）。请求体非法 → 400；未启用/未配 key → 500 自诊断（fail-visible，
-/// 绝不静默）；Brave 上游失败 → 502 归因透传。key 不进日志/错误消息。
+/// 绝不静默）；搜索上游失败 → 502 归因透传。key 不进日志/错误消息。
 async fn web_search(
     State(st): State<PluginState>,
     headers: axum::http::HeaderMap,

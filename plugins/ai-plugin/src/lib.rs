@@ -112,6 +112,14 @@ pub const BRAVE_API_KEY_ENV: &str = "EVORULE_AI_PLUGIN_BRAVE_API_KEY";
 /// 控制，无 SSRF 面；provider 扩位时新端点随枚举分支演进）
 pub const BRAVE_SEARCH_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 
+/// Tavily Search API 凭据环境变量名（推荐注入方式：凭据不落盘，
+/// 优先于配置文件值 `tavily_api_key`）。
+pub const TAVILY_API_KEY_ENV: &str = "EVORULE_AI_PLUGIN_TAVILY_API_KEY";
+
+/// Tavily Search API 端点（代码级固定——出站目标不受配置控制，无 SSRF
+/// 面；provider 扩位时新端点随枚举分支演进）
+pub const TAVILY_SEARCH_ENDPOINT: &str = "https://api.tavily.com/search";
+
 /// web_search 中继缺省结果条数
 pub const WEB_SEARCH_DEFAULT_COUNT: u64 = 5;
 
@@ -182,13 +190,18 @@ pub struct PluginConfig {
     /// 来源：env `EVORULE_AI_PLUGIN_CALLER_TOKEN` > 配置 `caller_token`。
     pub caller_token: Option<String>,
     /// web_search 中继 provider（批K 段2；None = /tools/web_search 未启用，
-    /// 请求显式 500 自诊断）。代码级枚举白名单：现仅 "brave"（provider
+    /// 请求显式 500 自诊断）。代码级枚举白名单："brave" / "tavily"（provider
     /// 扩位——新 provider 加枚举分支，端点/鉴权形态随分支演进）。
     pub web_search_provider: Option<String>,
     /// Brave Search API 订阅令牌（env `EVORULE_AI_PLUGIN_BRAVE_API_KEY` >
     /// 配置 `brave_api_key`；None = /tools/web_search 显式 500 自诊断，
     /// fail-visible 不静默）。凭据纪律同 llm_api_key：不进日志/错误消息。
     pub brave_api_key: Option<String>,
+    /// Tavily Search API 订阅令牌（env `EVORULE_AI_PLUGIN_TAVILY_API_KEY` >
+    /// 配置 `tavily_api_key`；None = provider 为 tavily 时 /tools/web_search
+    /// 显式 500 自诊断，fail-visible 不静默）。凭据纪律同 llm_api_key：
+    /// 不进日志/错误消息。
+    pub tavily_api_key: Option<String>,
 }
 
 /// 多 provider 路由的单条 provider 声明（`llm_providers` 配置节数组元素）。
@@ -272,6 +285,10 @@ impl std::fmt::Debug for PluginConfig {
             .field(
                 "brave_api_key",
                 &self.brave_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "tavily_api_key",
+                &self.tavily_api_key.as_ref().map(|_| "[REDACTED]"),
             )
             .finish()
     }
@@ -420,13 +437,13 @@ impl PluginConfig {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .or_else(|| optional_str(v, "caller_token"));
-        // web_search 中继配置（批K 段2）：provider 代码级枚举白名单（现仅
-        // brave，未知值 fail-fast）；key env 优先 > 配置文件（凭据不落盘推荐）。
+        // web_search 中继配置（批K 段2）：provider 代码级枚举白名单（brave/
+        // tavily 双值，未知值 fail-fast）；key env 优先 > 配置文件（凭据不落盘推荐）。
         let web_search_provider = optional_str(v, "web_search_provider");
         if let Some(p) = &web_search_provider {
-            if p != "brave" {
+            if p != "brave" && p != "tavily" {
                 return Err(PluginError::Config(format!(
-                    "字段 'web_search_provider' 非法: '{p}'（代码级 provider 白名单: brave）"
+                    "字段 'web_search_provider' 非法: '{p}'（代码级 provider 白名单: brave, tavily）"
                 )));
             }
         }
@@ -434,6 +451,10 @@ impl PluginConfig {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .or_else(|| optional_str(v, "brave_api_key"));
+        let tavily_api_key = env(TAVILY_API_KEY_ENV)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| optional_str(v, "tavily_api_key"));
         let llm_max_tokens = match v.get("llm_max_tokens") {
             None | Some(Value::Null) => None,
             Some(x) => Some(x.as_u64().ok_or_else(|| {
@@ -458,6 +479,7 @@ impl PluginConfig {
             caller_token,
             web_search_provider,
             brave_api_key,
+            tavily_api_key,
         })
     }
 
@@ -1061,7 +1083,8 @@ pub async fn execute_tool(
 // ---------------------------------------------------------------------------
 // web_search 中继（批K 段2）：POST /tools/web_search 出站搜索通路
 //
-// 职责单一：evo-agent 侧 WebSearchTool → 本插件端点 → Brave Search API v1。
+// 职责单一：evo-agent 侧 WebSearchTool → 本插件端点 → 搜索 provider
+// （brave/tavily，代码级白名单）。
 // key 仅本插件侧持有（evo-agent 进程零密钥）；凭据纪律同 llm_api_key：
 // 不进日志/错误消息/URL。fail-visible：未启用/未配 key 显式自诊断（端点
 // 映射 500），上游失败归因透传（502），绝不静默兜底。
@@ -1073,7 +1096,7 @@ pub async fn execute_tool(
 pub enum WebSearchError {
     /// 服务未就绪：未启用（provider 未配置）或凭据缺失——部署自诊断项
     NotReady(String),
-    /// 上游（Brave）请求失败——归因透传
+    /// 上游（搜索 provider）请求失败——归因透传
     Upstream(String),
 }
 
@@ -1088,7 +1111,7 @@ impl fmt::Display for WebSearchError {
 
 impl std::error::Error for WebSearchError {}
 
-/// web_search 中继入口：provider 分派（代码级枚举白名单，现仅 brave；
+/// web_search 中继入口：provider 分派（代码级枚举白名单 brave/tavily；
 /// 未知值配置期已 fail-fast，此处兜底防御）。
 pub async fn web_search_relay(
     cfg: &PluginConfig,
@@ -1098,7 +1121,8 @@ pub async fn web_search_relay(
     match cfg.web_search_provider.as_deref() {
         None => Err(WebSearchError::NotReady(
             "web_search 未启用: 配置键 web_search_provider 未填写（自诊断指引: \
-             ai-plugin.json 填 \"web_search_provider\": \"brave\" 并配置 Brave API key）"
+             ai-plugin.json 填 \"web_search_provider\": \"brave\" 或 \"tavily\" \
+             并配置对应搜索 API key）"
                 .to_string(),
         )),
         Some("brave") => {
@@ -1112,8 +1136,19 @@ pub async fn web_search_relay(
                 .await
                 .map_err(WebSearchError::Upstream)
         }
+        Some("tavily") => {
+            let key = cfg.tavily_api_key.as_deref().ok_or_else(|| {
+                WebSearchError::NotReady(format!(
+                    "Tavily API key 未配置（自诊断指引: 推荐设环境变量 {TAVILY_API_KEY_ENV}，\
+                     凭据不落盘; 或在 ai-plugin.json 填 tavily_api_key）"
+                ))
+            })?;
+            tavily_web_search(TAVILY_SEARCH_ENDPOINT, key, query, count)
+                .await
+                .map_err(WebSearchError::Upstream)
+        }
         Some(other) => Err(WebSearchError::NotReady(format!(
-            "web_search provider '{other}' 无实现分支（代码级白名单: brave; \
+            "web_search provider '{other}' 无实现分支（代码级白名单: brave, tavily; \
              配置校验应已拦截，属插件缺陷）"
         ))),
     }
@@ -1197,6 +1232,83 @@ fn normalize_brave_response(body: &Value, query: &str, count: u64) -> Result<Val
         "result_count": result_count,
         "results": results,
     }))
+}
+
+/// Tavily 响应归一（纯函数）：`{results:[{title,url,content}]}` →
+/// `{status, provider, query, result_count, results:[{title,url,description}]}`。
+///
+/// 缺 `results` 节点 = 零结果（Tavily 无命中的正常形态，非错误）；条目缺
+/// url 字段 = 形态异常 fail-visible（宁可显式报错，绝不静默丢结果）；title
+/// 缺省按空串归一；`content` 对位 description。截取前 `count` 条（调用方已钳帽）。
+fn normalize_tavily_response(body: &Value, query: &str, count: u64) -> Result<Value, String> {
+    let raw = body.get("results").and_then(Value::as_array);
+    let mut results = Vec::new();
+    if let Some(items) = raw {
+        for item in items.iter().take(count as usize) {
+            let url = item.get("url").and_then(Value::as_str).ok_or_else(|| {
+                "Tavily 响应结果缺 url 字段（形态异常，fail-visible）".to_string()
+            })?;
+            let title = item.get("title").and_then(Value::as_str).unwrap_or("");
+            let description = item.get("content").and_then(Value::as_str).unwrap_or("");
+            results.push(json!({ "title": title, "url": url, "description": description }));
+        }
+    }
+    let result_count = results.len();
+    Ok(json!({
+        "status": "ok",
+        "provider": "tavily",
+        "query": query,
+        "result_count": result_count,
+        "results": results,
+    }))
+}
+
+/// Tavily Search API 出站（POST JSON `{query, max_results, search_depth}` +
+/// `Authorization: Bearer`）。
+///
+/// 独立 client：重定向不跟随（出站安全纪律，同 [`build_http_client`]）+ 总
+/// 15s/连接 5s 超时（搜索是交互面短请求，不随 LLM 长窗）；端点为代码级
+/// 常量（出站目标不受配置控制，无 SSRF 面）。
+async fn tavily_web_search(
+    endpoint: &str,
+    key: &str,
+    query: &str,
+    count: u64,
+) -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(WEB_SEARCH_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(WEB_SEARCH_CONNECT_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
+    let payload = json!({
+        "query": query,
+        "max_results": count,
+        "search_depth": "basic",
+    });
+    let resp = client
+        .post(endpoint)
+        .bearer_auth(key)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Tavily 请求失败: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(200).collect();
+        let kind = match status.as_u16() {
+            401 => "鉴权失败(API key 无效)",
+            429 => "限流(429)",
+            _ => "上游错误",
+        };
+        return Err(format!("Tavily HTTP {status}({kind}): {snippet}"));
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Tavily 响应 JSON 解析失败: {e}"))?;
+    normalize_tavily_response(&body, query, count)
 }
 
 /// LLM 调用 —— 本 crate 唯一 LLM 路径。
@@ -2999,6 +3111,164 @@ mod tests {
         )
         .await
         .unwrap_err();
+        assert!(err.contains("401"), "{err}");
+        assert!(err.contains("鉴权失败"), "{err}");
+    }
+
+    // ---------- web_search 中继 tavily provider ----------
+
+    /// 构造带/不带 tavily web_search 配置的 PluginConfig（relay 自诊断测试用）
+    fn ws_cfg_tavily(provider: Option<&str>, key: Option<&str>) -> PluginConfig {
+        let mut v = json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_api_key":"k","llm_model":"m"});
+        if let Some(p) = provider {
+            v["web_search_provider"] = json!(p);
+        }
+        if let Some(k) = key {
+            v["tavily_api_key"] = json!(k);
+        }
+        PluginConfig::from_value_with_env(&v, &|_| None).unwrap()
+    }
+
+    #[test]
+    fn config_web_search_tavily_provider_and_key() {
+        // 白名单双值：tavily 合法；key env 优先于配置文件（含 trim）
+        let v = json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_api_key":"k","llm_model":"m","web_search_provider":"tavily",
+            "tavily_api_key":"file-key"});
+        let cfg = PluginConfig::from_value_with_env(&v, &|name| {
+            if name == TAVILY_API_KEY_ENV {
+                Some("  env-key  ".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(cfg.web_search_provider.as_deref(), Some("tavily"));
+        assert_eq!(cfg.tavily_api_key.as_deref(), Some("env-key"));
+        // env 缺省回落配置文件
+        let cfg2 = PluginConfig::from_value_with_env(&v, &|_| None).unwrap();
+        assert_eq!(cfg2.tavily_api_key.as_deref(), Some("file-key"));
+        // 凭据纪律：Debug 脱敏
+        assert!(!format!("{cfg:?}").contains("env-key"));
+        assert!(!format!("{cfg:?}").contains("file-key"));
+        // 未知值 fail-fast：错误文案列出全部白名单值
+        let err = PluginConfig::from_json_str(
+            r#"{"server_base_url":"http://x","llm_endpoint":"http://y","llm_api_key":"k",
+                "llm_model":"m","web_search_provider":"google"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("brave, tavily"), "{err}");
+    }
+
+    #[test]
+    fn web_search_normalize_tavily_shapes() {
+        // happy：content→description 映射 + provider 标记 + title 缺省空串
+        let body = json!({"results": [
+            {"title": "t1", "url": "https://a/1", "content": "c1"},
+            {"url": "https://a/2", "content": "c2"},
+        ]});
+        let out = normalize_tavily_response(&body, "rust async", 5).unwrap();
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["provider"], "tavily");
+        assert_eq!(out["query"], "rust async");
+        assert_eq!(out["result_count"], 2);
+        assert_eq!(out["results"][0]["description"], "c1");
+        assert_eq!(out["results"][1]["title"], "");
+        // 缺 results 节点 = 零结果（Tavily 无命中正常形态，非错误）
+        let out = normalize_tavily_response(&json!({}), "q", 5).unwrap();
+        assert_eq!(out["result_count"], 0);
+        assert_eq!(out["results"].as_array().unwrap().len(), 0);
+        // 条目缺 url 字段 = 形态异常 fail-visible
+        let body = json!({"results": [{"title": "x"}]});
+        assert!(normalize_tavily_response(&body, "q", 5)
+            .unwrap_err()
+            .contains("url"));
+        // 截取前 count 条
+        let body = json!({"results": [
+            {"title": "t1", "url": "https://a/1", "content": "c1"},
+            {"title": "t2", "url": "https://a/2", "content": "c2"},
+            {"title": "t3", "url": "https://a/3", "content": "c3"},
+        ]});
+        let out = normalize_tavily_response(&body, "q", 2).unwrap();
+        assert_eq!(out["result_count"], 2);
+        assert_eq!(out["results"].as_array().unwrap().len(), 2);
+        assert_eq!(out["results"][0]["url"], "https://a/1");
+    }
+
+    #[tokio::test]
+    async fn web_search_relay_tavily_not_ready_self_diagnosis() {
+        // 启用 tavily 但未配 key → NotReady + 提及 tavily 环境变量名
+        let err = web_search_relay(&ws_cfg_tavily(Some("tavily"), None), "q", 5)
+            .await
+            .unwrap_err();
+        match err {
+            WebSearchError::NotReady(m) => assert!(m.contains(TAVILY_API_KEY_ENV), "{m}"),
+            other => panic!("应为 NotReady, 实为 {other:?}"),
+        }
+        // 未启用自诊断文案列出双 provider 二选一指引
+        let err = web_search_relay(&ws_cfg_tavily(None, None), "q", 5)
+            .await
+            .unwrap_err();
+        match err {
+            WebSearchError::NotReady(m) => assert!(m.contains("tavily"), "{m}"),
+            other => panic!("应为 NotReady, 实为 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tavily_web_search_happy_and_request_shape() {
+        let seen = Arc::new(Mutex::new(None::<Value>));
+        let seen_h = seen.clone();
+        let app = Router::new().route(
+            "/search",
+            post(
+                move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                    let seen_h = seen_h.clone();
+                    async move {
+                        *seen_h.lock().unwrap() = Some(json!({
+                            "body": body,
+                            "auth": headers
+                                .get("Authorization")
+                                .and_then(|v| v.to_str().ok())
+                                .map(|s| s.to_string()),
+                        }));
+                        Json(json!({"results": [
+                            {"title": "t1", "url": "https://a.example/1", "content": "c1"},
+                            {"title": "t2", "url": "https://a.example/2", "content": "c2"},
+                            {"title": "t3", "url": "https://a.example/3", "content": "c3"},
+                        ]}))
+                    }
+                },
+            ),
+        );
+        let addr = spawn_app(app).await;
+        let out = tavily_web_search(&format!("http://{addr}/search"), "tavily-key-1", "rust", 2)
+            .await
+            .unwrap();
+        // 请求形态：POST JSON 体（query/max_results/search_depth），key 进 Bearer 头（不进 URL）
+        let req = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(req["body"]["query"], "rust");
+        assert_eq!(req["body"]["max_results"], 2);
+        assert_eq!(req["body"]["search_depth"], "basic");
+        assert_eq!(req["auth"], "Bearer tavily-key-1");
+        // 归一：content→description，截取前 count 条
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["provider"], "tavily");
+        assert_eq!(out["result_count"], 2);
+        assert_eq!(out["results"][0]["description"], "c1");
+    }
+
+    #[tokio::test]
+    async fn tavily_web_search_http_401_surfaced() {
+        let app = Router::new().route(
+            "/search",
+            post(|| async { (axum::http::StatusCode::UNAUTHORIZED, "invalid key") }),
+        );
+        let addr = spawn_app(app).await;
+        let err = tavily_web_search(&format!("http://{addr}/search"), "bad-key", "q", 5)
+            .await
+            .unwrap_err();
         assert!(err.contains("401"), "{err}");
         assert!(err.contains("鉴权失败"), "{err}");
     }
