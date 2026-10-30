@@ -2147,7 +2147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 复用 SessionApi::load_merged_with_layout（统一一份合并逻辑，避免双份代码漂移）；
     // 同时产出规则集 layout（下标→来源/指令类型解析 + 版本哈希），供命中统计聚合器使用。
     let step_start = Instant::now();
-    let (core_eval, ruleset_layout, rejected_overlaps, rejected_domains) =
+    let (core_eval, ruleset_layout, rejected_overlaps, rejected_domains, rejected_gate_files) =
         SessionApi::load_merged_with_layout(&cfg.core_eval, &cfg.rules_dir)?;
     let ruleset_version_for_anchor = ruleset_layout.ruleset_version.clone();
     info!(
@@ -2162,6 +2162,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // domain 求值装载门禁：启动汇总横幅（同款双态口径）
     SessionApi::log_rejected_domains(&rejected_domains, "启动装载");
+
+    // 四步门被拒文件横幅：启动期程序化可查面之外的 ERROR 留痕（与 reload 同构）
+    for g in &rejected_gate_files {
+        error!(
+            target: "gate_reject",
+            path = %g.path,
+            gate = %g.gate,
+            "规则文件装载门禁未过，已拒载: {}",
+            g.reason
+        );
+    }
 
     // 影子强制汇总曝光（纪律门禁影子强制整改，2026-09-24）：装载完成后一次性上报
     // 影子期违规文件数——0 = 影子期干净（分面灰度 flip 的安全前提）；
