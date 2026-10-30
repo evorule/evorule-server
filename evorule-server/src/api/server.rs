@@ -3117,6 +3117,18 @@ impl SessionApi {
         Ok(())
     }
 
+    /// 门禁拒载文件的日志留痕（import 响应契约未含该字段；运维可见与
+    /// import 响应可见分开——reload 响应面已程序化携带，此处仅日志）
+    fn log_gate_rejections(rejected: &[RejectedGateFileEntry]) {
+        for g in rejected {
+            tracing::warn!(
+                path = %g.path,
+                gate = %g.gate,
+                "bundle 导入触发 reload: 规则文件被门禁拒载"
+            );
+        }
+    }
+
     /// T2: 导入快照包（历史批次 集成契约）—— 6 项硬校验 → 逐条 Schema 门禁 → 服务绑定核对
     /// → I/O 权利面重叠前置预判 → 原子落盘 → 触发 reload。
     ///
@@ -3299,13 +3311,7 @@ impl SessionApi {
             reload_rejected_domains = rejected_domains;
             // 门禁拒载文件走日志面(ImportOutcome 契约未含该字段,加字段属
             // 契约演进;此处不静默——运维可见与 import 响应可见分开)
-            for g in &rejected_gate_files {
-                tracing::warn!(
-                    path = %g.path,
-                    gate = %g.gate,
-                    "bundle 导入触发 reload: 规则文件被门禁拒载"
-                );
-            }
+            Self::log_gate_rejections(&rejected_gate_files);
         }
 
         // ⑥ T5 审计溯源：bundle 导入历史写入 workspace 元数据库（bundle_imports 表）。
@@ -13770,7 +13776,9 @@ pub struct RulesReloadedResponse {
     )
 
 )]
-
+// 响应体本就是本 handler 的既有契约形态(成功/失败同构),新增门禁拒载字段后
+// 体积越过 result_large_err 阈值——契约不变,显式豁免而非缩小返回类型
+#[allow(clippy::result_large_err)]
 async fn reload_rules_handler(
     State(sessions): State<SessionApi>,
 ) -> Result<(StatusCode, Json<RulesReloadedResponse>), (StatusCode, Json<RulesReloadedResponse>)> {
