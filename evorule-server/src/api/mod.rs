@@ -48,13 +48,29 @@ mod evidence_fixture {
     /// 进程内 seed 序号（报告文件名唯一化，多测试并行互不覆盖）
     static SEED_SEQ: AtomicU64 = AtomicU64::new(0);
 
+    pub(super) fn seed_pass_sandbox(ws_db: &Arc<evorule_workspace::WorkspaceDb>) -> i64 {
+        seed_pass_sandbox_inner(ws_db, None)
+    }
+
     /// 在给定 workspace 元数据库中 seed 一个 closed+PASS 沙盒会话并落盘
     /// 报告文件，返回沙盒 ID。in-memory 库自增 ID 从 1 起，空库首个 seed
     /// 即得 `sandbox:1`，与测试夹具包的引用约定一致。
     ///
     /// 报告落盘与 close_sandbox 生产落盘同目录（仓库忽略区
     /// ./data/sandbox_reports），文件名带时间戳+序号+pid 保证唯一。
-    pub(super) fn seed_pass_sandbox(ws_db: &Arc<evorule_workspace::WorkspaceDb>) -> i64 {
+    /// 带内容对照数据的变体:沙盒记录携带 draft 规则快照(JSON 数组),
+    /// 证据校验的内容对照(条目 rule_body ∈ 快照)有数据面可用
+    pub(super) fn seed_pass_sandbox_with_draft(
+        ws_db: &Arc<evorule_workspace::WorkspaceDb>,
+        draft_rules_json: &str,
+    ) -> i64 {
+        seed_pass_sandbox_inner(ws_db, Some(draft_rules_json))
+    }
+
+    pub(super) fn seed_pass_sandbox_inner(
+        ws_db: &Arc<evorule_workspace::WorkspaceDb>,
+        draft_rules_json: Option<&str>,
+    ) -> i64 {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -88,6 +104,7 @@ mod evidence_fixture {
                 &ws_id,
                 1,
                 Some("hash-evidence-fixture"),
+                draft_rules_json,
                 1,
                 "test:evidence-fixture",
             )

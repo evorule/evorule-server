@@ -176,11 +176,16 @@ impl SandboxService {
         }
 
         // 6. 记录 sandbox_sessions 表
+        // draft 规则集内容快照随行（BND-D-03 演进）:证据校验「内容对照」的
+        // 数据面——沙盒实际测过的规则 vs 包内条目
+        let draft_rules_json = serde_json::to_string(&draft_rules)
+            .map_err(|e| WorkspaceError::Internal(format!("draft 规则快照序列化失败: {e}")))?;
         let sandbox_id = self.db.insert_sandbox_session(
             Some(tcb_session_id as i64),
             workspace_id,
             parent_session_id as i64,
             Some(&draft_hash),
+            Some(&draft_rules_json),
             req.test_dataset_id,
             started_by,
         )?;

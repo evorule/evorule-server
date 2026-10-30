@@ -3059,6 +3059,37 @@ impl SessionApi {
                 }
                 _ => {}
             }
+
+            // 内容对照（BND-D-03 演进收口）:沙盒记录携带 draft 规则快照时，
+            // 逐条 bundle 条目的 rule_body 必须命中快照中的某条规则
+            // （canonical JSON 同构比对，evorule_hash::json_digest 键序稳定）——
+            // 把「沙盒测过这些规则」从 hash 绑定升级为内容对照。
+            // 快照缺失（v9 前创建的存量沙盒）放行并留痕，零迁移。
+            if let Some(draft_json) = sb.draft_rules_json.as_deref() {
+                let draft: Vec<serde_json::Value> =
+                    serde_json::from_str(draft_json).map_err(|e| {
+                        format!("测试证据校验失败: 沙盒 #{sid} draft 规则快照损坏: {e}")
+                    })?;
+                let tested: std::collections::BTreeSet<String> =
+                    draft.iter().map(evorule_hash::json_digest).collect();
+                for entry in &bundle.entries {
+                    let d = evorule_hash::json_digest(&entry.rule_body);
+                    if !tested.contains(&d) {
+                        return Err(format!(
+                            "测试证据校验失败（不静默）: 条目 {} 的规则内容未被沙盒 #{sid} 的\
+                             draft 规则集覆盖（内容对照失配）——沙盒所测规则集与包内条目不一致,\
+                             不得作为 pass 证据",
+                            entry.entry_id
+                        ));
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    sandbox_id = sid,
+                    "sandbox record lacks draft rules snapshot (legacy data); \
+                     content-level coverage check skipped"
+                );
+            }
         }
         Ok(())
     }
@@ -19947,10 +19978,26 @@ mod tests {
         let facts_1 = format!("audit_sandbox_1_{ts}.json");
         let facts_2 = format!("audit_sandbox_2_{ts}.json");
         let sb_pass = ws_db
-            .insert_sandbox_session(None, &ws_id, 1, Some("hash-importreg"), 1, "test:importreg")
+            .insert_sandbox_session(
+                None,
+                &ws_id,
+                1,
+                Some("hash-importreg"),
+                Some(r#"["patch-1"]"#),
+                1,
+                "test:importreg",
+            )
             .unwrap();
         let sb_fail = ws_db
-            .insert_sandbox_session(None, &ws_id, 1, Some("hash-importreg"), 1, "test:importreg")
+            .insert_sandbox_session(
+                None,
+                &ws_id,
+                1,
+                Some("hash-importreg"),
+                Some(r#"["patch-1"]"#),
+                1,
+                "test:importreg",
+            )
             .unwrap();
         // insert 自增从 1 起;以实际返回 id 为准写报告与引用
         let export_1 = format!("{report_dir}/{facts_1}");

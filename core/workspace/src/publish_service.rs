@@ -1272,7 +1272,7 @@ mod tests {
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let export_path = format!("./data/test_reports/report-{n}.json");
         let sid = db
-            .insert_sandbox_session(None, ws_id, 100, None, 1, "head-1")
+            .insert_sandbox_session(None, ws_id, 100, None, None, 1, "head-1")
             .unwrap();
         db.close_sandbox_session(sid, &export_path).unwrap();
         std::fs::create_dir_all(crate::sandbox_report_dir()).unwrap();
@@ -1936,7 +1936,7 @@ mod tests {
         let tag = format!("closed-{}-{n}", std::process::id());
         let export_path = format!("./data/test_reports/{tag}.json");
         let sid = db
-            .insert_sandbox_session(None, ws_id, 100, None, 1, "head-1")
+            .insert_sandbox_session(None, ws_id, 100, None, None, 1, "head-1")
             .unwrap();
         db.close_sandbox_session(sid, &export_path).unwrap();
         if let Some(json) = report_json {
@@ -2011,7 +2011,7 @@ mod tests {
         // : 未关闭沙盒 (running, 测试未完成) 不得作为发布证据
         let (publish_svc, db, rule_svc_handle, ws_id, _ops, _tmp) = make_services().await;
         let sid = db
-            .insert_sandbox_session(None, &ws_id, 100, None, 1, "head-1")
+            .insert_sandbox_session(None, &ws_id, 100, None, None, 1, "head-1")
             .unwrap(); // 不 close → running
         expect_gate_one_rejection(
             &publish_svc,

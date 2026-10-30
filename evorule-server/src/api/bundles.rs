@@ -1744,4 +1744,48 @@ mod tests {
         // 空结果（ids 全不命中）由 Trimmer 显式拒
         assert!(super::apply_trim_spec(&b, "ids:nope", "x", "t").is_err());
     }
+
+    // ===== 内容对照(BND-D-03 演进):bundle 条目 rule_body ∈ 沙盒 draft 快照 =====
+    #[tokio::test]
+    async fn entry_outside_sandbox_draft_is_rejected() {
+        use super::tests::{schema_valid_body, test_api, valid_bundle};
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        // draft 快照里放一条与 bundle 条目**不同内容**的规则
+        let sandbox_id = crate::api::evidence_fixture::seed_pass_sandbox_with_draft(
+            &ws_db,
+            r#"[{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":"other"}}]}]"#,
+        );
+        assert_eq!(sandbox_id, 1);
+        let api = test_api(&tmp).with_workspace_db(ws_db);
+        let bundle = valid_bundle(schema_valid_body());
+        let err = api
+            .import_bundle(&bundle, true)
+            .await
+            .expect_err("条目不在沙盒 draft 快照中必须拒收");
+        assert!(
+            err.contains("内容对照失配"),
+            "错误应点名内容对照失配: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn entry_matching_sandbox_draft_passes_content_check() {
+        use super::tests::{schema_valid_body, test_api, valid_bundle};
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        let body = schema_valid_body();
+        // draft 快照含与 bundle 条目**相同内容**的规则(canonical 序列化同构)
+        let draft = serde_json::json!([body]);
+        let sandbox_id = crate::api::evidence_fixture::seed_pass_sandbox_with_draft(
+            &ws_db,
+            &serde_json::to_string(&draft).unwrap(),
+        );
+        assert_eq!(sandbox_id, 1);
+        let api = test_api(&tmp).with_workspace_db(ws_db);
+        let bundle = valid_bundle(schema_valid_body());
+        api.import_bundle(&bundle, true)
+            .await
+            .expect("条目在沙盒 draft 快照中应放行");
+    }
 }

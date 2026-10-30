@@ -425,6 +425,10 @@ pub struct SandboxSession {
     pub parent_session_id: i64,
     /// 本次测试的 Draft 规则集 BLAKE3 哈希
     pub draft_ruleset_hash: Option<String>,
+    /// Draft 规则集内容快照（JSON 数组，创建时存储）——证据校验
+    /// 「内容对照」的数据面（沙盒实际测过的规则 vs 包内条目）；v9 前创建的
+    /// 存量沙盒为 None（对照跳过，零迁移）
+    pub draft_rules_json: Option<String>,
     /// 使用的合成数据集 ID
     pub test_dataset_id: i64,
     /// 沙盒状态

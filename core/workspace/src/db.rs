@@ -29,7 +29,7 @@ use crate::models::{
 };
 
 /// 当前 schema 版本
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 /// SQLite 数据库封装
 ///
@@ -117,6 +117,9 @@ impl WorkspaceDb {
         }
         if current < 8 {
             migrate_v8(&conn)?;
+        }
+        if current < 9 {
+            migrate_v9(&conn)?;
         }
         Ok(())
     }
@@ -483,6 +486,21 @@ fn migrate_v7(conn: &Connection) -> WorkspaceResult<()> {
 }
 
 /// v8 迁移: 拒收留痕表（[CON-L1-003]，SR-15 件6）——L1 写入门拒收报文留痕
+/// v9 迁移: sandbox_sessions 增 draft 规则集内容快照列
+///
+/// 创建沙盒时存储 draft 规则 JSON 数组原文——证据校验「内容对照」的数据面
+/// （沙盒实际测过的规则 vs 包内条目，BND-D-03 演进收口）。v9 前创建的存量
+/// 行为 NULL：对照跳过（零迁移）。
+fn migrate_v9(conn: &Connection) -> WorkspaceResult<()> {
+    conn.execute_batch(
+        "
+        ALTER TABLE sandbox_sessions ADD COLUMN draft_rules_json TEXT;
+        ",
+    )
+    .map_err(|e| WorkspaceError::DatabaseError(format!("migrate v9: {e}")))?;
+    record_migration(conn, 9)
+}
+
 fn migrate_v8(conn: &Connection) -> WorkspaceResult<()> {
     conn.execute_batch(
         "
@@ -1496,12 +1514,16 @@ impl WorkspaceDb {
     /// 插入沙盒会话记录
     ///
     /// 返回自增 id。
+    // draft_ruleset_hash 与 draft_rules_json 成对携带(证据内容对照的数据面);
+    // 参数数超 clippy 默认阈值属迁移伴随形态,零迁移原则下不引入参数结构体
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_sandbox_session(
         &self,
         tcb_session_id: Option<i64>,
         workspace_id: &str,
         parent_session_id: i64,
         draft_ruleset_hash: Option<&str>,
+        draft_rules_json: Option<&str>,
         test_dataset_id: i64,
         started_by: &str,
     ) -> WorkspaceResult<i64> {
@@ -1510,13 +1532,14 @@ impl WorkspaceDb {
         conn.execute(
             "INSERT INTO sandbox_sessions
                 (workspace_id, tcb_session_id, parent_session_id, draft_ruleset_hash,
-                 test_dataset_id, status, started_at, started_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7)",
+                 draft_rules_json, test_dataset_id, status, started_at, started_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?8)",
             params![
                 workspace_id,
                 tcb_session_id,
                 parent_session_id,
                 draft_ruleset_hash,
+                draft_rules_json,
                 test_dataset_id,
                 now,
                 started_by,
@@ -1532,7 +1555,8 @@ impl WorkspaceDb {
         let s = conn
             .query_row(
                 "SELECT id, workspace_id, tcb_session_id, parent_session_id, draft_ruleset_hash,
-                        test_dataset_id, status, started_at, closed_at, started_by, export_path
+                        test_dataset_id, status, started_at, closed_at, started_by, export_path,
+                        draft_rules_json
                  FROM sandbox_sessions WHERE id = ?1",
                 params![id],
                 row_to_sandbox,
@@ -1551,7 +1575,8 @@ impl WorkspaceDb {
         let mut stmt = conn
             .prepare(
                 "SELECT id, workspace_id, tcb_session_id, parent_session_id, draft_ruleset_hash,
-                        test_dataset_id, status, started_at, closed_at, started_by, export_path
+                        test_dataset_id, status, started_at, closed_at, started_by, export_path,
+                        draft_rules_json
                  FROM sandbox_sessions
                  WHERE workspace_id = ?1
                  ORDER BY started_at DESC",
@@ -2454,6 +2479,7 @@ fn row_to_sandbox(row: &rusqlite::Row<'_>) -> rusqlite::Result<SandboxSession> {
         closed_at: row.get::<_, Option<String>>(8)?.map(parse_dt),
         started_by: row.get(9)?,
         export_path: row.get(10)?,
+        draft_rules_json: row.get(11)?,
     })
 }
 
@@ -2621,6 +2647,17 @@ mod tests {
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  kind TEXT NOT NULL DEFAULT 'normal',
                  meta_rule_content TEXT
+             );
+             CREATE TABLE sandbox_sessions (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 workspace_id TEXT NOT NULL,
+                 tcb_session_id INTEGER,
+                 parent_session_id INTEGER NOT NULL,
+                 draft_ruleset_hash TEXT,
+                 test_dataset_id INTEGER NOT NULL,
+                 status TEXT NOT NULL,
+                 started_at TEXT NOT NULL,
+                 started_by TEXT NOT NULL
              );",
         )
         .unwrap();
