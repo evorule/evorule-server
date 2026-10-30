@@ -1530,7 +1530,11 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "browser_evaluate",
         sensitive: false,
         description: "页面内跑 JS",
-        parameters: None,
+        // 契约补齐：实现侧只认 expression（lib.rs execute 处），签名必须同名单，
+        // 否则调用方按旧名传参会得到「需要 expression」而完全不可用
+        parameters: Some(
+            r#"{"type":"object","properties":{"expression":{"type":"string","description":"页面内求值的 JS 表达式,返回字符串化结果"}},"required":["expression"]}"#,
+        ),
         make: || Arc::new(BrowserEvaluate),
     },
 ];
@@ -1587,6 +1591,36 @@ mod tests {
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
         }
+    }
+
+    /// 契约防回归：browser_evaluate 实现侧只认 expression 参数，
+    /// 签名（parameters 声明）必须同名同必填——错位即整工具不可用。
+    #[test]
+    fn test_browser_evaluate_contract_matches_impl() -> Result<(), String> {
+        let def = NATIVE_SERVICES
+            .iter()
+            .find(|d| d.name == "browser_evaluate")
+            .ok_or("browser_evaluate 不在服务表")?;
+        let raw = def
+            .parameters
+            .ok_or("browser_evaluate 缺 parameters 契约")?;
+        let schema: serde_json::Value =
+            serde_json::from_str(raw).map_err(|e| format!("parameters 非法 JSON: {e}"))?;
+        if schema
+            .get("properties")
+            .and_then(|p| p.get("expression"))
+            .is_none()
+        {
+            return Err("契约缺 expression 参数（实现侧只认 expression）".to_string());
+        }
+        let required = schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .ok_or("缺 required")?;
+        if !required.iter().any(|v| v == "expression") {
+            return Err("required 未含 expression".to_string());
+        }
+        Ok(())
     }
 
     /// 端到端：真拉起本机 Edge，完整走 launch→navigate→get_html→screenshot→click。
