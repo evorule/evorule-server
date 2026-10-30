@@ -973,7 +973,7 @@ fn extract_promoted_from_versions(meta_rule_content: &str) -> Option<Vec<String>
 
 /// 校验转写后的元规则内容 (提交与落盘两侧共用单一权威实现)
 ///
-/// 与 loader 层级门禁 (`tier_gate_reason`) / Schema 门禁 (`passes_schema_gate`) 同口径:
+/// 与 rule_loader 装载门（层级门/schema 门同源四步）同口径:
 /// 1. 合法 JSON 对象;
 /// 2. `metadata.tier == "constraint"`（新权威值；兼容旧值 "meta"）(L2 正向门禁——防裸文件冒充约束规则);
 /// 3. `metadata.title` 非空 (元规则可观测性, W2 前馈摘要依赖标题);

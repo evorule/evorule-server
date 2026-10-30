@@ -78,8 +78,8 @@ pub enum Composition {
     Standalone,
 }
 
-/// L2 身份类别（tier 门与 domain 门豁免的判定依据，对齐生产 server.rs tier_gate_reason
-/// + reject_undeclared_domain_rules 双向纪律）
+/// L2 身份类别（tier 门与 domain 门豁免的判定依据，对齐 server 侧清单面/合并层
+/// 的双向纪律：文件级按治理事实定类，业务条目归合并层条目级门）
 ///
 /// - `None`：业务文件/沙盒草稿/API 提交——禁 enforce、禁声明 L2 tier、domain 门全守
 /// - `Constraint`：治理链晋升的约束文件（rules_dir 根 `00_constraint_*`/`00_meta_*` 前缀，
@@ -569,7 +569,8 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// tier 门（对齐生产 tier_gate_reason 全语义：正向声明纪律+反向伪造拦截+enforce 限定）
+/// tier 门（正向声明纪律+反向伪造拦截+enforce 限定；server 侧清单视图经
+/// 单文件装载门复用本语义，零镜像实现）
 ///
 /// - `L2Class::None`（业务/草稿/API）：禁止 enforce；禁止声明 `metadata.tier ∈ {constraint, meta}`
 /// - `L2Class::Constraint`：**必须**声明 `metadata.tier ∈ {constraint, meta}`（防裸文件冒充）
@@ -680,11 +681,11 @@ fn domain_on_missing_gate(
         return Ok(()); // 业务面归合并层条目级门（明细可查），文件级不重复拒
     }
     for (i, rule) in transform_arr.iter().enumerate() {
-        let mut violations: Vec<String> = Vec::new();
-        walk_eq_lt_domain(rule, &mut violations);
-        if !violations.is_empty() {
+        let hits = walk_domain_gate_violations(rule);
+        if !hits.is_empty() {
+            let details: Vec<String> = hits.iter().map(|h| h.detail.clone()).collect();
             return Err(ConstitutionError::DomainOnMissingGate(four_part(
-                &format!("eq/lt/in 域声明门禁未过（{}）", violations.join("; ")),
+                &format!("eq/lt/in 域声明门禁未过（{}）", details.join("; ")),
                 &format!("$.transform[{i}]"),
                 "https://evorule.org/schemas/_shared/v1.0.json#/$defs/domain",
                 r#"{"type":"eq","path":"__exec__.instruction.params.x","value":1,"on_missing":"error"}"#,
@@ -694,8 +695,31 @@ fn domain_on_missing_gate(
     Ok(())
 }
 
-/// 递归 walk 整棵规则树，收集 eq/lt 域对象的三道子门违规（对齐 server.rs domain_gate_violations）
-fn walk_eq_lt_domain(v: &Value, out: &mut Vec<String>) {
+/// eq/lt/in 域单条门禁违规（门类+明细；门类取值与 server 侧 DomainViolation.door
+/// 同一词汇表，双侧 parity 测试逐条全等锁定）
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainGateHit {
+    /// 违规门类：`missing_declaration`（缺 on_missing 声明）/
+    /// `invalid_declaration`（on_missing 非 error/unsat）/
+    /// `value_literal_ambiguous`（value/values 元素呈根段点路径形态缺 __ 前缀）/
+    /// `values_declaration`（仅 in：values 缺失/非数组/空数组）
+    pub door: &'static str,
+    /// 违规位置与说明（含 domain.path 与修复指引）
+    pub detail: String,
+}
+
+/// 递归 walk 整棵规则树，收集 eq/lt/in 域对象的四道门违规（门禁层 API）。
+///
+/// 与 server 侧 domain_gate_violations 同语义同文案；根段点路径判定谓词
+/// 直接调用 TCB `is_root_segment_dot_path` 唯一权威实现（装载期拒收与运行时
+/// 归因共用，零镜像复算），双侧 parity 测试逐条全等锁定防漂移。
+pub fn walk_domain_gate_violations(v: &Value) -> Vec<DomainGateHit> {
+    let mut out = Vec::new();
+    walk_eq_lt_domain(v, &mut out);
+    out
+}
+
+fn walk_eq_lt_domain(v: &Value, out: &mut Vec<DomainGateHit>) {
     match v {
         Value::Array(items) => {
             for it in items {
@@ -712,48 +736,69 @@ fn walk_eq_lt_domain(v: &Value, out: &mut Vec<String>) {
                     .map(|p| format!("path=\"{p}\""))
                     .unwrap_or_else(|| "path 缺失".to_string());
                 match m.get("on_missing") {
-                    None => out.push(format!(
-                        "{ty} 域 {path_desc} 缺 on_missing 显式声明（error=Missing 拒执行 / unsat=Missing 走 on_false+归因）"
-                    )),
+                    None => out.push(DomainGateHit {
+                        door: "missing_declaration",
+                        detail: format!(
+                            "{ty} 域 {path_desc} 缺 on_missing 显式声明（error=Missing 拒执行 / unsat=Missing 走 on_false+归因）"
+                        ),
+                    }),
                     Some(d) => {
                         if !matches!(d.as_str(), Some("error") | Some("unsat")) {
-                            out.push(format!(
-                                "{ty} 域 {path_desc} on_missing 声明值非法（仅允许 error/unsat）"
-                            ));
+                            out.push(DomainGateHit {
+                                door: "invalid_declaration",
+                                detail: format!(
+                                    "{ty} 域 {path_desc} on_missing 声明值非法（仅允许 error/unsat）"
+                                ),
+                            });
                         }
                     }
                 }
-                // ③ value_literal_ambiguous：value 像根段点路径（如 "payload.x" 无 __ 前缀）
+                // ③ value_literal_ambiguous：value 呈根段点路径形态（缺 __ 前缀）
                 if let Some(val) = m.get("value").and_then(|x| x.as_str()) {
-                    if is_root_segment_dot_path_like(val) {
-                        out.push(format!(
-                            "{ty} 域 {path_desc} value 字面量歧义（\"{val}\" 像路径引用但缺 __ 前缀——若引用路径请写全，若字面量请重命名）"
-                        ));
+                    if evorule_tcb::domain::is_root_segment_dot_path(val) {
+                        out.push(DomainGateHit {
+                            door: "value_literal_ambiguous",
+                            detail: format!(
+                                "{ty} 域 {path_desc} value=\"{val}\" 呈 exec 根段点路径形态但缺 __ 前缀（ValueLiteralAmbiguous 写作错误，运行时将被字面量化静默比对）"
+                            ),
+                        });
                     }
                 }
-                // ④ values_declaration（仅 in，design-19 R-3）：values 缺失/非数组/空数组
+                // ④ values_declaration（仅 in）：values 缺失/非数组/空数组
                 if ty == "in" {
                     let values_arr = m.get("values").and_then(|v| v.as_array());
                     if m.get("values").is_none() {
-                        out.push(format!(
-                            "in 域 {path_desc} 缺 values 显式声明（集合成员判定必备）"
-                        ));
+                        out.push(DomainGateHit {
+                            door: "values_declaration",
+                            detail: format!(
+                                "in 域 {path_desc} 缺 values 显式声明（集合成员判定必备）"
+                            ),
+                        });
                     } else if values_arr.is_none() {
-                        out.push(format!(
-                            "in 域 {path_desc} values 非数组（集合成员判定要求字面量数组）"
-                        ));
+                        out.push(DomainGateHit {
+                            door: "values_declaration",
+                            detail: format!(
+                                "in 域 {path_desc} values 非数组（集合成员判定要求字面量数组）"
+                            ),
+                        });
                     } else if values_arr.is_some_and(|a| a.is_empty()) {
-                        out.push(format!(
-                            "in 域 {path_desc} values 为空数组（空集恒假，大概率写作错误——fail-fast 拒载）"
-                        ));
+                        out.push(DomainGateHit {
+                            door: "values_declaration",
+                            detail: format!(
+                                "in 域 {path_desc} values 为空数组（空集恒假，大概率写作错误——fail-fast 拒载）"
+                            ),
+                        });
                     }
                     if let Some(arr) = values_arr {
                         for el in arr.iter() {
                             if let Some(s) = el.as_str() {
-                                if is_root_segment_dot_path_like(s) {
-                                    out.push(format!(
-                                        "in 域 {path_desc} values 元素 \"{s}\" 字面量歧义（像路径引用但缺 __ 前缀——若引用路径请写全，若字面量请重命名）"
-                                    ));
+                                if evorule_tcb::domain::is_root_segment_dot_path(s) {
+                                    out.push(DomainGateHit {
+                                        door: "value_literal_ambiguous",
+                                        detail: format!(
+                                            "in 域 {path_desc} values 元素 \"{s}\" 呈 exec 根段点路径形态但缺 __ 前缀（ValueLiteralAmbiguous 写作错误，运行时将被字面量化静默比对）"
+                                        ),
+                                    });
                                 }
                             }
                         }
@@ -767,17 +812,6 @@ fn walk_eq_lt_domain(v: &Value, out: &mut Vec<String>) {
         }
         _ => {}
     }
-}
-
-/// 「像根段点路径」的保守近似判定（生产实码用 TCB is_root_segment_dot_path；
-/// 本 crate 走 serde 域，用同语义轻量实现：首段为 exec 已知根段+含 . 的字符串）
-fn is_root_segment_dot_path_like(val: &str) -> bool {
-    const ROOTS: [&str; 4] = ["instruction", "payload", "queue", "__exec__"];
-    if val.contains("__") {
-        return false; // 有 __ 前缀=显式路径引用，合法
-    }
-    let first = val.split('.').next().unwrap_or("");
-    ROOTS.contains(&first) && val.contains('.')
 }
 
 // ============================================================================
@@ -815,27 +849,8 @@ pub fn serde_to_tcb(v: serde_json::Value) -> JsonValue {
 // ============================================================================
 
 // ============================================================================
-// 跨面 parity 测试钩子（[CON-L4-002] V3/V4；仅供 server.rs 对齐测试消费，
-// 非装载 API——两门为 crate 私有实现，跨 crate parity 断言经此只读暴露）
+// 测试（[CON-S-001] 判据：三分支 source × 两 venue 覆盖）
 // ============================================================================
-
-/// V3 对齐测试钩子：tier 门判定（同 load_rule_set 步骤③内部语义）
-#[doc(hidden)]
-pub fn tier_gate_for_test(
-    transform_arr: &[Value],
-    doc: &Value,
-    ctx: &LoadContext,
-) -> Result<(), ConstitutionError> {
-    tier_gate(transform_arr, doc, ctx)
-}
-
-/// V4 对齐测试钩子：eq/lt domain 门违规明细（同步骤③内部语义）
-#[doc(hidden)]
-pub fn walk_eq_lt_domain_for_test(v: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    walk_eq_lt_domain(v, &mut out);
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -1066,7 +1081,7 @@ mod tests {
         let err = load_rule_set(&doc, &ctx).expect_err("values 元素歧义应拒");
         assert!(matches!(err, ConstitutionError::DomainOnMissingGate(_)));
         let msg = format!("{err}");
-        assert!(msg.contains("字面量歧义"));
+        assert!(msg.contains("呈 exec 根段点路径形态"));
         assert!(msg.contains("正确形态"));
     }
 
@@ -1114,13 +1129,13 @@ mod tests {
 
     #[test]
     fn in_walk_test_hook_covers_values_gate_details() {
-        // V4 对齐测试钩子：in 域第 4 道门三形态 + 元素歧义逐条明细
+        // 域门禁 walk：in 域第 4 道门三形态 + 元素歧义逐条明细（门类+明细结构化）
         let mk = |domain: Value| {
             json!({ "type": "branch", "params": {
                 "domain": domain, "on_true": [], "on_false": []
             }})
         };
-        let violations = walk_eq_lt_domain_for_test(&json!([
+        let hits = walk_domain_gate_violations(&json!([
             mk(json!({ "type": "in", "path": "p", "on_missing": "unsat" })),
             mk(json!({ "type": "in", "path": "p", "values": "M3", "on_missing": "unsat" })),
             mk(json!({ "type": "in", "path": "p", "values": [], "on_missing": "unsat" })),
@@ -1131,11 +1146,15 @@ mod tests {
                 json!({ "type": "in", "path": "p", "values": ["M3", "M2.5"], "on_missing": "unsat" })
             ),
         ]));
-        assert_eq!(violations.len(), 4, "四违规一合法: {violations:?}");
-        assert!(violations[0].contains("缺 values 显式声明"));
-        assert!(violations[1].contains("values 非数组"));
-        assert!(violations[2].contains("values 为空数组"));
-        assert!(violations[3].contains("字面量歧义"));
+        assert_eq!(hits.len(), 4, "四违规一合法: {hits:?}");
+        assert_eq!(hits[0].door, "values_declaration");
+        assert!(hits[0].detail.contains("缺 values 显式声明"));
+        assert_eq!(hits[1].door, "values_declaration");
+        assert!(hits[1].detail.contains("values 非数组"));
+        assert_eq!(hits[2].door, "values_declaration");
+        assert!(hits[2].detail.contains("values 为空数组"));
+        assert_eq!(hits[3].door, "value_literal_ambiguous");
+        assert!(hits[3].detail.contains("呈 exec 根段点路径形态"));
     }
 
     #[test]

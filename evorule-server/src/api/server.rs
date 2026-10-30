@@ -135,7 +135,7 @@ pub fn is_external_executor_request(io_type: &IoType, params: &JsonValue) -> boo
         || is_flow_probe_request(io_type, params)
 }
 
-/// L2 约束层文件名判定（单一权威，tier_inventory / l2_inventory / tier_gate 三处共用）。
+/// L2 约束层文件名判定（单一权威，tier_inventory / l2_inventory / rule_file_gate 三处共用）。
 ///
 /// 新权威前缀 `00_constraint_`（命名收敛 v3.0）；旧前缀 `00_meta_` 保持
 /// 兼容读取（存量零迁移）。仅 rules_dir **根目录直置**文件可据此判定为 L2
@@ -2540,12 +2540,13 @@ impl SessionApi {
                 .unwrap_or(&p)
                 .to_string_lossy()
                 .replace('\\', "/");
-            // 清单只列「加载生效」的文件：未过层级门禁的不计入（拒载证据见加载日志 warn），
+            // 清单只列「加载生效」的文件：未过装载门禁（四步门，与加载路径同一
+            // 通道）的不计入（拒载证据见加载日志 warn / reload 出证），
             // 保证清单视图与 count（实际加载规则数）一致，运维不会被拒载文件误导
             let passes_gate = std::fs::read_to_string(&p)
                 .ok()
                 .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-                .map(|j| Self::tier_gate_reason(&p, rules_dir, &j).is_ok())
+                .map(|j| Self::rule_file_gate(&j, &p, rules_dir).is_ok())
                 .unwrap_or(false);
             if !passes_gate {
                 continue;
@@ -2579,8 +2580,8 @@ impl SessionApi {
     /// L2 约束（元规则）只读清单投影（结构化，供 LLM 代理读取约束边界摘要）。
     ///
     /// 扫描口径与 [`Self::tier_inventory`] 的 L2 层单一权威同源：rules_dir **根目录直置**
-    /// 的 `00_constraint_*.json`（新权威前缀）或 `00_meta_*.json`（旧前缀兼容）且过层级门禁
-    /// （[`Self::tier_gate_reason`]，拒载文件不投影）。
+    /// 的 `00_constraint_*.json`（新权威前缀）或 `00_meta_*.json`（旧前缀兼容）且过装载
+    /// 门禁（[`Self::rule_file_gate`] 四步门，拒载文件不投影）。
     /// 输出为结构化投影——`metadata.title` + `metadata.guard_for` +
     /// 晋升账三字段 `metadata.promoted_from/promoted_at/promoted_by`
     /// （非晋升条目为 null），不包含 transform / enforce 等执行语义内容。
@@ -2608,8 +2609,9 @@ impl SessionApi {
             let Some(json) = json else {
                 continue;
             };
-            // 未过层级门禁的不投影（清单只列加载生效文件，与 tier_inventory 口径一致）
-            if Self::tier_gate_reason(&p, rules_dir, &json).is_err() {
+            // 未过装载门禁（四步门）的不投影（清单只列加载生效文件，与 tier_inventory
+            // 口径一致，同一通道判定）
+            if Self::rule_file_gate(&json, &p, rules_dir).is_err() {
                 continue;
             }
             let meta = json.get("metadata");
@@ -2662,21 +2664,37 @@ impl SessionApi {
         p: &std::path::Path,
         rules_dir: &std::path::Path,
     ) -> Result<Option<(serde_json::Value, LoadContext)>, RejectedGateFileEntry> {
+        let json = Self::load_rule_doc(p).map_err(|reason| RejectedGateFileEntry {
+            path: p
+                .strip_prefix(rules_dir)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/"),
+            gate: "read".into(),
+            reason,
+        })?;
+        let ctx = Self::rule_file_gate(&json, p, rules_dir)?;
+        Ok(Some((json, ctx)))
+    }
+
+    /// 单文件装载门（清单面与装载面共用的唯一通道）：L2 身份由治理事实判定
+    /// （rules_dir 根目录 00_constraint_*/00_meta_* 前缀 = 约束文件；其余 = 业务
+    /// 文件），tier 门（正向声明+反向伪造+enforce 限定）/schema 门/discipline 门/
+    /// eq-lt domain 门四步同源走 rule_loader。清单视图的「加载生效」判定与
+    /// 装载路径、reload 拒载出证（rejected_gate_files）同由此函数裁决——同一
+    /// 文件三面同判，杜绝「清单里在、加载时不载」。
+    ///
+    /// 通过返回该文件的装载上下文；拒绝返回带门类标签的拒载明细。
+    fn rule_file_gate(
+        json: &serde_json::Value,
+        p: &std::path::Path,
+        rules_dir: &std::path::Path,
+    ) -> Result<LoadContext, RejectedGateFileEntry> {
         let rel = p
             .strip_prefix(rules_dir)
             .unwrap_or(p)
             .to_string_lossy()
             .replace('\\', "/");
-        let json = Self::load_rule_doc(p).map_err(|reason| RejectedGateFileEntry {
-            path: rel.clone(),
-            gate: "read".into(),
-            reason,
-        })?;
-
-        // 业务/约束文件装载收口（single constitution load path）：
-        // L2 身份由调用方按治理事实判定（rules_dir 根目录 00_constraint_*/00_meta_*
-        // 前缀 = 约束文件；其余 = 业务文件），tier 门（正向声明+反向伪造+enforce
-        // 限定）/schema 门/discipline 门/eq-lt domain 门四步同源走 rule_loader。
         let is_root_meta = p.parent().map(|d| d == rules_dir).unwrap_or(false)
             && p.file_name()
                 .and_then(|n| n.to_str())
@@ -2692,7 +2710,7 @@ impl SessionApi {
         // 与 merged 入口的部件门确定性等判——此处拒载的文件不进合并清单
         // （warn+跳过保目录可用性，fail-visible 明细上浮）；幸存部件的装载与
         // 拼装统一由 load_rule_set_merged 函数内完成（[CON-S-005] 禁调用方拼装）
-        if let Err(e) = evorule_rule_loader::load_rule_set(&json, &ctx) {
+        if let Err(e) = evorule_rule_loader::load_rule_set(json, &ctx) {
             // 门禁拒绝=治理纪律执行（B2 类旁路在此消解）；保留生产 loader 的
             // fail-soft 语义（warn+跳过该文件，其余文件照常装载）+ fail-visible
             //（拒载明细上浮至合并层与 reload 响应，与旧 schema gate 同可查面）
@@ -2718,60 +2736,7 @@ impl SessionApi {
                 reason: e.to_string(),
             });
         }
-        Ok(Some((json, ctx)))
-    }
-
-    /// 层级门禁判定核心（静默版，加载路径与 tier_inventory 清单共用单一权威实现）。
-    ///
-    /// - **正向**：rules_dir 根目录直置的 `00_constraint_*.json`（新权威前缀）或
-    ///   `00_meta_*.json`（旧前缀兼容，见 [`is_l2_meta_file_name`]）必须声明
-    ///   `metadata.tier == "constraint"`（新权威值）或 `"meta"`（deprecated 兼容旧值）
-    ///   ——防裸文件冒充元规则。
-    /// - **反向**：其余文件（根目录普通业务文件 / bundles/ 子目录条目）**禁止**声明
-    ///   L2 层级 tier——防 LLM 补丁伪造层级。
-    /// - **enforce 限定**（回归验证）：非 L2 文件禁止携带 `enforce` 强制原语——
-    ///   引擎级阻止权仅随治理链晋升的 L2 元规则下发，业务规则/LLM 补丁
-    ///   私自获得阻止权 = 治理旁路。
-    ///
-    /// `Ok(())` = 通过；`Err(reason)` = 拒载原因。
-    fn tier_gate_reason(
-        p: &std::path::Path,
-        rules_dir: &std::path::Path,
-        json: &serde_json::Value,
-    ) -> Result<(), String> {
-        let tier = json
-            .get("metadata")
-            .and_then(|m| m.get("tier"))
-            .and_then(|t| t.as_str());
-        let is_root_meta_file = p.parent().map(|d| d == rules_dir).unwrap_or(false)
-            && p.file_name()
-                .and_then(|n| n.to_str())
-                .map(is_l2_meta_file_name)
-                .unwrap_or(false);
-        match (is_root_meta_file, tier) {
-            // tier 双值门禁（命名收敛 v3.0）："constraint" 为新权威值，
-            // "meta" 为 deprecated 兼容旧值——存量文件零迁移可继续加载
-            (true, Some("constraint") | Some("meta")) => {}
-            (true, other) => {
-                return Err(format!(
-                    "元规则文件缺少 metadata.tier=\"constraint\"（兼容旧值 \"meta\"）（实际 {:?}）",
-                    other
-                ))
-            }
-            (false, Some("constraint") | Some("meta")) => {
-                return Err("非元规则文件携带 L2 层级 tier（层级伪造）".to_string())
-            }
-            (false, _) => {}
-        }
-        // enforce 层级限定（回归验证）：L2（根目录约束前缀 + L2 tier 声明）之外一律拒载
-        if !is_root_meta_file && Self::contains_enforce_rule(json) {
-            return Err(
-                "非元规则文件使用 enforce 强制原语（enforce 仅允许 L2 元规则文件，\
-                 业务规则/补丁禁止私自获得引擎级阻止权）"
-                    .to_string(),
-            );
-        }
-        Ok(())
+        Ok(ctx)
     }
 
     /// 文档是否携带 `enforce` 元指令（transform 数组两种形态：`{transform:[]}` / 裸数组）
@@ -20304,9 +20269,9 @@ mod tests {
         let (f, json) = tier_gate_fixture(
             &dir,
             "00_meta_x.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
-        assert!(SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20318,9 +20283,9 @@ mod tests {
         let (f, json) = tier_gate_fixture(
             &dir,
             "00_constraint_x.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"constraint"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"constraint"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
-        assert!(SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20336,10 +20301,12 @@ mod tests {
             let (f, json) = tier_gate_fixture(
                 &dir,
                 name,
-                &format!(r#"{{"kind":"rule_set","metadata":{{"tier":"{tier}"}},"transform":[]}}"#),
+                &format!(
+                    r#"{{"kind":"rule_set","metadata":{{"tier":"{tier}"}},"transform":[{{"type":"set","params":{{"attr":"x","operation":"set","value":1}}}}]}}"#
+                ),
             );
             assert!(
-                SessionApi::tier_gate_reason(&f, &dir, &json).is_ok(),
+                SessionApi::rule_file_gate(&json, &f, &dir).is_ok(),
                 "{name} + tier={tier} 应放行"
             );
         }
@@ -20354,9 +20321,9 @@ mod tests {
         let (f, json) = tier_gate_fixture(
             &dir,
             "sub/00_constraint_y.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"constraint"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"constraint"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
-        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(!SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20368,9 +20335,9 @@ mod tests {
         let (f, json) = tier_gate_fixture(
             &dir,
             "00_meta_x.json",
-            r#"{"kind":"rule_set","metadata":{"title":"x"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"title":"x"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
-        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(!SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20382,9 +20349,9 @@ mod tests {
         let (f, json) = tier_gate_fixture(
             &dir,
             "bundles/b-001/entry_a.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
-        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(!SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20396,9 +20363,9 @@ mod tests {
         let (f, json) = tier_gate_fixture(
             &dir,
             "sub/00_meta_y.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
-        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(!SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20410,9 +20377,9 @@ mod tests {
         let (f, json) = tier_gate_fixture(
             &dir,
             "biz_rules.json",
-            r#"{"kind":"rule_set","metadata":{"title":"biz"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"title":"biz"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
-        assert!(SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20426,7 +20393,7 @@ mod tests {
             "00_meta_guard.json",
             r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"违规拦截"}}]}"#,
         );
-        assert!(SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20440,7 +20407,7 @@ mod tests {
             "biz_rules.json",
             r#"{"kind":"rule_set","metadata":{"title":"biz"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"越权"}}]}"#,
         );
-        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(!SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20454,7 +20421,7 @@ mod tests {
             "sub/00_meta_y.json",
             r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"enforce","params":{"domain":{"type":"exists","path":"payload.x"},"reason":"越权"}}]}"#,
         );
-        assert!(!SessionApi::tier_gate_reason(&f, &dir, &json).is_ok());
+        assert!(!SessionApi::rule_file_gate(&json, &f, &dir).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20469,12 +20436,12 @@ mod tests {
         tier_gate_fixture(
             &dir,
             "00_meta_b_second.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"守卫乙","guard_for":["robot_move"]},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"守卫乙","guard_for":["robot_move"]},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         tier_gate_fixture(
             &dir,
             "00_meta_a_first.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"守卫甲","guard_for":["validate_precision","robot_move"]},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"守卫甲","guard_for":["validate_precision","robot_move"]},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         let inv = SessionApi::l2_inventory(&dir);
         assert_eq!(inv.count, 2, "两个过门禁的 L2 文件都应投影");
@@ -20500,14 +20467,14 @@ mod tests {
         tier_gate_fixture(
             &dir,
             "00_constraint_new.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"constraint","title":"约束守卫","guard_for":["robot_move"]},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"constraint","title":"约束守卫","guard_for":["robot_move"]},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         tier_gate_fixture(
             &dir,
             "00_constraint_promoted_abc.json",
             r#"{"kind":"rule_set","metadata":{"tier":"constraint","title":"晋升约束",
                 "promoted_from":"rule_version:01M3BDCC39Y5FQVGYHSE034R36",
-                "promoted_at":"2026-09-25T04:33:05Z","promoted_by":"console"},"transform":[]}"#,
+                "promoted_at":"2026-09-25T04:33:05Z","promoted_by":"console"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         let inv = SessionApi::l2_inventory(&dir);
         assert_eq!(inv.count, 2, "新前缀 L2 文件应投影");
@@ -20539,29 +20506,71 @@ mod tests {
         tier_gate_fixture(
             &dir,
             "00_meta_no_decl.json",
-            r#"{"kind":"rule_set","metadata":{"title":"裸文件"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"title":"裸文件"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         // 子目录内 00_meta_ 前缀（带 tier=meta）→ 层级伪造拒载 → 不投影
         tier_gate_fixture(
             &dir,
             "sub/00_meta_forged.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"伪造"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"伪造"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         // 根目录普通业务文件 → 非 00_meta_ 前缀 → 不投影
         tier_gate_fixture(
             &dir,
             "biz_rules.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"业务文件不应出现在 L2 清单"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"业务文件不应出现在 L2 清单"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         // 唯一合法 L2
         tier_gate_fixture(
             &dir,
             "00_meta_ok.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"合法守卫"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"合法守卫"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         let inv = SessionApi::l2_inventory(&dir);
         assert_eq!(inv.count, 1, "仅根目录过门禁的 00_meta_ 文件投影");
         assert_eq!(inv.files[0].path, "00_meta_ok.json");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_inventory_excludes_files_rejected_by_full_load_gate() {
+        // 清单视图与实载一致性：装载路径按四步门（层级/schema/纪律/domain）拒载的
+        // 文件，两张清单同样不得投影——防「清单里在、加载时不载」的判定分叉
+        // （清单门与装载门必须同一通道）。
+        let dir = std::env::temp_dir().join("inventory_full_gate_consistency");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 合法 L2：全门通过 → 双清单投影
+        tier_gate_fixture(
+            &dir,
+            "00_meta_ok.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"合法守卫"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
+        );
+        // 层级过但 domain 门挂：eq 域缺 on_missing 显式声明 → 装载路径拒载
+        tier_gate_fixture(
+            &dir,
+            "00_meta_domain_bad.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"domain 挂门"},"transform":[{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"x"},"on_true":[],"on_false":[]}}]}"#,
+        );
+        let inv = SessionApi::l2_inventory(&dir);
+        assert_eq!(
+            inv.count,
+            1,
+            "挂 domain 门的文件装载期必拒，L2 清单不得投影: {:?}",
+            inv.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert_eq!(inv.files[0].path, "00_meta_ok.json");
+        let tiers = SessionApi::tier_inventory(&dir.join("server_eval_absent.json"), &dir);
+        let l2 = tiers
+            .iter()
+            .find(|t| t.tier == "L2_meta")
+            .expect("L2_meta 层条目应存在");
+        assert_eq!(
+            l2.paths,
+            vec!["00_meta_ok.json".to_string()],
+            "三层清单 L2 路径集须与实载一致（挂 domain 门的文件排除）: {:?}",
+            l2.paths
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -20574,7 +20583,7 @@ mod tests {
         tier_gate_fixture(
             &dir,
             "00_meta_minimal.json",
-            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         );
         // 坏 JSON → 读取/解析失败 → 跳过（不影响其他文件）；直写绕过 fixture（其内部解析会 panic）
         std::fs::write(
@@ -20638,7 +20647,7 @@ mod tests {
         let populated = tempfile::tempdir().unwrap();
         std::fs::write(
             populated.path().join("00_meta_seed.json"),
-            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"种子元规则","guard_for":["robot_move"]},"transform":[]}"#,
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"种子元规则","guard_for":["robot_move"]},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         )
         .unwrap();
         let mut state_pop = state.clone();
@@ -20690,141 +20699,138 @@ mod tests {
     // 判定一致」——两实现长期并存（管辖分工见 SR-02 决策 3），漂移即红灯。
     mod parity {
         use super::*;
-        use evorule_rule_loader::{L2Class, LoadContext, LoadSource, Venue};
 
-        /// 构造与生产 parse_rule_file 同形态的 LoadContext
-        fn ctx_for(l2: L2Class) -> LoadContext {
-            LoadContext {
-                source: LoadSource::File {
-                    path: "parity_probe.json".to_string(),
-                },
-                venue: Venue::Production,
-                composition: evorule_rule_loader::Composition::Standalone,
-                l2_class: l2,
-                discipline_enforce: false,
-            }
-        }
-
-        /// V3：tier 门 parity——同一文档，清单面（tier_gate_reason 以文件名+目录
-        /// 判 L2）与装载面（tier_gate 以调用方治理事实判 L2）在等价 L2 判定输入下
-        /// 判定必须一致（同过/同拒）。
-        #[test]
-        fn v3_tier_gate_parity_same_verdict() {
-            let rules_dir = std::path::Path::new("/tmp/rules");
-            let cases: Vec<(&str, &str, serde_json::Value, bool)> = vec![
-                // (文件名, 描述, 文档, 应否通过)
-                // L2 约束文件 + tier=constraint → 双面同过
-                (
-                    "00_constraint_x.json",
-                    "constraint+tier",
-                    serde_json::json!({"metadata":{"tier":"constraint"},"transform":[]}),
-                    true,
-                ),
-                // L2 约束文件缺 tier → 双面同拒
-                (
-                    "00_constraint_x.json",
-                    "constraint 缺 tier",
-                    serde_json::json!({"metadata":{},"transform":[]}),
-                    false,
-                ),
-                // 业务文件携带 tier（层级伪造）→ 双面同拒
-                (
-                    "biz_rule.json",
-                    "业务文件伪造 tier",
-                    serde_json::json!({"metadata":{"tier":"constraint"},"transform":[]}),
-                    false,
-                ),
-                // 业务文件含 enforce → 双面同拒
-                (
-                    "biz_rule.json",
-                    "业务文件携 enforce",
-                    serde_json::json!({"transform":[{"type":"enforce","params":{}}]}),
-                    false,
-                ),
-                // 业务文件干净 → 双面同过
-                (
-                    "biz_rule.json",
-                    "业务文件干净",
-                    serde_json::json!({"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}),
-                    true,
-                ),
-            ];
-            for (fname, desc, doc, should_pass) in cases {
-                let p = rules_dir.join(fname);
-                // 清单面：is_root_meta = 父目录==rules_dir && is_l2_meta_file_name
-                let is_root_meta = p.parent() == Some(rules_dir)
-                    && p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(is_l2_meta_file_name)
-                        .unwrap_or(false);
-                let list_face = SessionApi::tier_gate_reason(&p, rules_dir, &doc).is_ok();
-                // 装载面：等价 L2 治理事实
-                let l2 = if is_root_meta {
-                    L2Class::Constraint
-                } else {
-                    L2Class::None
-                };
-                let arr: Vec<serde_json::Value> = doc
-                    .get("transform")
-                    .and_then(|t| t.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let load_face =
-                    evorule_rule_loader::tier_gate_for_test(&arr, &doc, &ctx_for(l2)).is_ok();
-                assert_eq!(
-                    list_face, load_face,
-                    "V3 parity 破裂 [{desc}]：清单面={list_face} 装载面={load_face}"
-                );
-                assert_eq!(
-                    list_face, should_pass,
-                    "V3 基准漂移 [{desc}]：清单面={list_face} 预期={should_pass}"
-                );
-            }
-        }
-
-        /// V4：eq/lt domain 门 parity——同一规则树，装载面 walk_eq_lt_domain 与
-        /// 清单面 domain_gate_violations 的三道门（missing/invalid/ambiguous）
-        /// 命中集合必须等价（门类逐一对齐）。
+        /// V4：eq/lt/in domain 门 parity——同一规则树，清单面 domain_gate_violations
+        /// （TCB 域）与装载面 walk_domain_gate_violations（serde 域）的违规必须
+        /// **逐条全等**（门类+明细，按多重集比对），并锚定各样本期望门类——
+        /// 含根段点路径判定谓词的边界样本（双侧共用 TCB 唯一权威实现）。
         #[test]
         fn v4_domain_gate_parity_same_violations() {
-            let samples = [
+            const MISSING: &str = "missing_declaration";
+            const INVALID: &str = "invalid_declaration";
+            const AMBIGUOUS: &str = "value_literal_ambiguous";
+            const VALUES: &str = "values_declaration";
+            // (描述, 样本, 期望门类多重集)
+            let samples: Vec<(&str, &str, Vec<&str>)> = vec![
                 // 缺 on_missing
-                r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"x"},"on_true":[],"on_false":[]}}"#,
+                (
+                    "eq 缺 on_missing",
+                    r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"x"},"on_true":[],"on_false":[]}}"#,
+                    vec![MISSING],
+                ),
                 // on_missing 非法值
-                r#"{"type":"branch","params":{"domain":{"type":"lt","path":"payload.c","value":5,"on_missing":"warn"},"on_true":[],"on_false":[]}}"#,
+                (
+                    "lt on_missing 非法",
+                    r#"{"type":"branch","params":{"domain":{"type":"lt","path":"payload.c","value":5,"on_missing":"warn"},"on_true":[],"on_false":[]}}"#,
+                    vec![INVALID],
+                ),
                 // value 字面量歧义（历史写作错误形态）
-                r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.m","value":"instruction.params.milestone_target","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                (
+                    "eq value 歧义",
+                    r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.m","value":"instruction.params.milestone_target","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![AMBIGUOUS],
+                ),
                 // 干净声明（零违例）
-                r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"done","on_missing":"error"},"on_true":[],"on_false":[]}}"#,
+                (
+                    "eq 干净",
+                    r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"done","on_missing":"error"},"on_true":[],"on_false":[]}}"#,
+                    vec![],
+                ),
                 // 嵌套 inner 内缺声明（walk 整树语义）
-                r#"{"type":"branch","params":{"domain":{"type":"all","inner":[{"type":"exists","path":"payload.a"},{"type":"eq","path":"payload.b","value":"y"}]},"on_true":[],"on_false":[]}}"#,
+                (
+                    "嵌套缺声明",
+                    r#"{"type":"branch","params":{"domain":{"type":"all","inner":[{"type":"exists","path":"payload.a"},{"type":"eq","path":"payload.b","value":"y"}]},"on_true":[],"on_false":[]}}"#,
+                    vec![MISSING],
+                ),
                 // __ 前缀显式路径引用=合法（不误伤）
-                r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"__exec__.payload.__io_results__.x","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                (
+                    "__ 引用合法",
+                    r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.s","value":"__exec__.payload.__io_results__.x","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![],
+                ),
+                // in 域第 4 道 values 门三形态
+                (
+                    "in 缺 values",
+                    r#"{"type":"branch","params":{"domain":{"type":"in","path":"payload.model","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![VALUES],
+                ),
+                (
+                    "in values 非数组",
+                    r#"{"type":"branch","params":{"domain":{"type":"in","path":"payload.model","values":"M3","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![VALUES],
+                ),
+                (
+                    "in values 空数组",
+                    r#"{"type":"branch","params":{"domain":{"type":"in","path":"payload.model","values":[],"on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![VALUES],
+                ),
+                (
+                    "in 元素歧义",
+                    r#"{"type":"branch","params":{"domain":{"type":"in","path":"payload.model","values":["M3","payload.x"],"on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![AMBIGUOUS],
+                ),
+                (
+                    "in 合法",
+                    r#"{"type":"branch","params":{"domain":{"type":"in","path":"payload.model","values":["M3","M2.5"],"on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![],
+                ),
+                // 根段点路径判定谓词边界（双侧共用 TCB is_root_segment_dot_path）
+                (
+                    "谓词边界 含 __ 段",
+                    r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.t","value":"instruction.x__y","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![AMBIGUOUS],
+                ),
+                (
+                    "谓词边界 空段",
+                    r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.t","value":"payload..x","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![],
+                ),
+                (
+                    "谓词边界 queue 根段",
+                    r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.t","value":"queue.a.b","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![AMBIGUOUS],
+                ),
+                (
+                    "谓词边界 非根段首词",
+                    r#"{"type":"branch","params":{"domain":{"type":"eq","path":"payload.t","value":"instructionx.a","on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![],
+                ),
+                (
+                    "数值 value 不查歧义",
+                    r#"{"type":"branch","params":{"domain":{"type":"lt","path":"payload.n","value":5,"on_missing":"unsat"},"on_true":[],"on_false":[]}}"#,
+                    vec![],
+                ),
             ];
-            for body in samples {
+            for (desc, body, expected_doors) in samples {
                 let v: serde_json::Value = serde_json::from_str(body).unwrap();
                 let tcb_rule = serde_to_tcb(v.clone());
-                // 清单面：生产纯函数
+                // 清单面：生产纯函数（TCB 域）
                 let prod = SessionApi::domain_gate_violations(&tcb_rule);
-                // 装载面：walk_eq_lt_domain
-                let load = evorule_rule_loader::walk_eq_lt_domain_for_test(&v);
-                // 门类集合等价（顺序不保证一致，按特征串比对）
-                let classify = |detail: &str| {
-                    if detail.contains("缺 on_missing") {
-                        "missing"
-                    } else if detail.contains("非法") {
-                        "invalid"
-                    } else {
-                        "ambiguous"
-                    }
-                };
-                let mut prod_set: Vec<&str> = prod.iter().map(|d| classify(&d.detail)).collect();
-                let mut load_set: Vec<&str> = load.iter().map(|s| classify(s)).collect();
-                prod_set.sort();
-                load_set.sort();
+                // 装载面：walk_domain_gate_violations（serde 域）
+                let load = evorule_rule_loader::walk_domain_gate_violations(&v);
+                let mut prod_items: Vec<(String, String)> =
+                    prod.into_iter().map(|d| (d.door, d.detail)).collect();
+                let mut load_items: Vec<(String, String)> = load
+                    .into_iter()
+                    .map(|h| (h.door.to_string(), h.detail))
+                    .collect();
+                // 逐条全等（门类+明细多重集；遍历序依赖各域 map 实现，不比顺序）
+                prod_items.sort();
+                load_items.sort();
                 assert_eq!(
-                    prod_set, load_set,
-                    "V4 parity 破裂：清单面={prod_set:?} 装载面={load_set:?}（样本 {body}）"
+                    prod_items, load_items,
+                    "V4 parity 破裂（逐条全等）[{desc}]：清单面={prod_items:?} 装载面={load_items:?}"
+                );
+                // 期望锚定：双侧都错成一致时仍能被基准抓住
+                let mut prod_doors: Vec<String> =
+                    prod_items.iter().map(|(d, _)| d.clone()).collect();
+                prod_doors.sort();
+                let mut expected: Vec<String> =
+                    expected_doors.iter().map(|s| s.to_string()).collect();
+                expected.sort();
+                assert_eq!(
+                    prod_doors, expected,
+                    "V4 基准漂移 [{desc}]：实际={prod_doors:?} 预期={expected:?}"
                 );
             }
         }
@@ -20849,7 +20855,7 @@ mod gate_file_rejection_tests {
         // 种子:一个合法业务文件(保底,目录非空)
         std::fs::write(
             rules_dir.join("ok_rule.json"),
-            r#"{"metadata":{"title":"ok-rule"},"transform":[]}"#,
+            r#"{"metadata":{"title":"ok-rule"},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
         )
         .unwrap();
         // 违规:非 L2 文件携带 tier=constraint(层级伪造,tier 门拒载)
