@@ -66,6 +66,7 @@
 - **`AGPL-3.0-or-later` — evorule-discipline / evorule-hash**：生态自有 crate（git 钉版依赖），非第三方组件；列出仅为清单完整性。
 - **`@colbymchenry/codegraph`（vendored）**：上游 MIT；构建产物 dist 入仓（`plugins/codegraph-bridge/vendor/codegraph/`，MIT 正文随附），同版钉 0.9.4，可复现可溯源。
 - **`BSD-1-Clause` — fiat-crypto**：三许可表达式分支，正文按分支归档。
+- **wasm-host（独立 workspace，随桌面安装包分发）**：`plugins/wasm-host/` 为独立 cargo workspace，随桌面安装包以独立 exe（+ plugin.json / trusted-keys.json / wasm 模块目录）分发；其依赖树（Cargo.lock 186 条，其中 wasmtime 运行时族 27 条，主导许可证 `Apache-2.0-WITH-LLVM-exception`，该类别正文已归档）**尚未并入本声明计数与生态 manifest**——独立 workspace 不在既有扫描面，清单收录与逐包正文归档已登记为后续批。
 
 ## 四、归档与复现
 
