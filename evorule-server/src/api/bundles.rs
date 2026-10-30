@@ -1262,7 +1262,8 @@ mod tests {
             .with_native_services(infos)
             .with_service_chain(std::sync::Arc::new(TestEchoChain));
 
-        // ① 非敏感服务 → 复用链执行，200 返回链结果
+        // ① 非敏感服务 → 复用链执行，200 返回 provenance 信封
+        // （result=链结果原样；deterministic=true 因 source=native）
         let ok = crate::api::server::invoke_service_handler(
             axum::extract::State(api.clone()),
             axum::extract::Path("physics_simulate".to_string()),
@@ -1271,7 +1272,19 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(ok.0, serde_json::json!("echo"));
+        assert_eq!(
+            ok.0,
+            serde_json::json!({
+                "result": "echo",
+                "provenance": {
+                    "service": "physics_simulate",
+                    "source": "native",
+                    "plugin": "physics-services",
+                    "version": null,
+                    "deterministic": true,
+                }
+            })
+        );
 
         // ② 敏感服务 → 403（直调=静默绕审批，禁止）
         let (status, body) = crate::api::server::invoke_service_handler(

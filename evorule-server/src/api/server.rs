@@ -12895,10 +12895,44 @@ pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<Bo
     Json(out)
 }
 
+/// invoke 成功响应的 provenance 元数据（结果可信度锚：消费方——LLM 工具
+/// 面/REST 直调方——据此区分「宿主进程内确定性服务」与「外部执行体透传
+/// 结果」）。deterministic 判定：native = 宿主进程内确定性模块（true）；
+/// plugin/registry = 外部执行体（插件进程/wasm-host/HTTP 回落），宿主不
+/// 背书其确定性（false）。
+fn invoke_provenance(api: &SessionApi, name: &str) -> serde_json::Value {
+    if let Some(info) = api.native_services.iter().find(|i| i.name == name) {
+        serde_json::json!({
+            "service": name,
+            "source": info.source,
+            "plugin": info.plugin,
+            "version": info.version,
+            "deterministic": info.source == "native",
+        })
+    } else {
+        // registry 回落绑定（native/plugin 未命中）：非宿主确定性执行体
+        let registry = api.registry_services_snapshot();
+        let meta = registry.iter().find(|m| m.name == name);
+        serde_json::json!({
+            "service": name,
+            "source": "registry",
+            "plugin": null,
+            "version": meta.and_then(|m| m.version.clone()),
+            "deterministic": false,
+        })
+    }
+}
+
 /// POST /api/services/{name}/invoke —— 插件服务直调（服务消费契约）
 ///
 /// 与 io_request **同一处理器链**（插件路由原生优先 → registry HTTP 回落），
 /// 无第二执行路径。请求 body = 服务 `args`（JSON 对象）。
+///
+/// 成功响应（200）为 provenance 信封：`{"result": <服务结果原样>,
+/// "provenance": {service, source, plugin, version, deterministic}}`——
+/// 结果可信度锚随行（deterministic：native=宿主进程内确定性服务 true；
+/// plugin/registry=外部执行体，宿主不背书其确定性）。错误响应保持
+/// `{"error": ..., "error_kind"?: ...}` 形态（成功/失败对称的双元数据面）。
 ///
 /// 治理语义（fail-fast）：
 /// - 未知服务 → 404（附合法名指引）；
@@ -12912,7 +12946,7 @@ pub async fn list_services_handler(State(api): State<SessionApi>) -> Json<Vec<Bo
     params(("name" = String, Path, description = "服务名（GET /api/services 对账清单内）")),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "服务执行结果", body = serde_json::Value),
+        (status = 200, description = "服务执行结果 provenance 信封（result = 服务结果原样；provenance = 结果可信度锚）", body = serde_json::Value),
         (status = 403, description = "敏感服务禁止直调（走会话审计链）"),
         (status = 404, description = "服务不在对账清单"),
         (status = 502, description = "服务执行失败（错误透传）"),
@@ -12976,7 +13010,13 @@ pub async fn invoke_service_handler(
         .scope(actor_ctx, chain.execute(&params))
         .await;
     match result {
-        Ok(result) => Ok(Json(tcb_to_serde(&result))),
+        // 成功响应信封：result=服务结果原样 + provenance=结果可信度锚
+        // （deterministic 档位等）；错误响应保持 error/error_kind 形态
+        // （成功/失败对称的双元数据面）
+        Ok(result) => Ok(Json(serde_json::json!({
+            "result": tcb_to_serde(&result),
+            "provenance": invoke_provenance(&api, &name),
+        }))),
         Err(e) => {
             // 批次B（P1-11 错误脱敏）: 错误响应不再内嵌链路错误原文
             // （reqwest Display/上游响应片段可携带内网 URL/端口/报文细节）。
@@ -13007,7 +13047,14 @@ pub async fn invoke_service_handler(
                     Ok(resp) => {
                         let status = resp.status();
                         match resp.json::<serde_json::Value>().await {
-                            Ok(value) if status.is_success() => Ok(Json(value)),
+                            // wasm-host 回落成功同样走 provenance 信封
+                            // （registry 回落绑定=非宿主确定性执行体）
+                            Ok(value) if status.is_success() => Ok(Json(
+                                serde_json::json!({
+                                    "result": value,
+                                    "provenance": invoke_provenance(&api, &name),
+                                })
+                            )),
                             Ok(value) => Err((
                                 StatusCode::UNPROCESSABLE_ENTITY,
                                 Json(serde_json::json!({ "error": value })),
