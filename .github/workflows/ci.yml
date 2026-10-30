@@ -405,3 +405,19 @@ jobs:
       contents: read
     uses: evorule/evorule/.github/workflows/license-gate.yml@9d0e4fdbb28cfd0db1051c9014149f198b290e6b
 
+  # wasm-host is a standalone workspace (own Cargo.lock) not covered by the
+  # root deny.toml; run the same four gates against its own deny.toml.
+  license-gate-wasm-host:
+    name: license gate (wasm-host workspace)
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny check (wasm-host workspace)
+        run: cargo deny check
+        working-directory: plugins/wasm-host
+

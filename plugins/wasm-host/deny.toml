@@ -1,0 +1,56 @@
+# cargo-deny 配置 — evorule-wasm-host（独立 workspace）
+#
+# 为什么独立：plugins/wasm-host 是自己的 workspace（自带 Cargo.lock），
+# 不被仓根 deny.toml 的 workspace 覆盖；本文件使 license-gate CI 能对
+# UDF 宿的依赖树独立跑四闸（licenses + advisories + bans + sources）。
+#
+# 同步纪律：[licenses] allow 集与仓根 deny.toml 保持一致（新增许可先改根
+# 并登记理由，再同步到这里）；[advisories] ignore 逐项登记理由同根惯例。
+#
+# 执行: cargo deny check --manifest-path plugins/wasm-host/Cargo.toml
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "Unlicense",
+    "BSL-1.0",
+    "NCSA",
+    "CDLA-Permissive-2.0",
+    "BlueOak-1.0.0",
+    "OFL-1.1",
+]
+confidence-threshold = 0.93
+# wasmtime 族（27 项）= Apache-2.0 WITH LLVM-exception，生态 allow 集既有；
+# 全量盘点见主仓 LICENSES/third-party/manifest.json（repo=evorule-wasm-host）。
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
