@@ -590,7 +590,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -981,9 +981,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-bundle"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "011c267087f45c12f7aa20351386dfa130478bd12ed4265f51ef2e3c98d8daff"
+checksum = "ad1493d476ec476d21fbbf1cb71d5c75431dbacb7b3d57f7658ad6152e85b087"
 dependencies = [
  "evorule-hash",
  "jsonschema",
@@ -1197,9 +1197,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-hash"
-version = "0.1.4"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b5be34733395be29a8da2f42d28c326a83a891c53b6798a9c200d68a776be7f"
+checksum = "b1d55c3b81d248d88e2575e2ec347d8063f44d235690355fd1f5dbf3935b5ecf"
 dependencies = [
  "blake3",
  "serde",
@@ -1408,8 +1408,8 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule"
-version = "0.5.0"
-source = "git+https://gitee.com/evorule/evorule-rule.git?rev=c1b6bc1340a549ceb89ba701e16c073edb225be6#c1b6bc1340a549ceb89ba701e16c073edb225be6"
+version = "0.5.1"
+source = "git+https://gitee.com/evorule/evorule-rule.git?rev=ba70271b903b767eb025370cb220f0a3ec819661#ba70271b903b767eb025370cb220f0a3ec819661"
 dependencies = [
  "argon2",
  "axum",
@@ -5121,7 +5121,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

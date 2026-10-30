@@ -25,7 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 规则内容哈希 (BLAKE3, 与审计链同源)
 # 规范哈希 SSOT (审计⑥ C3): 统一经 evorule-hash, 禁止自写 blake3 口径
-evorule-hash = "0.1.4"
+evorule-hash = "0.2.0"
 # 时间戳
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 # 错误传播 (与 evorule-server 保持一致: v2)
