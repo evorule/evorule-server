@@ -93,6 +93,7 @@ evorule-gov-services = { path = "../plugins/gov-services" }
 evorule-legal-services = { path = "../plugins/legal-services" }
 # 交付物导出插件（PDF 引擎 SSOT 下沉：api/pdf_export.rs 薄壳消费其 render_pdf）
 evorule-export-services = { path = "../plugins/export-services" }
+evorule-verification-services = { path = "../plugins/verification-services" }
 
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，

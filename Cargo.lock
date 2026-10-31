@@ -1453,6 +1453,7 @@ dependencies = [
  "evorule-rule-schema",
  "evorule-tcb",
  "evorule-template-services",
+ "evorule-verification-services",
  "evorule-workspace",
  "fs4",
  "futures-core",
@@ -1488,6 +1489,18 @@ checksum = "a7ac22910dd49747b81f7f9ce847720b4a8aeabd6dcb6add57af57069e49349c"
 
 [[package]]
 name = "evorule-template-services"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "evorule-verification-services"
 version = "0.10.0"
 dependencies = [
  "async-trait",

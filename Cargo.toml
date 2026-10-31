@@ -30,6 +30,7 @@ members = [
     "plugins/gov-services",
     "plugins/legal-services",
     "plugins/export-services",
+    "plugins/verification-services",
 ]
 
 [workspace.package]
