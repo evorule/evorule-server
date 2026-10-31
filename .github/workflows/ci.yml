@@ -168,42 +168,15 @@ jobs:
       - name: cargo test
         run: cargo test
 
-  # ===== vendored 副本自测（黄金向量自证闸门 · 强阻塞）=====
-  # patches/ 下 vendored 补丁副本（非 workspace 成员），主 CI 的 lint/test
-  # 天然不覆盖其测试面。本 job 跑两组黄金向量自证闸门：
-  # 1. reactor Fact 契约闸：副本 live 哈希契约 == 冻结向量（对向闸门在
-  #    evorule-integration-tests，经 include_str! 读同一向量；共同契约物变更
-  #    须双仓同批留痕），副本漂移即红。测试态 tcb 经本目录 [patch.crates-io]
-  #    重定向至仓内 vendored 副本（注册表 0.8.4 缺 u64 全域通道，
-  #    见 patches/evorule-reactor/Cargo.toml 注释）。
-  # 2. governance 审计导出闸：Auditor::export() 产物 == 冻结向量（EVID
-  #    fact_json_stable 契约；对向闸门同在 evorule-integration-tests 读同一
-  #    向量做 SSOT 复算），导出格式漂移即红。
-  vendored-reactor-gate:
-    name: vendored patches golden gates
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  # ===== vendored 副本自测（历史段，已全退役）=====
+  # 本段曾跑 patches/ 下两份 vendored 补丁的黄金向量自证闸门（reactor Fact
+  # 契约闸 + governance 审计导出闸）。两副本均已按各自 README-PATCH 删除
+  # 条款退役：governance → core/governance-host 原生 crate（其导出闸由该
+  # crate 自身 tests/audit_export_golden.rs 承接，workspace 测试覆盖）；
+  # reactor → 主仓 v0.12.0 收编干预原语后退役（其 Fact 契约棘轮由
+  # evorule-integration-tests 的 SSOT 侧对向闸门独力承接，黄金向量已随
+  # 退役移入该仓自持）。job 随最后一份副本退役删除，patches/ 目录清零。
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: patches/evorule-reactor
-          key: vendored-reactor-${{ hashFiles('patches/evorule-reactor/Cargo.lock') }}
-
-      - name: cargo test (fact contract golden gate)
-        working-directory: patches/evorule-reactor
-        run: cargo test --test ssot_fact_contract_gate
-
-      # The governance vendored patch has been retired into the native
-      # core/governance-host crate; its audit-export golden gate lives on in
-      # that crate's own tests/audit_export_golden.rs (covered by the workspace
-      # test job), so the vendored-directory run below is gone. The directory
-      # itself stays as a reference until the capability-parity review signs
-      # off its removal.
 
   # ===== Rust tests =====
   test:
