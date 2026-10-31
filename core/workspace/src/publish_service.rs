@@ -1162,10 +1162,7 @@ pub fn sign_bundle_if_configured(bundle: &mut evorule_bundle::DatasetBundle) -> 
     let sk = SigningKey::from_bytes(&seed);
     let sig = sk.sign(&signature_payload(&bundle.audit.content_hash));
     bundle.publish_signature = Some(evorule_bundle::SignatureBlock {
-        key_id: {
-            let vk = hex_encode(&sk.verifying_key().to_bytes());
-            vk
-        },
+        key_id: hex_encode(&sk.verifying_key().to_bytes()),
         sig: hex_encode(&sig.to_bytes()),
     });
     Ok(())

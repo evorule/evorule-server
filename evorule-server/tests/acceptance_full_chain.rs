@@ -297,6 +297,9 @@ fn build_gov(tmp: &std::path::Path, llm_base_url: &str) -> (axum::Router, Arc<Ru
 // 总验收主链:治理→发布→导入→执行→审计单用例贯通,场景化测试不拆分
 #[allow(clippy::too_many_lines)]
 async fn acceptance_governance_to_execution_full_chain() {
+    // 签名策略迁移档：本链路验证治理→执行语义（发布签名的 enforce 语义由
+    // bundles 模块纯函数测试专测），e2e 语料为无签名包，显式走 warn 档。
+    std::env::set_var("EVORULE_BUNDLE_SIGNATURE_POLICY", "warn");
     let tmp = tempfile::tempdir().unwrap();
     let llm = spawn_mock_evo_agent().await;
     let (app, store) = build_gov(tmp.path(), &llm);
