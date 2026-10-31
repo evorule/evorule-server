@@ -2,17 +2,12 @@
 resolver = "2"
 members = [
     "core/auth",
-    "core/debug_control",
     "core/governance-host",
-    "core/hot_reload",
     "core/io_handlers",
-    "core/metrics",
     "core/plugin-kit",
     "core/rule_loader",
     "core/rule_schema",
     "core/rule_tools",
-    "core/semantic_invariants",
-    "core/time_machine",
     "core/workspace",
     "evorule-server",
     "installer",

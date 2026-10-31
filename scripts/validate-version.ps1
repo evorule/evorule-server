@@ -40,13 +40,8 @@ function Get-TomlVersion {
 $projects = [ordered]@{}
 $projects['evorule-server-workspace']    = (Join-Path $repoRoot "Cargo.toml")
 $projects['evorule-auth']                = (Join-Path $repoRoot "core\auth\Cargo.toml")
-$projects['evorule-debug-control']       = (Join-Path $repoRoot "core\debug_control\Cargo.toml")
-$projects['evorule-hot-reload']          = (Join-Path $repoRoot "core\hot_reload\Cargo.toml")
 $projects['evorule-io-handlers']         = (Join-Path $repoRoot "core\io_handlers\Cargo.toml")
-$projects['evorule-metrics']             = (Join-Path $repoRoot "core\metrics\Cargo.toml")
 $projects['evorule-rule-tools']          = (Join-Path $repoRoot "core\rule_tools\Cargo.toml")
-$projects['evorule-semantic-invariants'] = (Join-Path $repoRoot "core\semantic_invariants\Cargo.toml")
-$projects['evorule-time-machine']        = (Join-Path $repoRoot "core\time_machine\Cargo.toml")
 $projects['evorule-server']              = (Join-Path $repoRoot "evorule-server\Cargo.toml")
 
 $versions = [ordered]@{}
@@ -76,8 +71,8 @@ $canonicalVersion = $versions['evorule-server-workspace']
 
 # 本仓内部 crate 必须与 workspace 完全一致(FULL version 比较,含 PATCH)
 $internalCrates = @(
-    'evorule-auth','evorule-debug-control','evorule-hot-reload','evorule-io-handlers',
-    'evorule-metrics','evorule-rule-tools','evorule-semantic-invariants','evorule-time-machine',
+    'evorule-auth','evorule-io-handlers',
+    'evorule-rule-tools',
     'evorule-server'
 )
 if ($canonicalVersion -and $canonicalVersion -match $semverPattern) {
@@ -131,9 +126,8 @@ if ($canonicalVersion -and $canonicalVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
         $l1Files += Get-ChildItem -LiteralPath $docsDir -Recurse -Filter *.md -File -ErrorAction SilentlyContinue
     }
     $crateSubPaths = @(
-        'core\auth','core\debug_control','core\hot_reload','core\io_handlers',
-        'core\metrics','core\rule_tools','core\semantic_invariants','core\time_machine',
-        'evorule-server'
+        'core\auth','core\io_handlers',
+        'core\rule_tools','evorule-server'
     )
     foreach ($sub in $crateSubPaths) {
         $crateDir = Join-Path $repoRoot $sub
