@@ -782,3 +782,62 @@ async fn test_externalization_violation_legislation() {
         );
     }
 }
+
+/// 构造 conservation_check 指令（Tier 1 立法 v0.8.1：守恒不变量三态裁决——
+/// 确定性物理服务的守恒测量事实按声明 scale 直传定点 Integer（drift_fp）,
+/// 对照声明容差（bound_fp）裁决,规则层零数据变形;三态词汇由立法固定）
+fn make_conservation_check_instruction(drift_fp: Option<i64>, bound_fp: i64) -> JsonValue {
+    let mut params = BTreeMap::new();
+    if let Some(d) = drift_fp {
+        params.insert("drift_fp".to_string(), JsonValue::Integer(d));
+    }
+    params.insert("bound_fp".to_string(), JsonValue::Integer(bound_fp));
+    params.insert(
+        "target".to_string(),
+        JsonValue::string("conservation_verdict"),
+    );
+    let mut instr = BTreeMap::new();
+    instr.insert("type".to_string(), JsonValue::string("conservation_check"));
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+/// conservation_check 立法六例：pass / violation / 边界 eq（闭区间含等号）/
+/// 篡改 bound（压到漂移之下）翻红 / 篡改 drift（抬到容差之上）翻红 /
+/// 测量缺失 → undetermined（不适用≠通过,弃权显式留痕）
+#[tokio::test]
+async fn test_conservation_check_legislation() {
+    for (drift_fp, bound_fp, expected) in [
+        (Some(481_180i64), 500_000i64, "pass"),
+        (Some(600_000i64), 500_000i64, "violation"),
+        (Some(500_000i64), 500_000i64, "pass"),
+        (Some(481_180i64), 400_000i64, "violation"),
+        (Some(520_000i64), 500_000i64, "violation"),
+        (None, 500_000i64, "undetermined"),
+    ] {
+        let core_eval = load_core_eval();
+        let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+        let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+
+        let instruction = make_conservation_check_instruction(drift_fp, bound_fp);
+        tx.send(Fact::Command {
+            id: FactId(1),
+            instruction,
+        })
+        .unwrap();
+
+        let snapshot = wait_for_stable(&mut rx, &facts_log)
+            .await
+            .expect("Timed out waiting for Stable");
+
+        // 相对路径 target 写 payload.conservation_verdict;Stable 快照根即 payload 本体
+        let verdict = snapshot
+            .get("conservation_verdict")
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            verdict,
+            Some(expected),
+            "drift_fp={drift_fp:?} bound_fp={bound_fp} 应判 {expected}; snapshot={snapshot:?}"
+        );
+    }
+}
