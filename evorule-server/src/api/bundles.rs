@@ -539,6 +539,14 @@ pub(crate) fn verify_signature_policy(
     }
 }
 
+/// 导入闸总入口：读信任注册表 + 按 env 策略校验（调用方一行接入）
+pub(crate) fn verify_bundle_signature_policy(
+    bundle: &evorule_bundle::DatasetBundle,
+) -> Result<(), String> {
+    let publishers = TrustedPublishers::load()?;
+    verify_signature_policy(bundle, &bundle_signature_policy(), &publishers)
+}
+
 /// env 策略读取（`EVORULE_BUNDLE_SIGNATURE_POLICY`，缺省 enforce；未知值按
 /// enforce 处理并留痕——fail-closed）。测试编译面缺省 warn：既有导入测试
 /// 语料为无签名包，enforce 语义由 verify_signature_policy 纯函数测试专测
@@ -559,7 +567,7 @@ pub(crate) fn bundle_signature_policy() -> String {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(format!("hex 长度 {} 为奇数", s.len()));
     }
     (0..s.len() / 2)
