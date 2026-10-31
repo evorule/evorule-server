@@ -1740,6 +1740,14 @@ async fn test_externalization_violation_audit_chain() {
         })
         .unwrap_or_else(|| panic!("受理后审计链必须含 call_external IoRequest: {audit}"));
 
+    // 双源一致性锁：wait=true 响应必须携带 pending IoRequest 的 fact_id——
+    // 非 SSE 消费路径单请求闭合 llm_audit 回路，免审计投影二次 round-trip
+    assert_eq!(
+        resp["pending_request_id"],
+        serde_json::json!(io_request_id),
+        "Waited 响应缺 pending_request_id（与审计投影双源不一致）: {resp}"
+    );
+
     // 收尾应答（request_id 对准 pending IoRequest，同步闭合 llm_audit 回路）：
     // observe 模式（缺省）命中后仍 200 放行
     let io_body = format!(

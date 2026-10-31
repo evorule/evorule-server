@@ -7376,6 +7376,11 @@ pub struct CommandWaitResponse {
 
     /// 稳定码：RULE_VIOLATION（拦截）/ WAIT_TIMEOUT（窗口超时）
     pub code: Option<String>,
+
+    /// 受理结论为 IoRequest 时该事实的 ID（与链上 Fact.id / SSE 事件 id 同源），
+    /// 供非 SSE 消费路径单请求闭合 IoRequest ↔ IoResponse 配对与审计回路；
+    /// StateTransition 受理或结论未落定时为 null
+    pub pending_request_id: Option<u64>,
 }
 
 /// enforce 拦截详情（与链上 Violation 事实的 rule_index/reason 字段同源）
@@ -7391,8 +7396,9 @@ pub struct CommandViolation {
 /// wait=true 单条指令的结论
 #[derive(Debug)]
 enum CommandVerdict {
-    /// 指令受理（StateTransition 落链；IoRequest 亦视为受理——指令已进入执行）
-    Accepted,
+    /// 指令受理（StateTransition 落链；IoRequest 亦视为受理——指令已进入执行）。
+    /// pending_request_id 仅在 IoRequest 受理时携带该事实自身的 ID
+    Accepted { pending_request_id: Option<u64> },
     /// 被 enforce 拦截（Violation 落链）
     Rejected { rule_index: u64, reason: String },
     /// 等待窗口内结论未落定
@@ -7425,10 +7431,15 @@ async fn wait_for_command_verdict(
     loop {
         for (_, fact) in facts_log.history_last_with_versions(COMMAND_WAIT_SCAN_WINDOW) {
             match fact {
-                Fact::StateTransition { cause, .. } | Fact::IoRequest { cause, .. }
-                    if cause.0 == fact_id =>
-                {
-                    return CommandVerdict::Accepted;
+                Fact::StateTransition { cause, .. } if cause.0 == fact_id => {
+                    return CommandVerdict::Accepted {
+                        pending_request_id: None,
+                    };
+                }
+                Fact::IoRequest { id, cause, .. } if cause.0 == fact_id => {
+                    return CommandVerdict::Accepted {
+                        pending_request_id: Some(id.0),
+                    };
                 }
                 Fact::Violation {
                     cause,
@@ -7611,14 +7622,17 @@ async fn session_command(
             }
 
             Ok(Json(match verdict {
-                CommandVerdict::Accepted => CommandSubmitResponse::Waited(CommandWaitResponse {
-                    success: true,
-                    message: "Command processed".to_string(),
-                    fact_id: id.0,
-                    accepted: Some(true),
-                    violation: None,
-                    code: None,
-                }),
+                CommandVerdict::Accepted { pending_request_id } => {
+                    CommandSubmitResponse::Waited(CommandWaitResponse {
+                        success: true,
+                        message: "Command processed".to_string(),
+                        fact_id: id.0,
+                        accepted: Some(true),
+                        violation: None,
+                        code: None,
+                        pending_request_id,
+                    })
+                }
                 CommandVerdict::Rejected { rule_index, reason } => {
                     CommandSubmitResponse::Waited(CommandWaitResponse {
                         success: true,
@@ -7627,6 +7641,7 @@ async fn session_command(
                         accepted: Some(false),
                         violation: Some(CommandViolation { rule_index, reason }),
                         code: Some("RULE_VIOLATION".to_string()),
+                        pending_request_id: None,
                     })
                 }
                 CommandVerdict::Timeout => CommandSubmitResponse::Waited(CommandWaitResponse {
@@ -7637,6 +7652,7 @@ async fn session_command(
                     accepted: None,
                     violation: None,
                     code: Some("WAIT_TIMEOUT".to_string()),
+                    pending_request_id: None,
                 }),
             }))
         }
@@ -17901,7 +17917,7 @@ mod tests {
         let empty_instruction = serde_to_tcb(serde_json::json!({"type":"noop"}));
         let no_wait = Duration::from_millis(10);
 
-        // StateTransition{cause=42} → Accepted
+        // StateTransition{cause=42} → Accepted（非 IoRequest 路径，无 pending_request_id）
         let log = FactsLog::new();
         log.append(Fact::StateTransition {
             id: FactId(2),
@@ -17912,7 +17928,9 @@ mod tests {
         .unwrap();
         assert!(matches!(
             wait_for_command_verdict(&log, 42, no_wait).await,
-            CommandVerdict::Accepted
+            CommandVerdict::Accepted {
+                pending_request_id: None
+            }
         ));
 
         // Violation{cause=42} → Rejected{rule_index, reason}
@@ -17933,7 +17951,7 @@ mod tests {
             other => panic!("expected Rejected, got {other:?}"),
         }
 
-        // IoRequest{cause=42} → 受理（指令已进入执行）
+        // IoRequest{cause=42} → 受理（指令已进入执行），携带该事实自身 ID 供配对
         let log = FactsLog::new();
         log.append(Fact::IoRequest {
             id: FactId(4),
@@ -17944,7 +17962,9 @@ mod tests {
         .unwrap();
         assert!(matches!(
             wait_for_command_verdict(&log, 42, no_wait).await,
-            CommandVerdict::Accepted
+            CommandVerdict::Accepted {
+                pending_request_id: Some(4)
+            }
         ));
 
         // 无结论事实 → Timeout（短超时实测走完等待窗口）
