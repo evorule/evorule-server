@@ -41,9 +41,43 @@ env:
 
 jobs:
   # ==========================================================================
+  # 0. 发布门 pre-flight：tag commit 上全量测试 + 全链 e2e（红=fail-fast 不出产物）
+  # ==========================================================================
+  pre-flight:
+    name: pre-flight tests (release gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Install system deps (SQLite)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev pkg-config
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: . -> target
+          key: preflight-${{ github.sha }}
+
+      - name: workspace tests
+        run: cargo test --workspace --exclude evorule-setup
+
+      - name: full-chain e2e (gated 三件套)
+        working-directory: evorule-server
+        run: >
+          cargo test --features full-chain-tests
+          --test acceptance_full_chain
+          --test binding_e2e
+          --test q12_data_asset_e2e
+
+  # ==========================================================================
   # 1. 双平台矩阵构建 (server 二进制)
   # ==========================================================================
   build:
+    needs: [pre-flight]
     name: build (${{ matrix.name }})
     strategy:
       fail-fast: false
