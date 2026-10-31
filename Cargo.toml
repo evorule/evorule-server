@@ -78,27 +78,11 @@ codegen-units = 1
 # （历史：0.6.1 registry 与过渡 git 源曾因双实例类型冲突需 patch 共实例；
 #  0.7 线治理侧 API 未上 registry 期间 evorule-governance 一并入 patch。）
 
-# [patch.crates-io] 在役（干预端点批）：evorule-reactor vendored 补丁——
-# 三个干预原语（check_invariants 提 pub / WalWriter::rotate 提 pub +
-# FactsLog 透传 / cancel_all_pending 新原语+快照 pending 清单+不变式扫描槽）
-# 主仓 0.10.0 未含同形 API，以仓内 patches/evorule-reactor 路径补丁先行
-# （[patch] 全局替换注册表实例，无双实例类型冲突；0.6.1/0.7 线同机制先例）。
-# 2026-10-28 换基重铸：副本以主仓 0.10.0 逐文件为基线重施独有面，版本号
-# 声明 0.10.0（否则 governance 0.10 依赖 reactor ^0.10 时旧 0.8.4 基线解析
-# 必炸）。差异面见 patches/evorule-reactor/README-PATCH.md。
-# 删除条件：主仓发布含同形 API → 删本段+patches/ 目录，依赖回纯 version，
-# cargo update 验证一致。
-# [patch.crates-io] 在役（白名单 in 域批）：evorule-tcb vendored 补丁——
-# in 域类型（集合成员判定，多模型准入白名单 DSL 表达面）。主仓 0.10.0 未含
-# in 域，以仓内 patches/evorule-tcb 路径补丁先行（与 evorule-reactor 同机制
-# 先例）。2026-10-28 换基重铸同上（版本声明 0.10.0）。
-# 差异面见 patches/evorule-tcb/README-PATCH.md。
-# 删除条件：主仓发布含同形 in 域 API → 删本行+patches/evorule-tcb，依赖回纯
-# version，cargo update 验证一致。
-# evorule-governance vendored 补丁已于 0.10.0 退役（治理 vendored patch 退役
-# 架构手术批）：session/auditor 服务端 fork 收编为原生 crate
-# core/governance-host（evorule-governance-host，含 rehydrate/G6 规则集锚定/
-# EVID 导出面），server 依赖回 registry 纯 version 0.10。历史副本
-# patches/evorule-governance 暂留参照，后续清理批删除。
-[patch.crates-io]
-evorule-reactor = { path = "patches/evorule-reactor" }
+# [patch.crates-io] 历史（全部已退役）：① evorule-tcb（白名单 in 域批）——
+# 主仓 v0.11.0 收编 in 域后按其删除条件退役（2026-10-31），内核消费走注册表；
+# ② evorule-reactor（干预端点批）——主仓 v0.12.0 收编干预原语三件
+# （cancel_all_pending/pending 快照/不变式扫描报告+check_invariants 提 pub）
+# 后按其删除条件退役（2026-10-31）；③ evorule-governance——v0.10.0 收编为
+# 原生 crate core/governance-host（rehydrate/G6 规则集锚定/EVID 导出面），
+# 历史参照副本 patches/evorule-governance 随 parity review 签字于同日删除。
+# 自此本仓对主仓内核五包全部为注册表纯 version 消费，零 vendored 补丁。

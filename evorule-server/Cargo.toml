@@ -21,12 +21,12 @@ path = "src/main.rs"
 # 核心层：主仓 0.10.0 已发布 crates.io，纯 version 依赖
 # （domain 三态 on_missing 显式声明 / A-3 压实点读取显式化 / pending I/O
 # 超时预算贯通均随 0.8 线在 registry；rotate_wal 随 0.10.0）
-evorule-tcb = { version = "0.11" }
+evorule-tcb = { version = "0.12" }
 evorule-rule-loader = { path = "../core/rule_loader" }
-evorule-reactor = { version = "0.11", features = ["persistence"] }
+evorule-reactor = { version = "0.12", features = ["persistence"] }
 # H6: evorule-governance 不再有 metrics/auth feature（IoMetrics trait 总是可用，auth 迁移到应用层）
 # R10: origin_fact_id 经 JSON 字段透传（0.6.1 已发布 crates.io）。
-evorule-governance = { version = "0.11", features = ["persistence"] }
+evorule-governance = { version = "0.12", features = ["persistence"] }
 # session/auditor 服务端 fork（治理 vendored patch 退役收编为原生 crate）
 evorule-governance-host = { path = "../core/governance-host" }
 # 审计档案链哈希重算
@@ -53,7 +53,7 @@ evorule-rule-schema = { path = "../core/rule_schema" }
 # L2 规则集形态纪律门禁判定引擎，与 evorule-cli 共享判定 SSOT（机制自 cli 抽出，
 # 2026-09-24 接线）。纯 version 依赖（0.10.0 与核心层同步升版，tcb req 对齐
 # vendored 换基线，避免 registry 0.8 旧实例分裂 JsonValue 类型）。
-evorule-discipline = { version = "0.11" }
+evorule-discipline = { version = "0.12" }
 
 # 快照包共享校验（历史批次 集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘）
 evorule-bundle = { version = "0.6.0" }
