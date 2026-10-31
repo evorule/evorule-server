@@ -49,17 +49,14 @@ pub struct Formula {
 }
 
 pub fn parse_formula(args: &evorule_tcb::JsonValue) -> Result<Formula, String> {
-    let num_vars = args
-        .get("vars")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| {
-            "缺少参数 vars（正整数,变量数）— 自诊断指引: 见服务 parameters 契约".to_string()
-        })?;
+    let num_vars = args.get("vars").and_then(|v| v.as_i64()).ok_or_else(|| {
+        "缺少参数 vars（正整数,变量数）— 自诊断指引: 见服务 parameters 契约".to_string()
+    })?;
     if num_vars <= 0 {
         return Err(format!("参数 vars={num_vars} 须为正整数"));
     }
-    let num_vars = usize::try_from(num_vars)
-        .map_err(|_| format!("参数 vars={num_vars} 超出允许范围"))?;
+    let num_vars =
+        usize::try_from(num_vars).map_err(|_| format!("参数 vars={num_vars} 超出允许范围"))?;
     if num_vars > MAX_VARS {
         return Err(format!(
             "参数 vars={num_vars} 超上限 {MAX_VARS} — 资源守卫,如实拒解(不静默降级)"
@@ -219,8 +216,6 @@ pub fn satisfies(f: &Formula, a: &Assignment) -> bool {
 /// 指派 → JSON（变量升序,未指派补 false）。
 pub fn assignment_json(f: &Formula, a: &Assignment) -> Vec<evorule_tcb::JsonValue> {
     (1..=f.num_vars)
-        .map(|v| {
-            evorule_tcb::JsonValue::Bool(a.get(&v).copied().unwrap_or(false))
-        })
+        .map(|v| evorule_tcb::JsonValue::Bool(a.get(&v).copied().unwrap_or(false)))
         .collect()
 }

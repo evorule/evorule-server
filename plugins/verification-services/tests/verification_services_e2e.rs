@@ -92,7 +92,7 @@ async fn sat_golden_pigeonhole_unsat() {
             JsonValue::array(vec![
                 ints(&[1, 2]),
                 ints(&[1, 3]),
-                ints(&[2, 3]),   // 两两至少一真
+                ints(&[2, 3]), // 两两至少一真
                 ints(&[-1, -2]),
                 ints(&[-1, -3]),
                 ints(&[-2, -3]), // 两两至多一真
@@ -116,7 +116,10 @@ async fn sat_empty_clause_is_unsat() {
     let router = VerificationServiceRouter::new(noop_fallback());
     let args = JsonValue::object_from_pairs(&[
         ("vars", int(1)),
-        ("clauses", JsonValue::array(vec![ints(&[1]), JsonValue::array(vec![])])),
+        (
+            "clauses",
+            JsonValue::array(vec![ints(&[1]), JsonValue::array(vec![])]),
+        ),
     ]);
     let out = router
         .execute(&svc_params("verification_sat_solve", args))
@@ -140,10 +143,8 @@ async fn sat_missing_var_fails_fast_with_guidance() {
 #[tokio::test]
 async fn sat_over_limit_fails_visible() {
     let router = VerificationServiceRouter::new(noop_fallback());
-    let args = JsonValue::object_from_pairs(&[
-        ("vars", int(201)),
-        ("clauses", JsonValue::array(vec![])),
-    ]);
+    let args =
+        JsonValue::object_from_pairs(&[("vars", int(201)), ("clauses", JsonValue::array(vec![]))]);
     let err = router
         .execute(&svc_params("verification_sat_solve", args))
         .await
@@ -170,7 +171,10 @@ async fn fsm_reachability_golden_witness() {
         .execute(&svc_params("verification_fsm_reachability", args))
         .await
         .unwrap();
-    assert_eq!(out.get("targets_reachable").unwrap(), &JsonValue::Bool(true));
+    assert_eq!(
+        out.get("targets_reachable").unwrap(),
+        &JsonValue::Bool(true)
+    );
     assert_eq!(out.get("bounded").unwrap(), &JsonValue::Bool(false));
     assert_eq!(out.get("language_empty").unwrap(), &JsonValue::Bool(false));
     assert_eq!(out.get("min_accept_steps").unwrap(), &int(1));
@@ -346,7 +350,10 @@ async fn envelope_has_reserved_keys_on_all_services() {
     let cases: Vec<(&str, JsonValue)> = vec![
         (
             "verification_sat_solve",
-            JsonValue::object_from_pairs(&[("vars", int(1)), ("clauses", JsonValue::array(vec![ints(&[1])]))]),
+            JsonValue::object_from_pairs(&[
+                ("vars", int(1)),
+                ("clauses", JsonValue::array(vec![ints(&[1])])),
+            ]),
         ),
         (
             "verification_fsm_reachability",
@@ -377,8 +384,13 @@ async fn envelope_has_reserved_keys_on_all_services() {
         let out = router
             .execute(&svc_params(name, args))
             .await
-            .unwrap_or_else(|e| panic!("服务 {name} 最小合法输入不应失败: {e}"));
-        assert_eq!(out.get("status").unwrap(), &JsonValue::string("determined"), "{name}");
+            .map_err(|e| format!("服务 {name} 最小合法输入不应失败: {e}"))
+            .unwrap();
+        assert_eq!(
+            out.get("status").unwrap(),
+            &JsonValue::string("determined"),
+            "{name}"
+        );
         assert_eq!(
             out.get("determinism").unwrap(),
             &JsonValue::string("bitwise_replayable"),
