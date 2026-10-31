@@ -264,6 +264,8 @@ async fn q12_e2e_governance_publish_to_execution_direct_read() {
     let baseline = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)
         .expect("TCB 合并加载不应失败");
 
+    // 签名策略迁移档：本链路语料为无签名包（enforce 语义由 bundles 纯函数测试专测）
+    std::env::set_var("EVORULE_BUNDLE_SIGNATURE_POLICY", "warn");
     let result = sessions.import_bundle(&bundle, false).await.unwrap();
     assert_eq!(result.dataset_id, "ds-rpsm-assets");
     assert_eq!(result.entry_count, 1);

@@ -423,6 +423,8 @@ async fn binding_e2e_declared_template_registry_hit() {
     // 2. 执行侧：真实本地 echo 服务 + 注册表绑定（层 3）+ 导入
     let echo_url = spawn_echo_service().await;
     let api = build_session_api(&rules_dir, Some(&echo_url));
+    // 签名策略迁移档：本链路语料为无签名包（enforce 语义由 bundles 纯函数测试专测）
+    std::env::set_var("EVORULE_BUNDLE_SIGNATURE_POLICY", "warn");
     let result = api.import_bundle(&bundle, false).await.unwrap();
     // 装载防线整改方案 B：防线透传回归锚——rejected_overlaps 非空 = bundle 规则被
     // 装载防线静默剔除（整改前曾静默发生，此处显式断言不再无人消费）
@@ -480,6 +482,8 @@ async fn binding_e2e_missing_registry_binding_reports_self_healing_guidance() {
     // 导入期：with_bound_services 含 SVC（模拟"绑定核对集已登记"）；
     // 运行期：注册表为空（漏配 service_registry.json 条目）→ unknown service_name
     let api = build_session_api(&rules_dir, None);
+    // 签名策略迁移档：本链路语料为无签名包（enforce 语义由 bundles 纯函数测试专测）
+    std::env::set_var("EVORULE_BUNDLE_SIGNATURE_POLICY", "warn");
     let result = api.import_bundle(&bundle, false).await.unwrap();
     // 装载防线整改方案 B：与正向同口径——负向只漏配运行时注册表，导入期装载面应干净
     assert!(
