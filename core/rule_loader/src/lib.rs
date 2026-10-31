@@ -6,7 +6,7 @@
 //! # 定位（防御层收口；尽调结论已沉淀为宪法条文正本）
 //!
 //! 本 crate 是「规则集进入引擎」的**唯一装载函数** `load_rule_set`：
-//! 宪法 schema 校验 → 剥壳 → 三门 → provenance，四步固定顺序、不可拆、不可跳。
+//! 宪法 schema 校验 → 剥壳 → 门禁检查 → provenance，四步固定顺序、不可拆、不可跳。
 //! 生产 loader（server.rs 双 loader）与沙盒 loader（sandbox parse_draft_rules）
 //! 一律改调本函数——消灭「第二条装载路径」（B-3 四缺陷 A/B2 的制度根源）。
 //!
@@ -14,11 +14,14 @@
 //!
 //! 1. **宪法 schema 校验**（`evorule_rule_schema::validate_rule_set` / `validate_transform_list`）
 //! 2. **剥壳**（提取 `transform[]`；兼容带壳 rule_set 文档与裸 transform 数组两形态）
-//! 3. **三门检查**（[CON-L2-003] 三门不减，venue=Sandbox 同守）：
+//! 3. **门禁检查**（[CON-L2-003] 三门不减为下限，venue=Sandbox 同守）：
 //!    - tier 门：非 L2 携 enforce 拒（引擎级阻止权仅随治理链晋升的 L2 条目下发）
 //!    - discipline 门：DC-01..09 形态纪律（evorule-discipline crate）
 //!    - domain on_missing 门：domain 节点缺 on_missing 显式声明拒
-//! 4. **provenance**（[CON-S-003]）：来源指纹+三门记录+宪法版本，可序列化入审计
+//!    - 量纲登记门（随守恒不变量裁决立法增补）：transform 引用立法计算裁决指令
+//!      （conservation_check）须携带 metadata.formula_registry 结构合法登记——
+//!      「公式 → 量纲」登记为规则集的一部分，未登记拒装载
+//! 4. **provenance**（[CON-S-003]）：来源指纹+门禁记录+宪法版本，可序列化入审计
 //!
 //! # 门-钥配套（硬币两面，[CON-X-002]）
 //!
@@ -202,12 +205,15 @@ impl LoadContext {
     }
 }
 
-/// 三门通过记录（provenance 组成部分）
+/// 门禁通过记录（provenance 组成部分）
 #[derive(Debug, Copy, Clone, Serialize)]
 pub struct GatesPassed {
     pub tier_gate: bool,
     pub discipline_gate: bool,
     pub domain_on_missing_gate: bool,
+    /// 量纲登记门（立法计算裁决指令引用须携带 metadata.formula_registry
+    /// 结构合法登记；随守恒不变量裁决立法增补，三门不减为下限）
+    pub dimension_registry_gate: bool,
 }
 
 /// 装载结果（[CON-S-001]：engine_rules + provenance）
@@ -277,6 +283,7 @@ pub enum ConstitutionError {
     TierGate(FourPartError),
     DisciplineGate(FourPartError),
     DomainOnMissingGate(FourPartError),
+    DimensionRegistryGate(FourPartError),
     ProvenanceIncomplete(String),
 }
 
@@ -287,7 +294,8 @@ impl std::fmt::Display for ConstitutionError {
             | ConstitutionError::ShellUnrecognized(e)
             | ConstitutionError::TierGate(e)
             | ConstitutionError::DisciplineGate(e)
-            | ConstitutionError::DomainOnMissingGate(e) => write!(f, "{e}"),
+            | ConstitutionError::DomainOnMissingGate(e)
+            | ConstitutionError::DimensionRegistryGate(e) => write!(f, "{e}"),
             ConstitutionError::ProvenanceIncomplete(s) => {
                 write!(f, "[装载] provenance 不完整：{s}")
             }
@@ -407,6 +415,10 @@ fn annotate_part(e: ConstitutionError, idx: usize) -> ConstitutionError {
             f.violation.insert_str(0, &prefix);
             ConstitutionError::DomainOnMissingGate(f)
         }
+        ConstitutionError::DimensionRegistryGate(mut f) => {
+            f.violation.insert_str(0, &prefix);
+            ConstitutionError::DimensionRegistryGate(f)
+        }
         other => other,
     }
 }
@@ -492,10 +504,11 @@ fn load_one(
         )));
     }
 
-    // ── 步骤 3：三门检查（venue 不减免）──
+    // ── 步骤 3：门禁检查（tier/discipline/domain on_missing 三门不减 + 量纲登记门；venue 不减免）──
     tier_gate(&transform_arr, doc, ctx)?;
     discipline_gate(&transform_arr, ctx)?;
     domain_on_missing_gate(&transform_arr, ctx.l2_class)?;
+    dimension_registry_gate(&transform_arr, doc)?;
 
     // ── 步骤 4：provenance ──
     // 内容指纹（R4/[CON-S-003]）：对输入文档字节算 blake3（evorule-hash SSOT）。
@@ -514,6 +527,7 @@ fn load_one(
             tier_gate: true,
             discipline_gate: true,
             domain_on_missing_gate: true,
+            dimension_registry_gate: true,
         },
         constitution_version: CONSTITUTION_SCHEMA_VERSION,
         loaded_at_unix: now_unix(),
@@ -812,6 +826,161 @@ fn walk_eq_lt_domain(v: &Value, out: &mut Vec<DomainGateHit>) {
         }
         _ => {}
     }
+}
+
+// ============================================================================
+// 量纲登记门（立法计算裁决指令的装载期资格证明）
+// ============================================================================
+
+/// 立法计算裁决指令清单（裁决量的量纲语义由立法固定、可登记的指令类型；
+/// 随立法逐版登记，与 $schema 版本白名单同构——装载器只认识它认识的立法）。
+///
+/// band_check 不入清单：其裁决量（value/lo/hi）由调用方场景携带，量纲随场景
+/// 而定，无固定量纲可登记；conservation_check 的 drift_fp 由立法固定为无量纲
+/// 相对漂移比（定点 Integer 直传），可登记。
+const LEGISLATED_MEASUREMENT_INSTRUCTIONS: &[&str] = &["conservation_check"];
+
+/// SI 七基本量纲幂次向量长度（[L, M, T, I, Θ, N, J] 序，整数幂次）；
+/// 与 inference 族量纲服务出参（七元整数组）同构。
+const DIMENSION_VECTOR_LEN: usize = 7;
+
+/// 量纲登记最小正确样例（四段式第④段）
+const MINIMAL_DIMENSION_REGISTRY_ENTRY: &str = r#"{"metadata":{"formula_registry":[{"instruction_type":"conservation_check","formula":"|E_final − E_initial| / E_initial","dimensions":[0,0,0,0,0,0,0]}]}}"#;
+
+/// 递归 walk 整棵规则树，收集立法计算裁决指令的 instruction 域引用
+/// （`{"type":"instruction","instruction_type":…}` 节点），命中清单者入集
+/// （BTreeSet 保序，报错确定性）。
+fn walk_legislated_instruction_refs(v: &Value, out: &mut std::collections::BTreeSet<String>) {
+    match v {
+        Value::Array(items) => {
+            for it in items {
+                walk_legislated_instruction_refs(it, out);
+            }
+        }
+        Value::Object(m) => {
+            if m.get("type").and_then(Value::as_str) == Some("instruction") {
+                if let Some(t) = m.get("instruction_type").and_then(Value::as_str) {
+                    if LEGISLATED_MEASUREMENT_INSTRUCTIONS.contains(&t) {
+                        out.insert(t.to_string());
+                    }
+                }
+            }
+            for (_k, child) in m {
+                walk_legislated_instruction_refs(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 量纲登记门：transform 引用立法计算裁决指令时，文档必须携带
+/// metadata.formula_registry 且对每个被引用指令有结构合法登记。
+///
+/// # 管辖面（venue 不减免）
+///
+/// 全 venue 全 L2Class——量纲登记不是治理层级问题，而是「使用立法计算裁决
+/// 指令的资格证明」：谁用谁登记，宪法/约束/业务/沙盒草稿/API 提交同守。
+/// 裸数组形态无处携带 metadata 登记，引用即拒（fail-closed）。
+///
+/// # 诚实边界
+///
+/// 本门是**结构校验**（登记存在、形态合法、覆盖全部引用），不做公式量纲
+/// 推导的语义验证——公式右侧是否真具声明量纲属创作期职责（inference 族
+/// 公式量纲一致性验证服务）；装载期结构门+创作期语义验证合成完整量纲通路
+/// （确定性算力设计稿：装载时公式过门，「公式 → 量纲」登记为规则集的一部分）。
+///
+/// 登记条目合法形态：instruction_type 非空字符串 / formula 非空字符串 /
+/// dimensions 恰好七元素整数数组（[L,M,T,I,Θ,N,J] 序 SI 七基本量纲幂次）；
+/// instruction_type 登记唯一；登记集须覆盖全部被引用立法指令。
+fn dimension_registry_gate(transform_arr: &[Value], doc: &Value) -> Result<(), ConstitutionError> {
+    let mut referenced = std::collections::BTreeSet::new();
+    for rule in transform_arr {
+        walk_legislated_instruction_refs(rule, &mut referenced);
+    }
+    if referenced.is_empty() {
+        return Ok(()); // 未引用立法计算裁决指令：门无事可做
+    }
+    let refs_desc: Vec<&str> = referenced.iter().map(String::as_str).collect();
+    let Some(Value::Array(entries)) = doc.pointer("/metadata/formula_registry") else {
+        return Err(ConstitutionError::DimensionRegistryGate(four_part(
+            &format!(
+                "规则集引用立法计算裁决指令 [{}]，但缺装载期量纲登记 \
+                 （metadata.formula_registry 缺失或非数组）——「公式 → 量纲」登记 \
+                 是规则集的一部分，未登记的立法裁决指令拒装载",
+                refs_desc.join("、")
+            ),
+            "$.metadata.formula_registry（缺失）",
+            GUIDE_URL,
+            MINIMAL_DIMENSION_REGISTRY_ENTRY,
+        )));
+    };
+    let mut registered: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let loc = format!("$.metadata.formula_registry[{i}]");
+        let malformed = |why: String| {
+            ConstitutionError::DimensionRegistryGate(four_part(
+                &format!("量纲登记条目畸形：{why}"),
+                &loc,
+                GUIDE_URL,
+                MINIMAL_DIMENSION_REGISTRY_ENTRY,
+            ))
+        };
+        let Some(obj) = entry.as_object() else {
+            return Err(malformed("条目须为对象".to_string()));
+        };
+        let Some(it) = obj.get("instruction_type").and_then(Value::as_str) else {
+            return Err(malformed("instruction_type 缺失或非字符串".to_string()));
+        };
+        if it.is_empty() {
+            return Err(malformed("instruction_type 为空串".to_string()));
+        }
+        let Some(f) = obj.get("formula").and_then(Value::as_str) else {
+            return Err(malformed("formula 缺失或非字符串".to_string()));
+        };
+        if f.is_empty() {
+            return Err(malformed(
+                "formula 为空串（须写明被裁决量的公式）".to_string(),
+            ));
+        }
+        let Some(dims) = obj.get("dimensions").and_then(Value::as_array) else {
+            return Err(malformed("dimensions 缺失或非数组".to_string()));
+        };
+        if dims.len() != DIMENSION_VECTOR_LEN {
+            return Err(malformed(format!(
+                "dimensions 须为恰好 {DIMENSION_VECTOR_LEN} 元素的 [L,M,T,I,Θ,N,J] 幂次向量（实际 {} 元素）",
+                dims.len()
+            )));
+        }
+        for (j, d) in dims.iter().enumerate() {
+            if !d.is_i64() {
+                return Err(malformed(format!(
+                    "dimensions[{j}] 非整数（七分量幂次须为整数）"
+                )));
+            }
+        }
+        if registered.contains_key(it) {
+            return Err(malformed(format!(
+                "instruction_type \"{it}\" 重复登记（登记须唯一）"
+            )));
+        }
+        registered.insert(it, i);
+    }
+    for t in &referenced {
+        if !registered.contains_key(t.as_str()) {
+            let keys: Vec<&str> = registered.keys().copied().collect();
+            return Err(ConstitutionError::DimensionRegistryGate(four_part(
+                &format!(
+                    "规则集引用立法计算裁决指令 \"{t}\"，但量纲登记未覆盖 \
+                     （已登记 [{}]）——每个被引用的立法裁决指令都必须有登记",
+                    keys.join("、")
+                ),
+                "$.metadata.formula_registry",
+                GUIDE_URL,
+                MINIMAL_DIMENSION_REGISTRY_ENTRY,
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -1370,5 +1539,123 @@ mod tests {
         let err = load_rule_set_merged(&[]).expect_err("空部件清单应拒");
         assert!(matches!(err, ConstitutionError::SchemaViolation(_)));
         assert!(format!("{err}").contains("部件清单为空"));
+    }
+
+    // ===== 量纲登记门（立法计算裁决指令的装载期资格证明）=====
+
+    /// 构造引用 conservation_check 的最小带壳规则集
+    fn conservation_ref_rule_set() -> Value {
+        json!({
+            "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+            "kind": "rule_set", "id": "x.y.cons", "version": "0.1.0",
+            "metadata": { "title": "守恒裁决引用测试" },
+            "transform": [
+                { "type": "branch", "params": {
+                    "domain": { "type": "instruction", "instruction_type": "conservation_check" },
+                    "on_true": [], "on_false": []
+                }}
+            ]
+        })
+    }
+
+    #[test]
+    fn dimension_registry_valid_entry_passes() {
+        // 合法登记（七元整数幂次向量，无量纲相对漂移比）→ 四步全过且 provenance 留痕
+        let mut doc = conservation_ref_rule_set();
+        doc["metadata"]["formula_registry"] = json!([
+            {
+                "instruction_type": "conservation_check",
+                "formula": "|E_final − E_initial| / E_initial",
+                "dimensions": [0, 0, 0, 0, 0, 0, 0]
+            }
+        ]);
+        let ctx = LoadContext::business_file("x.json");
+        let loaded = load_rule_set(&doc, &ctx).expect("合法量纲登记应过四步");
+        assert!(loaded.provenance.gates.dimension_registry_gate);
+    }
+
+    #[test]
+    fn dimension_registry_missing_rejected() {
+        // 带壳文档缺登记 → 拒（四段式可读）
+        let doc = conservation_ref_rule_set();
+        let ctx = LoadContext::business_file("x.json");
+        let err = load_rule_set(&doc, &ctx).expect_err("引用立法裁决指令缺登记应拒");
+        assert!(matches!(err, ConstitutionError::DimensionRegistryGate(_)));
+        let msg = format!("{err}");
+        assert!(msg.contains("量纲登记"), "报错应点明量纲登记: {msg}");
+        assert!(msg.contains("正确形态"));
+
+        // 裸数组形态（无 metadata 可载登记）同拒——venue 不减免，fail-closed
+        let bare = doc["transform"].clone();
+        let err = load_rule_set(&bare, &LoadContext::api("probe"))
+            .expect_err("裸数组引用立法裁决指令应拒（无处登记）");
+        assert!(matches!(err, ConstitutionError::DimensionRegistryGate(_)));
+
+        // 不引用立法计算裁决指令的普通文档不受门管辖（无登记亦过）
+        let ctx = LoadContext::business_file("x.json");
+        load_rule_set(&valid_rule_set(), &ctx).expect("未引用立法裁决指令的文档不受量纲门管辖");
+    }
+
+    #[test]
+    fn dimension_registry_malformed_dimensions_rejected() {
+        let ctx = LoadContext::business_file("x.json");
+
+        // 六元（少一分量）
+        let mut doc = conservation_ref_rule_set();
+        doc["metadata"]["formula_registry"] = json!([
+            { "instruction_type": "conservation_check", "formula": "|ΔE|/E", "dimensions": [0, 0, 0, 0, 0, 0] }
+        ]);
+        let err = load_rule_set(&doc, &ctx).expect_err("六元 dimensions 应拒");
+        assert!(matches!(err, ConstitutionError::DimensionRegistryGate(_)));
+        assert!(
+            format!("{err}").contains("恰好 7"),
+            "报错应说明七元要求: {err}"
+        );
+
+        // 含浮点幂次（量纲幂次必须为整数）
+        let mut doc = conservation_ref_rule_set();
+        doc["metadata"]["formula_registry"] = json!([
+            { "instruction_type": "conservation_check", "formula": "|ΔE|/E", "dimensions": [0, 0, 0, 0, 0, 0, 0.5] }
+        ]);
+        let err = load_rule_set(&doc, &ctx).expect_err("浮点幂次应拒");
+        assert!(
+            format!("{err}").contains("非整数"),
+            "报错应说明整数要求: {err}"
+        );
+    }
+
+    #[test]
+    fn dimension_registry_bad_formula_and_duplicate_rejected() {
+        let ctx = LoadContext::business_file("x.json");
+
+        // formula 空串（登记须写明公式——「公式 → 量纲」登记为规则集的一部分）
+        let mut doc = conservation_ref_rule_set();
+        doc["metadata"]["formula_registry"] = json!([
+            { "instruction_type": "conservation_check", "formula": "", "dimensions": [0, 0, 0, 0, 0, 0, 0] }
+        ]);
+        let err = load_rule_set(&doc, &ctx).expect_err("空 formula 应拒");
+        assert!(format!("{err}").contains("formula 为空串"), "实际: {err}");
+
+        // 同一 instruction_type 重复登记（登记须唯一）
+        let mut doc = conservation_ref_rule_set();
+        doc["metadata"]["formula_registry"] = json!([
+            { "instruction_type": "conservation_check", "formula": "a", "dimensions": [0, 0, 0, 0, 0, 0, 0] },
+            { "instruction_type": "conservation_check", "formula": "b", "dimensions": [0, 0, 0, 0, 0, 0, 0] }
+        ]);
+        let err = load_rule_set(&doc, &ctx).expect_err("重复登记应拒");
+        assert!(format!("{err}").contains("重复登记"), "实际: {err}");
+
+        // 登记存在但未覆盖被引用指令（登记了别的指令）→ 覆盖性拒
+        let mut doc = conservation_ref_rule_set();
+        doc["metadata"]["formula_registry"] = json!([
+            { "instruction_type": "other_legislated_instruction", "formula": "x", "dimensions": [0, 0, 0, 0, 0, 0, 0] }
+        ]);
+        let err = load_rule_set(&doc, &ctx).expect_err("登记未覆盖引用应拒");
+        let msg = format!("{err}");
+        assert!(msg.contains("未覆盖"), "报错应说明覆盖性缺失: {msg}");
+        assert!(
+            msg.contains("conservation_check"),
+            "报错应点名缺失的指令: {msg}"
+        );
     }
 }
