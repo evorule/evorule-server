@@ -268,3 +268,126 @@ impl NativeService for FsmEquivalenceService {
 pub fn mk_fsm_equivalence() -> Arc<dyn NativeService> {
     Arc::new(FsmEquivalenceService)
 }
+
+// verification_fsm_deadlock
+// ============================================================================
+
+struct FsmDeadlockService;
+
+impl NativeService for FsmDeadlockService {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let m = fsm::parse_fsm(args, "")?;
+        let initials = usizes(&ints_array(args, "initial")?, "initial")?;
+        if initials.is_empty() {
+            return Err("initial 为空——至少须给一个初始状态".into());
+        }
+        for (i, &q) in initials.iter().enumerate() {
+            if q >= m.state_count {
+                return Err(format!("initial[{i}]={q} 超出状态域 [0,{})", m.state_count));
+            }
+        }
+        let (dead, pred, dist) = fsm::deadlock_states(&m, &initials);
+        let dead_json: Vec<JsonValue> =
+            dead.iter().map(|&q| JsonValue::Integer(q as i64)).collect();
+        let mut pairs: Vec<(&str, JsonValue)> = vec![
+            ("has_deadlock", JsonValue::Bool(!dead.is_empty())),
+            ("deadlock_states", JsonValue::array(dead_json)),
+        ];
+        if let Some(&t) = dead.first() {
+            // witness 到首个死锁态(BFS 前向序 = 最短步数;列表升序同号取最小)
+            let (start, word) = fsm::witness_path(&pred, t);
+            // t 必可达(dist[t] 恒有值,死锁判定内部不变量);防御式缺省不外泄
+            let steps = dist[t].unwrap_or(0);
+            let word_json: Vec<JsonValue> =
+                word.iter().map(|&s| JsonValue::Integer(s as i64)).collect();
+            let path_json: Vec<JsonValue> = {
+                let mut path = vec![JsonValue::Integer(start as i64)];
+                let mut cur = start;
+                for &s in &word {
+                    cur = m.transitions[cur][s];
+                    path.push(JsonValue::Integer(cur as i64));
+                }
+                path
+            };
+            pairs.push((
+                "witness",
+                JsonValue::object_from_pairs(&[
+                    ("state", JsonValue::Integer(t as i64)),
+                    ("steps", JsonValue::Integer(steps as i64)),
+                    ("start", JsonValue::Integer(start as i64)),
+                    ("word", JsonValue::array(word_json)),
+                    ("path", JsonValue::array(path_json)),
+                ]),
+            ));
+        }
+        pairs.push((
+            "note",
+            JsonValue::string(
+                "死锁=可达但从此无法到达任何接受态(卡死在非接受吸收域,零出边为其特例);不可达态不判定;witness 为到首个死锁态的最短路径;机器无接受态时全部可达态均为死锁(语言恒空)",
+            ),
+        ));
+        Ok(envelope(&pairs))
+    }
+}
+
+pub fn mk_fsm_deadlock() -> Arc<dyn NativeService> {
+    Arc::new(FsmDeadlockService)
+}
+
+// ============================================================================
+// verification_fsm_language_inclusion
+// ============================================================================
+
+struct FsmLanguageInclusionService;
+
+impl NativeService for FsmLanguageInclusionService {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        // 两台机器:前缀 a_/b_;各自初始状态恒为 0(契约,与等价判定同约定)
+        let a = fsm::parse_fsm(args, "a_").map_err(|e| format!("机器 A: {e}"))?;
+        let b = fsm::parse_fsm(args, "b_").map_err(|e| format!("机器 B: {e}"))?;
+        match fsm::language_inclusion(&a, &b)? {
+            None => Ok(envelope(&[
+                ("included", JsonValue::Bool(true)),
+                (
+                    "note",
+                    JsonValue::string(
+                        "乘积可达闭包无「A 接受而 B 拒绝」混合态=L(A)⊆L(B) 的完备判定;两机初始状态约定均为 0",
+                    ),
+                ),
+            ])),
+            Some(cx) => {
+                let word_json: Vec<JsonValue> = cx
+                    .word
+                    .iter()
+                    .map(|&s| JsonValue::Integer(s as i64))
+                    .collect();
+                let pa: Vec<JsonValue> = cx
+                    .path_a
+                    .iter()
+                    .map(|&q| JsonValue::Integer(q as i64))
+                    .collect();
+                let pb: Vec<JsonValue> = cx
+                    .path_b
+                    .iter()
+                    .map(|&q| JsonValue::Integer(q as i64))
+                    .collect();
+                Ok(envelope(&[
+                    ("included", JsonValue::Bool(false)),
+                    ("counterexample_word", JsonValue::array(word_json)),
+                    ("path_a", JsonValue::array(pa)),
+                    ("path_b", JsonValue::array(pb)),
+                    (
+                        "note",
+                        JsonValue::string(
+                            "counterexample_word 为 A 接受而 B 拒绝的反例词(乘积机 BFS 首达,最短);反例可机械复核:沿词 A 终态接受、B 终态拒绝",
+                        ),
+                    ),
+                ]))
+            }
+        }
+    }
+}
+
+pub fn mk_fsm_language_inclusion() -> Arc<dyn NativeService> {
+    Arc::new(FsmLanguageInclusionService)
+}
