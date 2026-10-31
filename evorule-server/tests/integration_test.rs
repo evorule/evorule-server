@@ -709,12 +709,16 @@ async fn test_externalization_violation_legislation() {
             .get("meta_compliance")
             .and_then(|m| m.get("externalization_breach"));
         assert_eq!(
-            breach.and_then(|b| b.get("domain")).and_then(|d| d.as_str()),
+            breach
+                .and_then(|b| b.get("domain"))
+                .and_then(|d| d.as_str()),
             Some("deterministic_compute"),
             "违规事实应落 meta_compliance.externalization_breach; snapshot={snapshot:?}"
         );
         assert_eq!(
-            breach.and_then(|b| b.get("phrase")).and_then(|p| p.as_str()),
+            breach
+                .and_then(|b| b.get("phrase"))
+                .and_then(|p| p.as_str()),
             Some("经计算")
         );
     }

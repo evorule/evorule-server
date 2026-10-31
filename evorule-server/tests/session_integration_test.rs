@@ -1801,8 +1801,7 @@ async fn test_externalization_violation_audit_chain() {
     )
     .await;
     assert!(
-        snap["payload"]["meta_compliance"]["externalization_breach"]
-            .is_null(),
+        snap["payload"]["meta_compliance"]["externalization_breach"].is_null(),
         "无装配面会话不得落外判违规（三条件判据零波及）: {snap}"
     );
 }
