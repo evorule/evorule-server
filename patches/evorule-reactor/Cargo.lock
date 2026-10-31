@@ -323,9 +323,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-audit-chain"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0ee9fea62d91497312e48a03c17fd1c9e1bce042d1c94a06f53896d2b48ae6f"
+checksum = "6a2d3685eda25b25b8b2722315a0bcdd8858960809dd632f8599e952de80a785"
 dependencies = [
  "blake3",
  "evorule-tcb",
@@ -350,9 +350,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-tcb"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64828872d8ca47dcf006b6cc57a94e643b1c296a7a4cd8d5a627cfaa74b320a7"
+checksum = "2dfad424aa307d7a5d3d3d6f3271022f5c804e2c96088a0ffa4b1a481f4daecb"
 
 [[package]]
 name = "fastrand"
@@ -1147,7 +1147,3 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[patch.unused]]
-name = "evorule-tcb"
-version = "0.8.4"

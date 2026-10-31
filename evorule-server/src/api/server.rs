@@ -13049,12 +13049,10 @@ pub async fn invoke_service_handler(
                         match resp.json::<serde_json::Value>().await {
                             // wasm-host 回落成功同样走 provenance 信封
                             // （registry 回落绑定=非宿主确定性执行体）
-                            Ok(value) if status.is_success() => Ok(Json(
-                                serde_json::json!({
-                                    "result": value,
-                                    "provenance": invoke_provenance(&api, &name),
-                                })
-                            )),
+                            Ok(value) if status.is_success() => Ok(Json(serde_json::json!({
+                                "result": value,
+                                "provenance": invoke_provenance(&api, &name),
+                            }))),
                             Ok(value) => Err((
                                 StatusCode::UNPROCESSABLE_ENTITY,
                                 Json(serde_json::json!({ "error": value })),

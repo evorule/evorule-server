@@ -901,7 +901,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -936,9 +936,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-audit-chain"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0ee9fea62d91497312e48a03c17fd1c9e1bce042d1c94a06f53896d2b48ae6f"
+checksum = "6a2d3685eda25b25b8b2722315a0bcdd8858960809dd632f8599e952de80a785"
 dependencies = [
  "blake3",
  "evorule-tcb",
@@ -1058,9 +1058,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-discipline"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45fdf81481ef0e0a8563c5c742d0839875a53efec295fc80b719a72a857421bd"
+checksum = "b2c7bfcd6d97a648fd31eed567d4703b218c1d57fa58a2f2b96198a15009dcc4"
 dependencies = [
  "evorule-reactor",
  "evorule-tcb",
@@ -1146,9 +1146,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-governance"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27d5377c3a939233d4fa81b46aed7b50729828810301145a55b0e4b7ee8b409a"
+checksum = "47abcb2162cdc8e0978eb58f481d21aac6524a2e2b2607b6f960f47adfedf944"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-reactor"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1564,7 +1564,9 @@ version = "0.10.0"
 
 [[package]]
 name = "evorule-tcb"
-version = "0.10.0"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dfad424aa307d7a5d3d3d6f3271022f5c804e2c96088a0ffa4b1a481f4daecb"
 
 [[package]]
 name = "evorule-template-services"
@@ -2805,7 +2807,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3284,7 +3286,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3672,7 +3674,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4278,7 +4280,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

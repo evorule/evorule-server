@@ -1,7 +1,7 @@
 [package]
 name = "evorule-reactor"
-# vendored patch 基线 v0.10.0（主仓 2026-10-28 换基重铸）；差异面与删除条件见 README-PATCH.md
-version = "0.10.0"
+# vendored patch 对齐 v0.11.0（2026-10-31 随 tcb 补丁退役批换锚：主仓 v0.11.0 起内核消费走注册表，本补丁版本随线对齐；独有面与删除条件见 README-PATCH.md）
+version = "0.11.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 authors = ["EvoRule Project"]
@@ -33,10 +33,10 @@ exclude = [
 
 
 [dependencies]
-evorule-tcb = { version = "0.10.0" }
+evorule-tcb = { version = "0.11.0" }
 # SC3-a 方案乙：主仓 0.10.0 的 fact.rs/hash.rs 是 audit-chain 薄转发层，
 # 本 vendored 基线随迁（audit-chain 0.10.0 已发布注册表，直接 version 解析）
-evorule-audit-chain = { version = "0.10.0" }
+evorule-audit-chain = { version = "0.11.0" }
 tracing = "0.1"
 serde_json = "1.0" # P0-1: WAL 持久化序列化（Fact ↔ JSON）
 # 审计链哈希（两套 WAL 合并：哈希链提升到 tier1）
@@ -131,14 +131,10 @@ path = "verification/differential_test.rs"
 [[test]]
 name = "ssot_fact_contract_gate"
 
-# 独立测试态 tcb 源重定向：本目录自测（空 workspace 表 + 独立 lock）下
-# `evorule-tcb` 按纯 version req "0.10.0" 解析注册表 0.10.0 亦可编译（reactor
-# 自测不触 in 域——in 域在 tcb dispatch 层，reactor 不消费）；但为与根仓消费
-# 形态对齐（根仓 [patch.crates-io] 同时重定向 tcb 到 ../evorule-tcb 副本），
-# 独立自测态同样指向仓内 vendored 副本，保证自测所见 = 根仓运行所见。
-# 被根仓 [patch.crates-io] 以本目录为补丁源消费时本节不生效（patch 不嵌套）。
-[patch.crates-io]
-evorule-tcb = { path = "../evorule-tcb" }
+# 独立测试态 tcb 源：本目录自测（空 workspace 表 + 独立 lock）下 `evorule-tcb`
+# 按纯 version req 解析注册表版本（v0.11.0 起；reactor 自测不触 in 域——in 域
+# 在 tcb dispatch 层，reactor 不消费）。历史上的仓内 vendored 副本重定向已随
+# 该副本退役（主仓 v0.11.0 收编 in 域后）摘除，独立自测与根仓消费同源注册表。
 
 [package.metadata.kani]
 # CI 验证列表 (仅限能在 CI 预算内稳定通过的 proof; 与 .github/workflows/kani.yml

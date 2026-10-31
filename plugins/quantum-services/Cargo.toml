@@ -15,8 +15,8 @@ workspace = true
 
 [dependencies]
 # 核心层（主仓已发布 crates.io,纯 version——接入铁律:不依赖主仓源码路径）
-evorule-tcb = { version = "0.10" }
-evorule-reactor = { version = "0.10" }
+evorule-tcb = { version = "0.11" }
+evorule-reactor = { version = "0.11" }
 # 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)
 evorule-plugin-kit = { path = "../../core/plugin-kit" }
 # 精确数值原语复用(定点/有理数/舍入/值解析/ℏ 派生,单源不漂移)

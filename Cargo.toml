@@ -102,4 +102,3 @@ codegen-units = 1
 # patches/evorule-governance 暂留参照，后续清理批删除。
 [patch.crates-io]
 evorule-reactor = { path = "patches/evorule-reactor" }
-evorule-tcb = { path = "patches/evorule-tcb" }

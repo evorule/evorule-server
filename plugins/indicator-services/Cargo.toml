@@ -9,8 +9,8 @@ publish = false
 
 [dependencies]
 # 核心层（主仓 0.8.0 已发布 crates.io，纯 version）
-evorule-tcb = { version = "0.10" }
-evorule-reactor = { version = "0.10" }
+evorule-tcb = { version = "0.11" }
+evorule-reactor = { version = "0.11" }
 # 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)
 evorule-plugin-kit = { path = "../../core/plugin-kit" }
 serde_json = "1"
