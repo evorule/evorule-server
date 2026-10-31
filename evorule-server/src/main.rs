@@ -856,6 +856,83 @@ mod parameters_contract_tests {
             "demo 插件本批 parameters 应为 None"
         );
     }
+
+    /// 契约门禁升格（确定性族全覆盖）：indicator/geometry/physics/template
+    /// 四族 14 项声明须全部携带 parameters 契约并经 [`plugin_service_infos`]
+    /// 解析为 JSON 对象（/api/services 同源数据）——契约在位性由约定升格为
+    /// 守卫，防止「新增确定性服务漏契约」类漂移再现；inference 14 项断言
+    /// 与 demo 的 None 现状断言保留于既有测试。
+    #[test]
+    fn deterministic_families_carry_parsed_parameters_contract() {
+        const EXPECTED: &[(&str, usize)] = &[
+            ("indicator-services", 4),
+            ("geometry-services", 6),
+            ("physics-services", 3),
+            ("template-services", 1),
+        ];
+        for (plugin_id, expected_count) in EXPECTED {
+            let def = PLUGIN_DEFS
+                .iter()
+                .find(|p| p.id == *plugin_id)
+                .unwrap_or_else(|| panic!("PLUGIN_DEFS 应含 {plugin_id}"));
+            let infos = plugin_service_infos(def);
+            assert_eq!(
+                infos.len(),
+                *expected_count,
+                "{plugin_id} 声明表应为 {expected_count} 项"
+            );
+            for info in &infos {
+                let params = info
+                    .parameters
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("服务 {} 缺 parameters 契约", info.name));
+                assert_eq!(
+                    params.get("type").and_then(|v| v.as_str()),
+                    Some("object"),
+                    "服务 {} 契约顶层须为 object",
+                    info.name
+                );
+                assert!(
+                    params
+                        .get("properties")
+                        .map(|v| v.is_object())
+                        .unwrap_or(false),
+                    "服务 {} 契约缺 properties",
+                    info.name
+                );
+                assert!(
+                    params
+                        .get("required")
+                        .map(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+                        .unwrap_or(false),
+                    "服务 {} 契约缺非空 required 数组",
+                    info.name
+                );
+            }
+        }
+        // 抽样断言：indicator_sma 的 window 为可选整数（series 必填）
+        let sma = PLUGIN_DEFS
+            .iter()
+            .find(|p| p.id == "indicator-services")
+            .map(|def| {
+                plugin_service_infos(def)
+                    .into_iter()
+                    .find(|s| s.name == "indicator_sma")
+                    .expect("应有 indicator_sma")
+            })
+            .expect("PLUGIN_DEFS 应含 indicator-services");
+        let params = sma.parameters.as_ref().unwrap();
+        assert_eq!(
+            params
+                .pointer("/properties/window/type")
+                .and_then(|v| v.as_str()),
+            Some("integer")
+        );
+        assert_eq!(
+            params.pointer("/required/0").and_then(|v| v.as_str()),
+            Some("series")
+        );
+    }
 }
 
 /// 进程内插件登记表(声明序即挂载序与回落链序)。

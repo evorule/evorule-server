@@ -109,21 +109,27 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "indicator_sma",
         sensitive: false,
         description: "简单移动平均 SMA(窗口 N,pandas rolling(N).mean() 语义,warmup 期 null)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"series":{"type":"array","items":{"type":["number","string"]},"description":"数值序列,元素为数字或数字字符串,如 [10.5, 11.2];非空且不超过 100000 点,NaN/Infinity 显式拒绝"},"window":{"type":"integer","minimum":1,"description":"可选,窗口 N,缺省 5,取值 [1,100000] 内整数;窗口大于数据长度时前置位输出 null(warmup 语义),全 null 时状态为 undetermined"}},"required":["series"]}"#,
+        ),
         make: mk_sma,
     },
     NativeServiceDef {
         name: "indicator_ema",
         sensitive: false,
         description: "指数移动平均 EMA(span N,pandas ewm(span=N, adjust=False) 语义,递推逐位对齐)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"series":{"type":"array","items":{"type":["number","string"]},"description":"数值序列,元素为数字或数字字符串,如 [10.5, 11.2];非空且不超过 100000 点,NaN/Infinity 显式拒绝"},"span":{"type":"integer","minimum":1,"description":"可选,平滑跨度 span,缺省 5,取值 [1,100000] 内整数;pandas ewm(span=N, adjust=False) 递推语义"}},"required":["series"]}"#,
+        ),
         make: mk_ema,
     },
     NativeServiceDef {
         name: "indicator_macd",
         sensitive: false,
         description: "MACD 快慢线与柱(默认 12/26/9,三组 ewm(span, adjust=False) 组合)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"series":{"type":"array","items":{"type":["number","string"]},"description":"数值序列,元素为数字或数字字符串,如 [10.5, 11.2];非空且不超过 100000 点,NaN/Infinity 显式拒绝"},"fast":{"type":"integer","minimum":1,"description":"可选,快线 EMA 周期,缺省 12"},"slow":{"type":"integer","minimum":1,"description":"可选,慢线 EMA 周期,缺省 26,须大于 fast,否则报错"},"signal_period":{"type":"integer","minimum":1,"description":"可选,信号线 EMA 周期,缺省 9"}},"required":["series"]}"#,
+        ),
         make: mk_macd,
     },
     NativeServiceDef {
@@ -131,7 +137,9 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         sensitive: false,
         description:
             "RSI(默认 14,Wilder 平滑 ewm(alpha=1/N, adjust=False),分类语义与参考实现逐分支对齐)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"series":{"type":"array","items":{"type":["number","string"]},"description":"数值序列,元素为数字或数字字符串,如 [10.5, 11.2];非空且不超过 100000 点,NaN/Infinity 显式拒绝"},"period":{"type":"integer","minimum":2,"description":"可选,平均周期,缺省 14,最小 2;Wilder 平滑 ewm(alpha=1/N, adjust=False) 语义"}},"required":["series"]}"#,
+        ),
         make: mk_rsi,
     },
 ];

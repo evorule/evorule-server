@@ -85,42 +85,54 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "geometry_collision_check",
         sensitive: false,
         description: "几何碰撞检测(零件两两相交判定,bbox/圆/多边形,触即算,确定性)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"parts":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"零件对象数组,每项 {id: 非空唯一标识, shape: 形状对象, z?: 数值逻辑层};shape 三形态: {type:bbox,x,y,w,h} / {type:circle,cx,cy,r} / {type:polygon,points:[[x,y],...] 且 ≥3 点};绘制序=数组下标;碰撞语义: 两两距离 ≤ ε 即触,多报不漏报"}},"required":["parts"]}"#,
+        ),
         make: mk_collision_check,
     },
     NativeServiceDef {
         name: "geometry_clearance_check",
         sensitive: false,
         description: "几何间隙检查(零件两两最小距离vs阈值,违规清单+全局最小,宽容方向容差,确定性)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"parts":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"零件对象数组,每项 {id: 非空唯一标识, shape: 形状对象, z?: 数值逻辑层};shape 三形态: {type:bbox,x,y,w,h} / {type:circle,cx,cy,r} / {type:polygon,points:[[x,y],...] 且 ≥3 点};绘制序=数组下标"},"min_clearance":{"type":"number","minimum":0,"description":"间隙下限,非负数值,与坐标同单位;判定取宽容方向: gap ≥ 限值−ε 视为达标"}},"required":["parts","min_clearance"]}"#,
+        ),
         make: mk_clearance_check,
     },
     NativeServiceDef {
         name: "geometry_occlusion_check",
         sensitive: false,
         description: "几何遮挡序检查(重叠零件绘制序vs声明z层,画家算法语义,确定性)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"parts":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"零件对象数组,每项 {id: 非空唯一标识, shape: 形状对象, z?: 数值逻辑层};shape 三形态: {type:bbox,x,y,w,h} / {type:circle,cx,cy,r} / {type:polygon,points:[[x,y],...] 且 ≥3 点};绘制序=数组下标;遮挡检查要求全部零件声明 z(画家算法逻辑层高,非空间坐标),缺失即拒"}},"required":["parts"]}"#,
+        ),
         make: mk_occlusion_check,
     },
     NativeServiceDef {
         name: "geometry_iso_project",
         sensitive: false,
         description: "等距投影(三维点集→屏幕坐标,方位角/仰角/视口适配,契约化变换,确定性)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"points":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":1,"maxItems":65536,"description":"三维点数组 [[x,y,z],...],至少 1 点"},"azimuth_deg":{"type":"number","minimum":0,"maximum":360,"description":"可选,等距投影方位角,缺省 45"},"elevation_deg":{"type":"number","minimum":0,"maximum":90,"description":"可选,仰角,缺省 30"},"fit":{"type":"object","description":"可选,视口适配对象 {width: 正数, height: 正数, pad?: ≥0 且 2·pad < min(width,height),缺省 0};缺省不适配(scale=1, 零偏移)"}},"required":["points"]}"#,
+        ),
         make: mk_iso_project,
     },
     NativeServiceDef {
         name: "geometry_tube_route",
         sensitive: false,
         description: "管路走线校核(转折点序列→段长/转角/弯径切线需求,弯径超限违规,确定性)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"waypoints":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"minItems":2,"maxItems":1024,"description":"三维转折点数组 [[x,y,z],...],至少 2 点;相邻转折点距离须大于 ε,零长段拒绝"},"min_bend_radius":{"type":"number","minimum":0,"description":"可选,弯径下限,数值 ≥0;提供时逐转角产出弯径违规判定(bend_exceeds_leg),缺省不判弯径"}},"required":["waypoints"]}"#,
+        ),
         make: mk_tube_route,
     },
     NativeServiceDef {
         name: "geometry_figure_audit",
         sensitive: false,
         description: "图样场景审计(棱柱/管路成对间隙下界+端点承托,保守方向声明,确定性)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"solids":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"实体对象数组,每项 {id: 非空唯一, kind: prism|tube};prism 形态含 points=[[x,y],...] 且 ≥3 顶点 + base/top(top−base 须大于 ε);tube 形态含 waypoints=[[x,y,z],...] ≥2 点 + radius ≥0;管路零长段拒绝"},"min_clearance":{"type":"number","minimum":0,"description":"可选,实体对间隙下限,数值 ≥0;缺省仅报告实际间隙不判限;间隙产出为保守下界(gap_semantics=lower_bound,下界达标即真达标,下界不足须人工复核)"},"require_support":{"type":"boolean","description":"可选,缺省 false;true 时启用管端支撑判定,无支撑端产出 unsupported_end 违规"}},"required":["solids"]}"#,
+        ),
         make: mk_figure_audit,
     },
 ];

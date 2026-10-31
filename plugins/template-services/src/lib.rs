@@ -57,7 +57,9 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
     sensitive: false,
     description:
         "模板渲染(上下文+模板→JSON/Markdown/纯文本,{{}} 家族语法,if/for 最小集,确定性纯函数)",
-    parameters: None,
+    parameters: Some(
+        r#"{"type":"object","properties":{"template":{"type":"string","minLength":1,"description":"模板字符串,{{path}} 变量替换+if/for 最小控制流;空串拒绝,超执行预算报错"},"context":{"type":"object","description":"可选,模板变量取值来源对象,缺省空对象;时间/随机等非确定量须由调用方作为显式值放入(禁内置时钟)"},"format":{"type":"string","enum":["text","markdown","json"],"description":"可选,输出格式,缺省 text;json 时渲染产物额外做合法性校验,不合法即报错"}},"required":["template"]}"#,
+    ),
     make: mk_template_render,
 }];
 

@@ -107,21 +107,27 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "physics_simulate",
         sensitive: false,
         description: "确定性物理仿真推进(刚体+辛积分器,vendored rpsm-core 内核)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"bodies":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":64,"description":"刚体数组,每项 {mass: >0 数值, pos: [x,y,z], vel: [x,y,z], radius?: ≥0, drag?: ≥0, friction?: ≥0};高级内核字段(hinge/joint/double_well 等)服务面不开放"},"dt":{"type":"number","exclusiveMinimum":0,"maximum":1,"description":"仿真步长,数值 (0,1]"},"steps":{"type":"integer","minimum":1,"maximum":100000,"description":"步数,整数 [1,100000],确定性执行预算保护"},"gravity":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3,"description":"可选,均匀重力场 [x,y,z],缺省 [0,-9.81,0]"},"integrator_order":{"type":"integer","enum":[1,2],"description":"可选,积分器阶数: 1=辛欧拉, 2=速度 Verlet,缺省 1"},"restitution":{"type":"number","minimum":0,"maximum":1,"description":"可选,碰撞恢复系数,缺省 0.8"}},"required":["bodies","dt","steps"]}"#,
+        ),
         make: mk_simulate,
     },
     NativeServiceDef {
         name: "physics_energy",
         sensitive: false,
         description: "物理系统总机械能计算(确定性)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"bodies":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":64,"description":"刚体数组,每项 {mass: >0 数值, pos: [x,y,z], vel: [x,y,z], radius?: ≥0, drag?: ≥0, friction?: ≥0};高级内核字段(hinge/joint/double_well 等)服务面不开放"},"grav_band":{"type":"object","description":"可选,重力带对象 {lo, hi}(数值):分层势场,带内受重力、带外重力归零;提供时能量核算按重力带势场"},"gravity":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3,"description":"可选,均匀重力场 [x,y,z],缺省 [0,-9.81,0]"},"integrator_order":{"type":"integer","enum":[1,2],"description":"可选,积分器阶数: 1=辛欧拉, 2=速度 Verlet,缺省 1"},"restitution":{"type":"number","minimum":0,"maximum":1,"description":"可选,碰撞恢复系数,缺省 0.8"}},"required":["bodies"]}"#,
+        ),
         make: mk_energy,
     },
     NativeServiceDef {
         name: "physics_grav_band",
         sensitive: false,
         description: "有界重力带(分层势场)仿真推进与逃逸判定(确定性)",
-        parameters: None,
+        parameters: Some(
+            r#"{"type":"object","properties":{"bodies":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":64,"description":"刚体数组,每项 {mass: >0 数值, pos: [x,y,z], vel: [x,y,z], radius?: ≥0, drag?: ≥0, friction?: ≥0};高级内核字段(hinge/joint/double_well 等)服务面不开放"},"grav_band":{"type":"object","description":"重力带对象 {lo, hi}(数值):带内受重力、带外重力归零(可逃逸);出参含逐体 escaped 判定"},"gravity":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3,"description":"可选,均匀重力场 [x,y,z],缺省 [0,-9.81,0]"},"integrator_order":{"type":"integer","enum":[1,2],"description":"可选,积分器阶数: 1=辛欧拉, 2=速度 Verlet,缺省 1"},"restitution":{"type":"number","minimum":0,"maximum":1,"description":"可选,碰撞恢复系数,缺省 0.8"}},"required":["bodies","grav_band"]}"#,
+        ),
         make: mk_grav_band,
     },
 ];
