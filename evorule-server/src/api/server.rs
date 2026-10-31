@@ -3169,6 +3169,16 @@ impl SessionApi {
         }
         let is_knowledge = has_knowledge;
 
+        // ⓪-b 发布签名与信任策略（来源认证面）：缺省 enforce（无签名/未知签名者/
+        // 验签失败皆拒收），warn=显式迁移档（无签名放行并留痕，坏签名仍硬拒）。
+        // 验签载荷=包的 content hash 字符串（运输稳定，接收方重算即可验）。
+        let publishers = crate::api::bundles::TrustedPublishers::load()?;
+        crate::api::bundles::verify_signature_policy(
+            bundle,
+            &crate::api::bundles::bundle_signature_policy(),
+            &publishers,
+        )?;
+
         // ① 6 项硬校验（schema → 防篡改 → 版本链 → 符号三方一致/领域 schema 强校验
         //    → 版本解析 → 闸门一证据）。Q12 D3：Knowledge 条目经 resolver 做领域
         //    schema 强校验（执行侧注册表 = `{knowledge_dir}/domain_schemas/*.json`，
@@ -19512,6 +19522,7 @@ mod tests {
                 content_hash: String::new(),
                 hash_algo: "blake3".into(),
             },
+            publish_signature: None,
         };
         bundle.audit.content_hash = bundle.compute_content_hash();
         // 篡改条目内容但不重算哈希 → 防篡改校验失败
@@ -19643,6 +19654,7 @@ mod tests {
                 content_hash: String::new(),
                 hash_algo: "blake3".into(),
             },
+            publish_signature: None,
         };
         bundle.audit.content_hash = bundle.compute_content_hash();
         bundle

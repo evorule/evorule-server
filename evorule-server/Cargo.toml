@@ -57,6 +57,7 @@ evorule-discipline = { version = "0.12" }
 
 # 快照包共享校验（历史批次 集成契约；6 项校验链 + 逐条 Schema 门禁 + 原子落盘）
 evorule-bundle = { version = "0.6.0" }
+ed25519-dalek = "2"
 # 上移为生产依赖（自 dev-dependencies）：应用凭据 key_hash 必须
 # 统一走 evorule-hash（族 B 哈希纪律，禁自写 blake3），存储字段带 blake3: 前缀
 evorule-hash = "0.2.0"
@@ -184,7 +185,7 @@ tower = { version = "0.5", features = ["util"] }
 # [patch."https://gitee.com/evorule/evorule-rule.git"]
 # evorule-rule = { path = "../../evorule-rule" }
 # 待 evorule-rule 发版 crates.io 后可切换为 version 依赖进一步简化。
-evorule-rule = { git = "https://gitee.com/evorule/evorule-rule.git", rev = "ba70271b903b767eb025370cb220f0a3ec819661" }
+evorule-rule = { git = "https://gitee.com/evorule/evorule-rule.git", rev = "716097dbe15586287b9606eef8407cdf3cf70278" }
 
 [features]
 # H6: metrics feature 已移除（Prometheus 实现始终启用，由 metrics_impl.rs 提供）

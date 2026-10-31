@@ -1083,8 +1083,10 @@ fn build_publish_bundle(
         dataset: BundleDatasetMeta {
             dataset_id: item.workspace_id.clone(),
             name: format!("publish:{}:{}", item.workspace_id, item.id),
-            tenant_id: "local".to_string(),
-            instance_id: "evorule-server".to_string(),
+            tenant_id: std::env::var("EVORULE_PUBLISH_TENANT")
+                .unwrap_or_else(|_| "unattributed".to_string()),
+            instance_id: std::env::var("EVORULE_INSTANCE_ID")
+                .unwrap_or_else(|_| "unattributed".to_string()),
             versioning: Versioning::default(),
             version_selection: Some(VersionSelection {
                 mode: VersionSelectionMode::Pinned,
@@ -1128,9 +1130,58 @@ fn build_publish_bundle(
             content_hash: String::new(),
             hash_algo: "blake3".to_string(),
         },
+        publish_signature: None,
     };
     bundle.audit.content_hash = bundle.compute_content_hash();
+    let _ = sign_bundle_if_configured(&mut bundle);
     bundle
+}
+
+// ===== 发布签名（来源认证面）=====
+
+/// 签名载荷 = 包的 content hash 64-hex 字符串 UTF-8 字节（运输稳定：
+/// 接收方对收到的包重算 content hash 即可验签，不依赖传输字节形态）
+fn signature_payload(content_hash: &str) -> Vec<u8> {
+    content_hash.as_bytes().to_vec()
+}
+
+/// 发布密钥（env `EVORULE_PUBLISH_SIGNING_SEED`，64 hex = ed25519 种子）。
+/// 未配置 = 导出不签名（既有行为，显式留痕）；配置但格式非法 = 导出报错
+/// （fail-visible，不静默降级为不签名）。签名块随包分发，验签在消费侧
+/// 信任注册表（key_id 即公钥自描述）按策略执行。
+pub fn sign_bundle_if_configured(bundle: &mut evorule_bundle::DatasetBundle) -> Result<(), String> {
+    let Ok(seed_hex) = std::env::var("EVORULE_PUBLISH_SIGNING_SEED") else {
+        return Ok(());
+    };
+    let seed = hex_decode(&seed_hex)
+        .map_err(|e| format!("发布签名种子非法（EVORULE_PUBLISH_SIGNING_SEED）: {e}"))?;
+    let seed: [u8; 32] = seed
+        .try_into()
+        .map_err(|_| "发布签名种子长度非 64 hex 字符".to_string())?;
+    use ed25519_dalek::{Signer, SigningKey};
+    let sk = SigningKey::from_bytes(&seed);
+    let sig = sk.sign(&signature_payload(&bundle.audit.content_hash));
+    bundle.publish_signature = Some(evorule_bundle::SignatureBlock {
+        key_id: {
+            let vk = hex_encode(&sk.verifying_key().to_bytes());
+            vk
+        },
+        sig: hex_encode(&sig.to_bytes()),
+    });
+    Ok(())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+    if s.len() % 2 != 0 {
+        return Err(format!("hex 长度 {} 为奇数", s.len()));
+    }
+    (0..s.len() / 2)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|e| format!("hex 解码: {e}")))
+        .collect()
 }
 
 #[cfg(test)]

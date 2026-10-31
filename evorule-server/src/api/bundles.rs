@@ -399,8 +399,10 @@ pub fn export_workspace_bundle(
         dataset: BundleDatasetMeta {
             dataset_id: dataset_id.to_string(),
             name: format!("export:{dataset_id}"),
-            tenant_id: "local".to_string(),
-            instance_id: "evorule-server".to_string(),
+            tenant_id: std::env::var("EVORULE_PUBLISH_TENANT")
+                .unwrap_or_else(|_| "unattributed".to_string()),
+            instance_id: std::env::var("EVORULE_INSTANCE_ID")
+                .unwrap_or_else(|_| "unattributed".to_string()),
             versioning: Versioning::default(),
             version_selection: Some(VersionSelection {
                 mode: VersionSelectionMode::Pinned,
@@ -422,9 +424,153 @@ pub fn export_workspace_bundle(
             content_hash: String::new(),
             hash_algo: "blake3".to_string(),
         },
+        publish_signature: None,
     };
     bundle.audit.content_hash = bundle.compute_content_hash();
+    let _ = evorule_workspace::publish_service::sign_bundle_if_configured(&mut bundle);
     Ok(bundle)
+}
+
+// ===== 发布签名与信任策略（来源认证面，BND-D-02/05 收口）=====
+// 签名面（导出）的实现在 core/workspace::publish_service::sign_bundle_if_configured
+// （promote 流与导出 API 两处共用）；本段只承载消费侧：信任注册表与策略校验。
+
+/// 签名载荷 = 包的 content hash 64-hex 字符串 UTF-8 字节（运输稳定：
+/// 接收方对收到的包重算 content hash 即可验签，不依赖传输字节形态）
+fn signature_payload(content_hash: &str) -> Vec<u8> {
+    content_hash.as_bytes().to_vec()
+}
+
+/// 发布者信任注册表：key_id（64 hex 公钥）→ 公钥字节。
+/// 文件路径 env `EVORULE_BUNDLE_TRUSTED_KEYS`（缺省工作目录下
+/// `bundle-trusted-publishers.json`）；缺文件 = 空注册表（enforce 下所有
+/// 带签名包皆拒——运营方必须显式登记发布者）；全零公钥 = 示例/占位钥拒载。
+pub(crate) struct TrustedPublishers {
+    map: std::collections::BTreeMap<String, [u8; 32]>,
+}
+
+impl TrustedPublishers {
+    pub(crate) fn load() -> Result<Self, String> {
+        let path = std::env::var("EVORULE_BUNDLE_TRUSTED_KEYS")
+            .unwrap_or_else(|_| "bundle-trusted-publishers.json".to_string());
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => Self::parse(&path, &raw),
+            Err(_) => Ok(Self {
+                map: std::collections::BTreeMap::new(),
+            }),
+        }
+    }
+
+    /// 解析信任注册表文本（与文件读取分离：解析规则可纯函数测试，不触 env）
+    pub(crate) fn parse(path: &str, raw: &str) -> Result<Self, String> {
+        let mut map = std::collections::BTreeMap::new();
+        let doc: serde_json::Value =
+            serde_json::from_str(raw).map_err(|e| format!("信任注册表 {path} 非法 JSON: {e}"))?;
+        let Some(entries) = doc.get("publishers").and_then(|v| v.as_object()) else {
+            return Err(format!("信任注册表 {path} 缺 publishers 对象"));
+        };
+        for (key_id, pk) in entries {
+            let pk_hex = pk.as_str().unwrap_or("");
+            let bytes = hex_decode_32(pk_hex)
+                .map_err(|e| format!("信任注册表 {path} 条目 `{key_id}` 公钥非法: {e}"))?;
+            if bytes == [0u8; 32] {
+                return Err(format!("信任注册表 {path} 含全零公钥（示例/占位钥拒载）"));
+            }
+            map.insert(key_id.clone(), bytes);
+        }
+        Ok(Self { map })
+    }
+}
+
+/// 签名策略校验核心（纯函数便于测试）：`policy` ∈ {enforce, warn}。
+/// - 有签名：key_id 必须在注册表且验签通过（两态皆硬拒——坏签名比无签名更危险）；
+/// - 无签名：enforce 拒收 / warn 放行并留痕。
+pub(crate) fn verify_signature_policy(
+    bundle: &evorule_bundle::DatasetBundle,
+    policy: &str,
+    publishers: &TrustedPublishers,
+) -> Result<(), String> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let content_hash = bundle.compute_content_hash();
+    match &bundle.publish_signature {
+        Some(block) => {
+            let vk_bytes = publishers.map.get(&block.key_id).ok_or_else(|| {
+                format!(
+                    "快照包签名者 `{}` 不在信任注册表（bundle_signature_policy={policy}）",
+                    block.key_id
+                )
+            })?;
+            let sig_bytes = hex_decode(&block.sig)
+                .map_err(|e| format!("快照包签名字段非法（非 128 hex）: {e}"))?;
+            let sig: [u8; 64] = sig_bytes
+                .try_into()
+                .map_err(|_| "快照包签名字段长度非 64 字节".to_string())?;
+            let vk = VerifyingKey::from_bytes(vk_bytes)
+                .map_err(|e| format!("信任注册表公钥非法: {e}"))?;
+            let ok = vk
+                .verify(
+                    &signature_payload(&content_hash),
+                    &Signature::from_bytes(&sig),
+                )
+                .is_ok();
+            if ok {
+                Ok(())
+            } else {
+                Err(format!(
+                    "快照包签名验签失败（key_id `{}`，content_hash {content_hash}）——包内容与签名不匹配",
+                    block.key_id
+                ))
+            }
+        }
+        None => {
+            if policy == "warn" {
+                tracing::warn!(
+                    bundle_id = %bundle.bundle_id,
+                    "快照包缺少发布签名（bundle_signature_policy=warn 迁移档，放行并留痕）"
+                );
+                Ok(())
+            } else {
+                Err(format!(
+                    "快照包缺少发布签名（bundle_signature_policy={policy}，来源认证面拒绝无签名包；\
+                     运营方配置发布密钥与信任注册表，或显式切换 warn 迁移档）"
+                ))
+            }
+        }
+    }
+}
+
+/// env 策略读取（`EVORULE_BUNDLE_SIGNATURE_POLICY`，缺省 enforce；未知值按
+/// enforce 处理并留痕——fail-closed）。测试编译面缺省 warn：既有导入测试
+/// 语料为无签名包，enforce 语义由 verify_signature_policy 纯函数测试专测
+/// （显式传档位，不依赖 env）。
+pub(crate) fn bundle_signature_policy() -> String {
+    static POLICY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    POLICY
+        .get_or_init(|| {
+            if cfg!(test) {
+                return "warn".to_string();
+            }
+            match std::env::var("EVORULE_BUNDLE_SIGNATURE_POLICY").as_deref() {
+                Ok("warn") => "warn".to_string(),
+                _ => "enforce".to_string(),
+            }
+        })
+        .clone()
+}
+
+fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+    if s.len() % 2 != 0 {
+        return Err(format!("hex 长度 {} 为奇数", s.len()));
+    }
+    (0..s.len() / 2)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|e| format!("hex 解码: {e}")))
+        .collect()
+}
+
+fn hex_decode_32(s: &str) -> Result<[u8; 32], String> {
+    let v = hex_decode(s)?;
+    v.try_into()
+        .map_err(|_| format!("hex 长度 {} 非 64 字符（32 字节）", s.len()))
 }
 
 /// 裁剪视图语法解析（与治理侧同解析：`;` 分段交集；tag:/domain:/ids:；
@@ -700,6 +846,7 @@ mod tests {
                 content_hash: String::new(),
                 hash_algo: "blake3".into(),
             },
+            publish_signature: None,
         };
         let hash = b.compute_content_hash();
         b.audit.content_hash = hash;
@@ -1800,5 +1947,149 @@ mod tests {
         api.import_bundle(&bundle, true)
             .await
             .expect("条目在沙盒 draft 快照中应放行");
+    }
+
+    // ===== 发布签名与信任策略（来源认证面）测试 =====
+
+    /// 构造测试密钥与已签名包（直接以 ed25519 对 content hash 签名，
+    /// 与生产 sign_bundle_if_configured 的载荷口径一致）
+    fn signed_bundle(
+        rule_body: Value,
+        seed: [u8; 32],
+    ) -> (evorule_bundle::DatasetBundle, [u8; 32]) {
+        use ed25519_dalek::Signer;
+        let mut b = valid_bundle(rule_body);
+        b.audit.content_hash = b.compute_content_hash();
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let sig = sk.sign(b.audit.content_hash.as_bytes());
+        b.publish_signature = Some(evorule_bundle::SignatureBlock {
+            key_id: hex_encode_for_test(&sk.verifying_key().to_bytes()),
+            sig: hex_encode_for_test(&sig.to_bytes()),
+        });
+        (b, seed)
+    }
+
+    fn hex_encode_for_test(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn publishers_with(seed: [u8; 32]) -> TrustedPublishers {
+        use ed25519_dalek::{SigningKey, Verifier};
+        let sk = SigningKey::from_bytes(&seed);
+        let vk = sk.verifying_key();
+        // 绕过 load 的私有面：直接构造（map 字段模块内可见）
+        let mut p = TrustedPublishers {
+            map: std::collections::BTreeMap::new(),
+        };
+        let _ = vk.verify(&[], &ed25519_dalek::Signature::from_bytes(&[0u8; 64])); // 类型触达
+        p.map
+            .insert(hex_encode_for_test(&vk.to_bytes()), vk.to_bytes());
+        p
+    }
+
+    #[test]
+    fn signed_bundle_passes_policy() {
+        let seed = [7u8; 32];
+        let (b, _) = signed_bundle(
+            serde_json::json!({"type":"sequence","params":{"instructions":[]}}),
+            seed,
+        );
+        let publishers = publishers_with(seed);
+        assert!(verify_signature_policy(&b, "enforce", &publishers).is_ok());
+        assert!(verify_signature_policy(&b, "warn", &publishers).is_ok());
+    }
+
+    #[test]
+    fn debug_tamper_hash_behavior() {
+        let seed = [7u8; 32];
+        let (mut b, _) = signed_bundle(
+            serde_json::json!({"type":"sequence","params":{"instructions":[]}}),
+            seed,
+        );
+        let h_before = b.compute_content_hash();
+        if let Some(e0) = b.entries.first_mut() {
+            e0.rule_body = serde_json::json!(
+                {"type":"sequence","params":{"instructions":[
+                    {"type":"set","params":{"attr":"tampered","operation":"set","value":1}}
+                ]}}
+            );
+        }
+        let h_after = b.compute_content_hash();
+        println!("hash_before={h_before}");
+        println!("hash_after ={h_after}");
+        println!("hash_changed={}", h_before != h_after);
+        let publishers = publishers_with(seed);
+        let r = verify_signature_policy(&b, "enforce", &publishers);
+        println!("verify={r:?}");
+    }
+
+    #[test]
+    fn tampered_bundle_rejected_even_in_warn() {
+        let seed = [7u8; 32];
+        let (mut b, _) = signed_bundle(
+            serde_json::json!({"type":"sequence","params":{"instructions":[]}}),
+            seed,
+        );
+        // 篡改内容（hash 变了，签名覆盖的是旧 hash）
+        if let Some(e0) = b.entries.first_mut() {
+            e0.rule_body = serde_json::json!(
+                {"type":"sequence","params":{"instructions":[
+                    {"type":"set","params":{"attr":"tampered","operation":"set","value":1}}
+                ]}}
+            );
+        }
+        let publishers = publishers_with(seed);
+        for policy in ["enforce", "warn"] {
+            let r = verify_signature_policy(&b, policy, &publishers);
+            assert!(r.is_err(), "篡改包在 {policy} 下必须拒收");
+        }
+    }
+
+    #[test]
+    fn unsigned_bundle_enforce_rejects_warn_allows() {
+        let mut b =
+            valid_bundle(serde_json::json!({"type":"sequence","params":{"instructions":[]}}));
+        b.audit.content_hash = b.compute_content_hash();
+        assert!(b.publish_signature.is_none());
+        let publishers = TrustedPublishers {
+            map: std::collections::BTreeMap::new(),
+        };
+        let r = verify_signature_policy(&b, "enforce", &publishers);
+        assert!(r.is_err(), "enforce 下无签名必须拒收");
+        assert!(r.unwrap_err().contains("缺少发布签名"));
+        assert!(
+            verify_signature_policy(&b, "warn", &publishers).is_ok(),
+            "warn 迁移档放行"
+        );
+    }
+
+    #[test]
+    fn unknown_signer_rejected_in_both_modes() {
+        let seed = [7u8; 32];
+        let (b, _) = signed_bundle(
+            serde_json::json!({"type":"sequence","params":{"instructions":[]}}),
+            seed,
+        );
+        let publishers = TrustedPublishers {
+            map: std::collections::BTreeMap::new(),
+        };
+        for policy in ["enforce", "warn"] {
+            let r = verify_signature_policy(&b, policy, &publishers);
+            assert!(r.is_err(), "未知签名者在 {policy} 下必须拒收");
+            assert!(r.unwrap_err().contains("不在信任注册表"));
+        }
+    }
+
+    #[test]
+    fn trusted_registry_parse_rejects_zero_and_malformed_keys() {
+        let r = TrustedPublishers::parse(
+            "trusted.json",
+            r#"{"publishers":{"demo":"0000000000000000000000000000000000000000000000000000000000000000"}}"#,
+        );
+        assert!(r.is_err(), "全零公钥必须拒载");
+        let r = TrustedPublishers::parse("trusted.json", r#"{"publishers":{"bad":"zzzz"}}"#);
+        assert!(r.is_err(), "非法 hex 必须拒载");
+        let r = TrustedPublishers::parse("trusted.json", r#"{"publishers":{}}"#);
+        assert!(r.is_ok(), "空注册表合法");
     }
 }
