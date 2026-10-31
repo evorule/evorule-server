@@ -120,6 +120,14 @@ pub const TAVILY_API_KEY_ENV: &str = "EVORULE_AI_PLUGIN_TAVILY_API_KEY";
 /// 面；provider 扩位时新端点随枚举分支演进）
 pub const TAVILY_SEARCH_ENDPOINT: &str = "https://api.tavily.com/search";
 
+/// Bocha Web Search API 凭据环境变量名（推荐注入方式：凭据不落盘，
+/// 优先于配置文件值 `bocha_api_key`）。
+pub const BOCHA_API_KEY_ENV: &str = "EVORULE_AI_PLUGIN_BOCHA_API_KEY";
+
+/// Bocha Web Search API 端点（代码级固定——出站目标不受配置控制，无 SSRF
+/// 面；provider 扩位时新端点随枚举分支演进）
+pub const BOCHA_SEARCH_ENDPOINT: &str = "https://api.bochaai.com/v1/web-search";
+
 /// web_search 中继缺省结果条数
 pub const WEB_SEARCH_DEFAULT_COUNT: u64 = 5;
 
@@ -202,6 +210,11 @@ pub struct PluginConfig {
     /// 显式 500 自诊断，fail-visible 不静默）。凭据纪律同 llm_api_key：
     /// 不进日志/错误消息。
     pub tavily_api_key: Option<String>,
+    /// Bocha Web Search API 订阅令牌（env `EVORULE_AI_PLUGIN_BOCHA_API_KEY` >
+    /// 配置 `bocha_api_key`；None = provider 为 bocha 时 /tools/web_search
+    /// 显式 500 自诊断，fail-visible 不静默）。凭据纪律同 llm_api_key：
+    /// 不进日志/错误消息。
+    pub bocha_api_key: Option<String>,
 }
 
 /// 多 provider 路由的单条 provider 声明（`llm_providers` 配置节数组元素）。
@@ -289,6 +302,10 @@ impl std::fmt::Debug for PluginConfig {
             .field(
                 "tavily_api_key",
                 &self.tavily_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "bocha_api_key",
+                &self.bocha_api_key.as_ref().map(|_| "[REDACTED]"),
             )
             .finish()
     }
@@ -437,13 +454,13 @@ impl PluginConfig {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .or_else(|| optional_str(v, "caller_token"));
-        // web_search 中继配置（批K 段2）：provider 代码级枚举白名单（brave/
-        // tavily 双值，未知值 fail-fast）；key env 优先 > 配置文件（凭据不落盘推荐）。
+        // web_search 中继配置：provider 代码级枚举白名单（brave/tavily/bocha
+        // 三值，未知值 fail-fast）；key env 优先 > 配置文件（凭据不落盘推荐）。
         let web_search_provider = optional_str(v, "web_search_provider");
         if let Some(p) = &web_search_provider {
-            if p != "brave" && p != "tavily" {
+            if p != "brave" && p != "tavily" && p != "bocha" {
                 return Err(PluginError::Config(format!(
-                    "字段 'web_search_provider' 非法: '{p}'（代码级 provider 白名单: brave, tavily）"
+                    "字段 'web_search_provider' 非法: '{p}'（代码级 provider 白名单: brave, tavily, bocha）"
                 )));
             }
         }
@@ -455,6 +472,10 @@ impl PluginConfig {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .or_else(|| optional_str(v, "tavily_api_key"));
+        let bocha_api_key = env(BOCHA_API_KEY_ENV)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| optional_str(v, "bocha_api_key"));
         let llm_max_tokens = match v.get("llm_max_tokens") {
             None | Some(Value::Null) => None,
             Some(x) => Some(x.as_u64().ok_or_else(|| {
@@ -480,6 +501,7 @@ impl PluginConfig {
             web_search_provider,
             brave_api_key,
             tavily_api_key,
+            bocha_api_key,
         })
     }
 
@@ -1121,7 +1143,7 @@ pub async fn web_search_relay(
     match cfg.web_search_provider.as_deref() {
         None => Err(WebSearchError::NotReady(
             "web_search 未启用: 配置键 web_search_provider 未填写（自诊断指引: \
-             ai-plugin.json 填 \"web_search_provider\": \"brave\" 或 \"tavily\" \
+             ai-plugin.json 填 \"web_search_provider\": \"brave\"、\"tavily\" 或 \"bocha\" \
              并配置对应搜索 API key）"
                 .to_string(),
         )),
@@ -1147,8 +1169,19 @@ pub async fn web_search_relay(
                 .await
                 .map_err(WebSearchError::Upstream)
         }
+        Some("bocha") => {
+            let key = cfg.bocha_api_key.as_deref().ok_or_else(|| {
+                WebSearchError::NotReady(format!(
+                    "Bocha API key 未配置（自诊断指引: 推荐设环境变量 {BOCHA_API_KEY_ENV}，\
+                     凭据不落盘; 或在 ai-plugin.json 填 bocha_api_key）"
+                ))
+            })?;
+            bocha_web_search(BOCHA_SEARCH_ENDPOINT, key, query, count)
+                .await
+                .map_err(WebSearchError::Upstream)
+        }
         Some(other) => Err(WebSearchError::NotReady(format!(
-            "web_search provider '{other}' 无实现分支（代码级白名单: brave, tavily; \
+            "web_search provider '{other}' 无实现分支（代码级白名单: brave, tavily, bocha; \
              配置校验应已拦截，属插件缺陷）"
         ))),
     }
@@ -1309,6 +1342,101 @@ async fn tavily_web_search(
         .await
         .map_err(|e| format!("Tavily 响应 JSON 解析失败: {e}"))?;
     normalize_tavily_response(&body, query, count)
+}
+
+/// Bocha Web Search API 出站（POST JSON `{query, count, summary}` +
+/// `Authorization: Bearer`；HTTP 200 之外响应体另带业务码 `code` 字段，
+/// 非 200 同样归因为上游错误，不静默当零结果）。
+///
+/// 独立 client：重定向不跟随（出站安全纪律，同 [`build_http_client`]）+ 总
+/// 15s/连接 5s 超时（搜索是交互面短请求，不随 LLM 长窗）；端点为代码级
+/// 常量（出站目标不受配置控制，无 SSRF 面）。
+async fn bocha_web_search(
+    endpoint: &str,
+    key: &str,
+    query: &str,
+    count: u64,
+) -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(WEB_SEARCH_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(WEB_SEARCH_CONNECT_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
+    // summary 显式 false：只要检索摘要（snippet），不触发上游 AI 摘要生成
+    let payload = json!({
+        "query": query,
+        "count": count,
+        "summary": false,
+    });
+    let resp = client
+        .post(endpoint)
+        .bearer_auth(key)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Bocha 请求失败: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(200).collect();
+        let kind = match status.as_u16() {
+            401 => "鉴权失败(API key 无效)",
+            403 => "余额不足或无接口权限",
+            429 => "限流(429)",
+            _ => "上游错误",
+        };
+        return Err(format!("Bocha HTTP {status}({kind}): {snippet}"));
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Bocha 响应 JSON 解析失败: {e}"))?;
+    // 业务码与 HTTP 状态分离：HTTP 200 但 code 非 200 仍属上游拒绝
+    if let Some(code) = body.get("code").and_then(Value::as_i64) {
+        if code != 200 {
+            let log_id = body.get("log_id").and_then(Value::as_str).unwrap_or("");
+            return Err(format!(
+                "Bocha 响应业务码 {code} 非 200（上游拒绝，log_id: {log_id}）"
+            ));
+        }
+    }
+    normalize_bocha_response(&body, query, count)
+}
+
+/// Bocha 响应归一（纯函数）：`data.webPages.value[].{name,url,snippet}` →
+/// `{status, provider, query, result_count, results:[{title,url,description}]}`。
+///
+/// 缺 `data`/`webPages`/`value` 节点 = 零结果（无命中的正常形态，非错误）；
+/// 条目缺 url 字段 = 形态异常 fail-visible（宁可显式报错，绝不静默丢结果）；
+/// title 缺省按空串归一；`name` 对位 title、`snippet` 对位 description（不取
+/// AI 摘要字段，保持 description=检索摘要语义）。截取前 `count` 条（调用方已钳帽）。
+fn normalize_bocha_response(body: &Value, query: &str, count: u64) -> Result<Value, String> {
+    let raw = body
+        .get("data")
+        .and_then(|d| d.get("webPages"))
+        .and_then(|w| w.get("value"))
+        .and_then(Value::as_array);
+    let mut results = Vec::new();
+    if let Some(items) = raw {
+        for item in items.iter().take(count as usize) {
+            let url = item
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Bocha 响应结果缺 url 字段（形态异常，fail-visible）".to_string())?;
+            let title = item.get("name").and_then(Value::as_str).unwrap_or("");
+            let description = item.get("snippet").and_then(Value::as_str).unwrap_or("");
+            results.push(json!({ "title": title, "url": url, "description": description }));
+        }
+    }
+    let result_count = results.len();
+    Ok(json!({
+        "status": "ok",
+        "provider": "bocha",
+        "query": query,
+        "result_count": result_count,
+        "results": results,
+    }))
 }
 
 /// LLM 调用 —— 本 crate 唯一 LLM 路径。
@@ -3271,6 +3399,204 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("401"), "{err}");
         assert!(err.contains("鉴权失败"), "{err}");
+    }
+
+    // ---------- web_search 中继 bocha provider ----------
+
+    /// 构造带/不带 bocha web_search 配置的 PluginConfig（relay 自诊断测试用）
+    fn ws_cfg_bocha(provider: Option<&str>, key: Option<&str>) -> PluginConfig {
+        let mut v = json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_api_key":"k","llm_model":"m"});
+        if let Some(p) = provider {
+            v["web_search_provider"] = json!(p);
+        }
+        if let Some(k) = key {
+            v["bocha_api_key"] = json!(k);
+        }
+        PluginConfig::from_value_with_env(&v, &|_| None).unwrap()
+    }
+
+    #[test]
+    fn config_web_search_bocha_provider_and_key() {
+        // 白名单三值：bocha 合法；key env 优先于配置文件（含 trim）
+        let v = json!({"server_base_url":"http://x","llm_endpoint":"http://y",
+            "llm_api_key":"k","llm_model":"m","web_search_provider":"bocha",
+            "bocha_api_key":"file-key"});
+        let cfg = PluginConfig::from_value_with_env(&v, &|name| {
+            if name == BOCHA_API_KEY_ENV {
+                Some("  env-key  ".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(cfg.web_search_provider.as_deref(), Some("bocha"));
+        assert_eq!(cfg.bocha_api_key.as_deref(), Some("env-key"));
+        // env 缺省回落配置文件
+        let cfg2 = PluginConfig::from_value_with_env(&v, &|_| None).unwrap();
+        assert_eq!(cfg2.bocha_api_key.as_deref(), Some("file-key"));
+        // 凭据纪律：Debug 脱敏
+        assert!(!format!("{cfg:?}").contains("env-key"));
+        assert!(!format!("{cfg:?}").contains("file-key"));
+        // 未知值 fail-fast：错误文案列出全部白名单值
+        let err = PluginConfig::from_json_str(
+            r#"{"server_base_url":"http://x","llm_endpoint":"http://y","llm_api_key":"k",
+                "llm_model":"m","web_search_provider":"google"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("brave, tavily, bocha"), "{err}");
+    }
+
+    #[test]
+    fn web_search_normalize_bocha_shapes() {
+        // happy：name→title / snippet→description 映射 + provider 标记 + title 缺省空串
+        let body = json!({"code": 200, "data": {"webPages": {"value": [
+            {"name": "t1", "url": "https://a/1", "snippet": "s1"},
+            {"url": "https://a/2", "snippet": "s2"},
+        ]}}});
+        let out = normalize_bocha_response(&body, "rust async", 5).unwrap();
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["provider"], "bocha");
+        assert_eq!(out["query"], "rust async");
+        assert_eq!(out["result_count"], 2);
+        assert_eq!(out["results"][0]["description"], "s1");
+        assert_eq!(out["results"][1]["title"], "");
+        // 缺 data/webPages/value 节点 = 零结果（无命中正常形态，非错误）
+        let out = normalize_bocha_response(&json!({}), "q", 5).unwrap();
+        assert_eq!(out["result_count"], 0);
+        assert_eq!(out["results"].as_array().unwrap().len(), 0);
+        // 条目缺 url 字段 = 形态异常 fail-visible
+        let body = json!({"data": {"webPages": {"value": [{"name": "x"}]}}});
+        assert!(normalize_bocha_response(&body, "q", 5)
+            .unwrap_err()
+            .contains("url"));
+        // 截取前 count 条
+        let body = json!({"data": {"webPages": {"value": [
+            {"name": "t1", "url": "https://a/1", "snippet": "s1"},
+            {"name": "t2", "url": "https://a/2", "snippet": "s2"},
+            {"name": "t3", "url": "https://a/3", "snippet": "s3"},
+        ]}}});
+        let out = normalize_bocha_response(&body, "q", 2).unwrap();
+        assert_eq!(out["result_count"], 2);
+        assert_eq!(out["results"].as_array().unwrap().len(), 2);
+        assert_eq!(out["results"][0]["url"], "https://a/1");
+    }
+
+    #[tokio::test]
+    async fn web_search_relay_bocha_not_ready_self_diagnosis() {
+        // 启用 bocha 但未配 key → NotReady + 提及 bocha 环境变量名
+        let err = web_search_relay(&ws_cfg_bocha(Some("bocha"), None), "q", 5)
+            .await
+            .unwrap_err();
+        match err {
+            WebSearchError::NotReady(m) => assert!(m.contains(BOCHA_API_KEY_ENV), "{m}"),
+            other => panic!("应为 NotReady, 实为 {other:?}"),
+        }
+        // 未启用自诊断文案列出全部 provider 指引
+        let err = web_search_relay(&ws_cfg_bocha(None, None), "q", 5)
+            .await
+            .unwrap_err();
+        match err {
+            WebSearchError::NotReady(m) => assert!(m.contains("bocha"), "{m}"),
+            other => panic!("应为 NotReady, 实为 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bocha_web_search_happy_and_request_shape() {
+        let seen = Arc::new(Mutex::new(None::<Value>));
+        let seen_h = seen.clone();
+        let app = Router::new().route(
+            "/v1/web-search",
+            post(
+                move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                    let seen_h = seen_h.clone();
+                    async move {
+                        *seen_h.lock().unwrap() = Some(json!({
+                            "body": body,
+                            "auth": headers
+                                .get("Authorization")
+                                .and_then(|v| v.to_str().ok())
+                                .map(|s| s.to_string()),
+                        }));
+                        Json(json!({"code": 200, "log_id": "log-1", "msg": null,
+                            "data": {"webPages": {"value": [
+                            {"name": "t1", "url": "https://a.example/1", "snippet": "s1"},
+                            {"name": "t2", "url": "https://a.example/2", "snippet": "s2"},
+                            {"name": "t3", "url": "https://a.example/3", "snippet": "s3"},
+                        ]}}}))
+                    }
+                },
+            ),
+        );
+        let addr = spawn_app(app).await;
+        let out = bocha_web_search(
+            &format!("http://{addr}/v1/web-search"),
+            "bocha-key-1",
+            "rust",
+            2,
+        )
+        .await
+        .unwrap();
+        // 请求形态：POST JSON 体（query/count/summary），key 进 Bearer 头（不进 URL）
+        let req = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(req["body"]["query"], "rust");
+        assert_eq!(req["body"]["count"], 2);
+        assert_eq!(req["body"]["summary"], false);
+        assert_eq!(req["auth"], "Bearer bocha-key-1");
+        // 归一：name→title / snippet→description，截取前 count 条
+        assert_eq!(out["status"], "ok");
+        assert_eq!(out["provider"], "bocha");
+        assert_eq!(out["result_count"], 2);
+        assert_eq!(out["results"][0]["description"], "s1");
+    }
+
+    #[tokio::test]
+    async fn bocha_web_search_http_401_and_403_surfaced() {
+        // 401 = 鉴权失败归因
+        let app = Router::new().route(
+            "/v1/web-search",
+            post(|| async { (axum::http::StatusCode::UNAUTHORIZED, "invalid key") }),
+        );
+        let addr = spawn_app(app).await;
+        let err = bocha_web_search(&format!("http://{addr}/v1/web-search"), "bad-key", "q", 5)
+            .await
+            .unwrap_err();
+        assert!(err.contains("401"), "{err}");
+        assert!(err.contains("鉴权失败"), "{err}");
+        // 403 = 余额不足或无接口权限归因（provider 文档语义）
+        let app = Router::new().route(
+            "/v1/web-search",
+            post(|| async {
+                (
+                    axum::http::StatusCode::FORBIDDEN,
+                    "You do not have enough money",
+                )
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let err = bocha_web_search(&format!("http://{addr}/v1/web-search"), "poor-key", "q", 5)
+            .await
+            .unwrap_err();
+        assert!(err.contains("403"), "{err}");
+        assert!(err.contains("余额不足"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn bocha_web_search_business_code_surfaced() {
+        // HTTP 200 但业务码非 200（provider 侧 code 与 HTTP status 分离，同样显式失败）
+        let app = Router::new().route(
+            "/v1/web-search",
+            post(|| async {
+                Json(json!({"code": 403, "log_id": "log-x", "msg": "quota exhausted"}))
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let err = bocha_web_search(&format!("http://{addr}/v1/web-search"), "k", "q", 5)
+            .await
+            .unwrap_err();
+        assert!(err.contains("403"), "{err}");
+        assert!(err.contains("业务码"), "{err}");
     }
 
     // ---------- 请求体解析 ----------

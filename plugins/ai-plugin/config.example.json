@@ -27,7 +27,7 @@
       "models": ["deepseek-chat", "deepseek-reasoner"]
     }
   ],
-  "_web_search_说明": "web_search 中继（POST /tools/web_search）：web_search_provider 不填 = 端点未启用（请求 500 自诊断）；provider 白名单: brave, tavily。Brave API key 推荐设环境变量 EVORULE_AI_PLUGIN_BRAVE_API_KEY；Tavily API key 推荐设环境变量 EVORULE_AI_PLUGIN_TAVILY_API_KEY（皆不落盘，优先于本文件 brave_api_key / tavily_api_key）；key 仅本插件侧持有，evo-agent 进程零密钥。字段与启用细节见本目录 README.md",
+  "_web_search_说明": "web_search 中继（POST /tools/web_search）：web_search_provider 不填 = 端点未启用（请求 500 自诊断）；provider 白名单: brave, tavily, bocha。Brave API key 推荐设环境变量 EVORULE_AI_PLUGIN_BRAVE_API_KEY；Tavily API key 推荐设环境变量 EVORULE_AI_PLUGIN_TAVILY_API_KEY；Bocha API key 推荐设环境变量 EVORULE_AI_PLUGIN_BOCHA_API_KEY（皆不落盘，优先于本文件 brave_api_key / tavily_api_key / bocha_api_key）；key 仅本插件侧持有，evo-agent 进程零密钥。字段与启用细节见本目录 README.md",
   "web_search_provider": "brave",
   "brave_api_key": "",
   "llm_max_tokens": 32768
