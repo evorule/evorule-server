@@ -53,6 +53,9 @@ pub(crate) fn seed_pass_sandbox(ws_db: &std::sync::Arc<evorule_workspace::Worksp
             &ws_id,
             1,
             Some("hash-evidence-fixture"),
+            // 无 draft 快照：本夹具验证报告↔沙盒哈希绑定；快照缺位时导入侧
+            // 内容对照按 legacy 语义放行并留痕，不参与本夹具断言
+            None,
             1,
             "test:evidence-fixture",
         )
