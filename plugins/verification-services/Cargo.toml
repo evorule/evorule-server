@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-verification-services"
+version.workspace = true
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "逻辑验证原生服务(命题SAT确定性DPLL/有限状态机可达性/两台完全DFA等价判定)——纯计算,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
+repository = "https://gitee.com/evorule/evorule-server"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# 核心层（主仓已发布 crates.io,纯 version——接入铁律:不依赖主仓源码路径）
+evorule-tcb = { version = "0.12" }
+evorule-reactor = { version = "0.12" }
+# 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)
+evorule-plugin-kit = { path = "../../core/plugin-kit" }
+
+# IoHandler trait object-safety
+async-trait = "0.1"
+
+[dev-dependencies]
+# 测试用 async runtime（#[tokio::test] 需要 macros + rt）
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# SSOT 守卫测试:声明表 vs official_native_services.json 对比
+serde_json = "1"

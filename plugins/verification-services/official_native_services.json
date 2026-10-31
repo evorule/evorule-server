@@ -1,0 +1,21 @@
+{
+    "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/verification-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 verification-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+    "version": 1,
+    "services": [
+        {
+            "name": "verification_sat_solve",
+            "sensitive": false,
+            "description": "CNF 命题可满足性判定(确定性 DPLL:变量首现序+正枝先行+单元传播,变量上限200子句上限2000;UNSAT 为完备判定,SAT 给出满足指派,确定性)"
+        },
+        {
+            "name": "verification_fsm_reachability",
+            "sensitive": false,
+            "description": "显式有限状态机可达性分析(指定初始状态集与目标状态集,最短步数与一条 witness 路径,可选步数上界,返回接受语言空性,确定性)"
+        },
+        {
+            "name": "verification_fsm_equivalence",
+            "sensitive": false,
+            "description": "两台完全确定有限自动机等价判定(乘积机同步遍历,等价=true;不等价给出最短区分反例词与两机轨迹,确定性)"
+        }
+    ]
+}
