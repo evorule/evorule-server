@@ -837,8 +837,21 @@ fn walk_eq_lt_domain(v: &Value, out: &mut Vec<DomainGateHit>) {
 ///
 /// band_check 不入清单：其裁决量（value/lo/hi）由调用方场景携带，量纲随场景
 /// 而定，无固定量纲可登记；conservation_check 的 drift_fp 由立法固定为无量纲
-/// 相对漂移比（定点 Integer 直传），可登记。
-const LEGISLATED_MEASUREMENT_INSTRUCTIONS: &[&str] = &["conservation_check"];
+/// 相对漂移比（定点 Integer 直传），可登记；CAD 判据七指令（clearance/safety_
+/// factor/stress/mass_budget/thermal_growth/tolerance_stack/interference）的
+/// 裁决量由立法固定量纲向量（间隙裕度/热膨胀偏差/公差链累积 = 长度、安全系数
+/// = 无量纲、应力裕量 = Pa、质量余量 = kg、干涉体积 = m³；µm/MPa/g 等为同
+/// 量纲族内调用方 scale 约定，不改向量），可登记。
+const LEGISLATED_MEASUREMENT_INSTRUCTIONS: &[&str] = &[
+    "conservation_check",
+    "clearance_check",
+    "safety_factor_check",
+    "stress_check",
+    "mass_budget_check",
+    "thermal_growth_check",
+    "tolerance_stack_check",
+    "interference_check",
+];
 
 /// SI 七基本量纲幂次向量长度（[L, M, T, I, Θ, N, J] 序，整数幂次）；
 /// 与 inference 族量纲服务出参（七元整数组）同构。
@@ -1657,5 +1670,54 @@ mod tests {
             msg.contains("conservation_check"),
             "报错应点名缺失的指令: {msg}"
         );
+    }
+
+    #[test]
+    fn dimension_registry_cad_family_gate_coverage() {
+        // CAD 判据七指令（v0.9.0 立法）同受量纲登记门管辖：
+        // 引用任一未登记 → 拒且点名；七件全登记 → 过门。
+        let cad_ref = |t: &str| {
+            json!({
+                "$schema": "https://evorule.org/schemas/rule_set/v1.0.json",
+                "kind": "rule_set", "id": "x.y.cad", "version": "0.1.0",
+                "metadata": { "title": "CAD 判据登记门测试" },
+                "transform": [
+                    { "type": "branch", "params": {
+                        "domain": { "type": "instruction", "instruction_type": t },
+                        "on_true": [], "on_false": []
+                    }}
+                ]
+            })
+        };
+        let ctx = LoadContext::business_file("x.json");
+        for t in [
+            "clearance_check",
+            "safety_factor_check",
+            "stress_check",
+            "mass_budget_check",
+            "thermal_growth_check",
+            "tolerance_stack_check",
+            "interference_check",
+        ] {
+            let err = load_rule_set(&cad_ref(t), &ctx).expect_err("引用 CAD 判据指令缺登记应拒");
+            assert!(matches!(err, ConstitutionError::DimensionRegistryGate(_)));
+            assert!(
+                format!("{err}").contains(t),
+                "报错应点名缺失的指令 {t}: {err}"
+            );
+        }
+        // 七件全登记 → 过门（登记集超集于引用集合法，覆盖性只查缺不查多）
+        let mut doc = cad_ref("interference_check");
+        doc["metadata"]["formula_registry"] = json!([
+            { "instruction_type": "clearance_check", "formula": "g_min − d_min", "dimensions": [1, 0, 0, 0, 0, 0, 0] },
+            { "instruction_type": "safety_factor_check", "formula": "σ_yield / σ_max", "dimensions": [0, 0, 0, 0, 0, 0, 0] },
+            { "instruction_type": "stress_check", "formula": "σ_allow − σ_max", "dimensions": [-1, 1, -2, 0, 0, 0, 0] },
+            { "instruction_type": "mass_budget_check", "formula": "W − Σmᵢ", "dimensions": [0, 1, 0, 0, 0, 0, 0] },
+            { "instruction_type": "thermal_growth_check", "formula": "|ΔL_meas − α·L·ΔT|", "dimensions": [1, 0, 0, 0, 0, 0, 0] },
+            { "instruction_type": "tolerance_stack_check", "formula": "√(ΣTᵢ²)", "dimensions": [1, 0, 0, 0, 0, 0, 0] },
+            { "instruction_type": "interference_check", "formula": "V_intersecting", "dimensions": [3, 0, 0, 0, 0, 0, 0] }
+        ]);
+        let loaded = load_rule_set(&doc, &ctx).expect("CAD 判据全登记应过门");
+        assert!(loaded.provenance.gates.dimension_registry_gate);
     }
 }

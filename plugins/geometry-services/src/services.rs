@@ -86,6 +86,12 @@ fn parse_parts(args: &JsonValue) -> Result<Vec<Part>, String> {
 // 三服务
 // ============================================================================
 
+// 适用域（regime，逐服务声明；域外一律 Err 显式拒绝，不静默降维）：
+// - GeometryCollisionCheck：2D 平面像素级；触即算语义（距离 ≤ EPS，多报不漏报）。
+// - GeometryClearanceCheck：2D 平面像素级；宽容方向（gap ≥ 限值 − EPS 视为达标）。
+// - GeometryOcclusionCheck：2D 平面像素级 + z 声明层（画家算法逻辑层高，非空间
+//   坐标）；全部零件须声明 z，缺失即拒（遮挡序域外）。
+
 /// 内部执行核心：两两距离全表 + 按阈值产出违规清单
 fn pairwise(args: &JsonValue, mode: Mode) -> Result<JsonValue, String> {
     let parts = parse_parts(args)?;
@@ -302,6 +308,11 @@ fn pair_points(points: &[JsonValue], ctx: &str) -> Result<Vec<Pt3>, String> {
 
 // ---- geometry_iso_project ----
 
+/// 等距投影：3D 点集 → 屏幕坐标（契约变换，非测量）。
+///
+/// 适用域（regime）：3D 欧氏点的正交等距投影；方位角/仰角受声明区间约束
+/// （解析期拒绝越界，域外即 Err）；坐标无量纲——单位制由调用方自持声明，
+/// 服务只保序保形（投影前后相对位置关系确定）。
 pub struct GeometryIsoProject;
 
 impl NativeService for GeometryIsoProject {
@@ -389,6 +400,11 @@ pub fn mk_iso_project() -> Arc<dyn NativeService> {
 
 // ---- geometry_tube_route ----
 
+/// 管路走线校核：转折点序列 → 段长/转角/弯径切线需求。
+///
+/// 适用域（regime）：3D 折线段的几何核算（直段 + 圆弯切线近似）；相邻转折点
+/// 须距离 > EPS（零长段即 Err）；弯径占用量按段两端切线之和 ≤ 段长核算
+/// （声明即契约）；不建模管壁、流体、应力——非那些域的裁决面。
 pub struct GeometryTubeRoute;
 
 impl NativeService for GeometryTubeRoute {
@@ -525,6 +541,14 @@ impl Solid {
     }
 }
 
+/// 图样场景审计：棱柱/管路成对间隙下界 + 端点承托核查。
+///
+/// 适用域（regime）：棱柱（2D 多边形底面 × [base,top] 高度区间）与管路
+/// （3D 折线 × 半径）成对核算；间隙产出为**保守下界**（`gap_semantics =
+/// lower_bound`，声明即契约）——下界达标即真达标，下界不足须人工复核；
+/// 高度退化（top−base ≤ EPS）、零长段、重复 id 均域外即 Err。保守方向：
+/// 宁多报不漏报，图样级审计而非制造级测量（3D 实体精确测量属 CAD spike
+/// 另批范围）。
 pub struct GeometryFigureAudit;
 
 impl GeometryFigureAudit {

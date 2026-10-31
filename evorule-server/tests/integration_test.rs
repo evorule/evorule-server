@@ -841,3 +841,217 @@ async fn test_conservation_check_legislation() {
         );
     }
 }
+
+/// 构造 CAD 判据指令（v0.9.0 立法：确定性测量事实三态裁决七件套——
+/// 事实定点 i64 直传 + bound_fp 阈值，事实缺失经 exists 门显式分派
+/// undetermined；违规方向两式：裕度类事实<bound_fp、偏差类 bound_fp<事实，
+/// 边界等号一律 pass，规则层零数据变形）
+fn make_cad_check_instruction(
+    instruction_type: &str,
+    fact_param: &str,
+    fact_fp: Option<i64>,
+    bound_fp: i64,
+) -> JsonValue {
+    let mut params = BTreeMap::new();
+    if let Some(f) = fact_fp {
+        params.insert(fact_param.to_string(), JsonValue::Integer(f));
+    }
+    params.insert("bound_fp".to_string(), JsonValue::Integer(bound_fp));
+    params.insert("target".to_string(), JsonValue::string("cad_verdict"));
+    let mut instr = BTreeMap::new();
+    instr.insert("type".to_string(), JsonValue::string(instruction_type));
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+/// CAD 判据三态公用执行体：装载部署面规则集（过装载门禁）→ 发指令 →
+/// 等 Stable → 回读 target（相对路径写 payload.cad_verdict，快照根即 payload）
+async fn run_cad_verdict(instruction: JsonValue) -> String {
+    let core_eval = load_core_eval();
+    let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+    let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+    tx.send(Fact::Command {
+        id: FactId(1),
+        instruction,
+    })
+    .unwrap();
+    let snapshot = wait_for_stable(&mut rx, &facts_log)
+        .await
+        .expect("Timed out waiting for Stable");
+    snapshot
+        .get("cad_verdict")
+        .and_then(|v| v.as_str())
+        .expect("cad_verdict 缺失——判据指令未被规则消费")
+        .to_string()
+}
+
+/// clearance_check 立法五例（裕度类：事实<bound_fp → violation）：
+/// 裕度为正 pass / 边界等号 pass（闭区间含等号）/ 裕度为负 violation /
+/// 下限抬高尚不达标 violation / 测量缺失 → undetermined
+#[tokio::test]
+async fn test_clearance_check_legislation() {
+    for (margin_fp, bound_fp, expected) in [
+        (Some(5_000i64), 0i64, "pass"),
+        (Some(0), 0, "pass"),
+        (Some(-200), 0, "violation"),
+        (Some(5_000), 8_000, "violation"),
+        (None, 0, "undetermined"),
+    ] {
+        let verdict = run_cad_verdict(make_cad_check_instruction(
+            "clearance_check",
+            "margin_fp",
+            margin_fp,
+            bound_fp,
+        ))
+        .await;
+        assert_eq!(
+            verdict, expected,
+            "margin_fp={margin_fp:?} bound_fp={bound_fp} 应判 {expected}"
+        );
+    }
+}
+
+/// safety_factor_check 立法四例（裕度类，定点 1e6 相对量）：
+/// 系数达标 pass / 边界等号 pass / 系数不足 violation / 测量缺失 undetermined
+#[tokio::test]
+async fn test_safety_factor_check_legislation() {
+    for (ratio_fp, bound_fp, expected) in [
+        (Some(2_000_000i64), 1_500_000i64, "pass"),
+        (Some(1_500_000), 1_500_000, "pass"),
+        (Some(1_200_000), 1_500_000, "violation"),
+        (None, 1_500_000, "undetermined"),
+    ] {
+        let verdict = run_cad_verdict(make_cad_check_instruction(
+            "safety_factor_check",
+            "ratio_fp",
+            ratio_fp,
+            bound_fp,
+        ))
+        .await;
+        assert_eq!(
+            verdict, expected,
+            "ratio_fp={ratio_fp:?} bound_fp={bound_fp} 应判 {expected}"
+        );
+    }
+}
+
+/// stress_check 立法四例（符号判定类：bound_fp=0 约定，裕量<0 → violation）：
+/// 裕量为正 pass / 恰好用尽（等号）pass / 超许用应力 violation / 测量缺失 undetermined
+#[tokio::test]
+async fn test_stress_check_legislation() {
+    for (headroom_fp, bound_fp, expected) in [
+        (Some(50i64), 0i64, "pass"),
+        (Some(0), 0, "pass"),
+        (Some(-10), 0, "violation"),
+        (None, 0, "undetermined"),
+    ] {
+        let verdict = run_cad_verdict(make_cad_check_instruction(
+            "stress_check",
+            "headroom_fp",
+            headroom_fp,
+            bound_fp,
+        ))
+        .await;
+        assert_eq!(
+            verdict, expected,
+            "headroom_fp={headroom_fp:?} bound_fp={bound_fp} 应判 {expected}"
+        );
+    }
+}
+
+/// mass_budget_check 立法四例（符号判定类：bound_fp=0 约定，余量<0 → violation）：
+/// 预算内 pass / 恰好用尽 pass / 超重 violation / 测量缺失 undetermined
+#[tokio::test]
+async fn test_mass_budget_check_legislation() {
+    for (margin_fp, bound_fp, expected) in [
+        (Some(120i64), 0i64, "pass"),
+        (Some(0), 0, "pass"),
+        (Some(-45), 0, "violation"),
+        (None, 0, "undetermined"),
+    ] {
+        let verdict = run_cad_verdict(make_cad_check_instruction(
+            "mass_budget_check",
+            "margin_fp",
+            margin_fp,
+            bound_fp,
+        ))
+        .await;
+        assert_eq!(
+            verdict, expected,
+            "margin_fp={margin_fp:?} bound_fp={bound_fp} 应判 {expected}"
+        );
+    }
+}
+
+/// thermal_growth_check 立法四例（偏差类：bound_fp<事实 → violation）：
+/// 偏差在容差内 pass / 边界等号 pass / 偏差越容差 violation / 测量缺失 undetermined
+#[tokio::test]
+async fn test_thermal_growth_check_legislation() {
+    for (dev_fp, bound_fp, expected) in [
+        (Some(12i64), 50i64, "pass"),
+        (Some(50), 50, "pass"),
+        (Some(51), 50, "violation"),
+        (None, 50, "undetermined"),
+    ] {
+        let verdict = run_cad_verdict(make_cad_check_instruction(
+            "thermal_growth_check",
+            "dev_fp",
+            dev_fp,
+            bound_fp,
+        ))
+        .await;
+        assert_eq!(
+            verdict, expected,
+            "dev_fp={dev_fp:?} bound_fp={bound_fp} 应判 {expected}"
+        );
+    }
+}
+
+/// tolerance_stack_check 立法四例（偏差类，RSS 累积 µm）：
+/// 累积在界内 pass / 边界等号 pass / 累积越界 violation / 测量缺失 undetermined
+#[tokio::test]
+async fn test_tolerance_stack_check_legislation() {
+    for (stack_fp, bound_fp, expected) in [
+        (Some(38i64), 50i64, "pass"),
+        (Some(50), 50, "pass"),
+        (Some(62), 50, "violation"),
+        (None, 50, "undetermined"),
+    ] {
+        let verdict = run_cad_verdict(make_cad_check_instruction(
+            "tolerance_stack_check",
+            "stack_fp",
+            stack_fp,
+            bound_fp,
+        ))
+        .await;
+        assert_eq!(
+            verdict, expected,
+            "stack_fp={stack_fp:?} bound_fp={bound_fp} 应判 {expected}"
+        );
+    }
+}
+
+/// interference_check 立法四例（偏差类符号判定：bound_fp=0 约定，
+/// 任何正干涉体积 → violation）：零干涉 pass / 正干涉体积 violation ×2 /
+/// 测量缺失 undetermined
+#[tokio::test]
+async fn test_interference_check_legislation() {
+    for (overlap_fp, bound_fp, expected) in [
+        (Some(0i64), 0i64, "pass"),
+        (Some(1), 0, "violation"),
+        (Some(99_999), 0, "violation"),
+        (None, 0, "undetermined"),
+    ] {
+        let verdict = run_cad_verdict(make_cad_check_instruction(
+            "interference_check",
+            "overlap_fp",
+            overlap_fp,
+            bound_fp,
+        ))
+        .await;
+        assert_eq!(
+            verdict, expected,
+            "overlap_fp={overlap_fp:?} bound_fp={bound_fp} 应判 {expected}"
+        );
+    }
+}

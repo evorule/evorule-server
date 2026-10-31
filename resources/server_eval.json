@@ -3,8 +3,8 @@
   "kind": "rule_set",
   "id": "org.evorule.server.eval",
   "rule_id": "server.eval",
-  "version": "0.8.2",
-  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（2026-08-27），多轮编排由应用层 runner 负责（app.evoagent.agent v0.5.0 起同为单轮口径）；桥接规则修复(2026-09-01):HTTP 会话为平台消费面无法自持剧本,补回 call_external/call_service 会话桥接指令规则(v0.4.1)；v0.4.2:call_service 桥接规则触发域补 exists(params.service_name) 门禁——命令显式携带 service_name 才走宪法单发桥接,不携带时交由 bundle 落地规则硬编码路由(v0.4.1 缺该门禁致既有 bundle 工作流命令因必选路径解析失败而 Error,acceptance/binding e2e 回归发现)；v0.5.0(规则清理):移除桥接规则内遗留 ReAct 循环段(collect 工具扇出/react_iteration+merge 回环),回归纯单发桥接,多轮编排由应用层 runner 负责；v0.6.0:同步 TCB 宪法 v0.5.0 的 tool_trace 规则(工具调用轨迹事实记录通道,仅复用既有 set 动作与 instruction 域函数,零新原语)；2026-09-29 项目方裁定:id 拆分为 org.evorule.server.eval——本文件为部署面规则集,版本线独立自持,org.evorule.core.eval 归还主仓宪法专用,同 id 双版本线混淆就此消除；v0.7.0:band_check 区间判定立法——Tier 1 合规形态（lt×2+set 标签,零数据变形,开区间 lo<v<hi）,新指令类型=部署层数据+既有词汇组合（零新原语,词汇表维持加减）,调用方 params 直传 value/lo/hi、target 用 payload 相对路径（如 verdict；__exec__.payload. 全形式经动态 attr 会双层嵌套，真机实证 2026-10-19）；v0.8.0:externalization_violation 外判违规事实记录通道立法——数值/公式/量纲/日期时长类问题禁止心算、必须走确定性服务（外判纪律立法化）,运行时门禁（io_guard 特征表 deterministic_compute 域,三条件判据=收尾文本含动作声称词形×装配面有该域确定性服务×本会话零调用）命中后经本通道以 set 将违规事实写入 payload 审计链（tool_trace 同构,零新原语,零数据变形）；违规判定语义在运行时门禁面（壳核分离:语义归 LLM,行为归闸）,规则层只做记录不做语义判定；v0.8.1:conservation_check 守恒不变量三态裁决立法——确定性物理服务的守恒测量事实以定点 Integer 直传（调用方按声明 scale 转换,规则层零数据变形,lt 域仅 i64）,对照声明容差做三态裁决:drift_fp 缺失经 exists 门显式分派 → undetermined（不适用≠通过,弃权留痕）,drift_fp>bound_fp（经 lt 换侧合成严格大于）→ violation,否则（≤,闭区间含等号）→ pass;三态词汇由立法固定,与 band_check 同构（既有 branch/exists/lt/set 词汇,零新原语）,服务面只测量、规则层才裁决；v0.8.2:装载期量纲登记门落地——metadata.formula_registry 登记 conservation_check 裁决量的公式与量纲（|E_final − E_initial| / E_initial，无量纲相对漂移比，量纲向量 [0,0,0,0,0,0,0] = SI 七基本量纲幂次 [L,M,T,I,Θ,N,J] 序），装载器对引用立法计算裁决指令的规则集强制结构合法登记（缺登记/畸形登记/未覆盖即拒装载），「公式 → 量纲」登记自此为规则集的一部分",
+  "version": "0.9.0",
+  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（2026-08-27），多轮编排由应用层 runner 负责（app.evoagent.agent v0.5.0 起同为单轮口径）；桥接规则修复(2026-09-01):HTTP 会话为平台消费面无法自持剧本,补回 call_external/call_service 会话桥接指令规则(v0.4.1)；v0.4.2:call_service 桥接规则触发域补 exists(params.service_name) 门禁——命令显式携带 service_name 才走宪法单发桥接,不携带时交由 bundle 落地规则硬编码路由(v0.4.1 缺该门禁致既有 bundle 工作流命令因必选路径解析失败而 Error,acceptance/binding e2e 回归发现)；v0.5.0(规则清理):移除桥接规则内遗留 ReAct 循环段(collect 工具扇出/react_iteration+merge 回环),回归纯单发桥接,多轮编排由应用层 runner 负责；v0.6.0:同步 TCB 宪法 v0.5.0 的 tool_trace 规则(工具调用轨迹事实记录通道,仅复用既有 set 动作与 instruction 域函数,零新原语)；2026-09-29 项目方裁定:id 拆分为 org.evorule.server.eval——本文件为部署面规则集,版本线独立自持,org.evorule.core.eval 归还主仓宪法专用,同 id 双版本线混淆就此消除；v0.7.0:band_check 区间判定立法——Tier 1 合规形态（lt×2+set 标签,零数据变形,开区间 lo<v<hi）,新指令类型=部署层数据+既有词汇组合（零新原语,词汇表维持加减）,调用方 params 直传 value/lo/hi、target 用 payload 相对路径（如 verdict；__exec__.payload. 全形式经动态 attr 会双层嵌套，真机实证 2026-10-19）；v0.8.0:externalization_violation 外判违规事实记录通道立法——数值/公式/量纲/日期时长类问题禁止心算、必须走确定性服务（外判纪律立法化）,运行时门禁（io_guard 特征表 deterministic_compute 域,三条件判据=收尾文本含动作声称词形×装配面有该域确定性服务×本会话零调用）命中后经本通道以 set 将违规事实写入 payload 审计链（tool_trace 同构,零新原语,零数据变形）；违规判定语义在运行时门禁面（壳核分离:语义归 LLM,行为归闸）,规则层只做记录不做语义判定；v0.8.1:conservation_check 守恒不变量三态裁决立法——确定性物理服务的守恒测量事实以定点 Integer 直传（调用方按声明 scale 转换,规则层零数据变形,lt 域仅 i64）,对照声明容差做三态裁决:drift_fp 缺失经 exists 门显式分派 → undetermined（不适用≠通过,弃权留痕）,drift_fp>bound_fp（经 lt 换侧合成严格大于）→ violation,否则（≤,闭区间含等号）→ pass;三态词汇由立法固定,与 band_check 同构（既有 branch/exists/lt/set 词汇,零新原语）,服务面只测量、规则层才裁决；v0.8.2:装载期量纲登记门落地——metadata.formula_registry 登记 conservation_check 裁决量的公式与量纲（|E_final − E_initial| / E_initial，无量纲相对漂移比，量纲向量 [0,0,0,0,0,0,0] = SI 七基本量纲幂次 [L,M,T,I,Θ,N,J] 序），装载器对引用立法计算裁决指令的规则集强制结构合法登记（缺登记/畸形登记/未覆盖即拒装载），「公式 → 量纲」登记自此为规则集的一部分；v0.9.0:CAD 判据三态裁决族立法——七条同构判据指令(clearance_check/safety_factor_check/stress_check/mass_budget_check/thermal_growth_check/tolerance_stack_check/interference_check)按 conservation_check 范式落地(服务面只测量、规则层三态裁决,branch/exists/lt/set 既有词汇组合,零新原语,零数据变形):统一参数形态{测量事实定点 i64,bound_fp 阈值定点 i64,target},事实缺失经 exists 门显式分派 undetermined(不适用≠通过,弃权留痕),违规方向两式——裕度类(clearance/safety_factor/stress/mass_budget)事实<bound_fp 判 violation,偏差类(thermal_growth/tolerance_stack/interference)bound_fp<事实判 violation,边界等号一律 pass(闭区间含等号,同 conservation 先例);测量事实的除法/减法/开方全部在确定性服务面完成(间隙裕度/安全系数/应力裕量/质量余量/热膨胀偏差/公差链 RSS/干涉体积),规则层只比大小;公式与 SI 七基本量纲幂次经 metadata.formula_registry 登记(装载门强制覆盖),测量单位由调用方 scale 声明约定(µm/MPa/g/无量纲定点 1e6),符号判定类(stress/mass_budget/interference)按约定传 bound_fp=0;装载器量纲登记门管辖清单同步纳入七指令——谁用谁登记,未登记拒装载",
   "metadata": {
     "author": "evorule-core",
     "license": "CC0-1.0 Universal (Public Domain)",
@@ -20,7 +20,8 @@
       "4. 会话桥接指令: call_external, call_service(单发桥接;多轮编排由应用层 runner 负责——v0.5.0 随规则清理移除宪法内 ReAct 循环残留)",
       "5. 工具轨迹指令: tool_trace(应用层工具调用轨迹的事实记录通道;2026-09-29 项目方裁定自主仓宪法迁出,本部署面自持)",
       "6. 外判违规事实指令: externalization_violation(外判违规事实经 set 落 payload 审计链的记录通道;v0.8.0 立法,tool_trace 同构,违规判定在运行时门禁面)",
-      "7. 守恒不变量裁决指令: conservation_check(确定性服务守恒测量事实的三态裁决——pass/violation/undetermined 词汇立法固定;v0.8.1 立法,band_check 同构,测量在服务面、裁决在规则层)"
+      "7. 守恒不变量裁决指令: conservation_check(确定性服务守恒测量事实的三态裁决——pass/violation/undetermined 词汇立法固定;v0.8.1 立法,band_check 同构,测量在服务面、裁决在规则层)",
+      "8. CAD 判据裁决指令: clearance_check, safety_factor_check, stress_check, mass_budget_check, thermal_growth_check, tolerance_stack_check, interference_check(CAD 领域确定性测量事实的三态裁决七件套——pass/violation/undetermined 词汇与 conservation_check 同构,裕度类事实<bound_fp、偏差类 bound_fp<事实两式违规方向,边界等号一律 pass;v0.9.0 立法,测量在服务面、裁决在规则层)"
     ],
     "constraints": [
       "每条 transform 规则中最多包含一个 io_request 元指令",
@@ -37,13 +38,49 @@
       "v0.6.0 纪律: tool_trace 属部署面应用层策略规则（2026-09-29 项目方改判——应用层策略规则禁入主仓宪法，自主仓宪法迁出至此自持），不触及物理原语（元指令/域函数零新增）；确定性/可回放/审计链为无商量红线——轨迹数据只经 set 进入 payload 随 StateTransition 落链，不触碰哈希链与状态机语义",
       "v0.8.0 纪律: externalization_violation 属外判违规记录通道（数值/公式/量纲/日期时长类问题禁止心算、必须走确定性服务的外判纪律立法化），与 tool_trace 同构仅组合既有 set 动作（零新原语/零数据变形）；违规事实只经 set 进入 payload 随 StateTransition 落链，不触碰哈希链与状态机语义；违规判定在运行时门禁面（三条件字面配对，零语义判官），规则层不做语义判定",
       "v0.8.1 纪律: conservation_check 属守恒不变量三态裁决通道（band_check 同构,仅组合既有 branch/exists/lt/set 词汇,零新原语/零数据变形）;测量事实以定点 Integer 直传（lt 域仅 i64,浮点由调用方按声明 scale 转定点）,drift_fp 缺失=undetermined（不适用≠通过）;三态词汇（pass/violation/undetermined）由本立法固定,params 只携带 drift_fp/bound_fp/target",
-      "v0.8.2 纪律: metadata.formula_registry 是装载期量纲登记门的登记面——引用立法计算裁决指令（conservation_check）的规则集必须携带结构合法登记（instruction_type 非空串/formula 非空串/dimensions 恰好七元素整数数组,即 [L,M,T,I,Θ,N,J] 序 SI 七基本量纲幂次,与 inference 族量纲服务出参同构）,缺登记/畸形登记/登记未覆盖引用即拒装载（装载器通用门,venue 不减免,谁用谁登记）;登记属结构资格证明,公式量纲推导的语义验证属创作期量纲服务（dimension_verify_formula）职责,两层合成完整量纲通路"
+      "v0.8.2 纪律: metadata.formula_registry 是装载期量纲登记门的登记面——引用立法计算裁决指令（conservation_check）的规则集必须携带结构合法登记（instruction_type 非空串/formula 非空串/dimensions 恰好七元素整数数组,即 [L,M,T,I,Θ,N,J] 序 SI 七基本量纲幂次,与 inference 族量纲服务出参同构）,缺登记/畸形登记/登记未覆盖引用即拒装载（装载器通用门,venue 不减免,谁用谁登记）;登记属结构资格证明,公式量纲推导的语义验证属创作期量纲服务（dimension_verify_formula）职责,两层合成完整量纲通路",
+      "v0.9.0 纪律: CAD 判据七指令属确定性测量事实三态裁决通道（conservation_check 同构,仅组合既有 branch/exists/lt/set 词汇,零新原语/零数据变形）;统一参数形态{测量事实, bound_fp, target},事实参数逐指令语义化（clearance_check.margin_fp 间隙裕度/safety_factor_check.ratio_fp 安全系数/stress_check.headroom_fp 应力裕量/mass_budget_check.margin_fp 质量余量/thermal_growth_check.dev_fp 热膨胀偏差/tolerance_stack_check.stack_fp 公差链累积/interference_check.overlap_fp 干涉体积）,裕度类四指令事实<bound_fp→violation,偏差类三指令 bound_fp<事实→violation,边界等号一律 pass（闭区间含等号,同 conservation 先例）;事实缺失=undetermined（不适用≠通过,弃权留痕）,bound_fp 缺失=error（调用方必须声明阈值,符号判定类 stress/mass_budget/interference 按约定传 0）;测量事实与阈值均为定点 i64,单位语义由 formula_registry 登记条目+调用方 scale 声明约定（µm/MPa/g/无量纲定点 1e6）,除法/减法/开方在确定性服务面完成,规则层零数据变形"
     ],
     "formula_registry": [
       {
         "instruction_type": "conservation_check",
         "formula": "|E_final − E_initial| / E_initial",
         "dimensions": [0, 0, 0, 0, 0, 0, 0]
+      },
+      {
+        "instruction_type": "clearance_check",
+        "formula": "g_min − d_min（间隙裕度 = 实测最小间隙 − 下限）",
+        "dimensions": [1, 0, 0, 0, 0, 0, 0]
+      },
+      {
+        "instruction_type": "safety_factor_check",
+        "formula": "σ_yield / σ_max（安全系数，定点 1e6）",
+        "dimensions": [0, 0, 0, 0, 0, 0, 0]
+      },
+      {
+        "instruction_type": "stress_check",
+        "formula": "σ_allow − σ_max（应力裕量）",
+        "dimensions": [-1, 1, -2, 0, 0, 0, 0]
+      },
+      {
+        "instruction_type": "mass_budget_check",
+        "formula": "W − Σmᵢ（质量余量 = 预算上限 − 实际总质量）",
+        "dimensions": [0, 1, 0, 0, 0, 0, 0]
+      },
+      {
+        "instruction_type": "thermal_growth_check",
+        "formula": "|ΔL_meas − α·L·ΔT|（热膨胀位移偏差）",
+        "dimensions": [1, 0, 0, 0, 0, 0, 0]
+      },
+      {
+        "instruction_type": "tolerance_stack_check",
+        "formula": "√(ΣTᵢ²)（公差链 RSS 累积）",
+        "dimensions": [1, 0, 0, 0, 0, 0, 0]
+      },
+      {
+        "instruction_type": "interference_check",
+        "formula": "V_intersecting（干涉体积，bound_fp=0 约定）",
+        "dimensions": [3, 0, 0, 0, 0, 0, 0]
       }
     ]
   },
@@ -485,6 +522,461 @@
                           "type": "lt",
                           "path": "__exec__.instruction.params.bound_fp",
                           "value": "__exec__.instruction.params.drift_fp",
+                          "on_missing": "error"
+                        }
+                      ]
+                    },
+                    "on_true": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "violation"
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "pass"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.instruction.params.target",
+                    "operation": "set",
+                    "value": "undetermined"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "clearance_check" },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "exists",
+                "path": "__exec__.instruction.params.margin_fp"
+              },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": {
+                      "type": "all",
+                      "inner": [
+                        {
+                          "type": "lt",
+                          "path": "__exec__.instruction.params.margin_fp",
+                          "value": "__exec__.instruction.params.bound_fp",
+                          "on_missing": "error"
+                        }
+                      ]
+                    },
+                    "on_true": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "violation"
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "pass"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.instruction.params.target",
+                    "operation": "set",
+                    "value": "undetermined"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "safety_factor_check" },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "exists",
+                "path": "__exec__.instruction.params.ratio_fp"
+              },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": {
+                      "type": "all",
+                      "inner": [
+                        {
+                          "type": "lt",
+                          "path": "__exec__.instruction.params.ratio_fp",
+                          "value": "__exec__.instruction.params.bound_fp",
+                          "on_missing": "error"
+                        }
+                      ]
+                    },
+                    "on_true": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "violation"
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "pass"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.instruction.params.target",
+                    "operation": "set",
+                    "value": "undetermined"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "stress_check" },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "exists",
+                "path": "__exec__.instruction.params.headroom_fp"
+              },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": {
+                      "type": "all",
+                      "inner": [
+                        {
+                          "type": "lt",
+                          "path": "__exec__.instruction.params.headroom_fp",
+                          "value": "__exec__.instruction.params.bound_fp",
+                          "on_missing": "error"
+                        }
+                      ]
+                    },
+                    "on_true": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "violation"
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "pass"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.instruction.params.target",
+                    "operation": "set",
+                    "value": "undetermined"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "mass_budget_check" },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "exists",
+                "path": "__exec__.instruction.params.margin_fp"
+              },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": {
+                      "type": "all",
+                      "inner": [
+                        {
+                          "type": "lt",
+                          "path": "__exec__.instruction.params.margin_fp",
+                          "value": "__exec__.instruction.params.bound_fp",
+                          "on_missing": "error"
+                        }
+                      ]
+                    },
+                    "on_true": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "violation"
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "pass"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.instruction.params.target",
+                    "operation": "set",
+                    "value": "undetermined"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "thermal_growth_check" },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "exists",
+                "path": "__exec__.instruction.params.dev_fp"
+              },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": {
+                      "type": "all",
+                      "inner": [
+                        {
+                          "type": "lt",
+                          "path": "__exec__.instruction.params.bound_fp",
+                          "value": "__exec__.instruction.params.dev_fp",
+                          "on_missing": "error"
+                        }
+                      ]
+                    },
+                    "on_true": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "violation"
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "pass"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.instruction.params.target",
+                    "operation": "set",
+                    "value": "undetermined"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "tolerance_stack_check" },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "exists",
+                "path": "__exec__.instruction.params.stack_fp"
+              },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": {
+                      "type": "all",
+                      "inner": [
+                        {
+                          "type": "lt",
+                          "path": "__exec__.instruction.params.bound_fp",
+                          "value": "__exec__.instruction.params.stack_fp",
+                          "on_missing": "error"
+                        }
+                      ]
+                    },
+                    "on_true": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "violation"
+                        }
+                      }
+                    ],
+                    "on_false": [
+                      {
+                        "type": "set",
+                        "params": {
+                          "attr": "__exec__.instruction.params.target",
+                          "operation": "set",
+                          "value": "pass"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "on_false": [
+                {
+                  "type": "set",
+                  "params": {
+                    "attr": "__exec__.instruction.params.target",
+                    "operation": "set",
+                    "value": "undetermined"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "interference_check" },
+        "on_true": [
+          {
+            "type": "branch",
+            "params": {
+              "domain": {
+                "type": "exists",
+                "path": "__exec__.instruction.params.overlap_fp"
+              },
+              "on_true": [
+                {
+                  "type": "branch",
+                  "params": {
+                    "domain": {
+                      "type": "all",
+                      "inner": [
+                        {
+                          "type": "lt",
+                          "path": "__exec__.instruction.params.bound_fp",
+                          "value": "__exec__.instruction.params.overlap_fp",
                           "on_missing": "error"
                         }
                       ]
