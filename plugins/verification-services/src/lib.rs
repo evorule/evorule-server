@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 逻辑验证原生服务（CNF 可满足性/有限状态机可达性/DFA 等价判定）。
+//! 逻辑验证原生服务（CNF 可满足性/FSM 可达性/DFA 等价/死锁判定/语言包含）。
 //!
 //! # 定位
 //! - 规则约束的确定性机器断言：命题约束（SAT）、状态空间性质（可达性/
@@ -17,7 +17,7 @@
 //!   - 未命中 → 回落 `ServiceRegistryHandler`（HTTP，兼容其他外部服务）
 //!
 //! # 统一信封 v1
-//! - 全部 3 服务成功出参含保留键 `status`（恒 `determined`）+
+//! - 全部 5 服务成功出参含保留键 `status`（恒 `determined`）+
 //!   `determinism`（恒 `bitwise_replayable`）；无舍入形态，契约不含
 //!   scale/rounding（checksum 家族先例，按适用条件诚实省略）；error
 //!   走框架 `Err(String)` 通道并带自诊断指引。
@@ -28,12 +28,17 @@
 //! - FSM 可达性：`max_steps` 受限探查与全空间完备判定以出参 `bounded`
 //!   显式区分（未达 ≠ 不可达，如实标注）；
 //! - FSM 等价：仅完全 DFA（转移函数全定义），不完全表 fail-visible 拒解；
+//! - FSM 死锁：活性语义（可达但无法到达任何接受态）；不可达态不判定；
+//! - FSM 语言包含：仅完全 DFA，符号 ≤ 16（字母表独立资源守卫）；
+//!   不包含时反例词可机械复核；
 //! - witness/反例词均可机械复核（沿路径逐转移验真/逐终态验接受性）。
 //!
 //! # 服务清单（SSOT = official_native_services.json，双侧守卫锁定）
 //! 1. `verification_sat_solve` — CNF 命题可满足性判定（确定性 DPLL）
 //! 2. `verification_fsm_reachability` — 显式 FSM 可达性分析
 //! 3. `verification_fsm_equivalence` — 两台完全 DFA 等价判定
+//! 4. `verification_fsm_deadlock` — FSM 死锁判定（活性语义）
+//! 5. `verification_fsm_language_inclusion` — 两台完全 DFA 语言包含判定
 
 #![forbid(unsafe_code)]
 
@@ -48,7 +53,10 @@ pub mod fsm;
 pub mod sat;
 pub mod services;
 
-use services::{mk_fsm_equivalence, mk_fsm_reachability, mk_sat_solve};
+use services::{
+    mk_fsm_deadlock, mk_fsm_equivalence, mk_fsm_language_inclusion, mk_fsm_reachability,
+    mk_sat_solve,
+};
 
 // ============================================================================
 // 声明表（SSOT 配对文件: official_native_services.json; 顺序即声明序,
@@ -84,6 +92,24 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
             r#"{"type":"object","properties":{"a_states":{"type":"integer"},"a_symbols":{"type":"integer"},"a_transitions":{"type":"array","items":{"type":"array","items":{"type":"integer"}},"description":"机器 A 完全定义转移表[state][symbol]"},"a_accepting":{"type":"array","items":{"type":"integer"}},"b_states":{"type":"integer"},"b_symbols":{"type":"integer"},"b_transitions":{"type":"array","items":{"type":"array","items":{"type":"integer"}},"description":"机器 B 完全定义转移表[state][symbol]"},"b_accepting":{"type":"array","items":{"type":"integer"}}},"required":["a_states","a_symbols","a_transitions","a_accepting","b_states","b_symbols","b_transitions","b_accepting"]}"#,
         ),
         make: mk_fsm_equivalence,
+    },
+    NativeServiceDef {
+        name: "verification_fsm_deadlock",
+        sensitive: false,
+        description: "有限状态机死锁判定(活性语义:可达但从此无法到达任何接受态的状态集,卡死在非接受吸收域;给出到首个死锁态的最短witness路径,不可达态不判定,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"states":{"type":"integer","description":"状态数(状态 0..states)"},"symbols":{"type":"integer","description":"符号数(符号 0..symbols)"},"transitions":{"type":"array","items":{"type":"array","items":{"type":"integer"}},"description":"完全定义转移表[state][symbol]=目标状态,行数=states 列数=symbols"},"accepting":{"type":"array","items":{"type":"integer"},"description":"接受状态列表"},"initial":{"type":"array","items":{"type":"integer"},"description":"初始状态列表(至少一个)"}},"required":["states","symbols","transitions","accepting","initial"]}"#,
+        ),
+        make: mk_fsm_deadlock,
+    },
+    NativeServiceDef {
+        name: "verification_fsm_language_inclusion",
+        sensitive: false,
+        description: "两台完全确定有限自动机语言包含判定 L(A)⊆L(B)(乘积可达闭包与补机构造,符号上限16;包含=完备判定;不包含给出A接受而B拒绝的反例词与两机轨迹,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"a_states":{"type":"integer"},"a_symbols":{"type":"integer"},"a_transitions":{"type":"array","items":{"type":"array","items":{"type":"integer"}},"description":"机器 A 完全定义转移表[state][symbol]"},"a_accepting":{"type":"array","items":{"type":"integer"}},"b_states":{"type":"integer"},"b_symbols":{"type":"integer"},"b_transitions":{"type":"array","items":{"type":"array","items":{"type":"integer"}},"description":"机器 B 完全定义转移表[state][symbol]"},"b_accepting":{"type":"array","items":{"type":"integer"}}},"required":["a_states","a_symbols","a_transitions","a_accepting","b_states","b_symbols","b_transitions","b_accepting"]}"#,
+        ),
+        make: mk_fsm_language_inclusion,
     },
 ];
 
@@ -138,7 +164,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
-        assert_eq!(total, 3, "本插件声明表应为 3 项");
+        assert_eq!(total, 5, "本插件声明表应为 5 项");
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
         }

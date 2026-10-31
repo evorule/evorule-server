@@ -379,6 +379,29 @@ async fn envelope_has_reserved_keys_on_all_services() {
                 ("b_accepting", ints(&[0])),
             ]),
         ),
+        (
+            "verification_fsm_deadlock",
+            JsonValue::object_from_pairs(&[
+                ("states", int(2)),
+                ("symbols", int(1)),
+                ("transitions", int_matrix(&[&[1], &[1]])),
+                ("accepting", ints(&[0])),
+                ("initial", ints(&[0])),
+            ]),
+        ),
+        (
+            "verification_fsm_language_inclusion",
+            JsonValue::object_from_pairs(&[
+                ("a_states", int(1)),
+                ("a_symbols", int(1)),
+                ("a_transitions", int_matrix(&[&[0]])),
+                ("a_accepting", ints(&[0])),
+                ("b_states", int(1)),
+                ("b_symbols", int(1)),
+                ("b_transitions", int_matrix(&[&[0]])),
+                ("b_accepting", ints(&[0])),
+            ]),
+        ),
     ];
     for (name, args) in cases {
         let out = router
@@ -420,15 +443,160 @@ async fn deterministic_bitwise_replay() {
     assert_eq!(a, b, "同输入两次执行须逐位一致(含 note 文本与键序)");
 }
 
+/// 死锁(活性语义)golden:3 态机器,状态 1 经任意符号落入吸收态 2(非接受)
+/// ——状态 1 与 2 可达但均无法到达接受态 0,死锁={1,2},首个死锁态 1 的
+/// witness 为一步转移[0],路径[0,1]。
+#[tokio::test]
+async fn fsm_deadlock_liveness_golden() {
+    let router = VerificationServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("states", int(3)),
+        ("symbols", int(1)),
+        ("transitions", int_matrix(&[&[1], &[2], &[2]])),
+        ("accepting", ints(&[0])),
+        ("initial", ints(&[0])),
+    ]);
+    let out = router
+        .execute(&svc_params("verification_fsm_deadlock", args))
+        .await
+        .unwrap();
+    assert_eq!(out.get("has_deadlock").unwrap(), &JsonValue::Bool(true));
+    assert_eq!(out.get("deadlock_states").unwrap(), &ints(&[1, 2]));
+    let witness = out.get("witness").unwrap();
+    assert_eq!(witness.get("state").unwrap(), &int(1));
+    assert_eq!(witness.get("steps").unwrap(), &int(1));
+    assert_eq!(witness.get("start").unwrap(), &int(0));
+    assert_eq!(witness.get("word").unwrap(), &ints(&[0]));
+    assert_eq!(witness.get("path").unwrap(), &ints(&[0, 1]));
+}
+
+/// 无死锁:接受态可达性覆盖全部可达域(含不可达非接受态不在判定面)。
+#[tokio::test]
+async fn fsm_deadlock_none_when_accepting_reachable() {
+    let router = VerificationServiceRouter::new(noop_fallback());
+    // 状态 2 不可达且非接受——不在判定面,死锁集为空
+    let args = JsonValue::object_from_pairs(&[
+        ("states", int(3)),
+        ("symbols", int(1)),
+        ("transitions", int_matrix(&[&[1], &[0], &[2]])),
+        ("accepting", ints(&[1])),
+        ("initial", ints(&[0])),
+    ]);
+    let out = router
+        .execute(&svc_params("verification_fsm_deadlock", args))
+        .await
+        .unwrap();
+    assert_eq!(out.get("has_deadlock").unwrap(), &JsonValue::Bool(false));
+    assert_eq!(out.get("deadlock_states").unwrap(), &ints(&[]));
+    assert!(out.get("witness").is_none(), "无死锁时不得输出 witness");
+}
+
+/// 死锁 fail-visible:initial 越界拒绝。
+#[tokio::test]
+async fn fsm_deadlock_initial_out_of_range_fails() {
+    let router = VerificationServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("states", int(2)),
+        ("symbols", int(1)),
+        ("transitions", int_matrix(&[&[0], &[0]])),
+        ("accepting", ints(&[0])),
+        ("initial", ints(&[5])),
+    ]);
+    let err = router
+        .execute(&svc_params("verification_fsm_deadlock", args))
+        .await
+        .unwrap_err();
+    assert!(err.contains("超出状态域"), "initial 越界须拒绝, got: {err}");
+}
+
+/// 语言包含 golden(成立):A 的接受集⊆B 的接受集且转移相同 → 包含。
+#[tokio::test]
+async fn fsm_language_inclusion_holds_golden() {
+    let router = VerificationServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("a_states", int(2)),
+        ("a_symbols", int(1)),
+        ("a_transitions", int_matrix(&[&[1], &[0]])),
+        ("a_accepting", ints(&[1])),
+        ("b_states", int(2)),
+        ("b_symbols", int(1)),
+        ("b_transitions", int_matrix(&[&[1], &[0]])),
+        ("b_accepting", ints(&[0, 1])),
+    ]);
+    let out = router
+        .execute(&svc_params("verification_fsm_language_inclusion", args))
+        .await
+        .unwrap();
+    assert_eq!(out.get("included").unwrap(), &JsonValue::Bool(true));
+    assert!(out.get("counterexample_word").is_none());
+}
+
+/// 语言包含 golden(不成立):A 在 1 符号循环上接受,B 拒绝 1 符号词——
+/// 反例词 [1],轨迹 A: 0→1(B 同),A 终态接受、B 终态拒绝,可机械复核。
+#[tokio::test]
+async fn fsm_language_inclusion_counterexample_golden() {
+    let router = VerificationServiceRouter::new(noop_fallback());
+    let args = JsonValue::object_from_pairs(&[
+        ("a_states", int(2)),
+        ("a_symbols", int(1)),
+        ("a_transitions", int_matrix(&[&[1], &[0]])),
+        ("a_accepting", ints(&[1])),
+        ("b_states", int(2)),
+        ("b_symbols", int(1)),
+        ("b_transitions", int_matrix(&[&[1], &[0]])),
+        ("b_accepting", ints(&[0])),
+    ]);
+    let out = router
+        .execute(&svc_params("verification_fsm_language_inclusion", args))
+        .await
+        .unwrap();
+    assert_eq!(out.get("included").unwrap(), &JsonValue::Bool(false));
+    assert_eq!(
+        out.get("counterexample_word").unwrap(),
+        &ints(&[0]),
+        "反例词为最短区分词(乘积 BFS 首达):空词起 A 首符号后接受而 B 拒绝,单符号词 [0] 即成"
+    );
+    assert_eq!(out.get("path_a").unwrap(), &ints(&[0, 1]));
+    assert_eq!(out.get("path_b").unwrap(), &ints(&[0, 1]));
+}
+
+/// 语言包含守卫:符号数超上限 16 如实拒解(字母表独立资源守卫)。
+#[tokio::test]
+async fn fsm_language_inclusion_alphabet_over_limit_fails_visible() {
+    let router = VerificationServiceRouter::new(noop_fallback());
+    // 单态机:17 列自环(合法通过解析维度),进入包含判定后命中字母表守卫
+    let transitions = int_matrix(&[&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]);
+    let args = JsonValue::object_from_pairs(&[
+        ("a_states", int(1)),
+        ("a_symbols", int(17)),
+        ("a_transitions", transitions.clone()),
+        ("a_accepting", ints(&[0])),
+        ("b_states", int(1)),
+        ("b_symbols", int(17)),
+        ("b_transitions", transitions),
+        ("b_accepting", ints(&[0])),
+    ]);
+    let err = router
+        .execute(&svc_params("verification_fsm_language_inclusion", args))
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("超语言包含上限") || err.contains("16"),
+        "符号超限须 fail-visible 拒解, got: {err}"
+    );
+}
+
 #[test]
-fn declaration_table_has_three_services() {
+fn declaration_table_has_five_services() {
     let names: Vec<&str> = NATIVE_SERVICES.iter().map(|d| d.name).collect();
     assert_eq!(
         names,
         vec![
             "verification_sat_solve",
             "verification_fsm_reachability",
-            "verification_fsm_equivalence"
+            "verification_fsm_equivalence",
+            "verification_fsm_deadlock",
+            "verification_fsm_language_inclusion"
         ]
     );
 }
