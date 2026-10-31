@@ -663,3 +663,118 @@ async fn test_band_check_legislation() {
         );
     }
 }
+
+/// 构造 externalization_violation 指令（Tier 1 立法 v0.8.0：外判违规事实记录通道，tool_trace 同构）
+fn make_externalization_violation_instruction(phrase: &str) -> JsonValue {
+    let mut value = BTreeMap::new();
+    value.insert(
+        "domain".to_string(),
+        JsonValue::string("deterministic_compute"),
+    );
+    value.insert("phrase".to_string(), JsonValue::string(phrase));
+    value.insert("request_id".to_string(), JsonValue::string("req-itest-1"));
+    value.insert("mode".to_string(), JsonValue::string("observe"));
+    let mut params = BTreeMap::new();
+    params.insert(
+        "attr".to_string(),
+        JsonValue::string("meta_compliance.externalization_breach"),
+    );
+    params.insert("value".to_string(), JsonValue::Object(value));
+    let mut instr = BTreeMap::new();
+    instr.insert(
+        "type".to_string(),
+        JsonValue::string("externalization_violation"),
+    );
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+/// externalization_violation 立法三例：违规落链 / 单槽纯覆盖（后写胜）/ 无关指令零波及
+#[tokio::test]
+async fn test_externalization_violation_legislation() {
+    // 例 1：违规事实经新规则落 payload.meta_compliance.externalization_breach
+    {
+        let core_eval = load_core_eval();
+        let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+        let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+        tx.send(Fact::Command {
+            id: FactId(1),
+            instruction: make_externalization_violation_instruction("经计算"),
+        })
+        .unwrap();
+        let snapshot = wait_for_stable(&mut rx, &facts_log)
+            .await
+            .expect("Timed out waiting for Stable");
+        let breach = snapshot
+            .get("meta_compliance")
+            .and_then(|m| m.get("externalization_breach"));
+        assert_eq!(
+            breach.and_then(|b| b.get("domain")).and_then(|d| d.as_str()),
+            Some("deterministic_compute"),
+            "违规事实应落 meta_compliance.externalization_breach; snapshot={snapshot:?}"
+        );
+        assert_eq!(
+            breach.and_then(|b| b.get("phrase")).and_then(|p| p.as_str()),
+            Some("经计算")
+        );
+    }
+
+    // 例 2：单槽纯覆盖——两次违规后写胜（历史明细在 Violation 账，payload 只留最新）
+    {
+        let core_eval = load_core_eval();
+        let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+        let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+        tx.send(Fact::Command {
+            id: FactId(1),
+            instruction: make_externalization_violation_instruction("经计算"),
+        })
+        .unwrap();
+        tx.send(Fact::Command {
+            id: FactId(2),
+            instruction: make_externalization_violation_instruction("计算得出"),
+        })
+        .unwrap();
+        let snapshot = wait_for_stable(&mut rx, &facts_log)
+            .await
+            .expect("Timed out waiting for Stable");
+        assert_eq!(
+            snapshot
+                .get("meta_compliance")
+                .and_then(|m| m.get("externalization_breach"))
+                .and_then(|b| b.get("phrase"))
+                .and_then(|p| p.as_str()),
+            Some("计算得出"),
+            "单槽纯覆盖应后写胜; snapshot={snapshot:?}"
+        );
+    }
+
+    // 例 3：无关指令不触新规则（普通 set 不产生 meta_compliance 残留）
+    {
+        let core_eval = load_core_eval();
+        let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+        let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+        let mut params = BTreeMap::new();
+        params.insert("attr".to_string(), JsonValue::string("plain_field"));
+        params.insert("operation".to_string(), JsonValue::string("set"));
+        params.insert("value".to_string(), JsonValue::Integer(1));
+        let mut instr = BTreeMap::new();
+        instr.insert("type".to_string(), JsonValue::string("set"));
+        instr.insert("params".to_string(), JsonValue::Object(params));
+        tx.send(Fact::Command {
+            id: FactId(1),
+            instruction: JsonValue::Object(instr),
+        })
+        .unwrap();
+        let snapshot = wait_for_stable(&mut rx, &facts_log)
+            .await
+            .expect("Timed out waiting for Stable");
+        assert_eq!(
+            snapshot.get("plain_field").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+        assert!(
+            snapshot.get("meta_compliance").is_none(),
+            "无关指令不得触外判违规通道; snapshot={snapshot:?}"
+        );
+    }
+}

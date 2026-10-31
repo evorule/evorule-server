@@ -32,6 +32,12 @@ use std::sync::OnceLock;
 /// 特征表正本文件名（置于 rules_dir 根目录，与 00_constraint_ 元规则同目录）
 pub const FEATURE_TABLE_FILE: &str = "00_constraint_io_guard.json";
 
+/// 确定性外判域标识（外判立法 v0.8.0）：数值/公式/量纲/日期时长类问题
+/// 禁止心算、必须走确定性服务。命中该域时除 Violation 落账外，还经部署面
+/// `externalization_violation` 记录通道将违规事实写进 payload 审计链
+/// （评审面可检测；tool_trace 同通道同范式）。
+pub const EXTERNALIZATION_DOMAIN: &str = "deterministic_compute";
+
 /// 门禁模式（env `EVORULE_IO_GUARD`）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoGuardMode {
@@ -346,7 +352,10 @@ mod tests {
                 {"domain": "http_get", "tools": ["http_get"],
                  "phrases": ["已访问", "已请求", "接口返回如下", "已抓取"]},
                 {"domain": "retrieve", "tools": ["retrieve", "search_memory"],
-                 "phrases": ["已检索", "已查询", "查询结果如下", "搜索结果如下"]}
+                 "phrases": ["已检索", "已查询", "查询结果如下", "搜索结果如下"]},
+                {"domain": "deterministic_compute",
+                 "tools": ["numeric_decimal_eval", "gov_ratio_split"],
+                 "phrases": ["经计算", "计算得出", "计算结果如下", "换算结果如下", "换算如下"]}
             ]
         });
         parse_features(&json).unwrap_or_default()
@@ -360,6 +369,8 @@ mod tests {
             "http_get",
             "retrieve",
             "search_memory",
+            "numeric_decimal_eval",
+            "gov_ratio_split",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -426,9 +437,38 @@ mod tests {
     #[test]
     fn test_parse_features_valid() {
         let table = feature_table_fixture();
-        assert_eq!(table.features.len(), 5);
+        assert_eq!(table.features.len(), 6);
         assert_eq!(table.features[0].domain, "shell_exec");
         assert!(table.features[0].tools.contains(&"shell_exec".to_string()));
+    }
+
+    /// 外判立法（部署面 v0.8.0）：确定性外判域三条件判据正反例
+    #[test]
+    fn test_inspect_deterministic_compute_bypass_hit() {
+        let table = feature_table_fixture();
+        let assembled = full_assembly();
+        // 外判绕行样本：收尾声称「经计算」+ 确定性服务在装配面 + 零调用 → 命中
+        let called = BTreeSet::new();
+        let hit = table.inspect("经计算，该轨道周期约为 94 分钟。", &assembled, &called);
+        assert!(
+            matches!(&hit, Some(h) if h.domain == "deterministic_compute"),
+            "外判绕行样本应命中 deterministic_compute"
+        );
+        let hit = table.inspect("换算结果如下：1 英寸 = 2.54 厘米。", &assembled, &called);
+        assert!(
+            matches!(&hit, Some(h) if h.domain == "deterministic_compute"),
+            "外判绕行样本（换算声称）应命中 deterministic_compute"
+        );
+        // 已调用确定性服务 → 不命中（判据三）
+        let called = set(&["numeric_decimal_eval"]);
+        assert!(table
+            .inspect("经计算，该轨道周期约为 94 分钟。", &assembled, &called)
+            .is_none());
+        // 裸数值叙述无数值工具装配 → 不命中（判据二；金样本 The answer is 42. 同理）
+        let bare = set(&["file_read"]);
+        assert!(table
+            .inspect("The answer is 42.", &bare, &BTreeSet::new())
+            .is_none());
     }
 
     #[test]

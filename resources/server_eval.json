@@ -3,8 +3,8 @@
   "kind": "rule_set",
   "id": "org.evorule.server.eval",
   "rule_id": "server.eval",
-  "version": "0.7.0",
-  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（2026-08-27），多轮编排由应用层 runner 负责（app.evoagent.agent v0.5.0 起同为单轮口径）；桥接规则修复(2026-09-01):HTTP 会话为平台消费面无法自持剧本,补回 call_external/call_service 会话桥接指令规则(v0.4.1)；v0.4.2:call_service 桥接规则触发域补 exists(params.service_name) 门禁——命令显式携带 service_name 才走宪法单发桥接,不携带时交由 bundle 落地规则硬编码路由(v0.4.1 缺该门禁致既有 bundle 工作流命令因必选路径解析失败而 Error,acceptance/binding e2e 回归发现)；v0.5.0(规则清理):移除桥接规则内遗留 ReAct 循环段(collect 工具扇出/react_iteration+merge 回环),回归纯单发桥接,多轮编排由应用层 runner 负责；v0.6.0:同步 TCB 宪法 v0.5.0 的 tool_trace 规则(工具调用轨迹事实记录通道,仅复用既有 set 动作与 instruction 域函数,零新原语)；2026-09-29 项目方裁定:id 拆分为 org.evorule.server.eval——本文件为部署面规则集,版本线独立自持,org.evorule.core.eval 归还主仓宪法专用,同 id 双版本线混淆就此消除；v0.7.0:band_check 区间判定立法——Tier 1 合规形态（lt×2+set 标签,零数据变形,开区间 lo<v<hi）,新指令类型=部署层数据+既有词汇组合（零新原语,词汇表维持加减）,调用方 params 直传 value/lo/hi、target 用 payload 相对路径（如 verdict；__exec__.payload. 全形式经动态 attr 会双层嵌套，真机实证 2026-10-19）",
+  "version": "0.8.0",
+  "description": "TCB 最小引擎自评估集（原子计算+控制流+兜底）；ReAct 应用剧本已整体迁出至消费方自持（2026-08-27），多轮编排由应用层 runner 负责（app.evoagent.agent v0.5.0 起同为单轮口径）；桥接规则修复(2026-09-01):HTTP 会话为平台消费面无法自持剧本,补回 call_external/call_service 会话桥接指令规则(v0.4.1)；v0.4.2:call_service 桥接规则触发域补 exists(params.service_name) 门禁——命令显式携带 service_name 才走宪法单发桥接,不携带时交由 bundle 落地规则硬编码路由(v0.4.1 缺该门禁致既有 bundle 工作流命令因必选路径解析失败而 Error,acceptance/binding e2e 回归发现)；v0.5.0(规则清理):移除桥接规则内遗留 ReAct 循环段(collect 工具扇出/react_iteration+merge 回环),回归纯单发桥接,多轮编排由应用层 runner 负责；v0.6.0:同步 TCB 宪法 v0.5.0 的 tool_trace 规则(工具调用轨迹事实记录通道,仅复用既有 set 动作与 instruction 域函数,零新原语)；2026-09-29 项目方裁定:id 拆分为 org.evorule.server.eval——本文件为部署面规则集,版本线独立自持,org.evorule.core.eval 归还主仓宪法专用,同 id 双版本线混淆就此消除；v0.7.0:band_check 区间判定立法——Tier 1 合规形态（lt×2+set 标签,零数据变形,开区间 lo<v<hi）,新指令类型=部署层数据+既有词汇组合（零新原语,词汇表维持加减）,调用方 params 直传 value/lo/hi、target 用 payload 相对路径（如 verdict；__exec__.payload. 全形式经动态 attr 会双层嵌套，真机实证 2026-10-19）；v0.8.0:externalization_violation 外判违规事实记录通道立法——数值/公式/量纲/日期时长类问题禁止心算、必须走确定性服务（外判纪律立法化）,运行时门禁（io_guard 特征表 deterministic_compute 域,三条件判据=收尾文本含动作声称词形×装配面有该域确定性服务×本会话零调用）命中后经本通道以 set 将违规事实写入 payload 审计链（tool_trace 同构,零新原语,零数据变形）；违规判定语义在运行时门禁面（壳核分离:语义归 LLM,行为归闸）,规则层只做记录不做语义判定",
   "metadata": {
     "author": "evorule-core",
     "license": "CC0-1.0 Universal (Public Domain)",
@@ -18,7 +18,8 @@
       "2. 控制流指令: sequence, conditional, while_loop",
       "3. 默认处理: all([]) 兜底规则",
       "4. 会话桥接指令: call_external, call_service(单发桥接;多轮编排由应用层 runner 负责——v0.5.0 随规则清理移除宪法内 ReAct 循环残留)",
-      "5. 工具轨迹指令: tool_trace(应用层工具调用轨迹的事实记录通道;2026-09-29 项目方裁定自主仓宪法迁出,本部署面自持)"
+      "5. 工具轨迹指令: tool_trace(应用层工具调用轨迹的事实记录通道;2026-09-29 项目方裁定自主仓宪法迁出,本部署面自持)",
+      "6. 外判违规事实指令: externalization_violation(外判违规事实经 set 落 payload 审计链的记录通道;v0.8.0 立法,tool_trace 同构,违规判定在运行时门禁面)"
     ],
     "constraints": [
       "每条 transform 规则中最多包含一个 io_request 元指令",
@@ -32,7 +33,8 @@
       "本版 call_external 参数: 仅使用 messages（LLM 消息历史数组）与 tools（可选工具描述）；prompt/system 不再作为指令参数（live handler 可直接从 messages 透传）。v0.4.0 注: 最小集曾不定义 call_external 规则致 LLM 审计桥静默失效(该缺陷),v0.4.1 补回;server 启动 fail-fast 校验 call_external 规则存在。多轮编排应用请在其应用层 runner 自行实现（宪法 v0.5.0 起回归单轮指令映射）",
       "v0.4.2 call_service 桥接语义: 宪法单发桥接仅接管命令显式携带 params.service_name 的 call_service(io_request 必选路径解析失败即 Error 为 TCB 审计决策,不可静默);命令不携带 service_name 时宪法规则不触发——bundle 命令须显式携带 service_name 走部署面桥接,或使用 bundle 自有 io_type;bundle 规则发射/消费平台保留 io_type 将被 I/O 权利面独占防线拒载(装载期防线+导入期前置预判双落点),bundle 正道=自有 io_type",
       "语义澄清: 业务 set 指令为纯覆盖语义——宪法规则硬编码元指令 operation=set，指令 params 中的 operation 字段（如 add/sub）被忽略；算术更新必须使用 increment（add）/decrement（sub）指令。误用 set+add 做循环体累加会导致计数器每轮被覆盖回常量、while_loop 条件永真（差分测试回归教训）",
-      "v0.6.0 纪律: tool_trace 属部署面应用层策略规则（2026-09-29 项目方改判——应用层策略规则禁入主仓宪法，自主仓宪法迁出至此自持），不触及物理原语（元指令/域函数零新增）；确定性/可回放/审计链为无商量红线——轨迹数据只经 set 进入 payload 随 StateTransition 落链，不触碰哈希链与状态机语义"
+      "v0.6.0 纪律: tool_trace 属部署面应用层策略规则（2026-09-29 项目方改判——应用层策略规则禁入主仓宪法，自主仓宪法迁出至此自持），不触及物理原语（元指令/域函数零新增）；确定性/可回放/审计链为无商量红线——轨迹数据只经 set 进入 payload 随 StateTransition 落链，不触碰哈希链与状态机语义",
+      "v0.8.0 纪律: externalization_violation 属外判违规记录通道（数值/公式/量纲/日期时长类问题禁止心算、必须走确定性服务的外判纪律立法化），与 tool_trace 同构仅组合既有 set 动作（零新原语/零数据变形）；违规事实只经 set 进入 payload 随 StateTransition 落链，不触碰哈希链与状态机语义；违规判定在运行时门禁面（三条件字面配对，零语义判官），规则层不做语义判定"
     ]
   },
   "transform": [
@@ -429,6 +431,22 @@
                   }
                 }
               ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "branch",
+      "params": {
+        "domain": { "type": "instruction", "instruction_type": "externalization_violation" },
+        "on_true": [
+          {
+            "type": "set",
+            "params": {
+              "attr": "__exec__.instruction.params.attr",
+              "operation": "set",
+              "value": "__exec__.instruction.params.value"
             }
           }
         ]

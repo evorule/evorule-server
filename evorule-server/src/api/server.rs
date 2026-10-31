@@ -11689,6 +11689,29 @@ async fn session_io_response(
                 "io_guard hit on final response"
             );
 
+            // 外判立法（部署面 v0.8.0）：确定性外判域命中时，经
+            // externalization_violation 记录通道把违规事实写进 payload 审计链
+            // （评审面可检测；与 tool_trace 同通道；运行时 Violation 账不受影响）
+            if hit.domain == super::io_guard::EXTERNALIZATION_DOMAIN {
+                let breach_id = api.next_id();
+                let breach_instruction = serde_to_tcb(serde_json::json!({
+                    "type": "externalization_violation",
+                    "params": {
+                        "attr": "meta_compliance.externalization_breach",
+                        "value": {
+                            "domain": hit.domain,
+                            "phrase": hit.phrase,
+                            "request_id": req.request_id,
+                            "mode": format!("{io_guard_mode:?}").to_lowercase(),
+                        }
+                    }
+                }));
+                let _ = session.command_tx.send(evorule_reactor::Fact::Command {
+                    id: breach_id,
+                    instruction: breach_instruction,
+                });
+            }
+
             if io_guard_mode == super::io_guard::IoGuardMode::Enforce {
                 return Err((
                     StatusCode::UNPROCESSABLE_ENTITY,

@@ -1588,3 +1588,221 @@ async fn test_sentinel_anchor_wal_revives_for_reads() {
         "复活 payload 必须含规则集版本锚（__ruleset__.version 按路径分段落嵌套）: {resp}"
     );
 }
+
+/// 测试 N：外判立法（部署面 v0.8.0）——io_guard 命中 → externalization_violation
+/// 回注 → payload 审计链落账
+///
+/// handler 级端到端（HTTP 层验证 `session_io_response` 挂点接线）：
+/// io_guard 命中 deterministic_compute 域（收尾文本含「经计算」动作特征 ×
+/// call_external 装配面含确定性服务 × 本会话零调用）后，server.rs 挂点回注
+/// `externalization_violation` Command，经规则层 v0.8.0 规则落链
+/// `meta_compliance.externalization_breach`（评审面可检测；与 tool_trace 同通道）。
+///
+/// - 正例：三条件全满足 → observe 模式 200 放行 + 单槽落链（domain/phrase/mode 齐全）
+/// - 负例：无 call_external 装配的会话提交同样收尾文本 → 三条件判据不满足，
+///   槽位保持 null（零波及）。guard 在 handler 内同步判定，未命中则永无写入，
+///   无需等待版本推进即可断言。
+#[tokio::test]
+async fn test_externalization_violation_audit_chain() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ===== 1. 临时目录：core_eval.json + rules/ + 部署 deterministic_compute 特征域 =====
+
+    let tmp_dir = TempDir::new().expect("Failed to create temp dir");
+    let tmp_path = tmp_dir.path();
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let core_eval_source = manifest_dir.join("../resources/server_eval.json");
+    let core_eval_content = fs::read_to_string(&core_eval_source).unwrap_or_else(|e| {
+        panic!(
+            "Failed to read server_eval.json at {}: {}",
+            core_eval_source.display(),
+            e
+        )
+    });
+    let core_eval_path = tmp_path.join("core_eval.json");
+    fs::write(&core_eval_path, &core_eval_content).expect("Failed to write core_eval.json");
+
+    let rules_dir = tmp_path.join("rules");
+    fs::create_dir(&rules_dir).expect("Failed to create rules dir");
+    // 特征表（治理正本属地 rules_dir 根）：仅部署确定性外判域，聚焦外判立法通道
+    fs::write(
+        rules_dir.join(evorule_server::api::io_guard::FEATURE_TABLE_FILE),
+        r#"{
+            "kind": "io_guard_features",
+            "features": [
+                {"domain": "deterministic_compute",
+                 "tools": ["numeric_decimal_eval"],
+                 "phrases": ["经计算", "换算结果如下"]}
+            ]
+        }"#,
+    )
+    .expect("Failed to write feature table");
+
+    // ===== 2. AppState（自定义 core_eval_path + rules_dir，observe 缺省模式）=====
+
+    let core_eval = load_core_eval();
+
+    let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
+    let (tx, _rx, _event_tx, _handle, facts_log) = reactor.spawn();
+    let auditor = Auditor::new(facts_log.clone());
+    let governance = GovernanceApi::new(tx, facts_log, auditor);
+
+    let sessions = SessionApi::new_with_full_config(
+        core_eval,
+        100,
+        None,              // wal_dir: 纯内存模式
+        false,             // wal_fsync
+        100 * 1024 * 1024, // max_wal_size_bytes
+        false,             // auto_verify
+        1000,              // auto_verify_threshold
+        1,                 // auto_verify_interval
+        core_eval_path.clone(),
+        rules_dir.clone(),
+        evorule_governance_host::session::DEFAULT_IO_WARN_TIMEOUT.as_secs(),
+        evorule_governance_host::session::DEFAULT_IO_ERROR_TIMEOUT.as_secs(),
+        0,
+        None, // anchor_config: 默认关闭
+    );
+
+    let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
+    let readiness = Arc::new(AtomicBool::new(true));
+    let shared_facts = SharedFactsLog::new();
+    let workspace_state = make_workspace_state(&sessions);
+    let state = AppState::new(
+        governance,
+        sessions,
+        metrics,
+        readiness,
+        shared_facts,
+        workspace_state,
+        Arc::new(InputSanitizer::with_default_rules()),
+    );
+
+    // ===== 3. 正例：call_external 装配 + 「经计算」收尾 → 单槽落链 =====
+
+    let (_, json) = send(&state, "POST", "/api/sessions", None).await;
+    assert_eq!(json["message"], "Session created");
+    let session_hit = json["session_id"].as_u64().unwrap();
+
+    // 装配面：提交 call_external 指令（manifest 快照语义：工具集入装配面，本会话零调用）。
+    // 三个硬事实（缺一则静默漏判，逐条锁定）：
+    // 1. Schema 门禁要求 call_external 必带 messages（core_eval 合约，见 evo-agent
+    //    runner.rs build_call_external_command）；门禁拒绝形态 = HTTP 200 + success:false。
+    // 2. 带 messages 的 call_external = llm_audit 形态（is_llm_audit_request）：内置
+    //    IoSubscriber 跳过自动应答，IoRequest 保持 pending 等外部执行者；且
+    //    Command/IoRequest 落账不 bump version（facts_log append 语义），不能以
+    //    version>baseline 判装配入账。
+    // 3. ?wait=true 同步等受理结论（IoRequest 落链）——复现生产侧 SSE io_request
+    //    事件的同步点，保证 io_response 挂点扫装配面时 Command fact 必已落账。
+    let call_external_body = r#"{"instruction":{"type":"call_external","params":{"messages":[{"role":"user","content":"计算轨道周期"}],"tools":[{"type":"function","function":{"name":"numeric_decimal_eval","parameters":{}}}]}}}"#;
+    let (st, resp) = send(
+        &state,
+        "POST",
+        &format!("/api/sessions/{session_hit}/command?wait=true"),
+        Some(call_external_body),
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::OK,
+        "call_external command should succeed"
+    );
+    assert_eq!(
+        resp["accepted"],
+        serde_json::json!(true),
+        "call_external 必须受理落链（HTTP 200 + accepted≠true = Schema 门禁静默拒绝或结论未落）: {resp}"
+    );
+
+    // 从审计链取 pending IoRequest 的 fact_id（生产侧由 SSE io_request 事件携带；
+    // 测试经 include_content 审计投影等价获取），io_response 以其回参闭合回路
+    let (_, audit) = send(
+        &state,
+        "GET",
+        &format!("/api/sessions/{session_hit}/audit?include_content=true"),
+        None,
+    )
+    .await;
+    let io_request_id = audit["entries"]
+        .as_array()
+        .and_then(|entries| {
+            entries.iter().find_map(|e| {
+                if e["content_json"]["type"] == serde_json::json!("IoRequest")
+                    && e["content_json"]["io_type"] == serde_json::json!("call_external")
+                {
+                    e["fact_id"].as_u64()
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| panic!("受理后审计链必须含 call_external IoRequest: {audit}"));
+
+    // 收尾应答（request_id 对准 pending IoRequest，同步闭合 llm_audit 回路）：
+    // observe 模式（缺省）命中后仍 200 放行
+    let io_body = format!(
+        r#"{{"request_id":{io_request_id},"result":{{"content":"经计算，该轨道周期约为 94 分钟。","is_finished":true,"messages":[{{"role":"assistant","content":""}}]}},"error":null}}"#
+    );
+    let (st, resp) = send(
+        &state,
+        "POST",
+        &format!("/api/sessions/{session_hit}/io_response"),
+        Some(&io_body),
+    )
+    .await;
+    assert_eq!(
+        st,
+        axum::http::StatusCode::OK,
+        "observe 模式命中不得阻断 io_response: {resp}"
+    );
+
+    // 等待回注链落定：IoResponse 落账与 externalization_violation Command 的
+    // StateTransition 均推 version（Command/IoRequest/Stable/Violation 不推）
+    wait_for_processing(&state, session_hit, 0).await;
+
+    let (_, snap) = send(
+        &state,
+        "GET",
+        &format!("/api/sessions/{session_hit}/state"),
+        None,
+    )
+    .await;
+    let breach = &snap["payload"]["meta_compliance"]["externalization_breach"];
+    assert_eq!(
+        breach["domain"].as_str(),
+        Some("deterministic_compute"),
+        "外判违规必须落进 payload 审计链（评审面可检测）: {snap}"
+    );
+    assert_eq!(breach["phrase"].as_str(), Some("经计算"));
+    assert_eq!(breach["mode"].as_str(), Some("observe"));
+    assert_eq!(breach["request_id"], serde_json::json!(io_request_id));
+
+    // ===== 4. 负例：无 call_external 装配 → 不命中，槽位 null =====
+
+    let (_, json) = send(&state, "POST", "/api/sessions", None).await;
+    assert_eq!(json["message"], "Session created");
+    let session_clean = json["session_id"].as_u64().unwrap();
+
+    let (st, resp) = send(
+        &state,
+        "POST",
+        &format!("/api/sessions/{session_clean}/io_response"),
+        Some(&io_body),
+    )
+    .await;
+    assert_eq!(st, axum::http::StatusCode::OK, "负例不得阻断: {resp}");
+
+    let (_, snap) = send(
+        &state,
+        "GET",
+        &format!("/api/sessions/{session_clean}/state"),
+        None,
+    )
+    .await;
+    assert!(
+        snap["payload"]["meta_compliance"]["externalization_breach"]
+            .is_null(),
+        "无装配面会话不得落外判违规（三条件判据零波及）: {snap}"
+    );
+}
