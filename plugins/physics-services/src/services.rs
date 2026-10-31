@@ -8,6 +8,11 @@
 //! - 一切数值必须有限(NaN/Infinity 显式拒绝,不静默);
 //! - `bodies` 数量上限 64、`steps` 上限 100_000、`dt ∈ (0,1]`——确定性执行预算保护,
 //!   超限 fail-fast 并附自诊断指引。
+//!
+//! # undetermined 出口(适用域弃权,numeric 族 sin_fixed/sqrt_fixed 同范式)
+//! - 合法有限入参在演化/求值后产生**非有限结果**(数值发散越出可表示域)时,
+//!   不输出 "inf/NaN 形态的数"(不可证),经框架 `Err(String)` 通道弃权,
+//!   错误信息以 `undetermined:` 前缀 + 自诊断指引(确定性行为:同输入恒同弃权)。
 
 use evorule_reactor::IoResult;
 use evorule_tcb::JsonValue;
@@ -226,6 +231,36 @@ fn parse_steps(args: &JsonValue) -> Result<i64, String> {
 // 输出构造(浮点一律字符串化)
 // ============================================================================
 
+/// 运行期非有限守门(undetermined 出口):合法有限入参在演化/求值后产生
+/// 非有限结果时显式弃权,不输出不可证的 "inf/NaN 形态的数"。
+fn ensure_finite(x: f64, ctx: &str) -> Result<(), String> {
+    if x.is_finite() {
+        return Ok(());
+    }
+    Err(format!(
+        "undetermined: {ctx} 非有限({x}) — 数值发散越出可表示域,不输出不可证结果; \
+         自诊断指引: 缩小 dt/steps 或量级,或在调用方完成归一化后重试"
+    ))
+}
+
+/// 终态刚体非有限守门:位置/速度逐分量检查(与能量守门互为兜底,
+/// 防中间运算先产生 NaN 而能量恰为有限值的边角)。
+fn ensure_bodies_finite(bodies: &[RigidBody]) -> Result<(), String> {
+    for (i, b) in bodies.iter().enumerate() {
+        for (comp, v) in [
+            ("pos.x", b.pos.x),
+            ("pos.y", b.pos.y),
+            ("pos.z", b.pos.z),
+            ("vel.x", b.vel.x),
+            ("vel.y", b.vel.y),
+            ("vel.z", b.vel.z),
+        ] {
+            ensure_finite(v, &format!("bodies[{i}].{comp}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn vec3_out(v: Vec3) -> JsonValue {
     JsonValue::Array(vec![float_str(v.x), float_str(v.y), float_str(v.z)])
 }
@@ -242,15 +277,18 @@ fn body_out(b: &RigidBody, escaped: Option<bool>) -> JsonValue {
     obj(pairs)
 }
 
-fn bodies_out(kernel: &PhysicalKernel, escaped: bool, band_hi: Option<f64>) -> JsonValue {
+/// `escaped` 判定(两侧):终态竖直位置越出重力带(高于带顶**或低于带底**)
+/// 即标记逃逸——带外重力归零,以恒速滑行不再回落,与内核「带内受重力、
+/// 带外自由滑行」语义两侧对称。
+fn bodies_out(kernel: &PhysicalKernel, escaped: bool, band: Option<(f64, f64)>) -> JsonValue {
     JsonValue::Array(
         kernel
             .bodies
             .iter()
             .map(|b| {
                 let e = if escaped {
-                    Some(match band_hi {
-                        Some(hi) => b.pos.y > hi,
+                    Some(match band {
+                        Some((lo, hi)) => b.pos.y > hi || b.pos.y < lo,
                         None => false,
                     })
                 } else {
@@ -262,6 +300,15 @@ fn bodies_out(kernel: &PhysicalKernel, escaped: bool, band_hi: Option<f64>) -> J
     )
 }
 
+/// 守恒事实字段(测量,非裁决):初始总机械能 E0 与漂移 |E_final − E0|。
+/// 裁决(通过/拒绝)属规则层守恒不变量声明,服务面只提供可复算的测量事实。
+fn conservation_fields(e0: f64, e1: f64) -> Vec<(&'static str, JsonValue)> {
+    vec![
+        ("initial_total_mechanical_energy", float_str(e0)),
+        ("energy_drift_abs", float_str((e1 - e0).abs())),
+    ]
+}
+
 // ============================================================================
 // 服务实现(全部无状态)
 // ============================================================================
@@ -271,7 +318,10 @@ fn bodies_out(kernel: &PhysicalKernel, escaped: bool, band_hi: Option<f64>) -> J
 /// 入参:`bodies`(必填)、`dt`(必填,(0,1])、`steps`(必填,[1,100000])、
 /// `gravity`(可选,默认 [0,-9.81,0])、`integrator_order`(可选,1|2,默认 1)、
 /// `restitution`(可选,0..=1,默认 0.8)、刚体可选 `radius`/`drag`/`friction`。
-/// 出参:`status`/`steps`/`integrator_order`/`bodies`(终态快照)/`total_mechanical_energy`。
+/// 出参:`status`/`steps`/`integrator_order`/`bodies`(终态快照)/
+/// `total_mechanical_energy`/`initial_total_mechanical_energy`(E0)/
+/// `energy_drift_abs`(|E_final−E0|,测量事实)。
+/// undetermined 出口:演化后任一输出非有限(数值发散)→ Err 弃权,不给绿。
 pub struct PhysicsSimulate;
 
 impl NativeService for PhysicsSimulate {
@@ -280,10 +330,14 @@ impl NativeService for PhysicsSimulate {
         kernel.bodies = parse_bodies(args)?;
         let dt = parse_dt(args)?;
         let steps = parse_steps(args)?;
+        let e0 = kernel.total_mechanical_energy();
         for _ in 0..steps {
             kernel.tick(dt);
         }
-        Ok(obj(vec![
+        let e1 = kernel.total_mechanical_energy();
+        ensure_bodies_finite(&kernel.bodies)?;
+        ensure_finite(e1, "total_mechanical_energy")?;
+        let mut out = vec![
             ("status", JsonValue::string("determined")),
             ("determinism", JsonValue::string("corpus_locked")),
             ("steps", JsonValue::Integer(steps)),
@@ -292,11 +346,10 @@ impl NativeService for PhysicsSimulate {
                 JsonValue::Integer(kernel.integrator_order() as i64),
             ),
             ("bodies", bodies_out(&kernel, false, None)),
-            (
-                "total_mechanical_energy",
-                float_str(kernel.total_mechanical_energy()),
-            ),
-        ]))
+            ("total_mechanical_energy", float_str(e1)),
+        ];
+        out.extend(conservation_fields(e0, e1));
+        Ok(obj(out))
     }
 }
 
@@ -304,6 +357,7 @@ impl NativeService for PhysicsSimulate {
 ///
 /// 入参:`bodies`(必填)、`gravity`(可选)、`grav_band`(可选,{lo,hi},影响势能口径)。
 /// 出参:`status`/`total_mechanical_energy`。
+/// undetermined 出口:求值结果非有限(如过大量级致动能溢出)→ Err 弃权,不给绿。
 pub struct PhysicsEnergy;
 
 impl NativeService for PhysicsEnergy {
@@ -321,13 +375,12 @@ impl NativeService for PhysicsEnergy {
             let hi = parse_f64(hi, "grav_band.hi")?;
             kernel.set_gravity_band(lo, hi);
         }
+        let e = kernel.total_mechanical_energy();
+        ensure_finite(e, "total_mechanical_energy")?;
         Ok(obj(vec![
             ("status", JsonValue::string("determined")),
             ("determinism", JsonValue::string("corpus_locked")),
-            (
-                "total_mechanical_energy",
-                float_str(kernel.total_mechanical_energy()),
-            ),
+            ("total_mechanical_energy", float_str(e)),
         ]))
     }
 }
@@ -336,8 +389,10 @@ impl NativeService for PhysicsEnergy {
 ///
 /// 入参:`bodies`/`dt`/`steps` 必填;`gravity`/`integrator_order`/`restitution` 可选;
 /// `grav_band` {lo,hi}(必填,重力仅在 lo ≤ y ≤ hi 内生效)。
-/// 出参:`status`/`steps`/`band`/`bodies`(终态快照,含 `escaped`=终态高于带顶)/
-/// `total_mechanical_energy`。
+/// 出参:`status`/`steps`/`band`/`bodies`(终态快照,含 `escaped`=越出重力带,**两侧**:
+/// 高于带顶或低于带底,带外以恒速滑行不再回落)/`total_mechanical_energy`/
+/// `initial_total_mechanical_energy`(E0)/`energy_drift_abs`(|E_final−E0|,测量事实)。
+/// undetermined 出口:演化后任一输出非有限(数值发散)→ Err 弃权,不给绿。
 pub struct PhysicsGravBand;
 
 impl NativeService for PhysicsGravBand {
@@ -361,10 +416,14 @@ impl NativeService for PhysicsGravBand {
         kernel.set_gravity_band(lo, hi);
         let dt = parse_dt(args)?;
         let steps = parse_steps(args)?;
+        let e0 = kernel.total_mechanical_energy();
         for _ in 0..steps {
             kernel.tick(dt);
         }
-        Ok(obj(vec![
+        let e1 = kernel.total_mechanical_energy();
+        ensure_bodies_finite(&kernel.bodies)?;
+        ensure_finite(e1, "total_mechanical_energy")?;
+        let mut out = vec![
             ("status", JsonValue::string("determined")),
             ("determinism", JsonValue::string("corpus_locked")),
             ("steps", JsonValue::Integer(steps)),
@@ -372,13 +431,12 @@ impl NativeService for PhysicsGravBand {
                 "band",
                 obj(vec![("lo", float_str(lo)), ("hi", float_str(hi))]),
             ),
-            // escaped 判定:终态竖直位置高于带顶(以恒速逃逸、不再回落)
-            ("bodies", bodies_out(&kernel, true, Some(hi))),
-            (
-                "total_mechanical_energy",
-                float_str(kernel.total_mechanical_energy()),
-            ),
-        ]))
+            // escaped 判定(两侧):终态越出 [lo,hi] 即逃逸(带外恒速滑行、不再回落)
+            ("bodies", bodies_out(&kernel, true, Some((lo, hi)))),
+            ("total_mechanical_energy", float_str(e1)),
+        ];
+        out.extend(conservation_fields(e0, e1));
+        Ok(obj(out))
     }
 }
 
@@ -520,7 +578,9 @@ mod tests {
 
     #[test]
     fn test_grav_band_capture() {
-        // 重力带 [0,5]:带内低速刚体被拉回地面,不逃逸
+        // 重力带 [0,5]:带内低速刚体被重力拉回地面,地面碰撞把终态钳位在带内
+        // (radius=0.5 ≥ lo=0)。escaped 为两侧判定,质点(无半径)会穿出带底,
+        // 故「捕获」语义必须带半径——被钳位在带内才是真正的未逃逸。
         let args = JsonValue::object_from_pairs(&[
             (
                 "bodies",
@@ -528,7 +588,7 @@ mod tests {
                     "1.0",
                     [0.0, 3.0, 0.0],
                     [0.0, 0.0, 0.0],
-                    None,
+                    Some(0.5),
                 )]),
             ),
             ("dt", float_str(0.1)),
@@ -547,6 +607,7 @@ mod tests {
         let pos = bodies[0].get("pos").and_then(|v| v.as_array()).unwrap();
         let y: f64 = pos[1].as_str().unwrap().parse().unwrap();
         assert!(y < 3.0, "带内刚体应被重力拉回,y={y}");
+        assert!(y >= 0.5, "地面碰撞钳位后 y 不得低于半径,y={y}");
     }
 
     #[test]
@@ -613,8 +674,8 @@ mod tests {
 
     #[test]
     fn envelope_keys_present_all_three_services() {
-        // physics 族无 null/undetermined 路径(NaN/Inf 解析期拒绝,发散由
-        // escaped 显式字段表达)→ 恒 determined,无 reason
+        // 成功路径 status 恒 determined;undetermined 出口走 Err 通道(非有限
+        // 结果弃权,见 test_energy_nonfinite_result_undetermined 等),不占用 status
         let sim_args = simulate_args(
             vec![body_json("1.0", [0.0, 10.0, 0.0], [0.0, 0.0, 0.0], None)],
             "0.1",
@@ -646,20 +707,25 @@ mod tests {
                 obj(vec![("lo", float_str(0.0)), ("hi", float_str(5.0))]),
             ),
         ]);
+        let conservation_keys = vec!["initial_total_mechanical_energy", "energy_drift_abs"];
         for (svc, args, legacy_keys) in [
             (
                 &PhysicsSimulate as &dyn NativeService,
-                sim_args,
+                &sim_args,
                 vec!["steps", "bodies", "total_mechanical_energy"],
             ),
-            (&PhysicsEnergy, energy_args, vec!["total_mechanical_energy"]),
             (
-                &PhysicsGravBand,
-                band_args,
+                &PhysicsEnergy as &dyn NativeService,
+                &energy_args,
+                vec!["total_mechanical_energy"],
+            ),
+            (
+                &PhysicsGravBand as &dyn NativeService,
+                &band_args,
                 vec!["steps", "band", "bodies", "total_mechanical_energy"],
             ),
         ] {
-            let out = svc.execute(&args).unwrap();
+            let out = svc.execute(args).unwrap();
             assert_eq!(
                 out.get("status").and_then(JsonValue::as_str),
                 Some("determined")
@@ -671,6 +737,16 @@ mod tests {
             assert!(out.get("reason").is_none());
             for legacy in legacy_keys {
                 assert!(out.get(legacy).is_some(), "既有字段 {legacy} 丢失");
+            }
+        }
+        // 守恒事实字段:两个仿真推进服务必带(physics_energy 为快照计算,不带)
+        for (svc, args) in [
+            (&PhysicsSimulate as &dyn NativeService, &sim_args),
+            (&PhysicsGravBand as &dyn NativeService, &band_args),
+        ] {
+            let out = svc.execute(args).unwrap();
+            for k in &conservation_keys {
+                assert!(out.get(k).is_some(), "仿真服务缺守恒事实字段 {k}");
             }
         }
     }
@@ -691,5 +767,182 @@ mod tests {
         let r1 = PhysicsSimulate.execute(&args).unwrap().to_string();
         let r2 = PhysicsSimulate.execute(&args).unwrap().to_string();
         assert_eq!(r1, r2, "双跑输出不一致(位元级)");
+    }
+
+    // ===== 口径收口回归(逃逸两侧判定 / 非有限弃权 / 守恒事实) =====
+
+    /// 两侧逃逸口径:下冲越带底同样判逃逸(**两侧**口径)。质点(radius=0,无地面碰撞)
+    /// 自带内高速下冲,穿出带底后带外重力归零、恒速滑行,终态 y < lo → escaped=true。
+    #[test]
+    fn test_grav_band_escape_below_band_lower_bound() {
+        let args = JsonValue::object_from_pairs(&[
+            (
+                "bodies",
+                JsonValue::Array(vec![body_json(
+                    "1.0",
+                    [0.0, 5.0, 0.0],
+                    [0.0, -50.0, 0.0],
+                    None,
+                )]),
+            ),
+            ("dt", float_str(0.1)),
+            ("steps", JsonValue::Integer(20)),
+            (
+                "grav_band",
+                JsonValue::object_from_pairs(&[("lo", float_str(0.0)), ("hi", float_str(10.0))]),
+            ),
+        ]);
+        let r = PhysicsGravBand.execute(&args).unwrap();
+        let bodies = r.get("bodies").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(
+            bodies[0].get("escaped").and_then(|v| v.as_bool()),
+            Some(true),
+            "下冲越带底的刚体应同样标记逃逸(两侧口径)"
+        );
+    }
+
+    /// 非有限弃权:求值结果非有限(动能溢出)→ undetermined 出口弃权,不输出假数。
+    /// vel=1e200 → KE = ½·m·v² = 5e399,越出 f64 可表示域。
+    #[test]
+    fn test_energy_nonfinite_result_undetermined() {
+        let args = JsonValue::object_from_pairs(&[(
+            "bodies",
+            JsonValue::Array(vec![body_json(
+                "1.0",
+                [0.0, 5.0, 0.0],
+                [0.0, 1e200, 0.0],
+                None,
+            )]),
+        )]);
+        let err = PhysicsEnergy.execute(&args).unwrap_err();
+        assert!(err.contains("undetermined"), "{err}");
+        assert!(err.contains("自诊断指引"), "{err}");
+    }
+
+    /// 非有限弃权:合法有限入参在演化后数值发散(能量溢出)→ undetermined 出口弃权。
+    /// g=1e300、dt=1.0、100 步:终态速度 ~1e302 与位置 ~5e303 均有限,
+    /// 但 E = ½v²+|g|·|y| ≥ 1e604 溢出( KE 与 PE 分别溢出为 inf/−inf → NaN 同样拦)。
+    #[test]
+    fn test_simulate_divergence_undetermined() {
+        let args = JsonValue::object_from_pairs(&[
+            (
+                "bodies",
+                JsonValue::Array(vec![body_json(
+                    "1.0",
+                    [0.0, 100.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                    None,
+                )]),
+            ),
+            ("dt", float_str(1.0)),
+            ("steps", JsonValue::Integer(100)),
+            (
+                "gravity",
+                JsonValue::Array(vec![float_str(0.0), float_str(-1e300), float_str(0.0)]),
+            ),
+        ]);
+        let err = PhysicsSimulate.execute(&args).unwrap_err();
+        assert!(err.contains("undetermined"), "{err}");
+        assert!(err.contains("自诊断指引"), "{err}");
+    }
+
+    /// 守恒理论对账:守恒事实字段与理论逐字对账。自由落体 m=1、y0=1000、dt=0.001、10000 步:
+    /// E0 = g·h = 9810;辛欧拉每步损 ½·g²·dt²,10000 步累计 drift =
+    /// 10000·½·9.81²·0.001² = 0.4811805;速度 Verlet 对均匀场严格守恒 drift < 1e-6。
+    #[test]
+    fn test_conservation_fields_match_theory() {
+        let run = |order: i64| {
+            let args = JsonValue::object_from_pairs(&[
+                (
+                    "bodies",
+                    JsonValue::Array(vec![body_json(
+                        "1.0",
+                        [0.0, 1000.0, 0.0],
+                        [0.0, 0.0, 0.0],
+                        None,
+                    )]),
+                ),
+                ("dt", float_str(0.001)),
+                ("steps", JsonValue::Integer(10_000)),
+                ("integrator_order", JsonValue::Integer(order)),
+            ]);
+            PhysicsSimulate.execute(&args).unwrap()
+        };
+        let cases: [(i64, Option<f64>); 2] = [(1, Some(0.481_180_5)), (2, None)];
+        for (order, expected) in cases {
+            let r = run(order);
+            let e0: f64 = r
+                .get("initial_total_mechanical_energy")
+                .and_then(JsonValue::as_str)
+                .unwrap()
+                .parse()
+                .unwrap();
+            let drift: f64 = r
+                .get("energy_drift_abs")
+                .and_then(JsonValue::as_str)
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(
+                (e0 - 9810.0).abs() < 1e-9,
+                "order={order} E0={e0} 应为 g·h=9810"
+            );
+            match expected {
+                Some(theory) => assert!(
+                    (drift - theory).abs() < 1e-6,
+                    "order={order} drift={drift} 应为辛欧拉理论值 {theory}"
+                ),
+                None => assert!(
+                    drift < 1e-6,
+                    "order={order} 速度 Verlet 对均匀场应严格守恒,drift={drift}"
+                ),
+            }
+        }
+    }
+
+    /// 滑行恒定锁:逃逸滑行段能量逐字恒定(箱阱带外平台)。同一逃逸轨迹,步数 20 与 80
+    /// 的差异全部落在带外滑行段——带外 PE=平台值(上平台为 0)、KE=恒速不变,
+    /// 能量逐位不变,故 E0/E/drift 三个字符串必须逐字相等(内核依据:带内线性、
+    /// 带外平台的连续分段势)。
+    #[test]
+    fn test_grav_band_glide_energy_bitwise_constant() {
+        let run = |steps: i64| {
+            let args = JsonValue::object_from_pairs(&[
+                (
+                    "bodies",
+                    JsonValue::Array(vec![body_json(
+                        "1.0",
+                        [0.0, 3.0, 0.0],
+                        [0.0, 20.0, 0.0],
+                        None,
+                    )]),
+                ),
+                ("dt", float_str(0.1)),
+                ("steps", JsonValue::Integer(steps)),
+                (
+                    "grav_band",
+                    JsonValue::object_from_pairs(&[("lo", float_str(0.0)), ("hi", float_str(5.0))]),
+                ),
+            ]);
+            PhysicsGravBand.execute(&args).unwrap()
+        };
+        let r20 = run(20);
+        let r80 = run(80);
+        for key in [
+            "initial_total_mechanical_energy",
+            "total_mechanical_energy",
+            "energy_drift_abs",
+        ] {
+            assert_eq!(
+                r20.get(key).and_then(JsonValue::as_str),
+                r80.get(key).and_then(JsonValue::as_str),
+                "滑行段能量字段 {key} 应逐字相等"
+            );
+        }
+        let bodies = r80.get("bodies").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(
+            bodies[0].get("escaped").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 }

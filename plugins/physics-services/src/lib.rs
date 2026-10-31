@@ -26,9 +26,13 @@
 //!
 //! # 统一信封 v1(科学计算服务面规范)
 //!
-//! 成功出参保留键:`status`(恒 determined——本族无 undetermined 路径:
-//! NaN/Inf 解析期显式拒绝,发散/逃逸由既有 `escaped` 字段确定性表达)、
+//! 成功出参保留键:`status`(determined——成功路径恒定)、
 //! `determinism`(corpus_locked:双跑位元一致 + 黄金语料锁定)。
+//! undetermined 出口(numeric 族同范式):合法有限入参在演化/求值后产生
+//! 非有限结果(数值发散越出可表示域)时,经框架 `Err(String)` 通道显式弃权,
+//! 错误信息以 `undetermined:` 前缀 + 自诊断指引,不输出不可证的结果;
+//! 输入侧 NaN/Inf 仍在解析期显式拒绝。`escaped` 字段为带外逃逸判定
+//! (**两侧**:高于带顶或低于带底),物理语义详见 `services` 各服务头注。
 //! 既有字段全部原位保留;error 维持框架 `Err(String)` 通道。
 
 #![forbid(unsafe_code)]

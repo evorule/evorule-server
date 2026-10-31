@@ -14,12 +14,14 @@
 
 | 服务名 | 入参（args） | 出参 |
 |---|---|---|
-| `physics_simulate` | `bodies`（必填）、`dt`（必填，(0,1]）、`steps`（必填，[1,100000]）、`gravity`（可选，默认 [0,-9.81,0]）、`integrator_order`（可选，1\|2）、`restitution`（可选，0..=1）；刚体项：`mass`/`pos`/`vel` 必填，`radius`/`drag`/`friction` 可选 | `status`/`steps`/`integrator_order`/`bodies`（终态快照）/`total_mechanical_energy` |
+| `physics_simulate` | `bodies`（必填）、`dt`（必填，(0,1]）、`steps`（必填，[1,100000]）、`gravity`（可选，默认 [0,-9.81,0]）、`integrator_order`（可选，1\|2）、`restitution`（可选，0..=1）；刚体项：`mass`/`pos`/`vel` 必填，`radius`/`drag`/`friction` 可选 | `status`/`steps`/`integrator_order`/`bodies`（终态快照）/`total_mechanical_energy`/`initial_total_mechanical_energy`（E0）/`energy_drift_abs` |
 | `physics_energy` | `bodies`（必填）、`gravity`（可选）、`grav_band`（可选，{lo,hi}，影响势能口径） | `status`/`total_mechanical_energy` |
-| `physics_grav_band` | `physics_simulate` 全部参数 + `grav_band`（必填，{lo,hi}） | `status`/`steps`/`band`/`bodies`（含 `escaped`=终态高于带顶）/`total_mechanical_energy` |
+| `physics_grav_band` | `physics_simulate` 全部参数 + `grav_band`（必填，{lo,hi}） | `status`/`steps`/`band`/`bodies`（含 `escaped`=终态越出重力带，**两侧**：高于带顶或低于带底）/`total_mechanical_energy`/`initial_total_mechanical_energy`（E0）/`energy_drift_abs` |
 
 - 浮点入参接受 Integer 或数字字符串（TCB 无 Float 变体）；出参浮点一律字符串化。
 - 一切数值必须有限（NaN/Infinity 显式拒绝）；数量/步数上限为确定性执行预算保护。
+- undetermined 出口（numeric 族同范式）：合法有限入参在演化/求值后产生**非有限结果**（数值发散越出可表示域）时，经 `Err(String)` 通道显式弃权（`undetermined:` 前缀 + 自诊断指引），不输出 "inf/NaN 形态的数"。
+- 两个仿真推进服务（`physics_simulate`/`physics_grav_band`）出参附守恒**测量事实**：`initial_total_mechanical_energy`（E0）与 `energy_drift_abs`（|E_final−E0|）。服务面只测量不裁决——守恒不变量的通过/拒绝判定属规则层。
 - 单刚体示例：
 
 ```json
@@ -48,7 +50,7 @@
 
 ## 测试套
 
-服务层单测（13 项：3 服务行为/输入校验/同输入逐位一致/声明文件守卫）+ 内核集成测试
+服务层单测（20 项：3 服务行为/输入校验/同输入逐位一致/声明文件守卫/口径收口回归）+ 内核集成测试
 （`tests/`，自 rpsm `rpsm/tests` 于 2026-09-01 移植的内核正确性套件，65 项）：
 
 | 移植文件 | 覆盖 |
