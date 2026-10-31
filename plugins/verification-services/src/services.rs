@@ -40,9 +40,7 @@ fn ints_array(args: &JsonValue, key: &str) -> Result<Vec<i64>, String> {
         .ok_or_else(|| format!("缺少参数 {key}（整数数组）— 自诊断指引: 见服务 parameters 契约"))?;
     let mut out = Vec::with_capacity(arr.len());
     for (i, v) in arr.iter().enumerate() {
-        let n = v
-            .as_i64()
-            .ok_or_else(|| format!("{key}[{i}] 须为整数"))?;
+        let n = v.as_i64().ok_or_else(|| format!("{key}[{i}] 须为整数"))?;
         out.push(n);
     }
     Ok(out)
@@ -51,9 +49,7 @@ fn ints_array(args: &JsonValue, key: &str) -> Result<Vec<i64>, String> {
 fn usizes(json: &[i64], what: &str) -> Result<Vec<usize>, String> {
     json.iter()
         .enumerate()
-        .map(|(i, &n)| {
-            usize::try_from(n).map_err(|_| format!("{what}[{i}]={n} 须为非负整数"))
-        })
+        .map(|(i, &n)| usize::try_from(n).map_err(|_| format!("{what}[{i}]={n} 须为非负整数")))
         .collect()
 }
 
@@ -139,9 +135,7 @@ impl NativeService for FsmReachabilityService {
         let bounded = args.get("max_steps").is_some();
         let max_steps = match args.get("max_steps") {
             Some(JsonValue::Integer(n)) if *n >= 0 => Some(*n as u64),
-            Some(JsonValue::Integer(n)) => {
-                return Err(format!("max_steps={n} 须为非负整数"))
-            }
+            Some(JsonValue::Integer(n)) => return Err(format!("max_steps={n} 须为非负整数")),
             Some(_) => return Err("max_steps 须为整数".into()),
             None => None,
         };
@@ -192,15 +186,9 @@ impl NativeService for FsmReachabilityService {
         let mut pairs: Vec<(&str, JsonValue)> =
             vec![("targets_reachable", JsonValue::Bool(!reached.is_empty()))];
         pairs.push(("bounded", JsonValue::Bool(bounded)));
-        pairs.push((
-            "language_empty",
-            JsonValue::Bool(!accepts_any),
-        ));
+        pairs.push(("language_empty", JsonValue::Bool(!accepts_any)));
         if let Some(steps) = min_accept_steps {
-            pairs.push((
-                "min_accept_steps",
-                JsonValue::Integer(steps as i64),
-            ));
+            pairs.push(("min_accept_steps", JsonValue::Integer(steps as i64)));
         }
         pairs.push((
             "note",
@@ -230,10 +218,8 @@ struct FsmEquivalenceService;
 impl NativeService for FsmEquivalenceService {
     fn execute(&self, args: &JsonValue) -> IoResult {
         // 两台机器:前缀 a_/b_;各自初始状态恒为 0(契约,如实声明)
-        let a = fsm::parse_fsm(args, "a_")
-            .map_err(|e| format!("机器 A: {e}"))?;
-        let b = fsm::parse_fsm(args, "b_")
-            .map_err(|e| format!("机器 B: {e}"))?;
+        let a = fsm::parse_fsm(args, "a_").map_err(|e| format!("机器 A: {e}"))?;
+        let b = fsm::parse_fsm(args, "b_").map_err(|e| format!("机器 B: {e}"))?;
         match fsm::dfa_equivalent(&a, &b)? {
             None => Ok(envelope(&[
                 ("equivalent", JsonValue::Bool(true)),

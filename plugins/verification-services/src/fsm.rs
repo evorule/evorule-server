@@ -22,7 +22,7 @@
 //!
 //! # 互补定位
 //! inference_cycle_detect 查**规则集**的环；本服务查**显式 FSM**——
-//! 形态不同、层次不同，互补不重叠（01 号 §三③原文语义）。
+//! 形态不同、层次不同，互补不重叠。
 
 #![forbid(unsafe_code)]
 
@@ -67,7 +67,9 @@ pub fn parse_fsm(args: &JsonValue, prefix: &str) -> Result<Fsm, String> {
     let trans_json = args
         .get(&format!("{prefix}transitions"))
         .and_then(|v| v.as_array())
-        .ok_or_else(|| format!("缺少参数 {prefix}transitions（二维整数数组,转移表[state][symbol]）"))?;
+        .ok_or_else(|| {
+            format!("缺少参数 {prefix}transitions（二维整数数组,转移表[state][symbol]）")
+        })?;
     if trans_json.len() != state_count {
         return Err(format!(
             "{prefix}transitions 行数 {} ≠ {prefix}states={state_count}",
@@ -119,7 +121,12 @@ pub fn parse_fsm(args: &JsonValue, prefix: &str) -> Result<Fsm, String> {
         accepting.insert(q as usize);
     }
 
-    Ok(Fsm { state_count, symbol_count, transitions, accepting })
+    Ok(Fsm {
+        state_count,
+        symbol_count,
+        transitions,
+        accepting,
+    })
 }
 
 /// 可达性 BFS。返回 (每状态最短步数,witness 前驱边)。
@@ -139,10 +146,7 @@ pub fn bfs_reach(fsm: &Fsm, initials: &[usize], max_steps: Option<u64>) -> Reach
     while let Some(q) = queue.pop_front() {
         // 内部不变量:队列内状态必有距离记录(违例即结构错误,判别式如实暴露)
         let Some(d) = dist[q] else {
-            return (
-                vec![None; fsm.state_count],
-                vec![None; fsm.state_count],
-            );
+            return (vec![None; fsm.state_count], vec![None; fsm.state_count]);
         };
         if let Some(cap) = max_steps {
             if d >= cap {
@@ -199,7 +203,7 @@ pub fn dfa_equivalent(a: &Fsm, b: &Fsm) -> Result<Option<CounterExample>, String
     let mut seen = vec![false; product];
     let mut pred: Vec<Option<(usize, usize)>> = vec![None; product]; // (prev_pair, symbol)
     let mut queue = VecDeque::new();
-    let start = 0 * b.state_count + 0; // 约定:两机初始状态恒为 0(见 lib.rs 契约)
+    let start = 0usize; // 约定:两机初始状态恒为 0(见 lib.rs 契约)
     seen[start] = true;
     queue.push_back(start);
     while let Some(pair) = queue.pop_front() {
