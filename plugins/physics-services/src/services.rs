@@ -13,6 +13,12 @@
 //! - 合法有限入参在演化/求值后产生**非有限结果**(数值发散越出可表示域)时,
 //!   不输出 "inf/NaN 形态的数"(不可证),经框架 `Err(String)` 通道弃权,
 //!   错误信息以 `undetermined:` 前缀 + 自诊断指引(确定性行为:同输入恒同弃权)。
+//!
+//! # 适用域元数据(regime 声明,域外显式弃权)
+//! - 本族内核为牛顿力学,适用域声明:**任一刚体速度 ≤ 0.01c**
+//!   (γ−1 ≈ β²/2 ≤ 5e-5,相对论修正在声明容差内可忽略);
+//! - 域外(速度越界)经 Err 通道显式弃权(`undetermined:` 前缀),不输出牛顿假数——
+//!   「在声明的适用域内,裁决是确定且可审计的」,域外不给绿。
 
 use evorule_reactor::IoResult;
 use evorule_tcb::JsonValue;
@@ -26,6 +32,11 @@ const MAX_BODIES: usize = 64;
 const MAX_STEPS: i64 = 100_000;
 /// 默认重力(均匀场,-Y 方向;锁定常量 G/C 与此无关——重力方向属可配置场,非锁定常量)
 const DEFAULT_GRAVITY: [f64; 3] = [0.0, -9.81, 0.0];
+
+/// 牛顿适用域上界(适用域元数据,regime 声明):任一刚体速度 ≤ 0.01·c。
+/// 依据:洛伦兹因子 γ−1 ≈ β²/2,β=0.01 时 ≤ 5e-5——牛顿力学的相对论修正
+/// 在声明容差内可忽略;域外属适用域外,显式弃权而非输出牛顿假数。
+const REGIME_MAX_SPEED: f64 = 0.01 * crate::kernel::C;
 
 // ============================================================================
 // 入参解析(全部 fail-fast,错误含自诊断指引)
@@ -261,6 +272,25 @@ fn ensure_bodies_finite(bodies: &[RigidBody]) -> Result<(), String> {
     Ok(())
 }
 
+/// 适用域守门(regime 声明,域外显式弃权):任一刚体速度越出牛顿适用域
+/// (|v| > 0.01c)时牛顿内核不再适用,经 Err 通道弃权,不输出牛顿假数。
+/// 必须在非有限守门**之后**调用——NaN 参与比较恒为 false,会静默穿过本门。
+fn ensure_regime(bodies: &[RigidBody]) -> Result<(), String> {
+    for (i, b) in bodies.iter().enumerate() {
+        let speed = b.vel.length();
+        if speed > REGIME_MAX_SPEED {
+            return Err(format!(
+                "undetermined: bodies[{i}] 速度 {speed} m/s 越出牛顿适用域 \
+                 (|v| ≤ 0.01c ≈ {REGIME_MAX_SPEED:.6e} m/s,γ−1 ≤ 5e-5) — \
+                 牛顿内核在域外不适用,不输出牛顿假数; \
+                 自诊断指引: 缩小速度/重力/初速量级,演化类输入请确认不致加速越域, \
+                 域外问题应改用相对论模型(超出本服务声明)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn vec3_out(v: Vec3) -> JsonValue {
     JsonValue::Array(vec![float_str(v.x), float_str(v.y), float_str(v.z)])
 }
@@ -321,13 +351,15 @@ fn conservation_fields(e0: f64, e1: f64) -> Vec<(&'static str, JsonValue)> {
 /// 出参:`status`/`steps`/`integrator_order`/`bodies`(终态快照)/
 /// `total_mechanical_energy`/`initial_total_mechanical_energy`(E0)/
 /// `energy_drift_abs`(|E_final−E0|,测量事实)。
-/// undetermined 出口:演化后任一输出非有限(数值发散)→ Err 弃权,不给绿。
+/// undetermined 出口:演化后任一输出非有限(数值发散)→ Err 弃权,不给绿;
+/// 适用域(regime):任一刚体速度越出 0.01c(初态与终态均守门)→ Err 弃权。
 pub struct PhysicsSimulate;
 
 impl NativeService for PhysicsSimulate {
     fn execute(&self, args: &JsonValue) -> IoResult {
         let mut kernel = build_kernel(args)?;
         kernel.bodies = parse_bodies(args)?;
+        ensure_regime(&kernel.bodies)?;
         let dt = parse_dt(args)?;
         let steps = parse_steps(args)?;
         let e0 = kernel.total_mechanical_energy();
@@ -336,6 +368,7 @@ impl NativeService for PhysicsSimulate {
         }
         let e1 = kernel.total_mechanical_energy();
         ensure_bodies_finite(&kernel.bodies)?;
+        ensure_regime(&kernel.bodies)?;
         ensure_finite(e1, "total_mechanical_energy")?;
         let mut out = vec![
             ("status", JsonValue::string("determined")),
@@ -357,13 +390,15 @@ impl NativeService for PhysicsSimulate {
 ///
 /// 入参:`bodies`(必填)、`gravity`(可选)、`grav_band`(可选,{lo,hi},影响势能口径)。
 /// 出参:`status`/`total_mechanical_energy`。
-/// undetermined 出口:求值结果非有限(如过大量级致动能溢出)→ Err 弃权,不给绿。
+/// undetermined 出口:求值结果非有限(如过大量级致能量溢出)→ Err 弃权,不给绿;
+/// 适用域(regime):任一刚体速度越出 0.01c → Err 弃权。
 pub struct PhysicsEnergy;
 
 impl NativeService for PhysicsEnergy {
     fn execute(&self, args: &JsonValue) -> IoResult {
         let mut kernel = build_kernel(args)?;
         kernel.bodies = parse_bodies(args)?;
+        ensure_regime(&kernel.bodies)?;
         if let Some(band) = args.get("grav_band") {
             let lo = band
                 .get("lo")
@@ -392,7 +427,8 @@ impl NativeService for PhysicsEnergy {
 /// 出参:`status`/`steps`/`band`/`bodies`(终态快照,含 `escaped`=越出重力带,**两侧**:
 /// 高于带顶或低于带底,带外以恒速滑行不再回落)/`total_mechanical_energy`/
 /// `initial_total_mechanical_energy`(E0)/`energy_drift_abs`(|E_final−E0|,测量事实)。
-/// undetermined 出口:演化后任一输出非有限(数值发散)→ Err 弃权,不给绿。
+/// undetermined 出口:演化后任一输出非有限(数值发散)→ Err 弃权,不给绿;
+/// 适用域(regime):任一刚体速度越出 0.01c(初态与终态均守门)→ Err 弃权。
 pub struct PhysicsGravBand;
 
 impl NativeService for PhysicsGravBand {
@@ -413,6 +449,7 @@ impl NativeService for PhysicsGravBand {
 
         let mut kernel = build_kernel(args)?;
         kernel.bodies = parse_bodies(args)?;
+        ensure_regime(&kernel.bodies)?;
         kernel.set_gravity_band(lo, hi);
         let dt = parse_dt(args)?;
         let steps = parse_steps(args)?;
@@ -422,6 +459,7 @@ impl NativeService for PhysicsGravBand {
         }
         let e1 = kernel.total_mechanical_energy();
         ensure_bodies_finite(&kernel.bodies)?;
+        ensure_regime(&kernel.bodies)?;
         ensure_finite(e1, "total_mechanical_energy")?;
         let mut out = vec![
             ("status", JsonValue::string("determined")),
@@ -801,16 +839,17 @@ mod tests {
         );
     }
 
-    /// 非有限弃权:求值结果非有限(动能溢出)→ undetermined 出口弃权,不输出假数。
-    /// vel=1e200 → KE = ½·m·v² = 5e399,越出 f64 可表示域。
+    /// 非有限弃权:求值结果非有限(能量溢出)→ undetermined 出口弃权,不输出假数。
+    /// mass=1e300、h=1e8 → PE = m·g·h ≈ 9.81e308 越出 f64 可表示域(速度为零,
+    /// 不触发适用域门,独立覆盖非有限出口)。
     #[test]
     fn test_energy_nonfinite_result_undetermined() {
         let args = JsonValue::object_from_pairs(&[(
             "bodies",
             JsonValue::Array(vec![body_json(
-                "1.0",
-                [0.0, 5.0, 0.0],
-                [0.0, 1e200, 0.0],
+                "1e300",
+                [0.0, 1e8, 0.0],
+                [0.0, 0.0, 0.0],
                 None,
             )]),
         )]);
@@ -819,9 +858,71 @@ mod tests {
         assert!(err.contains("自诊断指引"), "{err}");
     }
 
+    /// 适用域弃权(regime 声明,域外显式弃权):速度越出 0.01c 牛顿适用域 →
+    /// undetermined,不输出牛顿假数;域内速度照常 determined。
+    #[test]
+    fn test_energy_out_of_regime_speed_waives() {
+        // 域外:0.5c → 弃权
+        let fast = JsonValue::object_from_pairs(&[(
+            "bodies",
+            JsonValue::Array(vec![body_json(
+                "1.0",
+                [0.0, 5.0, 0.0],
+                [0.0, 1.5e8, 0.0],
+                None,
+            )]),
+        )]);
+        let err = PhysicsEnergy.execute(&fast).unwrap_err();
+        assert!(err.contains("undetermined"), "{err}");
+        assert!(err.contains("适用域"), "{err}");
+        // 域内:0.001c(γ−1 ≈ 5e-7) → 照常 determined
+        let slow = JsonValue::object_from_pairs(&[(
+            "bodies",
+            JsonValue::Array(vec![body_json(
+                "1.0",
+                [0.0, 5.0, 0.0],
+                [0.0, 299_792.458, 0.0],
+                None,
+            )]),
+        )]);
+        let r = PhysicsEnergy.execute(&slow).unwrap();
+        assert_eq!(
+            r.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+    }
+
+    /// 真实弃权用例:合法有限入参在演化中加速越出牛顿适用域 → 终态弃权。
+    /// g=1e10、dt=1、10 步 → 终速 1e11 m/s ≈ 333c,**全量有限**(能量亦有限):
+    /// 无适用域门时本例会输出 determined 的 333c 牛顿假数——域外显式弃权
+    /// 而非给绿的机制实体。
+    #[test]
+    fn test_simulate_out_of_regime_final_speed_waives() {
+        let args = JsonValue::object_from_pairs(&[
+            (
+                "bodies",
+                JsonValue::Array(vec![body_json(
+                    "1.0",
+                    [0.0, 100.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                    None,
+                )]),
+            ),
+            ("dt", float_str(1.0)),
+            ("steps", JsonValue::Integer(10)),
+            (
+                "gravity",
+                JsonValue::Array(vec![float_str(0.0), float_str(-1e10), float_str(0.0)]),
+            ),
+        ]);
+        let err = PhysicsSimulate.execute(&args).unwrap_err();
+        assert!(err.contains("undetermined"), "{err}");
+        assert!(err.contains("适用域"), "{err}");
+    }
+
     /// 非有限弃权:合法有限入参在演化后数值发散(能量溢出)→ undetermined 出口弃权。
-    /// g=1e300、dt=1.0、100 步:终态速度 ~1e302 与位置 ~5e303 均有限,
-    /// 但 E = ½v²+|g|·|y| ≥ 1e604 溢出( KE 与 PE 分别溢出为 inf/−inf → NaN 同样拦)。
+    /// g=1e300、dt=1.0、100 步:终态速度 ~1e302 先触发适用域弃权(且能量溢出为
+    /// inf/−inf → NaN 同样拦)——两道门任一命中均 undetermined。
     #[test]
     fn test_simulate_divergence_undetermined() {
         let args = JsonValue::object_from_pairs(&[
