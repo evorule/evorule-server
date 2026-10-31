@@ -1603,6 +1603,7 @@ async fn test_sentinel_anchor_wal_revives_for_reads() {
 ///   槽位保持 null（零波及）。guard 在 handler 内同步判定，未命中则永无写入，
 ///   无需等待版本推进即可断言。
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn test_externalization_violation_audit_chain() {
     use std::fs;
     use tempfile::TempDir;
