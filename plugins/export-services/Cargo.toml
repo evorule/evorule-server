@@ -7,7 +7,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "交付物导出原生服务(报告 PDF 渲染+内容寻址落盘)——纯 Rust 文本型渲染引擎,以声明表挂载到 evorule-server 服务链"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [lints]

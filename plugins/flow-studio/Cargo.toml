@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "flow-studio external plugin: 声明式流程编译器（flow JSON v0 → 内核规则草稿；纯函数编译核 + axum 服务壳，契约 v1.1 §6）"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 # 显式脱离任何上层 workspace（独立插件包：独立版本独立演进，随包装卸）

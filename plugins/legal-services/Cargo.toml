@@ -7,7 +7,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "法律期限原生服务(期间届日计算:日起算不含当日/月年对应日/节假日周末顺延)——纯计算,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [lints]

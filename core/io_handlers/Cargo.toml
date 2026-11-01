@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule I/O Handler 实现 — DB/HTTP/Memory (evorule-server 仓配套 lib)"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [dependencies]

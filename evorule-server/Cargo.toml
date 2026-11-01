@@ -4,8 +4,8 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "EvoRule 框架官方 HTTP server 实现 — 把 evorule-tcb/reactor 暴露为远程 API"
-repository = "https://gitee.com/evorule/evorule-server"
-homepage = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
+homepage = "https://github.com/evorule/evorule-server"
 readme = "../README.md"
 publish = false
 
@@ -183,10 +183,10 @@ tower = { version = "0.5", features = ["util"] }
 # full-chain-tests + 三个 [[test]] required-features（CI 默认不编译这三个
 # 跨仓测试，测试命令去掉 --all-features；本地联测见 scripts/ 文档）。
 # 本地用工作区版本：.cargo/config.toml（gitignore，不进 CI）加
-# [patch."https://gitee.com/evorule/evorule-rule.git"]
+# [patch."https://github.com/evorule/evorule-rule.git"]
 # evorule-rule = { path = "../../evorule-rule" }
 # 待 evorule-rule 发版 crates.io 后可切换为 version 依赖进一步简化。
-evorule-rule = { git = "https://gitee.com/evorule/evorule-rule.git", rev = "716097dbe15586287b9606eef8407cdf3cf70278" }
+evorule-rule = { git = "https://github.com/evorule/evorule-rule.git", rev = "716097dbe15586287b9606eef8407cdf3cf70278" }
 
 [features]
 # H6: metrics feature 已移除（Prometheus 实现始终启用，由 metrics_impl.rs 提供）

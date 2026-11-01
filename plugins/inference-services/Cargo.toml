@@ -7,7 +7,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "确定性推理分析原生服务（量纲检查先行）——纯计算静态分析,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [lints]

@@ -7,7 +7,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "经典力学与基础电路公式原生服务(牛顿第二定律/匀加速运动学/动量冲量/机械能/欧姆定律/电阻网络/离散PID单步)——纯计算,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [lints]

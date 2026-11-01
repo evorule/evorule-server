@@ -7,9 +7,9 @@ version.workspace = true
 edition = "2021"
 description = "EvoRule 规则 Schema 门禁 —— 基于固化的 evorule-system-rules v1.0 Schema 的确定性校验"
 license = "AGPL-3.0-or-later"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
-homepage = "https://gitee.com/evorule/evorule-server"
+homepage = "https://github.com/evorule/evorule-server"
 
 [lints]
 # 继承顶层 [workspace.lints] (C4 forbid unsafe / C5 unwrap·expect·panic = deny)

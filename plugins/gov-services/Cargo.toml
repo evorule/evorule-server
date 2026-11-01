@@ -7,7 +7,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "治理数学原生服务(比例分配最大余数法/数组聚合/时长差/区间对)——纯计算,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [lints]
