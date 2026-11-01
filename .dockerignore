@@ -2,8 +2,6 @@
 .git/
 .gitignore
 .github/
-.gitee-ci/
-.gitee/
 
 # === Rust 构建产物(关键:大幅减小 context 体积) ===
 **/target/

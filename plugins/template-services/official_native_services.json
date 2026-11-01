@@ -1,6 +1,6 @@
 {
-  "$schema": "https://gitee.com/evorule/evorule-server/raw/main/plugins/schema/official_native_services.schema.json",
-  "$id": "https://gitee.com/evorule/evorule-server/plugins/template-services/official_native_services.json",
+  "$schema": "https://raw.githubusercontent.com/evorule/evorule-server/main/plugins/schema/official_native_services.schema.json",
+  "$id": "https://github.com/evorule/evorule-server/plugins/template-services/official_native_services.json",
   "title": "template-services 官方原生服务声明（第四个进程内插件）",
   "version": "1.0.0",
   "plugin_id": "template-services",

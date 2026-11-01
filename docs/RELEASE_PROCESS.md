@@ -27,7 +27,7 @@
 
 发布执行人需具备：
 
-- Gitee 源仓库的 push 权限
+- GitHub 权威源仓库的 push 权限
 - 本地 Rust 工具链（stable，与 CI 一致）
 - PowerShell 7（`pwsh`）或 Windows PowerShell 5.1（脚本已兼容两者，含 UTF-8 BOM）
 - Docker（用于构建和测试镜像）
@@ -149,20 +149,17 @@ git tag -a vX.Y.Z -m "EvoRule Server vX.Y.Z
 详见 CHANGELOG.md。"
 ```
 
-## 5. 推送到 Gitee（源仓库）
+## 5. 推送到 GitHub（权威源）
 
 ```bash
 # 推送 main 分支 + tag
 git push origin main --tags
 ```
 
-确认 Gitee CI（`.gitee-ci/validate.yml`）在 tag 上通过：
+确认 GitHub Actions CI 在 tag 上通过：
 
-- validate-pr（文档安全 + 版本一致性）✅
-- lint（fmt + clippy）✅
-- test（cargo test）✅
-- build（release 构建）✅
-- docker（镜像构建 + 冒烟测试）✅
+- `ci.yml`：lint（fmt + clippy）+ docs-check + test + build + build-docker ✅
+- `release.yml`：双平台分发包构建 + Release 发布（随 tag 触发）✅
 
 ## 6. 构建 Docker 镜像
 
@@ -180,31 +177,16 @@ docker stop evorule-smoke
 
 > Docker 镜像推送到 registry 的流程待 registry 配置后补充。当前 CI 中的 `build-docker` job 仅构建不推送。
 
-## 7. 同步到 GitHub（镜像仓）
+## 7. 创建 Release
 
-> **暂缓**：GitHub 镜像仓尚未配置，本节留作以后稳定了再执行。当前仅发布到 Gitee。
-
-```bash
-# 推送 main 分支 + tag
-git push github main --tags
-```
-
-确认 GitHub CI 在 tag 上通过：
-
-- `ci.yml`：lint + docs-check + test + build + build-docker ✅
-
-## 8. 创建 Release
-
-> **暂缓**：与 §7 同步，GitHub 镜像仓配置后执行。
-
-在 Gitee/GitHub 的 Releases 页面创建 Release：
+在 GitHub 的 Releases 页面创建 Release：
 
 1. **Tag**: 选择刚推送的 `vX.Y.Z`
 2. **Title**: `EvoRule Server vX.Y.Z`
 3. **Body**: 从 `CHANGELOG.md` 的当前版本章节提取
 4. **附加产物**（可选）：Linux x86_64 二进制（`target/release/evorule-server`）、Docker 镜像 tar
 
-## 9. 发布后验证
+## 8. 发布后验证
 
 ```powershell
 # 1. 发布后验证模式（严格）：tag 必须存在，CHANGELOG 无 [未发布]
@@ -216,18 +198,16 @@ pwsh scripts/validate-all.ps1
 ```bash
 # 2. 确认 tag 在仓库存在
 git tag -l vX.Y.Z                    # 本地
-git ls-remote --tags origin vX.Y.Z   # Gitee
-# GitHub: 暂缓（镜像仓未配置）
+git ls-remote --tags origin vX.Y.Z   # GitHub
 
 # 3. 确认 CI 全绿
-# Gitee: 访问 Gitee CI 页面确认 validate.yml 通过
-# GitHub: 暂缓（镜像仓未配置）
+# GitHub: 访问 Actions 页面确认 ci.yml / release.yml 通过
 
 # 4. 确认 cargo audit 报告已归档（如执行了 §2）
 ls -la audit-report-vX.Y.Z/
 ```
 
-## 10. 发布后事项
+## 9. 发布后事项
 
 - [ ] 归档本次发布的所有 CI 日志链接
 - [ ] 确认 Docker 镜像可用（如执行了 §6）
@@ -240,13 +220,11 @@ ls -la audit-report-vX.Y.Z/
 
 ```bash
 # 1. 删除 Release（如已创建）
-# Gitee: 在 Releases 页面手动删除
-# GitHub: gh release delete vX.Y.Z --yes（暂缓）
+# GitHub: 在 Releases 页面手动删除，或 gh release delete vX.Y.Z --yes
 
 # 2. 在仓库删除 tag
 git tag -d vX.Y.Z                          # 本地
-git push origin :refs/tags/vX.Y.Z          # Gitee
-# git push github :refs/tags/vX.Y.Z        # GitHub（暂缓）
+git push origin :refs/tags/vX.Y.Z          # GitHub
 
 # 3. 在 README.md 标注"vX.Y.Z 已撤回，原因：XXX"
 # 4. 修复后以 vX.Y.Z 重新发布（不覆盖已撤回的 vX.Y.Z）

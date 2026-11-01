@@ -24,9 +24,9 @@
 
 use crate::validator::{ValidationReport, ValidationResult, ValidationSeverity};
 
-/// [CON-K1-002] 导览常量：仓内路径 + Gitee 权威源 URL
+/// [CON-K1-002] 导览常量：仓内路径 + 权威源 URL
 pub const GUIDE_REF: &str =
-    "docs/guide.md（规则作者节）| https://gitee.com/evorule/evorule-system-rules#docs";
+    "docs/guide.md（规则作者节）| https://github.com/evorule/evorule-system-rules#docs";
 
 /// ③ 正本链接基准（rule_set v1.0 = 本校验器权威基准 SSOT）
 pub const SCHEMA_REFERENCE_URL: &str = "https://evorule.org/schemas/rule_set/v1.0.json";
@@ -239,7 +239,7 @@ mod tests {
         assert!(text.contains("④ 正确形态（最小可过）："), "{text}");
         assert!(text.contains("→ 导览：docs/guide.md"), "{text}");
         assert!(
-            text.contains("https://gitee.com/evorule/evorule-system-rules"),
+            text.contains("https://github.com/evorule/evorule-system-rules"),
             "{text}"
         );
         // missing field `attr` → required 关键字 + set 最小样例
