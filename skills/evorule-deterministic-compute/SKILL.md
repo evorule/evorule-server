@@ -141,6 +141,34 @@ Classical mechanics: F = m·a with m=2, a=3 → **6 N** (`mechanics_newton_secon
 solve:"f"); fluid: Bernoulli pressure drop on 2→4 m/s acceleration →
 `fluid_bernoulli` p₂ = **194000 Pa**.
 
+Rule-set conflict detection — two rules both guard on `mode == "a"` and write
+`x` to different constants → `contradictory_constants` (the most common
+rule-set defect):
+
+```json
+{"service":"inference_conflict_detect","args":{"rules":[{"type":"branch","params":{"domain":{"type":"eq","path":"__exec__.payload.mode","value":"a"},"on_true":[{"type":"set","params":{"attr":"x","value":1}}]}},{"type":"branch","params":{"domain":{"type":"eq","path":"__exec__.payload.mode","value":"a"},"on_true":[{"type":"set","params":{"attr":"x","value":2}}]}}],"sources":["rules/r0.json","rules/r1.json"]}}
+→ has_conflicts true, conflicts[0].conflict_type "contradictory_constants", rule_id_1 "rules/r0.json#0", rule_id_2 "rules/r1.json#1" — description: "…域可能同时满足且都写 'payload.x' 但赋予不同常量: 1 vs 2"
+```
+
+I/O result contention — two rules both issue a `call_service` request; results
+share one per-type slot and would silently overwrite each other
+(`io_result_contention`, the contention class unique to this service):
+
+```json
+{"service":"inference_conflict_detect","args":{"rules":[{"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_service"},"on_false":[{"type":"io_request","params":{"io_type":"call_service","marker":1}}]}},{"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_service"},"on_false":[{"type":"io_request","params":{"io_type":"call_service","marker":2}}]}}],"sources":["rules/r0.json","rules/r1.json"]}}
+→ has_conflicts true, conflicts[0].conflict_type "io_result_contention" — description: "…__io_results__.call_service 按类型隔离，多生产者顺序混用会互相覆盖结果"
+```
+
+Counterfactual diff — one rule-set, two documents (guard flag present vs
+absent); the conditional write vanishes together with its guard
+(`inference_counterfactual_analyze`, run both sides to fixpoint and diff the
+observable surface):
+
+```json
+{"service":"inference_counterfactual_analyze","args":{"rules":[{"type":"branch","params":{"domain":{"type":"exists","path":"__exec__.payload.flag"},"on_true":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}}],"sources":["rules/a.json"],"original_document":{"payload":{"flag":true},"instruction":{},"queue":[]},"hypothetical_document":{"payload":{},"instruction":{},"queue":[]},"max_steps":16}}
+→ original fixpoint (1 step), hypothetical fixpoint (0 steps); diffs 3 条: "payload.flag" removed (true), "payload.x" removed (1), "payload" added ({}); simulation_scope declares the honest boundary — "不动点≠真实系统行为", compares final states only
+```
+
 ## 6. Family quick reference
 
 | Family | What it computes |
@@ -156,7 +184,7 @@ solve:"f"); fluid: Bernoulli pressure drop on 2→4 m/s acceleration →
 | cny | RMB amounts in bill-standard Chinese uppercase |
 | indicator | SMA/EMA/MACD/RSI technical indicators |
 | physics | rigid-body simulation, energy, gravitational band |
-| inference | SI dimension extraction/comparison/verification, rule-inference helpers |
+| inference | SI dimension extraction/comparison/verification; rule-set static analysis (read-write sets, cycles, conflicts); forward/backward simulation, effect prediction, convergence; counterfactual diff (single + sweep); equivalence/differential |
 | geometry | collision/clearance/occlusion checks |
 | template | deterministic template rendering |
 | browser | browser automation services |
