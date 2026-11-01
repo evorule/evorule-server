@@ -6,7 +6,7 @@
 > 为准（GitHub Releases 单通道+自更新）。
 >
 > **文档性质**：evo-agent-desktop 安装包的发布操作手册（固化版）。
-> **发布形态**：安装包（exe）发布到 Gitee/GitHub Releases，内部邀请试用
+> **发布形态**：安装包（exe）发布到 GitHub Releases，内部邀请试用
 > 反馈；尚非公开推广——公开推广另有物料与渠道决策。
 > **发布前双闸预检是强制步骤**，任何一闸不过 = 停止发布。
 
@@ -67,31 +67,31 @@ pwsh <server 仓根>\scripts\prepackage_checks.ps1 `
 - 按既定安装器流程产出安装包；
 - 打包完成后**复跑闸 1**（对最终安装包做一次字节级密钥扫描）——双保险。
 
-## 5. 发布到 Gitee/GitHub（内部邀请 Beta）
+## 5. 发布到 GitHub Releases（内部邀请 Beta）
 
-1. Gitee Release 页新建（tag：`evo-agent-desktop-v<语义化版本>` 形态）；
+1. GitHub Releases 页新建（tag：`evo-agent-desktop-v<语义化版本>` 形态）；
 2. 上传安装包 + SHA256 校验和文件 + **latest.json（更新器喂料，随构建三件套产出）**；
-3. GitHub Releases 镜像同步（**latest.json 必传**——更新器端点 =
+3. **latest.json 必传**——更新器端点 =
    GitHub Releases 稳定 latest 资产 URL，缺件即全体用户更新检查失败；
-   latest.json 内 url 已按本版 tag permalink 钉版，勿改）；
+   latest.json 内 url 已按本版 tag permalink 钉版，勿改；
 4. Release 说明模板：
    - 本版本新增（能力摘要：确定性计算服务家族、期间届日、比例分配等）；
    - **首次启动**：把你的模型 API 密钥单行写入
      `%APPDATA%\evo-agent-desktop\llm-key.txt`（仅存本机，不进浏览器界面）；
-   - 内部邀请性质说明 + 反馈渠道（Gitee issue）；
-5. **可见性**：Gitee 仓为公开时 Release 即公开可下载——内部邀请阶段
-   如需限流，用点对点分发给邀请名单，或调整仓库可见性。
+   - 内部邀请性质说明 + 反馈渠道（GitHub issue）；
+5. **可见性**：当前仓为私有，Release 不对外公开——内部邀请阶段
+   用点对点分发给邀请名单。
 
 ## 6. 已知问题门（发布说明须如实携带）
 
 | 来源 | 问题 | 发布说明口径 |
 |---|---|---|
 | 已知问题 | 旧版 service_tools 不含计算家族/执行体端口失指 | 本版已修复（发版模板入库+SSOT 守卫） |
-| 已知问题 | 自动更新器端点未配置 | 本版已配置（GitHub Releases latest）；不可达时手动下载 Gitee Release |
+| 已知问题 | 自动更新器端点未配置 | 本版已配置（GitHub Releases latest）；不可达时手动从 GitHub Releases 下载 |
 
 ## 7. 发布后
 
 - 邀请名单内逐一点对点通知（内部邀请，不做公开推广）；
-- 反馈统一走 Gitee issue 登记跟踪；
+- 反馈统一走 GitHub issue 登记跟踪；
 - 引擎/serve 日志在用户机应用数据目录 `logs\` 下，反馈问题时请用户
   附上（日志无密钥明文，已扫描验证）。

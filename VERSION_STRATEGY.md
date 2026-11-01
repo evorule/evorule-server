@@ -93,7 +93,7 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 - [ ] `README.md` 的"已知限制"段更新
 - [ ] `Cargo.toml` 版本号更新
 - [ ] `git tag vX.Y.Z` + `git push --tags`
-- [ ] Gitee Release 描述复制 `CHANGELOG.md` 的 [X.Y.Z] 段
+- [ ] GitHub Release 描述复制 `CHANGELOG.md` 的 [X.Y.Z] 段
 - [ ] Docker image 重新构建并测试(如果有)
 
 > **CHANGELOG 维护纪律**：开发期**不维护** `CHANGELOG.md`（禁止 `[Unreleased]` 段——`scripts/validate-changelog.ps1` 对此红线强制）；变更摘要留存于 commit message,发版时按本清单首项一次性汇总写入。

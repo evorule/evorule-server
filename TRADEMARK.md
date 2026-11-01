@@ -200,7 +200,7 @@ EvoRule Project 拥有以下商标(统称"EvoRule 商标"):
 
 - **商标使用许可申请**:<evorulelab@gmail.com>(主题加 `[Trademark]`)
 - **侵权举报**:<evorulelab@gmail.com>(主题加 `[Trademark Violation]`)
-- **官方网站**:<https://gitee.com/evorule/evorule>
+- **官方网站**:<https://github.com/evorule/evorule>
 
 ---
 

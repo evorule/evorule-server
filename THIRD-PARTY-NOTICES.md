@@ -84,4 +84,4 @@
 
 - **项目**: EvoRule — 反应式执行引擎
 - **邮箱**: <evorulelab@gmail.com>
-- **仓库**: <https://gitee.com/evorule/evorule-server>
+- **仓库**: <https://github.com/evorule/evorule-server>

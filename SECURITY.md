@@ -8,15 +8,15 @@
 
 **最后更新**: 2026-07-30
 
-本仓(`evorule-server`)的安全漏洞报告流程**与 [核心仓](https://gitee.com/evorule/evorule)共用**。
-详细流程见核心仓 [`SECURITY.md`](https://gitee.com/evorule/evorule/blob/main/SECURITY.md)。
+本仓(`evorule-server`)的安全漏洞报告流程**与 [核心仓](https://github.com/evorule/evorule)共用**。
+详细流程见核心仓 [`SECURITY.md`](https://github.com/evorule/evorule/blob/main/SECURITY.md)。
 
 ---
 
 ## 📧 联系方式
 
 - **邮箱**: <evorulelab@gmail.com>(主题加 `[SECURITY][evorule-server]`)
-- **Gitee 私信**: 维护者(@evorulelab)
+- **GitHub 私信**: 维护者(@evorulelab),或使用 GitHub Security Advisory
 
 ---
 
@@ -26,7 +26,7 @@
 |---|---|---|
 | `v0.2.0` | ✅ Supported | 首个独立稳定 release(2026-08-19) |
 | `v0.1.0` | ⚠️ EOL | 内部基线(2026-07-30),已停止支持 |
-| 应用层旧位置 | ❌ EOL | 已迁出,无 Gitee 撤回成本 |
+| 应用层旧位置 | ❌ EOL | 已迁出,无原平台撤回成本 |
 
 ---
 

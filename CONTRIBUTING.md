@@ -25,7 +25,7 @@ Git 语义中，**committer（提交者）**表示「将该提交放入仓库的
 |---|---|
 | `Mr.Damu Zheng <evorulelab@gmail.com>` | 项目维护者，也是所有提交的统一 author（内容作者）署名 |
 | `EvoRuleLab <evorulelab@gmail.com>` | 项目发布与自动化流水线的机器身份 |
-| `evorule` | 镜像推送通道的机器身份（Gitee / GitHub 双端镜像同步产物） |
+| `evorule` | 历史机器身份（单主转换前的跨平台镜像同步通道，已退役保留） |
 | `GitHub <noreply@github.com>` | 平台合并产物（PR 按钮合并时由 GitHub 平台默认署名） |
 | `TheEquation Project` | 项目初代历史身份（2026 年 8 月，author 与 committer 同名完整署名） |
 
@@ -38,7 +38,7 @@ Git 语义中，**committer（提交者）**表示「将该提交放入仓库的
 ### 1. Fork & Clone
 
 ```bash
-git clone https://gitee.com/<your-fork>/evorule-server.git
+git clone https://github.com/<your-fork>/evorule-server.git
 cd evorule-server
 ```
 
@@ -139,7 +139,7 @@ Closes #123
 
 要让商业授权在法律上**可执行**,第三方贡献者的版权需通过 **Contributor License Agreement(CLA)** **非独占授权**给 EvoRule Project,供其纳入双许可体系进行商业转授权。**您的版权仍归您所有**,只是授予了 EvoRule Project 非独占使用、修改与再许可的权利。
 
-- **个人贡献者**:需签署 `CLA-individual.md`(模板参照[核心仓](https://gitee.com/evorule/evorule)的 `CLA-individual.md`,发布前可联系 <evorulelab@gmail.com> 索取)
+- **个人贡献者**:需签署 `CLA-individual.md`(模板参照[核心仓](https://github.com/evorule/evorule)的 `CLA-individual.md`,发布前可联系 <evorulelab@gmail.com> 索取)
 - **企业贡献者**:通过所在机构签署,请联系 <evorulelab@gmail.com>
 
 > ⚠️ 若无 CLA,第三方贡献的版权无法被纳入商业授权,双许可会存在**版权瑕疵**。因此所有外部提交在 **PR 合并前需完成 CLA 签署**。
@@ -148,7 +148,7 @@ Closes #123
 
 ## 联系方式
 
-- Gitee Issue:本仓 Issues
+- GitHub Issue:本仓 Issues
 - 邮箱:<evorulelab@gmail.com>
 
 ---
