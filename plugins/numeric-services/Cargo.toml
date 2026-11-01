@@ -7,7 +7,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "精确算术原生服务(有理数/定点十进制/数论原子/利息摊销/单位换算/量纲感知求值)——纯计算,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [lints]

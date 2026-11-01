@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "确定性模板渲染原生服务 —— {{}} 家族语法(变量替换 + if/for 控制流最小集)的渲染引擎,上下文+模板→JSON/Markdown/纯文本,确定性纯函数,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [dependencies]

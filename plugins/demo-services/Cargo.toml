@@ -7,7 +7,7 @@ version.workspace = true
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "yuanze-demos 业务服务 Rust 原生实现 —— 以 IoHandler 形式挂载到 evorule-server IoDispatcher（Phase 1）"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 [lints]

@@ -38,8 +38,8 @@ version = "0.10.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 authors = ["EvoRule Project"]
-repository = "https://gitee.com/evorule/evorule-server"
-homepage = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
+homepage = "https://github.com/evorule/evorule-server"
 rust-version = "1.74"
 
 

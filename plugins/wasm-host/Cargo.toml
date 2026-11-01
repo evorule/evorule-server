@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "WASM UDF 宿主进程（wasmtime，零能力 + fuel 计量）；以 external 插件身份经 HTTP 接入 evorule-server（阶段 2 / ADR-0001）"
-repository = "https://gitee.com/evorule/evorule-server"
+repository = "https://github.com/evorule/evorule-server"
 publish = false
 
 # MSRV：由 wasmtime 48 决定（crates.io 实测 rust_version = 1.95.0）。
