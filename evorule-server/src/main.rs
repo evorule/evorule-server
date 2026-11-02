@@ -3007,6 +3007,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("伴跑状态机 runner 已启动（缺省 A 态待命；POST /api/companion/state 切换 B 态）");
     }
 
+    // 伴跑分析执行隔离：专用单 worker runtime 承载三件套 CPU 密集段——
+    // 主多线程 runtime 的 HTTP handler 零抢占；IO 面（watch/去抖/落链/status）
+    // 仍留主 runtime。构建失败降级为内联执行（缺省兜底，不阻断启动）。
+    // runtime 须保活至进程退出（drop 即关闭）。
+    let _companion_exec_keepalive: Option<tokio::runtime::Runtime> = {
+        match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("companion-exec")
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => {
+                companion_hub.with_exec_runtime(rt.handle().clone());
+                info!("伴跑分析执行隔离已启用（专用单 worker runtime）");
+                Some(rt)
+            }
+            Err(e) => {
+                warn!("伴跑分析执行 runtime 构建失败，降级内联执行: {e}");
+                None
+            }
+        }
+    };
+
+    // 伴跑编辑检出触发源（watch 触发源）：rules_dir+core_eval 文件系统变更
+    // → 只读求版 → 既有装载漏斗（同版本幂等；唯一静默窗=runner 去抖）。
+    // watcher 常开（A 态待命零活动语义不受影响）。
+    evorule_server::api::companion::spawn_fs_watcher(
+        companion_hub.clone(),
+        cfg.core_eval.clone(),
+        cfg.rules_dir.clone(),
+    );
+    info!("伴跑编辑检出 watcher 已启动（rules_dir+core_eval 变更检出）");
+
     // 创建 readiness flag（优雅退出时设为 false）
     let readiness: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
 
