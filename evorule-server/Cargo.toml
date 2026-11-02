@@ -111,6 +111,8 @@ tokio = { version = "1", features = [
     "time",
     "signal",
 ] }
+# CancellationToken（伴跑分析抢占令牌；已在依赖树，显式声明启用 rt feature）
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # HTTP API(直接使用 axum 类型;multipart 供模板市场上传 W4)
 axum = { version = "0.8", features = ["multipart"] }
