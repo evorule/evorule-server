@@ -1,0 +1,17 @@
+# Commit-message structural lint (layer 1) - caller.
+# The reusable workflow lives in the main repository; this file only wires
+# it into this repo's CI. Disclosure face (layer 2) is owned by the
+# public-face scan workflow and is intentionally not duplicated here.
+name: commit-lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    uses: evorule/evorule/.github/workflows/commit-lint.yml@main
