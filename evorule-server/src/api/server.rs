@@ -1716,10 +1716,14 @@ impl SessionApi {
     ///
     /// - `expected_version`：runner 传入的去抖后最新版；装载结果版本不匹配
     ///   即 stale 显式报错（防 TOCTOU：分析对象必须与信号版本逐位一致）。
+    /// - `cancel`：抢占令牌（更新版本到达时取消 in-flight 分析）；检查点=
+    ///   服务间三处（单服务 execute 是原子长调用，设计稿 D1 获批粒度）。
+    ///   被取消即返回哨兵错误（[`companion::CANCEL_SENTINEL`]），不产出报告。
     /// - 报告含全量三件套结果+快照摘要（digest 互证），由伴跑中枢落链。
     pub(crate) async fn companion_run_lint_suite(
         &self,
         expected_version: &str,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<serde_json::Value, String> {
         let Some(chain) = self.service_chain.as_ref() else {
             return Err(
@@ -1755,9 +1759,15 @@ impl SessionApi {
             "rules": in_rules_serde,
             "sources": in_sources,
         }));
-        // lint 三件套进程内直调（与 invoke handler 同一 execute 链，无第二执行路径）
+        // lint 三件套进程内直调（与 invoke handler 同一 execute 链，无第二执行路径）；
+        // 每个服务之间检查抢占令牌（设计稿 D1：服务间三检查点）
         let mut analyses = Vec::new();
         for name in crate::api::companion::LINT_SERVICE_NAMES {
+            if let Some(token) = cancel {
+                if token.is_cancelled() {
+                    return Err(crate::api::companion::CANCEL_SENTINEL.to_string());
+                }
+            }
             let args = serde_json::json!({
                 "rules": in_rules_serde,
                 "sources": in_sources,
@@ -12998,9 +13008,11 @@ async fn companion_state_handler(
             ),
         ));
     };
+    // actor 真实化（设计稿 12b 获批项）：有认证身份取之；无鉴权模式固定
+    // local:unauthenticated（禁止自由文本进链事实——干预留痕防伪造）
     let actor_id = actor
         .map(|Extension(a)| a.0)
-        .unwrap_or_else(|| "anonymous".to_string());
+        .unwrap_or_else(|| "local:unauthenticated".to_string());
     hub.set_enabled(body.enabled, &actor_id);
     Ok(Json(serde_json::json!({
         "enabled": body.enabled,
@@ -21490,7 +21502,7 @@ mod tests {
         let version = fixture_layout_version(&core_eval_path, &rules_dir);
         let report = state
             .sessions
-            .companion_run_lint_suite(&version)
+            .companion_run_lint_suite(&version, None)
             .await
             .expect("套件执行成功");
         assert_eq!(report["kind"], serde_json::json!("CompanionReport"));
@@ -21535,6 +21547,134 @@ mod tests {
             "三件套全命中: {analyses:?}"
         );
         assert!(hub.verify_chain().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_companion_suite_cancel_sentinel_preempt() {
+        // 抢占哨兵契约：预取消令牌 → 三件套首个服务检查点即返回 CANCEL_SENTINEL
+        // （证明检查点真实生效——D1 获批粒度=服务间三检查点）
+        let (state, _hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        let version = fixture_layout_version(&core_eval_path, &rules_dir);
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let err = state
+            .sessions
+            .companion_run_lint_suite(&version, Some(&token))
+            .await
+            .unwrap_err();
+        assert_eq!(err, crate::api::companion::CANCEL_SENTINEL);
+    }
+
+    #[tokio::test]
+    async fn test_companion_errors_history_ring_capped_at_five() {
+        // 错误历史环形缓冲：连续真失败（stale 版本号 vs fs 快照）→ errors 封顶 5 条
+        // 时序呈现，last_error=最新一条（fail-visible 兼容既有消费者）
+        let (state, hub, (_tmp, _cp, _rd)) = make_companion_state_with_anchor(None);
+        hub.set_enabled(true, "test");
+        tokio::spawn(hub.clone().run(state.sessions.clone()));
+        for i in 0..7 {
+            hub.notify_version(format!("bogus-{i}"));
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        let status = hub.status_json();
+        let errors = status["errors"].as_array().expect("errors 数组呈现");
+        assert_eq!(
+            errors.len(),
+            crate::api::companion::ERROR_HISTORY_CAP,
+            "环形缓冲封顶（7 次失败只留最近 5 条）: {errors:?}"
+        );
+        let last = status["last_error"].as_str().unwrap_or("");
+        assert!(
+            last.contains("bogus-6"),
+            "last_error=最新一条（时序呈现）: {last}"
+        );
+        assert_eq!(
+            errors.last().and_then(|e| e.as_str()),
+            Some(last),
+            "errors 末位与 last_error 一致"
+        );
+        assert!(
+            status["counters"]["analyses_failed"].as_u64().unwrap_or(0) >= 5,
+            "失败计数未被环形淘汰影响"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_companion_metrics_registered_and_counted() {
+        // 指标面：with_metrics 挂自建 registry → 一次成功分析 →
+        // evorule_companion_analyses_total{result=ok} ≥ 1 且时长直方图族在场
+        let (state, hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        let version = fixture_layout_version(&core_eval_path, &rules_dir);
+        let registry = prometheus::Registry::new();
+        hub.with_metrics(&registry);
+        hub.set_enabled(true, "test");
+        tokio::spawn(hub.clone().run(state.sessions.clone()));
+        hub.notify_version(version);
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert_eq!(
+            hub.status_json()["state"],
+            serde_json::json!("certified"),
+            "前置：分析成功"
+        );
+        let families = registry.gather();
+        let ok_total = families
+            .iter()
+            .find(|f| f.name() == "evorule_companion_analyses_total")
+            .and_then(|f| {
+                f.get_metric().iter().find(|m| {
+                    m.get_label()
+                        .iter()
+                        .any(|l| l.name() == "result" && l.value() == "ok")
+                })
+            })
+            .and_then(|m| m.get_counter().value)
+            .map(|v| v as u64)
+            .unwrap_or(0);
+        assert!(ok_total >= 1, "ok 计数 ≥1，实际 {ok_total}");
+        assert!(
+            families
+                .iter()
+                .any(|f| f.name() == "evorule_companion_analysis_duration_seconds"),
+            "时长直方图族在场"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_companion_cert_expired_falls_to_chain() {
+        // 认证集窗口语义端到端：连续 10 个真实新版本（改写夹具派生新 layout
+        // version）→ 认证集封顶 8 → 淘汰者落链 CompanionCertExpired 记录性事实
+        let (state, hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        let second = rules_dir.join("b_second.json");
+        hub.set_enabled(true, "test");
+        tokio::spawn(hub.clone().run(state.sessions.clone()));
+        for i in 0..10 {
+            std::fs::write(
+                &second,
+                format!(
+                    r#"{{"transform":[{{"type":"set","params":{{"attr":"y","operation":"set","value":{i}}}}}]}}"#
+                ),
+            )
+            .expect("改写夹具规则件");
+            let v = fixture_layout_version(&core_eval_path, &rules_dir);
+            hub.notify_version(v);
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        }
+        let status = hub.status_json();
+        let certified = status["certified_versions"].as_array().expect("认证集呈现");
+        assert_eq!(
+            certified.len(),
+            crate::api::companion::CERTIFIED_MAX_EXTRA,
+            "无锚认证集封顶=最近 N 条，实际 {certified:?}"
+        );
+        let tail = status["chain"]["tail"].as_array().expect("链尾呈现");
+        assert!(
+            tail.iter().any(|e| e["kind"] == "CompanionCertExpired"),
+            "淘汰者落链记录性事实: {tail:?}"
+        );
+        assert!(hub.verify_chain().is_ok(), "淘汰落链后哈希链仍完整");
     }
 
     #[test]

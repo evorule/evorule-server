@@ -387,6 +387,28 @@ struct Cli {
     )]
     wal_fsync: Option<bool>,
 
+    /// 伴跑去抖静默窗（毫秒；<10 拒启防打爆分析面；获批设计稿 D3 参数配置化）
+    #[arg(long, env = "EVORULE_COMPANION_DEBOUNCE_MS", default_value_t = 3000)]
+    companion_debounce_ms: u64,
+
+    /// 伴跑两次已完成分析最小间隔（毫秒；<10 拒启；获批设计稿 D3 参数配置化）
+    #[arg(
+        long,
+        env = "EVORULE_COMPANION_MIN_INTERVAL_MS",
+        default_value_t = 60000
+    )]
+    companion_min_interval_ms: u64,
+
+    /// 启动即 B 态（缺省 false=A 态待命，安全姿态不变；真机验证摩擦用）
+    #[arg(
+        long,
+        env = "EVORULE_COMPANION_START_ENABLED",
+        default_missing_value = "true",
+        num_args = 0..=1,
+        value_parser = clap::value_parser!(bool)
+    )]
+    companion_start_enabled: bool,
+
     /// 启动期 WAL 全链校验（P1 W-5：反应器审计链 + 共享事实账本全量重算；
     /// 校验失败仅告警并经 /api/health 呈现，不拒绝启动——保护取证现场）
     #[arg(long, env = "EVORULE_VERIFY_WAL_ON_START")]
@@ -2053,6 +2075,12 @@ fn wal_verify_fail_closed_enabled() -> bool {
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    // 伴跑 CLI 配置先取（cli 随后 move 进 ResolvedConfig::resolve）
+    let (companion_debounce_ms, companion_min_interval_ms, companion_start_enabled) = (
+        cli.companion_debounce_ms,
+        cli.companion_min_interval_ms,
+        cli.companion_start_enabled,
+    );
 
     // 加载 JSON 配置文件（若指定）
     // M3 修复: 注释原本写"TOML",但实际加载的是 JSON(serde_json::from_str)。
@@ -2884,13 +2912,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 伴跑中枢（获批设计稿）：链文件与 wal-dir 同级
     // 配置面（companion_chain.jsonl，None=纯内存）；锚定版本与 G6 会话锚定同源
     // （ruleset_layout.ruleset_version，覆盖率会话归属判据）。缺省 A 态待命。
+    // 12a 配置外置（获批）：clap/env 双轨；<10ms fail-fast 防打爆分析面
+    const COMPANION_MS_FLOOR: u64 = 10;
+    if companion_debounce_ms < COMPANION_MS_FLOOR || companion_min_interval_ms < COMPANION_MS_FLOOR
+    {
+        return Err(format!(
+            "companion debounce/min-interval must be >= {COMPANION_MS_FLOOR}ms \
+             (got debounce={}ms, min_interval={}ms)",
+            companion_debounce_ms, companion_min_interval_ms
+        )
+        .into());
+    }
+    let companion_chain_path = cfg
+        .wal_dir
+        .as_ref()
+        .map(|d| d.join("companion_chain.jsonl"));
+    // 12c 多实例 fail-fast（获批 D2）：链文件独占锁；死 PID 残留覆盖接管
+    let _companion_chain_lock = match companion_chain_path.as_deref() {
+        Some(p) => Some(
+            evorule_server::api::companion::ChainLock::acquire(p)
+                .map_err(Box::<dyn std::error::Error>::from)?,
+        ),
+        None => None,
+    };
     let companion_hub = evorule_server::api::companion::CompanionHub::new(
-        evorule_server::api::companion::CompanionConfig::default(),
-        cfg.wal_dir
-            .as_ref()
-            .map(|d| d.join("companion_chain.jsonl")),
+        evorule_server::api::companion::CompanionConfig {
+            debounce: std::time::Duration::from_millis(companion_debounce_ms),
+            min_interval: std::time::Duration::from_millis(companion_min_interval_ms),
+        },
+        companion_chain_path,
         Some(ruleset_version_at_startup.clone()),
     );
+    // 12 运维面：挂 server 既有 registry（evorule_companion_* 四指标；注册失败降级无指标）
+    companion_hub.with_metrics(prometheus_metrics.registry());
+    // 12a 获批 D3：可选启动即 B 态（缺省 false=A 态待命安全姿态不变）；
+    // 留痕走 set_enabled 同一通道（干预必留痕；受控常量 actor，非用户自由文本）
+    if companion_start_enabled {
+        companion_hub.set_enabled(true, "local:startup-flag");
+    }
 
     let session_api = SessionApi::new_with_full_config(
         core_eval,
