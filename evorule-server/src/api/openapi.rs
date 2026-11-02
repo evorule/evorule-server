@@ -91,6 +91,10 @@ use utoipa::OpenApi;
         crate::api::server::l2_inventory_handler,
         // 规则集快照只读出口（与 lint 推理服务入参严格同形，快照即喂）
         crate::api::server::ruleset_snapshot_handler,
+        // 伴跑状态机呈现面（design-22 R3：只读旁路消费者，独立命名空间）
+        crate::api::server::companion_status_handler,
+        crate::api::server::companion_coverage_handler,
+        crate::api::server::companion_state_handler,
         // 进化信号只读聚合（自进化：scanner 对 FactsLog 的只读投影）
         crate::api::server::session_evolution_signals,
         // rules 命中统计组
@@ -398,6 +402,9 @@ mod tests {
             "/api/rules",
             "/api/rules/l2-inventory",
             "/api/ruleset/snapshot",
+            "/api/companion/status",
+            "/api/companion/coverage",
+            "/api/companion/state",
             "/api/rules/hit-stats",
             "/api/rules/hit-stats/{rule_key}",
             "/api/bundles/import",

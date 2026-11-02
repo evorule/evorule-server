@@ -201,6 +201,35 @@ re-ordering, no assembly. To analyze the full set including constitution
 rules, take the snapshot with `include_constitution=true` and pass
 `include_constitution:true` in the service args as well.
 
+## 5.6 Companion state machine (server-side continuous lint)
+
+The snapshot → lint two-step above is on-demand. The server can also run
+it **continuously**: a companion state machine watches the active ruleset
+(reload events, event-driven, zero polling) and re-runs the lint suite
+(`inference_rw_extract`, `inference_cycle_detect`,
+`inference_conflict_detect`) on every ruleset change — in-process, against
+the same deterministic kernel as manual invocation. It only reports; it
+never blocks a session or rewrites a rule (fail-soft, audit-only).
+
+The companion is **off by default** (dormant, zero analysis activity):
+
+```
+POST /api/companion/state   {"enabled": true}    # start accompanying
+POST /api/companion/state   {"enabled": false}   # back to dormant (audited)
+GET  /api/companion/status                       # phase, counters, chain tail
+GET  /api/companion/coverage                     # certified-vs-total sessions
+```
+
+Each toggle is written to an append-only companion hash chain
+(`companion_chain.jsonl` next to the WAL dir, one full report JSON per
+analysis under `reports/`); every entry hashes its payload and links to
+the previous hash, and `GET /api/companion/status` exposes the tail for
+spot verification. A ruleset version is "certified" once the suite has
+run clean against it; coverage reports how many live sessions sit on a
+certified version. Analysis cadence is debounced (3 s quiet window,
+60 s minimum interval, both configurable) so rapid reload bursts collapse
+into one run.
+
 ## 6. Family quick reference
 
 | Family | What it computes |

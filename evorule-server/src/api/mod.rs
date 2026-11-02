@@ -13,6 +13,7 @@ pub mod app_quota;
 pub mod audit_archive;
 pub mod bundles;
 pub mod caller_role_resolver;
+pub mod companion;
 pub mod hit_stats;
 pub mod io_contract;
 pub mod io_guard;
