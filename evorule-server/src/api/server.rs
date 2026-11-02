@@ -460,7 +460,7 @@ pub struct SessionApi {
     /// None（未装配）时 invoke 返回 503。
     service_chain: Option<Arc<dyn evorule_reactor::IoHandler>>,
 
-    /// 伴跑中枢（design-22 R3 / design-63：审计链驱动的确定性旁路消费者）。
+    /// 伴跑中枢（设计稿：审计链驱动的确定性旁路消费者）。
     /// None=未装配（测试/桥接路径，`/api/companion/*` 端点 503 显式呈现）；
     /// main.rs 启动期经 `with_companion` 注入并 spawn 独立 runner task（零侵入主循环）。
     pub(crate) companion: Option<Arc<crate::api::companion::CompanionHub>>,
@@ -1302,7 +1302,7 @@ impl SessionApi {
         self
     }
 
-    /// 注入伴跑中枢（design-22 R3 / design-63 获批设计稿：审计链驱动的确定性
+    /// 注入伴跑中枢（获批设计稿：审计链驱动的确定性
     /// 旁路消费者）。builder 模式；调用方（main.rs）随后 `tokio::spawn` 独立
     /// runner task——零侵入主循环（独立 task + 独立 `/api/companion/*` 命名空间）。
     pub fn with_companion(mut self, hub: Arc<crate::api::companion::CompanionHub>) -> Self {
@@ -1621,7 +1621,7 @@ impl SessionApi {
         let new_ruleset_version = new_layout.ruleset_version.clone();
         self.hit_stats.adopt_layout(new_layout);
 
-        // 4. 伴跑中枢信号（design-22 R3：装载漏斗唯一出口——事件驱动零轮询，
+        // 4. 伴跑中枢信号（获批方案：装载漏斗唯一出口——事件驱动零轮询，
         //    新版 ruleset_version 触发伴跑状态机 dirty→analyzing→certified）
         if let Some(hub) = &self.companion {
             hub.notify_version(new_ruleset_version);
@@ -1710,7 +1710,7 @@ impl SessionApi {
         Self::ruleset_snapshot_from_fs(&self.core_eval_path, &self.rules_dir, include_constitution)
     }
 
-    /// 伴跑分析一次（design-22 R3 / design-63 获批设计稿 §5：快照即喂→lint
+    /// 伴跑分析一次（获批设计稿 §5：快照即喂→lint
     /// 三件套进程内直调→报告 JSON）。与 HTTP invoke 同一确定性内核
     /// （service_chain.execute），逐字段一致由构造保证（契约测试防退化）。
     ///
@@ -12388,7 +12388,7 @@ impl GovernanceServer {
             // 规则集快照只读出口：合并装载一次读取，与 lint 推理服务入参
             // 严格同形（快照即喂）——受认证保护（治理状态全量读出面）
             .route("/api/ruleset/snapshot", get(ruleset_snapshot_handler))
-            // 伴跑状态机呈现面（design-22 R3：只读旁路消费者，独立命名空间；
+            // 伴跑状态机呈现面（获批方案：只读旁路消费者，独立命名空间；
             // state 端点=A/B 切换唯一入口，干预必留痕）——受认证保护
             .route("/api/companion/status", get(companion_status_handler))
             .route("/api/companion/coverage", get(companion_coverage_handler))
@@ -12915,7 +12915,7 @@ async fn ruleset_snapshot_handler(
         })
 }
 
-/// 伴跑状态机端点家族（design-22 R3 / design-63 获批设计稿：只读旁路消费者
+/// 伴跑状态机端点家族（获批设计稿：只读旁路消费者
 /// 的呈现面；独立命名空间，不触碰既有 handler 语义——硬边界④零侵入）
 #[utoipa::path(
     get,
@@ -21265,7 +21265,7 @@ mod tests {
         );
     }
 
-    // ===== design-22 R3 / design-63 伴跑状态机 A→B 最小版契约测试 =====
+    // ===== 设计稿 伴跑状态机 A→B 最小版契约测试 =====
 
     /// 伴跑 fallback stub（三件套名全命中 inference 内核，永不回落）
     struct CompanionTestFallback;

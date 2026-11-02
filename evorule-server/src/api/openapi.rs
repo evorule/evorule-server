@@ -91,7 +91,7 @@ use utoipa::OpenApi;
         crate::api::server::l2_inventory_handler,
         // 规则集快照只读出口（与 lint 推理服务入参严格同形，快照即喂）
         crate::api::server::ruleset_snapshot_handler,
-        // 伴跑状态机呈现面（design-22 R3：只读旁路消费者，独立命名空间）
+        // 伴跑状态机呈现面（获批方案：只读旁路消费者，独立命名空间）
         crate::api::server::companion_status_handler,
         crate::api::server::companion_coverage_handler,
         crate::api::server::companion_state_handler,

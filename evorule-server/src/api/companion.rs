@@ -1,17 +1,17 @@
-//! 伴跑状态机 A→B 最小版（design-22 批 R3 / design-63 获批设计稿，CLAIM-BOARD B-098）
+//! 伴跑状态机 A→B 最小版（获批设计稿）
 //!
 //! 审计链驱动的确定性旁路消费者：规则集版本变更（载入/编辑检出=同一装载漏斗）
 //! → 去抖 → lint 三件套进程内直调（与 HTTP invoke 同一确定性内核）→ 报告落
 //! 伴随域自有哈希链事实（记录性，不进业务会话链）→ 认证集更新 → 覆盖率可查询。
 //!
-//! 硬边界（design-22 §三 R3 四条照单全收）：
+//! 硬边界（四条照单全收）：
 //! 1. 只报告不拦截——本模块无任何阻断权，产出=报告/证书+查询面
 //! 2. 干预必留痕——enable/disable 双向落链事实 + `tracing::warn!`
 //! 3. 收尾覆盖率打标——`GET /api/companion/coverage` 可查询
 //! 4. 零侵入主循环——独立 tokio task（`run`），不改 evo-agent（零 commit）
 //!    与 server 既有 handler 语义（新增独立 `/api/companion/*` 命名空间）
 //!
-//! 落链形态（design-63 §10 D2 获批项的施工实现）：`evorule-reactor` 为
+//! 落链形态（获批设计稿 D2 项的施工实现）：`evorule-reactor` 为
 //! crates.io 依赖（vendored patch 已退役收编为原生 crate），本批不可加枚举
 //! 变体——故为**伴随域自有哈希链事实**：JSONL 追加 + blake3 前链（`prev_hash`
 //! 链接、`evorule_hash::json_digest` 键序稳定摘要），记录性事实语义与
@@ -27,17 +27,17 @@ use serde_json::json;
 
 use super::server::SessionApi;
 
-/// lint 三件套（design-63 §1.3：全部非 sensitive，REST 直调合法，进程内直调同权）
+/// lint 三件套（设计稿：全部非 sensitive，REST 直调合法，进程内直调同权）
 pub(crate) const LINT_SERVICE_NAMES: &[&str] = &[
     "inference_rw_extract",
     "inference_cycle_detect",
     "inference_conflict_detect",
 ];
 
-/// 缺省去抖静默窗（design-63 §10 D3 获批参数）
+/// 缺省去抖静默窗（获批设计稿 D3 参数）
 pub(crate) const DEFAULT_DEBOUNCE_MS: u64 = 3000;
 
-/// 缺省两次已完成分析最小间隔（design-63 §10 D3 获批参数）
+/// 缺省两次已完成分析最小间隔（获批设计稿 D3 参数）
 pub(crate) const DEFAULT_MIN_INTERVAL_MS: u64 = 60_000;
 
 /// 伴跑状态（验收骨架「状态链可见」五态链）
@@ -82,7 +82,7 @@ struct ChainState {
 /// 内存链尾部保留上限（status 呈现面，防无界增长；全量以链文件为准）
 const CHAIN_MEM_CAP: usize = 64;
 
-/// 伴跑配置（design-63 §10 D3 获批参数，配置面可调）
+/// 伴跑配置（获批设计稿 D3 参数，配置面可调）
 #[derive(Debug, Clone)]
 pub struct CompanionConfig {
     pub debounce: Duration,
@@ -377,7 +377,7 @@ impl CompanionHub {
         let mut chain = lock_poem(&self.chain);
         chain.seq += 1;
         let seq = chain.seq;
-        // 报告全文落盘（design-63 §5：全文落 companion 本地报告目录，事实内持 digest 互证）
+        // 报告全文落盘（设计稿：全文落 companion 本地报告目录，事实内持 digest 互证）
         if let (Some(dir), Some((full, _digest))) = (chain.reports_dir.clone(), artifact) {
             let file = dir.join(format!("report_{seq:06}.json"));
             if let Some(parent) = file.parent() {
@@ -479,7 +479,7 @@ impl CompanionHub {
         })
     }
 
-    /// 覆盖率呈现（design-63 §6 版本认证制；会话归属=锚定版本∈认证集）
+    /// 覆盖率呈现（版本认证制；会话归属=锚定版本∈认证集）
     pub fn coverage_json(&self, sessions_total: usize) -> serde_json::Value {
         let certified = lock_poem(&self.certified);
         let anchor = lock_poem(&self.anchor_version).clone();
