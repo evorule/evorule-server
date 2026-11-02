@@ -65,11 +65,14 @@ yanked = "warn"
 # zip 2/3/8（RUSTSEC-2026-0367/0368/0369）：修复版 9.0.0 属大版本，依赖方
 # rust_xlsxwriter / zendriver / utoipa-swagger-ui / docx-rs 上游未跟进，本地无
 # 升级路径；抽取 API 未在服务面使用，待上游跟进后随版解除，豁免。
+# RUSTSEC-2026-0429（2026-11-02 treadmill 追加）：zip 抽取符号链接入口同族漏洞
+# （修复版同 >=9.0.0，依赖方钉死同上）；同前豁免理由，随上游升级一并解除。
 # （RUSTSEC-2026-0192 ttf-parser 豁免已随 export-services 迁移 skrifa 解除摘除）
 ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0429",
 ]
 
 # ---------------------------------------------------------------------------
