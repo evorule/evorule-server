@@ -1627,6 +1627,65 @@ impl SessionApi {
         Self::load_merged_with_layout(core_eval_path, rules_dir).map(|(rules, _, _, _, _)| rules)
     }
 
+    /// 规则集快照（只读出口）：合并装载一次读取，输出与 lint 推理服务
+    /// （inference_conflict_detect 等三件套）入参**严格同形**——`rules`+
+    /// `sources` 直接可喂（快照即喂），调用方无需再自行按合并序组装。
+    ///
+    /// - 宪法段（`source == "core_eval"` 前缀段）缺省豁免：移入
+    ///   `constitution_excluded` 桶——豁免标注口径与 rw_extract `excluded`
+    ///   桶单一同源（`source == "core_eval"` 判据，见 inference-services
+    ///   rw_extract::extract）；`include_constitution = true` 时宪法段留在
+    ///   `rules`/`sources` 内（与 lint 服务同名参数语义透传对齐），豁免桶为空。
+    /// - **只读无副作用**：不触碰会话/缓存/审计状态，与 reload 面物理隔离。
+    /// - **fail-visible**：core_eval/rules_dir 缺失或装载门禁未过，经
+    ///   [`Self::load_merged_with_layout`] 显式报错上抛，不静默回落空集。
+    pub fn ruleset_snapshot_from_fs(
+        core_eval_path: &std::path::Path,
+        rules_dir: &std::path::Path,
+        include_constitution: bool,
+    ) -> Result<serde_json::Value, String> {
+        let (rules, layout, _, _, _) = Self::load_merged_with_layout(core_eval_path, rules_dir)?;
+        let sources: Vec<String> = layout.rules.into_iter().map(|m| m.source).collect();
+        // 宪法段 = 合并序前缀 source=="core_eval" 段（装载两道防线对宪法前缀
+        // 段豁免，故该段连续居首）；rules_dir 部件标签为路径形态，不会撞名。
+        let mut in_rules = Vec::new();
+        let mut in_sources = Vec::new();
+        let mut excluded_rules = Vec::new();
+        let mut excluded_sources = Vec::new();
+        for (rule, source) in rules.into_iter().zip(sources) {
+            if !include_constitution && source == "core_eval" {
+                excluded_rules.push(rule);
+                excluded_sources.push(source);
+            } else {
+                in_rules.push(rule);
+                in_sources.push(source);
+            }
+        }
+        // TCB JsonValue → serde_json::Value（lint 服务 HTTP 入参消费 serde 形态）
+        let in_rules_serde: Vec<serde_json::Value> = in_rules.iter().map(tcb_to_serde).collect();
+        let excluded_rules_serde: Vec<serde_json::Value> =
+            excluded_rules.iter().map(tcb_to_serde).collect();
+        Ok(serde_json::json!({
+            "rules": in_rules_serde,
+            "sources": in_sources,
+            "constitution_excluded": {
+                "rules": excluded_rules_serde,
+                "sources": excluded_sources,
+            },
+        }))
+    }
+
+    /// 规则集快照（实例出口）：读取本 API 装配的权威 core_eval/rules_dir 路径。
+    ///
+    /// 语义与 [`Self::ruleset_snapshot_from_fs`] 全同（快照即喂/宪法豁免/
+    /// 只读 fail-visible），路径以启动配置为单一权威，调用方不可指定。
+    pub fn ruleset_snapshot(
+        &self,
+        include_constitution: bool,
+    ) -> Result<serde_json::Value, String> {
+        Self::ruleset_snapshot_from_fs(&self.core_eval_path, &self.rules_dir, include_constitution)
+    }
+
     /// 合并加载并产出规则集 layout（单一权威装载点）
     ///
     /// 与 [`Self::load_merged_transforms_from_fs`] 同一次读取产出三件事：
@@ -12225,6 +12284,9 @@ impl GovernanceServer {
             .route("/api/rules", get(get_rules))
             // L2 约束（元规则）只读清单投影（LLM 代理消费面，需认证）
             .route("/api/rules/l2-inventory", get(l2_inventory_handler))
+            // 规则集快照只读出口：合并装载一次读取，与 lint 推理服务入参
+            // 严格同形（快照即喂）——受认证保护（治理状态全量读出面）
+            .route("/api/ruleset/snapshot", get(ruleset_snapshot_handler))
             .route(
                 "/api/sessions/{id}/evolution-signals",
                 get(session_evolution_signals),
@@ -12702,6 +12764,49 @@ async fn get_rules(State(api): State<SessionApi>) -> Result<Json<RulesResponse>,
 
 async fn l2_inventory_handler(State(api): State<SessionApi>) -> Json<L2InventoryResponse> {
     Json(SessionApi::l2_inventory(&api.rules_dir))
+}
+
+/// 规则集快照查询参数（`GET /api/ruleset/snapshot`）
+#[derive(Debug, Deserialize)]
+struct RulesetSnapshotParams {
+    /// 可选,缺省 false:宪法段豁免(移入 constitution_excluded 桶)
+    include_constitution: Option<bool>,
+}
+
+/// 规则集快照（GET /api/ruleset/snapshot，只读出口）
+///
+/// 合并规则集 + 来源标签 + 宪法豁免桶，与 lint 推理服务
+/// （inference_conflict_detect 等三件套）入参**严格同形**（快照即喂）：
+/// 响应的 `rules`+`sources` 直接作为服务入参回投即可，无需调用方自行按
+/// 合并序（core_eval 在前 + rules_dir 字典序）组装。宪法段缺省豁免——
+/// 移入 `constitution_excluded` 桶（豁免标注与 rw_extract excluded 桶
+/// 同一判据 `source == "core_eval"`）；`include_constitution=true` 时宪法
+/// 段并入 `rules`/`sources`（与 lint 服务同名参数语义透传对齐）。
+/// 只读无副作用；装载失败（core_eval/rules_dir 缺失等）显式 500 报错。
+#[utoipa::path(
+    get,
+    path = "/api/ruleset/snapshot",
+    tag = "rules",
+    params(
+        ("include_constitution" = Option<bool>, Query, description = "可选,缺省 false:宪法段豁免(移入 constitution_excluded 桶);true 时宪法段并入 rules/sources")
+    ),
+    responses(
+        (status = 200, description = "规则集快照(rules/sources 与 lint 服务入参严格同形)"),
+        (status = 500, description = "装载失败(core_eval/rules_dir 缺失或装载门禁未过,显式报错)")
+    )
+)]
+async fn ruleset_snapshot_handler(
+    State(api): State<SessionApi>,
+    Query(params): Query<RulesetSnapshotParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    api.ruleset_snapshot(params.include_constitution.unwrap_or(false))
+        .map(Json)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            )
+        })
 }
 
 /// 进化信号查询参数（`GET /api/sessions/{id}/evolution-signals`）
@@ -20766,6 +20871,198 @@ mod tests {
         assert_eq!(json["files"][0]["path"], "00_meta_seed.json");
         assert_eq!(json["files"][0]["title"], "种子元规则");
         assert_eq!(json["files"][0]["guard_for"][0], "robot_move");
+    }
+
+    // ===== 规则集快照只读出口（GET /api/ruleset/snapshot）契约测试 =====
+    // 快照与 lint 推理服务入参严格同形（快照即喂）；宪法段缺省豁免移入
+    // constitution_excluded 桶（标注口径=source=="core_eval"，与 rw_extract
+    // excluded 桶单一同源）；include_constitution=true 透传并入。
+
+    /// 快照测试夹具：宪法 2 规则（含 call_external 指令门）+ rules_dir 两文件
+    /// （a_first/b_second，验证字典序注入）。
+    fn make_snapshot_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let core_eval_path = tmp.path().join("core_eval.json");
+        std::fs::write(
+            &core_eval_path,
+            r#"{"transform":[
+                {"type":"set","params":{"attr":"result","operation":"set","value":"ok"}},
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[],"on_false":[]}}]}"#,
+        )
+        .unwrap();
+        let rules_dir = tmp.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("b_second.json"),
+            r#"{"transform":[{"type":"set","params":{"attr":"y","operation":"set","value":2}}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            rules_dir.join("a_first.json"),
+            r#"{"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
+        )
+        .unwrap();
+        (tmp, core_eval_path, rules_dir)
+    }
+
+    #[test]
+    fn test_ruleset_snapshot_strict_same_shape_as_lint_input() {
+        // 快照即喂：rules/sources 等长对齐；include_constitution=true 时与
+        // load_merged_transforms_from_fs 手工组装基线逐字段一致
+        let (_tmp, core_eval_path, rules_dir) = make_snapshot_fixture();
+
+        let snap = SessionApi::ruleset_snapshot_from_fs(&core_eval_path, &rules_dir, true)
+            .expect("合法夹具快照必装载成功");
+        let rules = snap["rules"].as_array().unwrap();
+        let sources = snap["sources"].as_array().unwrap();
+        assert_eq!(
+            rules.len(),
+            sources.len(),
+            "rules/sources 等长对齐（lint 入参契约）"
+        );
+        assert_eq!(rules.len(), 4, "宪法 2 + rules_dir 2");
+        assert_eq!(sources[0], "core_eval", "宪法前缀段标注");
+        assert_eq!(sources[1], "core_eval");
+        assert_eq!(sources[2], "a_first.json", "rules_dir 字典序在前");
+        assert_eq!(sources[3], "b_second.json");
+
+        // 对拍基线：手工组装（core_eval 在前 + rules_dir 字典序）= 合并装载原序
+        let baseline = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir)
+            .expect("基线装载成功");
+        let baseline_serde: Vec<serde_json::Value> = baseline.iter().map(tcb_to_serde).collect();
+        assert_eq!(
+            rules, &baseline_serde,
+            "快照(include_constitution=true) 与手工组装基线逐字段一致"
+        );
+    }
+
+    #[test]
+    fn test_ruleset_snapshot_default_excludes_constitution_bucket() {
+        // 缺省豁免：宪法段移入 constitution_excluded 桶（标注=core_eval），
+        // rules/sources 仅含 rules_dir 部件且保持合并序
+        let (_tmp, core_eval_path, rules_dir) = make_snapshot_fixture();
+
+        let snap = SessionApi::ruleset_snapshot_from_fs(&core_eval_path, &rules_dir, false)
+            .expect("合法夹具快照必装载成功");
+        let rules = snap["rules"].as_array().unwrap();
+        let sources = snap["sources"].as_array().unwrap();
+        assert_eq!(rules.len(), 2, "缺省豁免后仅 rules_dir 两件");
+        assert_eq!(sources[0], "a_first.json");
+        assert_eq!(sources[1], "b_second.json");
+        assert!(
+            sources.iter().all(|s| s != "core_eval"),
+            "豁免桶外无宪法标注"
+        );
+
+        let excluded_rules = snap["constitution_excluded"]["rules"].as_array().unwrap();
+        let excluded_sources = snap["constitution_excluded"]["sources"].as_array().unwrap();
+        assert_eq!(excluded_rules.len(), 2, "宪法 2 规则进豁免桶");
+        assert!(
+            excluded_sources.iter().all(|s| s == "core_eval"),
+            "豁免桶标注口径与 rw_extract excluded 桶一致（source==core_eval）"
+        );
+
+        // 无损性：rules + constitution_excluded.rules = 全量合并集
+        let full = SessionApi::load_merged_transforms_from_fs(&core_eval_path, &rules_dir).unwrap();
+        let full_serde: Vec<serde_json::Value> = full.iter().map(tcb_to_serde).collect();
+        let mut combined = excluded_rules.clone();
+        combined.extend(rules.iter().cloned());
+        assert_eq!(
+            combined, full_serde,
+            "豁免桶与喂出集拼回=全量合并（无损快照）"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ruleset_snapshot_endpoint_200_and_include_passthrough() {
+        // 端点级：缺省 200 + 豁免桶；include_constitution=true 宪法段并入
+        let (state, _) = make_test_state();
+        let (_tmp, core_eval_path, rules_dir) = make_snapshot_fixture();
+        let mut state_snap = state.clone();
+        state_snap.sessions.core_eval_path = core_eval_path;
+        state_snap.sessions.rules_dir = rules_dir;
+
+        let router = GovernanceServer::new(
+            state_snap,
+            AuthConfig::disabled(),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            false,
+            None,
+        )
+        .build_router();
+
+        // 缺省：宪法豁免
+        let (status, json) =
+            oneshot_json(router.clone(), "GET", "/api/ruleset/snapshot", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rules"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            json["constitution_excluded"]["rules"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(json["sources"].as_array().unwrap().len(), 2);
+
+        // include_constitution=true：宪法段并入 rules/sources，豁免桶为空
+        let (status, json) = oneshot_json(
+            router,
+            "GET",
+            "/api/ruleset/snapshot?include_constitution=true",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rules = json["rules"].as_array().unwrap();
+        let sources = json["sources"].as_array().unwrap();
+        assert_eq!(rules.len(), 4, "宪法段并入（透传 lint 服务同名参数语义）");
+        assert_eq!(sources[0], "core_eval");
+        assert_eq!(
+            json["constitution_excluded"]["rules"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ruleset_snapshot_endpoint_fail_visible_missing_core_eval() {
+        // fail-visible：core_eval 缺失 → 500 + 显式 error（不静默回落空集）
+        let (state, _) = make_test_state();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state_snap = state.clone();
+        state_snap.sessions.core_eval_path = tmp.path().join("no_such_core_eval.json");
+        state_snap.sessions.rules_dir = tmp.path().join("rules");
+
+        let router = GovernanceServer::new(
+            state_snap,
+            AuthConfig::disabled(),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            false,
+            None,
+        )
+        .build_router();
+        let (status, json) = oneshot_json(router, "GET", "/api/ruleset/snapshot", None).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        let err = json["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("no_such_core_eval.json"),
+            "显式报错点名缺失宪法文件: {err}"
+        );
     }
 
     #[test]

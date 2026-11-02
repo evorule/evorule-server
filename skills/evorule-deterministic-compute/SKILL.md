@@ -169,6 +169,38 @@ observable surface):
 → original fixpoint (1 step), hypothetical fixpoint (0 steps); diffs 3 条: "payload.flag" removed (true), "payload.x" removed (1), "payload" added ({}); simulation_scope declares the honest boundary — "不动点≠真实系统行为", compares final states only
 ```
 
+## 5.5 Snapshot → lint two-step (feed the analyzers from the live ruleset)
+
+The lint analyzers (`inference_conflict_detect`, `inference_rw_extract`,
+`inference_cycle_detect`, …) take `rules` + `sources` in merged order
+(constitution first, then rule files in server load order). Assembling that
+list by hand is error-prone — the merge order is server-side knowledge, and a
+wrongly ordered list silently distorts the analysis. Take a snapshot instead
+and feed it straight in.
+
+Step 1 — snapshot the live ruleset:
+
+```
+GET /api/ruleset/snapshot
+→ {"rules": [...], "sources": [...],
+   "constitution_excluded": {"rules": [...], "sources": [...]}}
+```
+
+Constitution rules are excluded by default and reported in the
+`constitution_excluded` bucket; pass `?include_constitution=true` to keep
+them in `rules`/`sources` instead.
+
+Step 2 — feed the analyzer:
+
+```json
+{"service":"inference_conflict_detect","args":{"rules":<snapshot.rules>,"sources":<snapshot.sources>}}
+```
+
+The `rules`/`sources` pair is shaped exactly like the service input — no
+re-ordering, no assembly. To analyze the full set including constitution
+rules, take the snapshot with `include_constitution=true` and pass
+`include_constitution:true` in the service args as well.
+
 ## 6. Family quick reference
 
 | Family | What it computes |
