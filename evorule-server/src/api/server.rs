@@ -460,6 +460,11 @@ pub struct SessionApi {
     /// None（未装配）时 invoke 返回 503。
     service_chain: Option<Arc<dyn evorule_reactor::IoHandler>>,
 
+    /// 伴跑中枢（design-22 R3 / design-63：审计链驱动的确定性旁路消费者）。
+    /// None=未装配（测试/桥接路径，`/api/companion/*` 端点 503 显式呈现）；
+    /// main.rs 启动期经 `with_companion` 注入并 spawn 独立 runner task（零侵入主循环）。
+    pub(crate) companion: Option<Arc<crate::api::companion::CompanionHub>>,
+
     /// 注册表（service_registry.json）显式绑定的服务元数据（C5/C6）
     ///
     /// - C5：`GET /api/services` 能力对账的来源 `registry` 条目（带 version/description）；
@@ -808,6 +813,9 @@ impl SessionApi {
             ),
 
             service_chain: None,
+
+            // 伴跑中枢：默认未装配（测试/桥接路径 503 显式呈现；main.rs with_companion 注入）
+            companion: None,
 
             bound_services: Arc::new(
                 DemoServiceRouter::native_service_names()
@@ -1294,6 +1302,14 @@ impl SessionApi {
         self
     }
 
+    /// 注入伴跑中枢（design-22 R3 / design-63 获批设计稿：审计链驱动的确定性
+    /// 旁路消费者）。builder 模式；调用方（main.rs）随后 `tokio::spawn` 独立
+    /// runner task——零侵入主循环（独立 task + 独立 `/api/companion/*` 命名空间）。
+    pub fn with_companion(mut self, hub: Arc<crate::api::companion::CompanionHub>) -> Self {
+        self.companion = Some(hub);
+        self
+    }
+
     /// 注入 workspace 元数据库（builder 模式, T5 bundle 导入溯源）
     ///
     /// 仅用于管理元数据旁路（bundle_imports 表），不参与 fact / 哈希 / 审计链。
@@ -1601,7 +1617,15 @@ impl SessionApi {
         }
 
         // 3. hit-stats 聚合器换版（新计数进新版本桶，旧版本切片保留）
+        //    版本哈希先取（adopt_layout 消费 layout 所有权）
+        let new_ruleset_version = new_layout.ruleset_version.clone();
         self.hit_stats.adopt_layout(new_layout);
+
+        // 4. 伴跑中枢信号（design-22 R3：装载漏斗唯一出口——事件驱动零轮询，
+        //    新版 ruleset_version 触发伴跑状态机 dirty→analyzing→certified）
+        if let Some(hub) = &self.companion {
+            hub.notify_version(new_ruleset_version);
+        }
 
         tracing::info!(
             old_len = old_len_cache,
@@ -1684,6 +1708,83 @@ impl SessionApi {
         include_constitution: bool,
     ) -> Result<serde_json::Value, String> {
         Self::ruleset_snapshot_from_fs(&self.core_eval_path, &self.rules_dir, include_constitution)
+    }
+
+    /// 伴跑分析一次（design-22 R3 / design-63 获批设计稿 §5：快照即喂→lint
+    /// 三件套进程内直调→报告 JSON）。与 HTTP invoke 同一确定性内核
+    /// （service_chain.execute），逐字段一致由构造保证（契约测试防退化）。
+    ///
+    /// - `expected_version`：runner 传入的去抖后最新版；装载结果版本不匹配
+    ///   即 stale 显式报错（防 TOCTOU：分析对象必须与信号版本逐位一致）。
+    /// - 报告含全量三件套结果+快照摘要（digest 互证），由伴跑中枢落链。
+    pub(crate) async fn companion_run_lint_suite(
+        &self,
+        expected_version: &str,
+    ) -> Result<serde_json::Value, String> {
+        let Some(chain) = self.service_chain.as_ref() else {
+            return Err(
+                "service chain 未装配（伴跑依赖进程内内核，需 main.rs with_service_chain 注入）"
+                    .to_string(),
+            );
+        };
+        let (rules, layout, _, _, _) =
+            Self::load_merged_with_layout(&self.core_eval_path, &self.rules_dir)?;
+        if layout.ruleset_version != expected_version {
+            return Err(format!(
+                "stale ruleset version: expected {expected_version}, got {}",
+                layout.ruleset_version
+            ));
+        }
+        let rule_count = rules.len();
+        let sources: Vec<String> = layout.rules.into_iter().map(|m| m.source).collect();
+        // 与 ruleset_snapshot_from_fs 同构分桶（宪法段缺省豁免单一判据 source=="core_eval"）
+        let mut in_rules_tcb = Vec::new();
+        let mut in_sources = Vec::new();
+        let mut excluded_count = 0u64;
+        for (rule, source) in rules.into_iter().zip(sources.iter()) {
+            if source == "core_eval" {
+                excluded_count += 1;
+            } else {
+                in_rules_tcb.push(rule);
+                in_sources.push(source.clone());
+            }
+        }
+        let in_rules_serde: Vec<serde_json::Value> =
+            in_rules_tcb.iter().map(tcb_to_serde).collect();
+        let snapshot_digest = evorule_hash::json_digest(&serde_json::json!({
+            "rules": in_rules_serde,
+            "sources": in_sources,
+        }));
+        // lint 三件套进程内直调（与 invoke handler 同一 execute 链，无第二执行路径）
+        let mut analyses = Vec::new();
+        for name in crate::api::companion::LINT_SERVICE_NAMES {
+            let args = serde_json::json!({
+                "rules": in_rules_serde,
+                "sources": in_sources,
+                "include_constitution": false,
+            });
+            let params = serde_to_tcb(serde_json::json!({ "service_name": name, "args": args }));
+            match chain.execute(&params).await {
+                Ok(result) => analyses.push(serde_json::json!({
+                    "service": name,
+                    "ok": true,
+                    "result": tcb_to_serde(&result),
+                })),
+                Err(e) => analyses.push(serde_json::json!({
+                    "service": name,
+                    "ok": false,
+                    "error": e.to_string(),
+                })),
+            }
+        }
+        Ok(serde_json::json!({
+            "kind": "CompanionReport",
+            "ruleset_version": expected_version,
+            "rule_count": rule_count,
+            "constitution_excluded_count": excluded_count,
+            "snapshot_json_digest": snapshot_digest,
+            "analyses": analyses,
+        }))
     }
 
     /// 合并加载并产出规则集 layout（单一权威装载点）
@@ -12287,6 +12388,11 @@ impl GovernanceServer {
             // 规则集快照只读出口：合并装载一次读取，与 lint 推理服务入参
             // 严格同形（快照即喂）——受认证保护（治理状态全量读出面）
             .route("/api/ruleset/snapshot", get(ruleset_snapshot_handler))
+            // 伴跑状态机呈现面（design-22 R3：只读旁路消费者，独立命名空间；
+            // state 端点=A/B 切换唯一入口，干预必留痕）——受认证保护
+            .route("/api/companion/status", get(companion_status_handler))
+            .route("/api/companion/coverage", get(companion_coverage_handler))
+            .route("/api/companion/state", post(companion_state_handler))
             .route(
                 "/api/sessions/{id}/evolution-signals",
                 get(session_evolution_signals),
@@ -12807,6 +12913,100 @@ async fn ruleset_snapshot_handler(
                 Json(serde_json::json!({ "error": e })),
             )
         })
+}
+
+/// 伴跑状态机端点家族（design-22 R3 / design-63 获批设计稿：只读旁路消费者
+/// 的呈现面；独立命名空间，不触碰既有 handler 语义——硬边界④零侵入）
+#[utoipa::path(
+    get,
+    path = "/api/companion/status",
+    tag = "companion",
+    responses(
+        (status = 200, description = "伴跑状态机全量状态（五态链+认证集+计数器+链尾）"),
+        (status = 503, description = "伴跑中枢未装配（测试/桥接路径）")
+    )
+)]
+async fn companion_status_handler(
+    State(api): State<SessionApi>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    match api.companion.as_ref() {
+        Some(hub) => Ok(Json(hub.status_json())),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                serde_json::json!({ "error": "companion hub 未装配（伴跑状态机仅生产装配路径启用）" }),
+            ),
+        )),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/companion/coverage",
+    tag = "companion",
+    responses(
+        (status = 200, description = "伴跑覆盖率（版本认证制：认证集+锚定版本+会话归属占比）"),
+        (status = 503, description = "伴跑中枢未装配（测试/桥接路径）")
+    )
+)]
+async fn companion_coverage_handler(
+    State(api): State<SessionApi>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(hub) = api.companion.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                serde_json::json!({ "error": "companion hub 未装配（伴跑状态机仅生产装配路径启用）" }),
+            ),
+        ));
+    };
+    // 会话总数：内存会话表枚举（SessionManager::list_sessions，分片快照）
+    let sessions_total = {
+        let mgr = api.sessions.lock().await;
+        mgr.list_sessions().len()
+    };
+    Ok(Json(hub.coverage_json(sessions_total)))
+}
+
+/// A/B 切换请求体（`POST /api/companion/state`）
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+struct CompanionStateParams {
+    /// true=B 态（自动伴跑）；false=A 态（停着·待命，零伴跑活动）
+    enabled: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/companion/state",
+    tag = "companion",
+    request_body = CompanionStateParams,
+    responses(
+        (status = 200, description = "切换完成（双向落链事实+warn 日志：干预必留痕）"),
+        (status = 503, description = "伴跑中枢未装配（测试/桥接路径）")
+    )
+)]
+async fn companion_state_handler(
+    State(api): State<SessionApi>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+    Json(body): Json<CompanionStateParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(hub) = api.companion.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                serde_json::json!({ "error": "companion hub 未装配（伴跑状态机仅生产装配路径启用）" }),
+            ),
+        ));
+    };
+    let actor_id = actor
+        .map(|Extension(a)| a.0)
+        .unwrap_or_else(|| "anonymous".to_string());
+    hub.set_enabled(body.enabled, &actor_id);
+    Ok(Json(serde_json::json!({
+        "enabled": body.enabled,
+        "actor": actor_id,
+        "status": hub.status_json(),
+    })))
 }
 
 /// 进化信号查询参数（`GET /api/sessions/{id}/evolution-signals`）
@@ -21063,6 +21263,278 @@ mod tests {
             err.contains("no_such_core_eval.json"),
             "显式报错点名缺失宪法文件: {err}"
         );
+    }
+
+    // ===== design-22 R3 / design-63 伴跑状态机 A→B 最小版契约测试 =====
+
+    /// 伴跑 fallback stub（三件套名全命中 inference 内核，永不回落）
+    struct CompanionTestFallback;
+    #[async_trait::async_trait]
+    impl evorule_reactor::IoHandler for CompanionTestFallback {
+        async fn execute(&self, _params: &JsonValue) -> evorule_reactor::IoResult {
+            Err("companion-test-fallback-called".to_string())
+        }
+    }
+
+    /// 伴跑测试 state：注入 hub（for_tests 节奏）+ inference 内核链 + 真实
+    /// 快照夹具路径 + 三件套能力对账清单（invoke 端点 known 判据）
+    fn make_companion_state_with_anchor(
+        anchor_version: Option<String>,
+    ) -> (
+        AppState,
+        Arc<crate::api::companion::CompanionHub>,
+        (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf),
+    ) {
+        let (mut state, _readiness) = make_test_state();
+        let fixture = make_snapshot_fixture();
+        state.sessions.core_eval_path = fixture.1.clone();
+        state.sessions.rules_dir = fixture.2.clone();
+        let hub = crate::api::companion::CompanionHub::new(
+            crate::api::companion::CompanionConfig::for_tests(),
+            None,
+            anchor_version,
+        );
+        state.sessions.companion = Some(hub.clone());
+        state.sessions.service_chain = Some(Arc::new(
+            evorule_inference_services::InferenceServiceRouter::new(Arc::new(
+                CompanionTestFallback,
+            )),
+        ));
+        let infos: Vec<BoundServiceInfo> = crate::api::companion::LINT_SERVICE_NAMES
+            .iter()
+            .map(|n| BoundServiceInfo {
+                name: n.to_string(),
+                source: "native".to_string(),
+                version: None,
+                description: Some("companion test".to_string()),
+                plugin: Some("inference-services".to_string()),
+                sensitive: false,
+                parameters: None,
+            })
+            .collect();
+        state.sessions.native_services = Arc::new(infos);
+        // state.sessions 装配完成后重建 AppState（sessions 字段为 Clone 所有权转移面
+        // ——AppState::new 持有 SessionApi 值；此处 make_test_state 返回的 state 已含
+        // sessions，直接可变字段赋值即生效（tests 为 server 模块后代，私有字段可达））
+        (state, hub, fixture)
+    }
+
+    fn companion_router(state: AppState) -> Router {
+        GovernanceServer::new(
+            state,
+            AuthConfig::disabled(),
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            false,
+            None,
+        )
+        .build_router()
+    }
+
+    fn fixture_layout_version(
+        core_eval_path: &std::path::Path,
+        rules_dir: &std::path::Path,
+    ) -> String {
+        SessionApi::load_merged_with_layout(core_eval_path, rules_dir)
+            .expect("夹具装载成功")
+            .1
+            .ruleset_version
+    }
+
+    #[tokio::test]
+    async fn test_companion_endpoints_503_without_hub_and_state_toggle_audited() {
+        // ①未装配 → 503 显式呈现（fail-visible）
+        let (state, _) = make_test_state();
+        let (status, json) = oneshot_json(
+            companion_router(state),
+            "GET",
+            "/api/companion/status",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(json["error"].as_str().unwrap_or("").contains("未装配"));
+
+        // ②A/B 切换落链留痕 + 状态可见（硬边界②干预必留痕）
+        let (state, hub, _) = make_companion_state_with_anchor(None);
+        let router = companion_router(state);
+        let (status, json) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/companion/state",
+            Some(r#"{"enabled": true}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["enabled"], serde_json::json!(true));
+        let status_body = json["status"].clone();
+        assert_eq!(status_body["enabled"], serde_json::json!(true));
+        assert_eq!(status_body["state"], serde_json::json!("idle"));
+        // 留痕：链上 CompanionStateChange 事实 + 链完整性可验
+        let tail = status_body["chain"]["tail"].as_array().unwrap();
+        assert!(
+            tail.iter()
+                .any(|e| e["kind"] == "CompanionStateChange" && e["payload"]["enabled"] == true),
+            "enable 动作落链留痕: {tail:?}"
+        );
+        assert!(hub.verify_chain().is_ok(), "哈希链完整可验");
+
+        // ③切回 A 态：phase=disabled（停着·待命）
+        let (status, json) = oneshot_json(
+            router,
+            "POST",
+            "/api/companion/state",
+            Some(r#"{"enabled": false}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["status"]["state"], serde_json::json!("disabled"));
+    }
+
+    #[tokio::test]
+    async fn test_companion_runner_certifies_and_coverage_queryable() {
+        // 全链：notify（脏）→ runner（去抖+单飞）→ 三件套（真实 inference 内核）
+        // → 报告落链 → 认证 → 覆盖率可查询（验收骨架①+③）
+        let (state, hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        let version = fixture_layout_version(&core_eval_path, &rules_dir);
+        hub.set_enabled(true, "test");
+        tokio::spawn(hub.clone().run(state.sessions.clone()));
+        hub.notify_version(version.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        let status = hub.status_json();
+        assert_eq!(
+            status["state"],
+            serde_json::json!("certified"),
+            "状态链走到证书出具 last_error={:?} counters={:?}",
+            status["last_error"],
+            status["counters"]
+        );
+        assert_eq!(
+            status["certified_versions"].as_array().unwrap().len(),
+            1,
+            "认证集收新版本"
+        );
+        assert_eq!(status["counters"]["analyses_ok"], serde_json::json!(1));
+        let tail = status["chain"]["tail"].as_array().unwrap();
+        let report_entry = tail
+            .iter()
+            .find(|e| e["kind"] == "CompanionReport")
+            .expect("报告事实落链");
+        assert_eq!(report_entry["payload"]["ruleset_version"], version);
+        assert!(hub.verify_chain().is_ok(), "落链后哈希链仍完整");
+
+        // 覆盖率：认证集+锚定归属（anchor 未设 → anchor_certified=false，如实呈现）
+        let (mut state2, hub2, (_tmp2, cp2, rd2)) =
+            make_companion_state_with_anchor(Some(version.clone()));
+        state2.sessions.core_eval_path = cp2;
+        state2.sessions.rules_dir = rd2;
+        hub2.set_enabled(true, "test");
+        tokio::spawn(hub2.clone().run(state2.sessions.clone()));
+        hub2.notify_version(version);
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let router = companion_router(state2);
+        let (status, json) = oneshot_json(router, "GET", "/api/companion/coverage", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["anchor_certified"], serde_json::json!(true));
+        assert_eq!(json["certified_count"], serde_json::json!(1));
+        assert_eq!(json["sessions_total"], serde_json::json!(0));
+    }
+
+    #[tokio::test]
+    async fn test_companion_disabled_zero_activity_and_no_change_zero_activity() {
+        // 验收骨架②：无变更/未启用 → 零伴跑活动（待命零常驻成本语义）
+        let (state, hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        let version = fixture_layout_version(&core_eval_path, &rules_dir);
+        // 未启用（A 态缺省）+ 版本信号到达 → 不分析
+        tokio::spawn(hub.clone().run(state.sessions.clone()));
+        hub.notify_version(version.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_eq!(
+            hub.status_json()["counters"]["analyses_started"],
+            serde_json::json!(0),
+            "A 态信号到达不触发分析"
+        );
+
+        // 启用后同版本再发信号：已认证语义外（未认证过）→ 会分析；但同版本
+        // 重复信号（已认证）→ 零活动（幂等面）
+        hub.set_enabled(true, "test");
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let first = hub.status_json()["counters"]["analyses_ok"]
+            .as_u64()
+            .unwrap_or(0);
+        assert!(first >= 1, "enable 补发信号驱动分析");
+        hub.notify_version(version); // 同版本幂等信号
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let started = hub.status_json()["counters"]["analyses_started"]
+            .as_u64()
+            .unwrap_or(0);
+        let ok = hub.status_json()["counters"]["analyses_ok"]
+            .as_u64()
+            .unwrap_or(0);
+        assert_eq!(started, ok, "同版本重复信号零新增分析（幂等零活动）");
+    }
+
+    #[tokio::test]
+    async fn test_companion_suite_field_parity_with_http_invoke() {
+        // 验收骨架⑤：同一确定性内核——伴跑进程内直调 vs HTTP invoke 逐字段一致
+        let (state, hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        let version = fixture_layout_version(&core_eval_path, &rules_dir);
+        let report = state
+            .sessions
+            .companion_run_lint_suite(&version)
+            .await
+            .expect("套件执行成功");
+        assert_eq!(report["kind"], serde_json::json!("CompanionReport"));
+        assert_eq!(report["ruleset_version"], version);
+        assert_eq!(report["rule_count"], serde_json::json!(4));
+        assert_eq!(
+            report["constitution_excluded_count"],
+            serde_json::json!(2),
+            "宪法段缺省豁免计数"
+        );
+
+        // HTTP invoke 同快照对拍（conflict_detect）
+        let snap = SessionApi::ruleset_snapshot_from_fs(&core_eval_path, &rules_dir, false)
+            .expect("快照装载成功");
+        let body = serde_json::json!({
+            "rules": snap["rules"],
+            "sources": snap["sources"],
+            "include_constitution": false,
+        });
+        let router = companion_router(state);
+        let (status, invoke_json) = oneshot_json(
+            router,
+            "POST",
+            "/api/services/inference_conflict_detect/invoke",
+            Some(&body.to_string()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "invoke 200");
+        let analyses = report["analyses"].as_array().unwrap();
+        let conflict = analyses
+            .iter()
+            .find(|a| a["service"] == "inference_conflict_detect")
+            .expect("conflict 条目在报告");
+        assert_eq!(conflict["ok"], serde_json::json!(true));
+        assert_eq!(
+            conflict["result"], invoke_json["result"],
+            "同内核逐字段一致（构造保证+契约防退化）"
+        );
+        // 三件套全 ok（真实 inference 内核路由命中，fallback 未被调用）
+        assert!(
+            analyses.iter().all(|a| a["ok"] == serde_json::json!(true)),
+            "三件套全命中: {analyses:?}"
+        );
+        assert!(hub.verify_chain().is_ok());
     }
 
     #[test]

@@ -2636,6 +2636,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prometheus_metrics = evorule_server::metrics_impl::shared_prometheus_metrics()
         .map_err(|e| format!("Prometheus 指标初始化失败: {}", e))?;
     let metrics: SharedMetrics = prometheus_metrics.clone();
+    // 启动期规则集版本（伴跑锚定与 G6 会话锚定同源；在 ruleset_layout 被
+    // HitStatsAggregator 消费前取出——同一权威 layout 只归一个所有者）
+    let ruleset_version_at_startup = ruleset_layout.ruleset_version.clone();
     let hit_stats = Arc::new(
         evorule_server::api::hit_stats::HitStatsAggregator::with_registry(
             ruleset_layout,
@@ -2878,6 +2881,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("WARN: {msg} (enforce via EVORULE_TTL_ENFORCE=1)");
         }
     }
+    // 伴跑中枢（design-22 R3 / design-63 获批设计稿）：链文件与 wal-dir 同级
+    // 配置面（companion_chain.jsonl，None=纯内存）；锚定版本与 G6 会话锚定同源
+    // （ruleset_layout.ruleset_version，覆盖率会话归属判据）。缺省 A 态待命。
+    let companion_hub = evorule_server::api::companion::CompanionHub::new(
+        evorule_server::api::companion::CompanionConfig::default(),
+        cfg.wal_dir
+            .as_ref()
+            .map(|d| d.join("companion_chain.jsonl")),
+        Some(ruleset_version_at_startup.clone()),
+    );
+
     let session_api = SessionApi::new_with_full_config(
         core_eval,
         cfg.max_rounds,
@@ -2915,7 +2929,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_native_services(native_service_infos)
     // 插件契约 v1：声明式 pack 资产注册表注入（资产面三 API 数据源）
     .with_plugin_packs(pack_registry)
-    .with_service_chain(call_handler.clone());
+    .with_service_chain(call_handler.clone())
+    // 伴跑状态机（design-22 R3 / design-63 获批设计稿）：审计链驱动的确定性
+    // 旁路消费者——装载漏斗信号（事件驱动零轮询）→ 去抖/单飞/节流 → lint
+    // 三件套进程内直调（同一确定性内核）→ 报告落伴随域哈希链。独立 task
+    // 运行（零侵入主循环）；A/B 切换经 POST /api/companion/state（干预必留痕）。
+    .with_companion(companion_hub.clone());
+
+    // 伴跑 runner（独立 tokio task，零侵入主循环）：启动信号注入（startup 触发源，
+    // 缺省 A 态待命不分析——enable 时 set_enabled 补发信号驱动首次分析）
+    {
+        let hub = companion_hub.clone();
+        let api = session_api.clone();
+        tokio::spawn(async move {
+            hub.run(api).await;
+        });
+        companion_hub.notify_version(ruleset_version_at_startup.clone());
+        info!("伴跑状态机 runner 已启动（缺省 A 态待命；POST /api/companion/state 切换 B 态）");
+    }
 
     // 创建 readiness flag（优雅退出时设为 false）
     let readiness: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
