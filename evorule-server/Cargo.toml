@@ -114,6 +114,9 @@ tokio = { version = "1", features = [
 # CancellationToken（伴跑分析抢占令牌；已在依赖树，显式声明启用 rt feature）
 tokio-util = { version = "0.7", features = ["rt"] }
 
+# 伴跑编辑检出：rules_dir/core_eval 文件系统监听（跨平台后端，非递归 watch）
+notify = "8"
+
 # HTTP API(直接使用 axum 类型;multipart 供模板市场上传 W4)
 axum = { version = "0.8", features = ["multipart"] }
 tower = { version = "0.5", features = ["limit"] }

@@ -1622,9 +1622,10 @@ impl SessionApi {
         self.hit_stats.adopt_layout(new_layout);
 
         // 4. 伴跑中枢信号（获批方案：装载漏斗唯一出口——事件驱动零轮询，
-        //    新版 ruleset_version 触发伴跑状态机 dirty→analyzing→certified）
+        //    新版 ruleset_version 触发伴跑状态机 dirty→analyzing→certified；
+        //    源标注 reload 与启动/watch 触发区分呈现）
         if let Some(hub) = &self.companion {
-            hub.notify_version(new_ruleset_version);
+            hub.notify_version_source(new_ruleset_version, super::companion::TRIGGER_RELOAD);
         }
 
         tracing::info!(
@@ -21440,7 +21441,17 @@ mod tests {
             .find(|e| e["kind"] == "CompanionReport")
             .expect("报告事实落链");
         assert_eq!(report_entry["payload"]["ruleset_version"], version);
+        assert_eq!(
+            report_entry["payload"]["trigger"],
+            serde_json::json!("startup"),
+            "报告 payload 携触发源标注"
+        );
         assert!(hub.verify_chain().is_ok(), "落链后哈希链仍完整");
+        assert_eq!(
+            hub.status_json()["chain"]["verified"],
+            serde_json::json!(true),
+            "status 呈现链校验结论（空闲尾验通过保持 true）"
+        );
 
         // 覆盖率：认证集+锚定归属（anchor 未设 → anchor_certified=false，如实呈现）
         let (mut state2, hub2, (_tmp2, cp2, rd2)) =
@@ -21457,6 +21468,78 @@ mod tests {
         assert_eq!(json["anchor_certified"], serde_json::json!(true));
         assert_eq!(json["certified_count"], serde_json::json!(1));
         assert_eq!(json["sessions_total"], serde_json::json!(0));
+    }
+
+    #[tokio::test]
+    async fn test_companion_runner_with_exec_runtime_certifies() {
+        // 执行隔离派发面：分析 future 经 with_exec_runtime 注入的 runtime 句柄
+        // spawn——全链认证语义不变（去抖/单飞/落链照旧），报告 trigger=startup
+        let (state, hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        hub.with_exec_runtime(tokio::runtime::Handle::current());
+        let version = fixture_layout_version(&core_eval_path, &rules_dir);
+        hub.set_enabled(true, "test");
+        tokio::spawn(hub.clone().run(state.sessions.clone()));
+        hub.notify_version(version.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        let status = hub.status_json();
+        assert_eq!(
+            status["state"],
+            serde_json::json!("certified"),
+            "专用 runtime 派发下仍完成认证 last_error={:?} counters={:?}",
+            status["last_error"],
+            status["counters"]
+        );
+        assert_eq!(status["counters"]["analyses_ok"], serde_json::json!(1));
+        let tail = status["chain"]["tail"].as_array().unwrap();
+        let report = tail
+            .iter()
+            .find(|e| e["kind"] == "CompanionReport")
+            .expect("报告事实落链");
+        assert_eq!(report["payload"]["ruleset_version"], version);
+        assert!(hub.verify_chain().is_ok(), "落链后哈希链仍完整");
+    }
+
+    #[tokio::test]
+    async fn test_companion_watcher_detects_external_rules_edit() {
+        // 编辑检出触发：进程外改写 rules_dir 合法 JSON → watcher 只读求版
+        // → 既有漏斗（last_trigger=watch，latest_version 更新）
+        let (_state, hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        let old_version = fixture_layout_version(&core_eval_path, &rules_dir);
+        hub.notify_version(old_version.clone());
+        crate::api::companion::spawn_fs_watcher(
+            hub.clone(),
+            core_eval_path.clone(),
+            rules_dir.clone(),
+        );
+        // 外部合法编辑：改写既有规则文件值（内容变→版本必变）
+        let target = rules_dir.join("a_first.json");
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+        doc["transform"][0]["params"]["value"] = serde_json::json!(111);
+        std::fs::write(&target, serde_json::to_string(&doc).unwrap()).unwrap();
+
+        let mut detected = false;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let st = hub.status_json();
+            if st["latest_version"]
+                .as_str()
+                .map(|v| v != old_version)
+                .unwrap_or(false)
+            {
+                assert_eq!(
+                    st["last_trigger"],
+                    serde_json::json!("watch"),
+                    "触发源标注=watch"
+                );
+                detected = true;
+                break;
+            }
+        }
+        assert!(detected, "5s 内 watcher 检出外部编辑并驱动漏斗");
     }
 
     #[tokio::test]
