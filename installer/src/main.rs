@@ -17,10 +17,9 @@ mod ffi;
 // + provenance statics relayed from payload/manifest.json (see build.rs)
 include!(concat!(env!("OUT_DIR"), "/payload.rs"));
 
-// SHA-256 is only exercised by the unit tests here; build.rs includes the
-// same file via #[path] for the compile-time manifest gate.
-#[cfg(test)]
-mod sha256;
+mod manifest;
+
+use sha2::{Digest, Sha256};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -100,19 +99,26 @@ fn install(silent: bool, dir_override: Option<String>) -> i32 {
         }
     }
 
-    // 1. 释放文件（升级时 data\ 不在载荷中，天然保留）
+    // 1. 防篡改自检：释放前对内嵌载荷全量重算 SHA-256 与内嵌 manifest 对拍。
+    //    检出点必须在任何文件落盘之前——被二进制补丁改过 payload 字节的成品
+    //    安装器在此中止，绝不静默继续安装被篡改的内容。
+    if let Err(e) = verify_payload_integrity(&mut log) {
+        return fail(silent, &target, &e);
+    }
+
+    // 2. 释放文件（升级时 data\ 不在载荷中，天然保留）
     let file_count = match extract(&target, &mut log) {
         Ok(n) => n,
         Err(e) => return fail(silent, &target, &e),
     };
 
-    // 2. 复制自身作为卸载器
+    // 3. 复制自身作为卸载器
     if let Err(e) = copy_self(&target) {
         return fail(silent, &target, &e);
     }
     log.push("self copied as uninstaller".to_string());
 
-    // 3. 快捷方式 + 卸载注册表（仅默认安装路径；--dir 测试模式跳过）
+    // 4. 快捷方式 + 卸载注册表（仅默认安装路径；--dir 测试模式跳过）
     if !is_test_mode {
         if let Err(e) = write_shortcuts(&target) {
             return fail(silent, &target, &e);
@@ -123,7 +129,7 @@ fn install(silent: bool, dir_override: Option<String>) -> i32 {
         log.push("shortcuts + uninstall registry written".to_string());
     }
 
-    // 4. 可选:AI 助手配置（批次D;跳过则零写入,不影响任何功能）
+    // 5. 可选:AI 助手配置（批次D;跳过则零写入,不影响任何功能）
     //    Key 仅落本机 plugins\ai-plugin\ai-plugin.json（用户目录隔离,README 有保管警告）;
     //    写配置成功才翻转 plugin_manifest.json 的 enabled 开关。
     let mut ai_note = String::from("AI 助手未配置（可稍后在浏览器「设置」中配置）");
@@ -221,6 +227,70 @@ fn readback_matches(path: &std::path::Path, expected: &[u8]) -> Result<(), Strin
         ));
     }
     Ok(())
+}
+
+/// Fail-visible tamper check: before anything touches disk, recompute the
+/// SHA-256 of every embedded payload file and compare it against the
+/// embedded manifest. Detects a distributed installer whose payload bytes
+/// were binary-patched after the fact (the manifest section left intact).
+/// Never continues silently: any mismatch aborts the install.
+fn verify_payload_integrity(log: &mut Vec<String>) -> Result<(), String> {
+    verify_payload_integrity_impl(PAYLOAD, PAYLOAD_MANIFEST).map(|n| {
+        log.push(format!("payload integrity verified ({n} files)"));
+    })
+}
+
+/// Core check over injectable inputs (single source of truth for both the
+/// real embedded statics and the tamper-scenario unit tests).
+fn verify_payload_integrity_impl(
+    files: &[(&str, &[u8])],
+    manifest_text: &str,
+) -> Result<usize, String> {
+    let manifest = manifest::parse_manifest(manifest_text)
+        .map_err(|e| format!("内嵌 manifest 解析失败（安装包可能被篡改）: {e}"))?;
+
+    let mut listed: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    for (rel, sha) in &manifest.files {
+        listed.insert(rel.as_str(), sha.as_str());
+    }
+
+    // Every embedded file must be listed with a matching digest.
+    for (rel, bytes) in files {
+        let expected = match listed.get(*rel) {
+            Some(sha) => *sha,
+            None => {
+                return Err(format!(
+                    "内嵌载荷文件未登记于 manifest: {rel}\n安装包不完整或已被篡改，请重新获取官方安装包。"
+                ));
+            }
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let actual = manifest::to_hex(&hasher.finalize());
+        // Constant-time habit: accumulate every byte difference before judging,
+        // so the comparison never short-circuits on the first differing byte.
+        let a = actual.as_bytes();
+        let b = expected.as_bytes();
+        let mut acc = (a.len() ^ b.len()) as u32;
+        for (x, y) in a.iter().zip(b.iter()) {
+            acc |= (*x ^ *y) as u32;
+        }
+        if acc != 0 {
+            return Err(format!(
+                "载荷自校验不符: {rel}\n安装包内容与清单不一致，可能已被篡改或损坏，请重新获取官方安装包。"
+            ));
+        }
+    }
+
+    // And the manifest must not list files the installer does not carry.
+    if listed.len() != files.len() {
+        return Err(format!(
+            "manifest 条目数（{}）与内嵌载荷数（{}）不一致\n安装包不完整或已被篡改，请重新获取官方安装包。",
+            listed.len(),
+            files.len()
+        ));
+    }
+    Ok(files.len())
 }
 
 fn friendly_io(path: &std::path::Path, e: &std::io::Error) -> String {
@@ -466,6 +536,81 @@ fn write_log(log: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a controlled-shape manifest text for tamper-scenario tests.
+    fn integrity_manifest_text(entries: &[(&str, &str)]) -> String {
+        let mut s = String::from(
+            "{\n  \"generated_at\": \"2026-11-03T00:00:00Z\",\n  \
+             \"versions\": {\n    \"server\": \"0.0.0-test\"\n  },\n  \"files\": [\n",
+        );
+        for (i, (path, sha)) in entries.iter().enumerate() {
+            let comma = if i + 1 < entries.len() { "," } else { "" };
+            s.push_str(&format!(
+                "    {{ \"path\": \"{path}\", \"sha256\": \"{sha}\" }}{comma}\n"
+            ));
+        }
+        s.push_str("  ]\n}\n");
+        s
+    }
+
+    /// Digest helper for tests (same crate call path as the runtime check).
+    fn sha256_hex_of(data: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        manifest::to_hex(&hasher.finalize())
+    }
+
+    #[test]
+    fn payload_integrity_passes_on_real_embedded_statics() -> Result<(), String> {
+        // 正路径：真实内嵌 statics 全量重算对拍（编译期 build.rs 已对拍过
+        // payload 树，运行期重算走 sha2 crate，双重覆盖防篡改面）。
+        let n = verify_payload_integrity_impl(PAYLOAD, PAYLOAD_MANIFEST)
+            .map_err(|e| format!("正路径不应报错: {e}"))?;
+        if n == 0 {
+            return Err("真实内嵌载荷不应为空".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn payload_integrity_detects_tampered_bytes() -> Result<(), String> {
+        let good = sha256_hex_of(b"payload-bytes");
+        let text = integrity_manifest_text(&[("bin/server.exe", &good)]);
+        // 1) 一致场景通过
+        let files = [("bin/server.exe", &b"payload-bytes"[..])];
+        verify_payload_integrity_impl(&files, &text)
+            .map_err(|e| format!("一致场景不应报错: {e}"))?;
+        // 2) 单字节被改（模拟成品安装器被二进制补丁）→ fail-visible
+        let files_tampered = [("bin/server.exe", &b"payload-bytes!"[..])];
+        if verify_payload_integrity_impl(&files_tampered, &text).is_ok() {
+            return Err("篡改场景应报错，实际通过".to_string());
+        }
+        // 3) hex 手改（合法 64 位十六进制但值错误）→ fail-visible
+        let wrong = "0".repeat(64);
+        let text_wrong = integrity_manifest_text(&[("bin/server.exe", &wrong)]);
+        if verify_payload_integrity_impl(&files, &text_wrong).is_ok() {
+            return Err("手改 hex 场景应报错，实际通过".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn payload_integrity_detects_unlisted_and_extra_entries() -> Result<(), String> {
+        let good = sha256_hex_of(b"payload-bytes");
+        // 1) 载荷文件未登记于 manifest（manifest 只列别的文件）→ fail-visible
+        let text_other = integrity_manifest_text(&[("other/file.txt", &good)]);
+        let files = [("bin/server.exe", &b"payload-bytes"[..])];
+        if verify_payload_integrity_impl(&files, &text_other).is_ok() {
+            return Err("未登记场景应报错，实际通过".to_string());
+        }
+        // 2) manifest 多列一个载荷没有的条目（条目数不一致）→ fail-visible
+        let text_extra =
+            integrity_manifest_text(&[("bin/server.exe", &good), ("other/file.txt", &good)]);
+        if verify_payload_integrity_impl(&files, &text_extra).is_ok() {
+            return Err("条目数不一致场景应报错，实际通过".to_string());
+        }
+        Ok(())
+    }
 
     #[test]
     fn json_escape_covers_quotes_backslash_and_controls() {

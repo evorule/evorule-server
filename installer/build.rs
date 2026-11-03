@@ -18,15 +18,20 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[path = "src/sha256.rs"]
-mod sha256;
+use sha2::{Digest, Sha256};
+
+// Shared manifest parser (same file as the one mounted by main.rs): the
+// strict shape rules must stay identical for the compile-time gate and the
+// runtime tamper check.
+#[path = "src/manifest.rs"]
+mod manifest;
 
 const MANIFEST_NAME: &str = "manifest.json";
 
 fn main() {
     println!("cargo:rerun-if-changed=payload");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/sha256.rs");
+    println!("cargo:rerun-if-changed=src/manifest.rs");
 
     let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {
         Ok(v) => PathBuf::from(v),
@@ -73,7 +78,7 @@ fn main() {
 }
 
 /// Load + structurally validate the manifest (presence, shape, checksums).
-fn load_and_verify(manifest_path: &Path) -> Result<Manifest, String> {
+fn load_and_verify(manifest_path: &Path) -> Result<manifest::Manifest, String> {
     if !manifest_path.is_file() {
         return Err(format!(
             "payload manifest 缺失：{}。请先运行 installer/prepare-payload.ps1 生成 manifest.json。",
@@ -91,7 +96,7 @@ fn load_and_verify(manifest_path: &Path) -> Result<Manifest, String> {
             manifest_path.display()
         )
     })?;
-    let manifest = parse_manifest(&text)?;
+    let manifest = manifest::parse_manifest(&text)?;
 
     // The manifest must never ship as an installed file: it is metadata.
     if manifest.files.iter().any(|(rel, _)| rel == MANIFEST_NAME) {
@@ -100,104 +105,8 @@ fn load_and_verify(manifest_path: &Path) -> Result<Manifest, String> {
     Ok(manifest)
 }
 
-struct Manifest {
-    generated_at: String,
-    versions: Vec<(String, String)>,
-    files: Vec<(String, String)>, // (relative path with '/', lowercase sha256 hex)
-}
-
-/// Strict parser for the controlled manifest shape emitted by
-/// prepare-payload.ps1 (one file entry per line, no nested objects besides
-/// `versions`). Anything outside the known shape is rejected — a hand-edited
-/// manifest therefore fails the build instead of passing silently.
-fn parse_manifest(text: &str) -> Result<Manifest, String> {
-    let mut manifest = Manifest {
-        generated_at: String::new(),
-        versions: Vec::new(),
-        files: Vec::new(),
-    };
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty()
-            || line == "{"
-            || line == "}"
-            || line == "},"
-            || line == "["
-            || line == "]"
-            || line == "],"
-        {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("\"generated_at\":") {
-            manifest.generated_at = json_string_value(rest)?;
-            continue;
-        }
-        if line.starts_with("\"versions\":") || line.starts_with("\"files\":") {
-            continue;
-        }
-        if line.contains("\"path\":") && line.contains("\"sha256\":") {
-            let path = extract_string_field(line, "\"path\": \"")?;
-            let sha = extract_string_field(line, "\"sha256\": \"")?;
-            if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(format!("manifest 文件条目 sha256 非 64 位十六进制: {path}"));
-            }
-            manifest
-                .files
-                .push((path.to_string(), sha.to_ascii_lowercase()));
-            continue;
-        }
-        if let Some((k, v)) = parse_kv_line(line) {
-            manifest.versions.push((k, v));
-            continue;
-        }
-        return Err(format!("manifest 含未知行形态: {line}"));
-    }
-    if manifest.generated_at.is_empty() {
-        return Err("manifest 缺 generated_at".to_string());
-    }
-    if manifest.versions.is_empty() {
-        return Err("manifest 缺 versions 段".to_string());
-    }
-    if manifest.files.is_empty() {
-        return Err("manifest files 段为空".to_string());
-    }
-    Ok(manifest)
-}
-
-fn json_string_value(s: &str) -> Result<String, String> {
-    let s = s.trim().trim_end_matches(',');
-    if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
-        return Err(format!("非 JSON 字符串值: {s}"));
-    }
-    Ok(s[1..s.len() - 1].to_string())
-}
-
-fn parse_kv_line(line: &str) -> Option<(String, String)> {
-    // trailing comma optional: the last entry of the versions block has none
-    let line = line.trim_end_matches(',');
-    let (k, v) = line.split_once("\": \"")?;
-    let k = k.trim().strip_prefix('"')?.to_string();
-    let v = v.strip_suffix('"')?.to_string();
-    if k.is_empty() || v.is_empty() {
-        return None;
-    }
-    Some((k, v))
-}
-
-fn extract_string_field<'a>(line: &'a str, marker: &str) -> Result<&'a str, String> {
-    let start = line
-        .find(marker)
-        .ok_or_else(|| format!("manifest 缺字段 {marker}"))?
-        + marker.len();
-    let rest = &line[start..];
-    let end = rest
-        .find('"')
-        .ok_or_else(|| format!("manifest 字符串未闭合: {marker}"))?;
-    Ok(&rest[..end])
-}
-
 /// Bidirectional set comparison plus a full content-hash pass.
-fn cross_check(files: &[(String, PathBuf)], manifest: &Manifest) -> Result<(), String> {
+fn cross_check(files: &[(String, PathBuf)], manifest: &manifest::Manifest) -> Result<(), String> {
     let mut tree: BTreeMap<&str, &PathBuf> = BTreeMap::new();
     for (rel, abs) in files {
         tree.insert(rel.as_str(), abs);
@@ -220,7 +129,9 @@ fn cross_check(files: &[(String, PathBuf)], manifest: &Manifest) -> Result<(), S
     for (rel, sha) in &manifest.files {
         let abs = tree[rel.as_str()];
         let bytes = fs::read(abs).map_err(|e| format!("读取失败 {}: {e}", abs.display()))?;
-        let actual = sha256::sha256_hex(&bytes);
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual = manifest::to_hex(&hasher.finalize());
         if actual != *sha {
             return Err(format!("内容与 manifest 不符: {rel}"));
         }
@@ -228,7 +139,11 @@ fn cross_check(files: &[(String, PathBuf)], manifest: &Manifest) -> Result<(), S
     Ok(())
 }
 
-fn emit_payload_rs(files: &[(String, PathBuf)], manifest: &Manifest, manifest_path: &Path) {
+fn emit_payload_rs(
+    files: &[(String, PathBuf)],
+    manifest: &manifest::Manifest,
+    manifest_path: &Path,
+) {
     let mut out = String::new();
     out.push_str("// @generated by build.rs — do not edit\n");
     out.push_str("#[rustfmt::skip]\n");
