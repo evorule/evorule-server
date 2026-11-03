@@ -13567,15 +13567,22 @@ fn invoke_provenance(api: &SessionApi, name: &str) -> serde_json::Value {
     }
 }
 
+/// invoke 成功信封的契约版本（消费方可据此自检宿主/引擎版本匹配；
+/// 形态变更须升版本号，消费方对未知版本显式拒绝而非静默误读）。
+pub(crate) const SERVICE_INVOKE_CONTRACT_VERSION: &str = "1.0";
+
 /// POST /api/services/{name}/invoke —— 插件服务直调（服务消费契约）
 ///
 /// 与 io_request **同一处理器链**（插件路由原生优先 → registry HTTP 回落），
 /// 无第二执行路径。请求 body = 服务 `args`（JSON 对象）。
 ///
 /// 成功响应（200）为 provenance 信封：`{"result": <服务结果原样>,
-/// "provenance": {service, source, plugin, version, deterministic}}`——
+/// "provenance": {service, source, plugin, version, deterministic},
+/// "contract_version": SERVICE_INVOKE_CONTRACT_VERSION}`——
 /// 结果可信度锚随行（deterministic：native=宿主进程内确定性服务 true；
-/// plugin/registry=外部执行体，宿主不背书其确定性）。错误响应保持
+/// plugin/registry=外部执行体，宿主不背书其确定性）；`contract_version`
+/// 为信封契约标识（跨版本形态变更的显式对账锚，wasm-host 回落路径同键）。
+/// 错误响应保持
 /// `{"error": ..., "error_kind"?: ...}` 形态（成功/失败对称的双元数据面）。
 ///
 /// 治理语义（fail-fast）：
@@ -13590,7 +13597,7 @@ fn invoke_provenance(api: &SessionApi, name: &str) -> serde_json::Value {
     params(("name" = String, Path, description = "服务名（GET /api/services 对账清单内）")),
     request_body = serde_json::Value,
     responses(
-        (status = 200, description = "服务执行结果 provenance 信封（result = 服务结果原样；provenance = 结果可信度锚）", body = serde_json::Value),
+        (status = 200, description = "服务执行结果 provenance 信封（result = 服务结果原样；provenance = 结果可信度锚；contract_version = 信封契约版本）", body = serde_json::Value),
         (status = 403, description = "敏感服务禁止直调（走会话审计链）"),
         (status = 404, description = "服务不在对账清单"),
         (status = 502, description = "服务执行失败（错误透传）"),
@@ -13655,11 +13662,13 @@ pub async fn invoke_service_handler(
         .await;
     match result {
         // 成功响应信封：result=服务结果原样 + provenance=结果可信度锚
-        // （deterministic 档位等）；错误响应保持 error/error_kind 形态
-        // （成功/失败对称的双元数据面）
+        // （deterministic 档位等）+ contract_version=信封契约标识（消费方
+        // 自检锚：未知版本须显式拒绝而非静默误读）；错误响应保持
+        // error/error_kind 形态（成功/失败对称的双元数据面）
         Ok(result) => Ok(Json(serde_json::json!({
             "result": tcb_to_serde(&result),
             "provenance": invoke_provenance(&api, &name),
+            "contract_version": SERVICE_INVOKE_CONTRACT_VERSION,
         }))),
         Err(e) => {
             // 批次B（P1-11 错误脱敏）: 错误响应不再内嵌链路错误原文
@@ -13692,10 +13701,13 @@ pub async fn invoke_service_handler(
                         let status = resp.status();
                         match resp.json::<serde_json::Value>().await {
                             // wasm-host 回落成功同样走 provenance 信封
-                            // （registry 回落绑定=非宿主确定性执行体）
+                            // （registry 回落绑定=非宿主确定性执行体）；
+                            // contract_version 与主路径同键同值（信封契约
+                            // 属端点面，与执行体无关）
                             Ok(value) if status.is_success() => Ok(Json(serde_json::json!({
                                 "result": value,
                                 "provenance": invoke_provenance(&api, &name),
+                                "contract_version": SERVICE_INVOKE_CONTRACT_VERSION,
                             }))),
                             Ok(value) => Err((
                                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -22155,6 +22167,18 @@ mod tests {
         assert_eq!(
             conflict["result"], invoke_json["result"],
             "同内核逐字段一致（构造保证+契约防退化）"
+        );
+        // 信封契约标识：成功响应必须携带 contract_version 与 provenance
+        // （消费方自检锚——缺失即信封契约回归，须显式红而非静默容忍）
+        assert_eq!(
+            invoke_json["contract_version"],
+            serde_json::json!("1.0"),
+            "信封契约版本在位"
+        );
+        assert_eq!(
+            invoke_json["provenance"]["deterministic"],
+            serde_json::json!(true),
+            "native 服务 provenance 档位"
         );
         // 三件套全 ok（真实 inference 内核路由命中，fallback 未被调用）
         assert!(
