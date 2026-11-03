@@ -1,4 +1,4 @@
-# evorule-setup 安装器载荷填充脚本
+﻿# evorule-setup 安装器载荷填充脚本
 # 将分发包内容汇集到 installer/payload/（build.rs 会整树内嵌进单文件安装器）。
 # 来源与 release.yml win64 打包步骤保持一致：
 #   - evorule-server.exe        <- 本仓 target/release
@@ -9,6 +9,9 @@
 #   - rules/                    <- console-cloud assets/evorule-rules/*.json + 本仓 rules/10_role13_demo.json
 #   - resources/server_eval.json / service_registry.json / dist 启动脚本与说明
 # 防御性排除 data/、logs/、*.log（build.rs 亦有同样排除）。
+# 汇集完成后生成 payload/manifest.json（相对路径+SHA256+版本戳+来源 HEAD）：
+# installer/build.rs 编译期与载荷树双向对拍（含逐文件内容哈希），
+# 非 manifest 条目 / 手改 payload / 跨批产物一律 compile_error 拒绝内嵌。
 # 默认来源路径按检出根兄弟目录推导；换机发版也可显式传参（-RuleRepo / -ConsoleRepo）。
 param(
     [string]$ServerRepo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
@@ -77,6 +80,83 @@ if (Test-Path $wdCfg) {
 #    自带合法清单，否则 server 对 --plugins fail-fast 拒启。
 Set-Content -Path (Join-Path $payload "plugin_manifest.json") -Value '{ "plugins": { "ai-plugin": { "enabled": false, "manifest": "plugins/ai-plugin/plugin.json" } } }' -Encoding ascii
 
+# 7. 载荷装载清单（manifest gate 的 prepare 侧）
+#    - 每文件相对路径（'/' 分隔）+ SHA256（Get-FileHash，与 build.rs 内置 SHA-256 互证）
+#    - 生成时间 + 版本戳：server/serve exe 产品版本、web dist 版本、三来源仓 HEAD 短哈希
+#    - manifest 自身不入安装内容（build.rs 扫描时排除，单独 include_str! 内嵌作售后取证）
+$manifestPath = Join-Path $payload "manifest.json"
+$generatedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+
+function Get-ProductVersion($path) {
+    # cargo 构建的 exe 默认无 VERSIONINFO 资源 → 常为空；空则回退读来源仓 Cargo.toml 顶层 version
+    $v = (Get-Item $path).VersionInfo.ProductVersion
+    if ([string]::IsNullOrWhiteSpace($v)) { return "unknown" }
+    return $v
+}
+function Get-CrateVersion($repo) {
+    $toml = Join-Path $repo "Cargo.toml"
+    if (-not (Test-Path $toml)) { return "unknown" }
+    $text = [System.IO.File]::ReadAllText($toml)
+    if ($text -match '(?m)^version\s*=\s*"([^"]+)"') { return $Matches[1] }
+    return "unknown"
+}
+function Get-RepoHead($repo) {
+    if (-not (Test-Path (Join-Path $repo ".git"))) { return "unknown" }
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $head = & git -C $repo rev-parse --short HEAD 2>$null
+    $ErrorActionPreference = $prev
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace("$head")) { return "unknown" }
+    return ("$head".Trim())
+}
+
+$serverVersion = Get-ProductVersion (Join-Path $payload "evorule-server.exe")
+if ($serverVersion -eq "unknown") { $serverVersion = Get-CrateVersion $ServerRepo }
+$serveVersion  = Get-ProductVersion (Join-Path $payload "evorule-rule-serve.exe")
+if ($serveVersion -eq "unknown") { $serveVersion = Get-CrateVersion $RuleRepo }
+$serverHead    = Get-RepoHead $ServerRepo
+$ruleHead      = Get-RepoHead $RuleRepo
+$consoleHead   = Get-RepoHead $ConsoleRepo
+$webVersion    = "unknown"
+$consolePkg = Join-Path $ConsoleRepo "package.json"
+if (Test-Path $consolePkg) {
+    # ReadAllText 默认 UTF-8：package.json 常无 BOM，PS5.1 Get-Content 会按 ANSI 读出 mojibake 炸 ConvertFrom-Json
+    $pkg = [System.IO.File]::ReadAllText($consolePkg) | ConvertFrom-Json
+    if ($pkg.version) { $webVersion = "$($pkg.version)" }
+}
+
+$payloadFiles = Get-ChildItem $payload -Recurse -File |
+    Where-Object { $_.FullName -ne $manifestPath } |
+    Sort-Object FullName
+if ($payloadFiles.Count -eq 0) { throw "payload 为空，无法生成 manifest" }
+$payloadLen = $payload.Length
+$entryLines = [System.Collections.Generic.List[string]]::new()
+foreach ($f in $payloadFiles) {
+    $rel = $f.FullName.Substring($payloadLen + 1).Replace('\', '/')
+    $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $entryLines.Add('    { "path": "' + $rel + '", "sha256": "' + $hash + '" }')
+}
+# 末行补逗号（除最后一行），保持严格 JSON
+for ($i = 0; $i -lt $entryLines.Count - 1; $i++) { $entryLines[$i] += ',' }
+
+$manifestText = (@(
+    '{'
+    '  "generated_at": "' + $generatedAt + '",'
+    '  "versions": {'
+    '    "server": "' + $serverVersion + '",'
+    '    "server_head": "' + $serverHead + '",'
+    '    "rule_serve": "' + $serveVersion + '",'
+    '    "rule_head": "' + $ruleHead + '",'
+    '    "web_dist": "' + $webVersion + '",'
+    '    "console_head": "' + $consoleHead + '"'
+    '  },'
+    '  "files": ['
+    $entryLines
+    '  ]'
+    '}' ) -join "`n") + "`n"
+# .NET WriteAllText + UTF8Encoding($false) = 恒定无 BOM（PS5/PS7 双版一致）
+[System.IO.File]::WriteAllText($manifestPath, $manifestText, (New-Object System.Text.UTF8Encoding($false)))
+
 $count = (Get-ChildItem $payload -Recurse -File).Count
 $size = [math]::Round((Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
-Write-Host "payload 就绪: $count 个文件, $size MB"
+Write-Host "payload 就绪: $count 个文件, $size MB（含 manifest.json, 载荷 $($payloadFiles.Count) 件）"

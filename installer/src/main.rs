@@ -14,7 +14,13 @@
 mod ffi;
 
 // build.rs 生成的内嵌载荷表：`&[(&str 相对路径, &[u8] 内容)]`
+// + provenance statics relayed from payload/manifest.json (see build.rs)
 include!(concat!(env!("OUT_DIR"), "/payload.rs"));
+
+// SHA-256 is only exercised by the unit tests here; build.rs includes the
+// same file via #[path] for the compile-time manifest gate.
+#[cfg(test)]
+mod sha256;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -67,6 +73,17 @@ fn install(silent: bool, dir_override: Option<String>) -> i32 {
     let target_str = target.to_string_lossy().to_string();
     let mut log: Vec<String> = Vec::new();
     log.push(format!("evorule-setup v{VERSION}"));
+    // Manifest version stamps: the shipped combination is logged verbatim
+    // (three-piece versions + source repo HEADs) for after-sales evidence.
+    log.push(format!(
+        "payload: generated {PAYLOAD_GENERATED_AT}, server v{} ({}), rule-serve v{} ({}), web dist v{} ({})",
+        payload_version("server"),
+        payload_version("server_head"),
+        payload_version("rule_serve"),
+        payload_version("rule_head"),
+        payload_version("web_dist"),
+        payload_version("console_head")
+    ));
 
     if !silent {
         // 批次E:确认页升格「许可与隐私」语义——开源声明+数据本机+同意按钮
@@ -164,6 +181,15 @@ fn install(silent: bool, dir_override: Option<String>) -> i32 {
     0
 }
 
+/// Look up a version stamp relayed from the payload manifest.
+fn payload_version(key: &str) -> &'static str {
+    PAYLOAD_VERSIONS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| *v)
+        .unwrap_or("unknown")
+}
+
 fn extract(target: &std::path::Path, log: &mut Vec<String>) -> Result<usize, String> {
     let mut count = 0usize;
     for (rel, bytes) in PAYLOAD {
@@ -175,10 +201,26 @@ fn extract(target: &std::path::Path, log: &mut Vec<String>) -> Result<usize, Str
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建目录失败 {}: {e}", parent.display()))?;
         std::fs::write(&dest, bytes).map_err(|e| friendly_io(&dest, &e))?;
+        readback_matches(&dest, bytes)?;
         count += 1;
     }
     log.push(format!("extracted {count} files"));
     Ok(count)
+}
+
+/// Fail-visible release self-check: what landed on disk must byte-equal the
+/// embedded payload (guards truncated or corrupted writes at install time).
+fn readback_matches(path: &std::path::Path, expected: &[u8]) -> Result<(), String> {
+    let written = std::fs::read(path).map_err(|e| format!("回读失败 {}: {e}", path.display()))?;
+    if written != expected {
+        return Err(format!(
+            "回读对拍不符 {}: 磁盘 {} 字节 vs 内嵌 {} 字节",
+            path.display(),
+            written.len(),
+            expected.len()
+        ));
+    }
+    Ok(())
 }
 
 fn friendly_io(path: &std::path::Path, e: &std::io::Error) -> String {
@@ -505,5 +547,31 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    #[test]
+    fn readback_detects_corrupted_disk_content() -> Result<(), String> {
+        let dir =
+            std::env::temp_dir().join(format!("evorule-setup-test-{}-rb", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create dir: {e}"))?;
+        let path = dir.join("probe.bin");
+        // 1) 磁盘内容与内嵌一致 → 通过
+        std::fs::write(&path, b"payload-bytes").map_err(|e| format!("seed: {e}"))?;
+        readback_matches(&path, b"payload-bytes").map_err(|e| format!("一致场景不应报错: {e}"))?;
+        // 2) 磁盘内容被改/截断 → 报错（fail-visible）
+        std::fs::write(&path, b"payload-bytes!").map_err(|e| format!("tamper: {e}"))?;
+        if let Ok(()) = readback_matches(&path, b"payload-bytes") {
+            return Err("篡改场景应报错，实际通过".to_string());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn payload_version_lookup_falls_back_to_unknown() {
+        // 查存在的键（manifest 由 build.rs 真实生成，至少含 server 键）
+        assert!(!payload_version("server").is_empty());
+        // 查不存在的键 → unknown，不 panic
+        assert_eq!(payload_version("__no_such_key__"), "unknown");
     }
 }
