@@ -111,6 +111,30 @@ impl HttpHandler {
         }
     }
 
+    /// 创建受信路由面 HTTP 处理器（放行 loopback 目标）。
+    ///
+    /// 供 `ServiceRegistryHandler` 使用：注册表的路由目标（url）来自运维
+    /// 显式配置（plugins-manifest.json 的 base_url / 安装自动化管理面），
+    /// **不是**规则运行时或用户输入——SSRF 守卫的威胁模型（诱导宿主访问
+    /// 内网/元数据端点）不覆盖此面。桌面发行版的插件进程绑定 127.0.0.1
+    /// （本地 sidecar 架构决定），须走本构造器方能调通。
+    ///
+    /// 与 `new_dev_allow_loopback()` 当前实现等价（放行 loopback），但语义
+    /// 独立：前者是「开发模式全局放行」（跟随 CLI 旗标、覆盖用户输入面），
+    /// 本构造器是「受信路由面结构性放行」（与旗标无关、不覆盖用户输入面
+    /// 的守卫——`HttpHandler::new()` 的用户直连调用守卫不变）。
+    pub fn new_trusted_routes() -> Self {
+        let client = Self::build_client(
+            DEFAULT_POOL_MAX_IDLE_PER_HOST,
+            Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS),
+            Duration::from_secs(DEFAULT_TCP_KEEPALIVE_SECS),
+        );
+        Self {
+            client,
+            allow_loopback: true,
+        }
+    }
+
     /// 内部：构建 reqwest Client
     fn build_client(
         pool_max_idle_per_host: usize,

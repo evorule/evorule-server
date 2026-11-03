@@ -526,6 +526,51 @@ mod tests {
         assert_eq!(headers.get("X-Extra").unwrap().as_str().unwrap(), "1");
     }
 
+    /// 受信路由面 vs 用户直连面的信任边界：registry 目标为 loopback
+    /// （运维配置的本地 sidecar 插件——桌面发行版架构）时，受信构造器
+    /// （new_trusted_routes）须放行直连；同一 URL 经用户直连构造器
+    /// （new）仍须被 SSRF 守卫拦下——信任不外溢到用户输入面。
+    #[tokio::test]
+    async fn registry_loopback_route_trusted_passes_and_guarded_blocks() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("POST", "/services/echo")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ok":true}"#)
+            .create_async()
+            .await;
+        let reg_json = format!(
+            r#"{{ "echo_svc": {{"url": "{}/services/echo"}} }}"#,
+            server.url()
+        );
+
+        // 受信路由面：registry url 来自运维配置，loopback 直连调通
+        let trusted = ServiceRegistryHandler::new(
+            ServiceRegistry::load_from_str(&reg_json).unwrap(),
+            Arc::new(HttpHandler::new_trusted_routes()),
+        );
+        let params = serde_to_json_value(serde_json::json!({"service_name": "echo_svc"}));
+        let out = trusted.execute(&params).await.unwrap();
+        assert_eq!(
+            out,
+            serde_to_json_value(serde_json::json!({"ok":true})),
+            "受信路由面须放行 loopback 目标（桌面插件 sidecar 架构前提）"
+        );
+        m.assert_async().await;
+
+        // 用户直连面：同一 loopback URL 必须仍被守卫拦（信任边界不外溢）
+        let guarded = ServiceRegistryHandler::new(
+            ServiceRegistry::load_from_str(&reg_json).unwrap(),
+            Arc::new(HttpHandler::new()),
+        );
+        let err = guarded.execute(&params).await.unwrap_err();
+        assert!(
+            err.to_string().contains("SSRF blocked"),
+            "用户直连构造器对 loopback 仍须拦截: {err}"
+        );
+    }
+
     #[test]
     fn test_load_from_str_ok() {
         let json = r#"{

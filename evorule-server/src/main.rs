@@ -1540,10 +1540,15 @@ fn load_external_plugins(
         let mut discovered: Vec<String> = Vec::new();
         if m.auto_discover {
             if !allow_loopback && base_url_is_loopback(&m.base_url) {
+                // 调用面已改受信路由通道（registry 目标=运维配置，loopback
+                // 可调通）；此发现面判定保留为确定性守护：未开旗标时不向
+                // loopback 发真实拉取连接（避免对未起 sidecar 的环境/测试
+                // 环境产生网络尝试的非确定性），策略表显式声明的服务照常
+                // 注册且可调（调用面不受此判定影响）。
                 error!(
                     "外部插件包: {id} auto_discover 拉取被拒: base_url {} 为 loopback 且 \
-                     server 未开 --allow-loopback（与调用链 SSRF 语义对齐——现在能发现、\
-                     将来也调不通）。策略表显式声明的 {} 个服务照常注册",
+                     server 未开 --allow-loopback（发现面确定性守护——策略表显式 \
+                     声明的 {} 个服务照常注册且调用面可调通）",
                     m.base_url,
                     declared.len()
                 );
@@ -2417,8 +2422,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         HttpHandler::new()
     });
+    // 注册表面走受信路由构造器：路由目标（url）全部来自运维显式配置
+    // （plugins-manifest.json base_url / 安装自动化管理面），非用户/规则
+    // 运行时输入——SSRF 守卫威胁模型不覆盖此面。桌面插件进程绑定
+    // 127.0.0.1（本地 sidecar 架构），生产默认下也须调通；用户直连
+    // （HTTP_GET）的守卫不受影响（上面 http 的构造不变）。
+    let svc_http = Arc::new(HttpHandler::new_trusted_routes());
     let svc_handler = Arc::new(
-        ServiceRegistryHandler::new(registry.clone(), http.clone())
+        ServiceRegistryHandler::new(registry.clone(), svc_http)
             // 插件契约 v1 §3.3：REST invoke 身份透传——动态头解析器在
             // invoke_service_handler 的 task_local 作用域内读取操作者身份，
             // 注入 X-Evorule-Actor-*（or_insert 语义,params/规则不可伪造）。
@@ -4253,8 +4264,8 @@ mod tests {
 
         #[test]
         fn auto_discover_loopback_rejected_without_flag() {
-            // SSRF 语义对齐：loopback base_url + 未开 --allow-loopback → 拉取被拒，
-            // 策略表照常（现在能发现将来也调不通，干脆不发现）
+            // 发现面确定性守护：loopback base_url + 未开 --allow-loopback → 不发
+            // 真实拉取连接（调用面已走受信路由通道，策略表声明的服务可调通）
             let dir = TempDir::new().unwrap();
             write_file(
                 dir.path(),
