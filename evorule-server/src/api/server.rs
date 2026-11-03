@@ -8062,9 +8062,11 @@ async fn session_audit(
         // 调用方以 returned 末条 fact_id+1 作下页 from_fact 翻页。
         let (from_fact, to_fact) = (query.from_fact, query.to_fact);
         let in_range = |e: &serde_json::Value| {
-            e.get("fact_id").and_then(|v| v.as_u64()).is_some_and(|fid| {
-                from_fact.map_or(true, |lo| fid >= lo) && to_fact.map_or(true, |hi| fid <= hi)
-            })
+            e.get("fact_id")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|fid| {
+                    from_fact.is_none_or(|lo| fid >= lo) && to_fact.is_none_or(|hi| fid <= hi)
+                })
         };
         let limit = query.limit.unwrap_or(200).clamp(1, 10000);
         if let Some(arr) = entries.as_array_mut() {
@@ -8079,7 +8081,10 @@ async fn session_audit(
             let returned = arr.len();
             normalized.insert("total_in_range".into(), serde_json::json!(total_in_range));
             normalized.insert("returned".into(), serde_json::json!(returned));
-            normalized.insert("truncated".into(), serde_json::json!(returned < total_in_range));
+            normalized.insert(
+                "truncated".into(),
+                serde_json::json!(returned < total_in_range),
+            );
         }
         normalized.insert("entries".into(), entries);
     }
@@ -16952,11 +16957,10 @@ mod tests {
 
     // --- 审计报告分页/摘要（session_audit 摘要态/全量态） ---
 
-    /// 摘要态（默认）：去 fact 全文、from_fact/to_fact 过滤、limit 截断、
-    /// 分页元信息（total_in_range/returned/truncated）；full=true 回全量
-    /// （含 fact 全文，向后兼容逃生口）；include_content 仅全量态生效。
+    /// 摘要态（默认）：去 fact 全文、附分页元信息；full=true 回全量
+    /// （含 fact 全文，向后兼容逃生口）。
     #[tokio::test]
-    async fn audit_report_summary_paging_and_full_escape() {
+    async fn audit_report_summary_and_full_modes() {
         let (state, _) = make_test_state();
         let router = make_test_router(&state);
 
@@ -16988,10 +16992,7 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK);
             summary = s;
-            if summary["entries"]
-                .as_array()
-                .is_some_and(|a| a.len() >= 2)
-            {
+            if summary["entries"].as_array().is_some_and(|a| a.len() >= 2) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -17042,12 +17043,55 @@ mod tests {
             summary["total_in_range"],
             serde_json::json!(full_entries.len())
         );
-        assert_eq!(
-            summary["returned"],
-            serde_json::json!(full_entries.len())
-        );
+        assert_eq!(summary["returned"], serde_json::json!(full_entries.len()));
         assert_eq!(summary["truncated"], serde_json::json!(false));
         assert_eq!(summary["fact_count"], serde_json::json!(full_entries.len()));
+    }
+
+    /// 分页参数：from_fact/to_fact（含端点）过滤、limit 截断与钳制、
+    /// include_content 仅全量态生效。
+    #[tokio::test]
+    async fn audit_report_paging_params() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let sid = body["session_id"].as_u64().unwrap();
+
+        // 造 ≥2 条审计条目（两条 noop 指令；command 经 channel 异步进
+        // reactor，轮询等待条目出现）
+        for _ in 0..2 {
+            let (status, body) = oneshot_json(
+                router.clone(),
+                "POST",
+                &format!("/api/sessions/{sid}/command"),
+                Some(r#"{"instruction":{"type":"noop"}}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "基线命令应成功: {body}");
+        }
+
+        let mut summary = serde_json::Value::Null;
+        for _ in 0..40 {
+            let (status, s) = oneshot_json(
+                router.clone(),
+                "GET",
+                &format!("/api/sessions/{sid}/audit"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            summary = s;
+            if summary["entries"].as_array().is_some_and(|a| a.len() >= 2) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let entries = summary["entries"]
+            .as_array()
+            .expect("摘要态应有条目（轮询后）");
+        assert!(entries.len() >= 2, "前置：至少 2 条审计条目: {summary}");
 
         // fact_id 升序基准
         let mut ids: Vec<u64> = entries
