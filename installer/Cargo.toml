@@ -10,6 +10,16 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+# Runtime tamper check: recompute embedded payload digests against the
+# embedded manifest before anything touches disk.
+sha2 = "0.10"
+
+[build-dependencies]
+# Compile-time manifest gate: recompute payload digests against
+# payload/manifest.json before embedding.
+sha2 = "0.10"
+
 [[bin]]
 name = "evorule-setup"
 path = "src/main.rs"
