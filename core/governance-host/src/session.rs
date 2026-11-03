@@ -107,6 +107,9 @@ pub struct Session {
     pub initial_content_hash: Option<String>,
     /// 初始内容哈希口径（审计⑥ C2,验证方按口径分派验证算法）
     pub content_hash_scheme: ContentHashScheme,
+    /// 本会话锚定的规则集版本（创建时与 `__ruleset__.version` 锚定事实
+    /// 同源同刻；None=创建时未注入版本或落链失败，无版本归属）
+    pub ruleset_version: Option<String>,
     created_at: Arc<Instant>,
     last_activity_ms: Arc<AtomicU64>,
     /// 运行时时钟（时钟缝，经 manager 注入；默认 SystemClock 与直接
@@ -411,10 +414,11 @@ pub struct SessionManager {
     /// 运行时时钟（时钟缝，经 [`Self::with_clock`] 注入；默认 SystemClock，
     /// 行为与直接 `Instant::now()` 逐字一致——复用 reactor 侧 RuntimeClock 抽象）
     clock: ClockHandle,
-    /// 规则集版本哈希（G6 最小修：会话创建时落链 `__ruleset__.version`——
+    /// 规则集版本哈希（G6：会话创建时落链 `__ruleset__.version`——
     /// TraceHit.index 可回溯解释：取该版本规则集确定性重放合并按下标取规则）。
-    /// OnceLock：启动期 builder 一次性 set（先于任何会话创建），创建期无锁读
-    ruleset_version: std::sync::OnceLock<String>,
+    /// RwLock<Option>：启动期 builder 注入初值，reload 期可覆盖更新（动态锚）；
+    /// 创建期无阻塞读（读锁短暂持有，写仅发生在装载漏斗锁内）
+    ruleset_version: std::sync::RwLock<Option<String>>,
 }
 
 /// 会话审计锚点链配置（G-A2）
@@ -642,7 +646,7 @@ impl SessionManager {
             pending_recycle: Mutex::new(Vec::new()),
             anchor_config: None,
             clock: ClockHandle::system(),
-            ruleset_version: std::sync::OnceLock::new(),
+            ruleset_version: std::sync::RwLock::new(None),
         }
     }
 
@@ -666,34 +670,51 @@ impl SessionManager {
         self
     }
 
-    /// 注入规则集版本哈希（G6 最小修）：此后创建的会话在审计链落
+    /// 注入规则集版本哈希（G6）：此后创建的会话在审计链落
     /// `__ruleset__.version` 锚定事实——TraceHit/Violation 的规则下标
     /// 可取该版本规则集确定性重放解释
     pub fn with_ruleset_version(self, version: String) -> Self {
-        let _ = self.ruleset_version.set(version);
+        if let Ok(mut w) = self.ruleset_version.write() {
+            *w = Some(version);
+        }
         self
     }
 
-    /// by-ref 变体（SessionApi 透传用：Arc<Mutex<SessionManager>> 不可消费）
+    /// by-ref 变体（SessionApi 透传用：Arc<Mutex<SessionManager>> 不可消费）。
+    /// 可重复调用覆盖写（reload 期动态换锚；新会话自此锚定新版本）
     pub fn set_ruleset_version(&self, version: String) {
-        let _ = self.ruleset_version.set(version);
+        if let Ok(mut w) = self.ruleset_version.write() {
+            *w = Some(version);
+        }
     }
 
-    /// G6 最小修：规则集版本锚定事实落链（`__ruleset__.version`）
+    /// 当前注入的规则集版本快照（None=未注入；启动装配/reload 双源读）
+    pub fn current_ruleset_version(&self) -> Option<String> {
+        self.ruleset_version.read().ok().and_then(|g| g.clone())
+    }
+
+    /// G6：规则集版本锚定事实落链（`__ruleset__.version`）
     ///
     /// TraceHit/Violation 只携带规则下标——本事实使下标可回溯解释：
     /// 取该版本规则集确定性重放合并（load_merged 确定性保证）按下标取规则。
     /// 固定 FactId（u64::MAX-1，独立于常规分配器与 M-4 fork 锚的 1e9 段）；
     /// 未注入 ruleset_version 时零事实（行为与旧版一致）。
-    fn append_ruleset_anchor(&self, facts_log: &FactsLog) {
-        if let Some(version) = self.ruleset_version.get() {
-            let fact = Fact::PayloadUpdate {
-                id: FactId(u64::MAX - 1),
-                path: "__ruleset__.version".to_string(),
-                value: JsonValue::string(version.clone()),
-            };
-            if let Err(e) = facts_log.append(fact) {
+    ///
+    /// 返回与落链同源同刻的版本快照：`Some(v)` = 锚定事实已成功落链（v 即
+    /// 事实值），调用方（Session 构造点）应将其存入会话字段作 per-session
+    /// 归属依据；`None` = 未注入版本或落链失败（零事实，会话无版本归属）。
+    fn append_ruleset_anchor(&self, facts_log: &FactsLog) -> Option<String> {
+        let version = self.ruleset_version.read().ok()?.clone()?;
+        let fact = Fact::PayloadUpdate {
+            id: FactId(u64::MAX - 1),
+            path: "__ruleset__.version".to_string(),
+            value: JsonValue::string(version.clone()),
+        };
+        match facts_log.append(fact) {
+            Ok(_) => Some(version),
+            Err(e) => {
                 tracing::warn!(error = %e, "规则集版本锚定事实落链失败");
+                None
             }
         }
     }
@@ -900,7 +921,7 @@ impl SessionManager {
             .facts_log(facts_log)
             .build();
         let (command_tx, _event_rx, event_tx, handle, facts_log) = reactor.spawn();
-        self.append_ruleset_anchor(&facts_log);
+        let anchored_ruleset_version = self.append_ruleset_anchor(&facts_log);
 
         let shard = self.get_shard(session_id);
         let mut shard_guard = match lock_mutex(shard) {
@@ -935,6 +956,7 @@ impl SessionManager {
                 parent_session_id: None,
                 initial_content_hash: None,
                 content_hash_scheme: ContentHashScheme::default(),
+                ruleset_version: anchored_ruleset_version,
                 created_at: Arc::new(self.clock.now()),
                 last_activity_ms: Arc::new(AtomicU64::new(0)),
                 clock: self.clock.clone(),
@@ -1105,7 +1127,7 @@ impl SessionManager {
             .facts_log(facts_log)
             .build();
         let (command_tx, _event_rx, event_tx, handle, facts_log) = reactor.spawn();
-        self.append_ruleset_anchor(&facts_log);
+        let anchored_ruleset_version = self.append_ruleset_anchor(&facts_log);
 
         let shard = self.get_shard(session_id);
         let mut shard_guard = match lock_mutex(shard) {
@@ -1141,6 +1163,7 @@ impl SessionManager {
                 parent_session_id: parent_id,
                 initial_content_hash: Some(initial_content_hash),
                 content_hash_scheme,
+                ruleset_version: anchored_ruleset_version,
                 created_at: Arc::new(self.clock.now()),
                 last_activity_ms: Arc::new(AtomicU64::new(0)),
                 clock: self.clock.clone(),
@@ -1231,7 +1254,7 @@ impl SessionManager {
             .facts_log(facts_log)
             .build();
         let (command_tx, _event_rx, event_tx, handle, facts_log) = reactor.spawn();
-        self.append_ruleset_anchor(&facts_log);
+        let anchored_ruleset_version = self.append_ruleset_anchor(&facts_log);
 
         let shard = self.get_shard(session_id);
         let mut shard_guard = match lock_mutex(shard) {
@@ -1278,6 +1301,7 @@ impl SessionManager {
             parent_session_id: None,
             initial_content_hash: None,
             content_hash_scheme: ContentHashScheme::default(),
+            ruleset_version: anchored_ruleset_version,
             created_at: Arc::new(self.clock.now()),
             last_activity_ms: Arc::new(AtomicU64::new(0)),
             clock: self.clock.clone(),
@@ -1389,6 +1413,28 @@ impl SessionManager {
         }
         ids.sort();
         ids
+    }
+
+    /// 列出所有活跃会话的规则集版本归属快照（按会话 ID 升序）
+    ///
+    /// 每项 = `(session_id, 会话锚定的规则集版本)`；`None` = 创建时未注入
+    /// 版本或锚定事实落链失败。覆盖呈现/审计面消费。
+    pub fn list_session_ruleset_versions(&self) -> Vec<(SessionId, Option<String>)> {
+        let mut rows = Vec::new();
+        for shard in &self.shards {
+            let shard_guard = match lock_mutex(shard) {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::warn!("SessionManager shard mutex poisoned, recovering");
+                    e.into_inner()
+                }
+            };
+            for (id, session) in shard_guard.iter() {
+                rows.push((*id, session.ruleset_version.clone()));
+            }
+        }
+        rows.sort_by_key(|(id, _)| *id);
+        rows
     }
 
     /// 清理已结束的会话
@@ -1995,6 +2041,52 @@ mod tests {
         assert!(mgr.get_session(id1).is_some());
         assert!(mgr.get_session(id2).is_some());
         assert!(mgr.get_session(999).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_ruleset_version_dynamic_anchor_per_session() {
+        // 会话级动态版本锚：注入可覆盖写；每会话创建时与锚定事实同源同刻
+        // 取版本快照——旧会话保留旧归属，新会话锚定覆盖后版本
+        let core_eval = make_core_eval();
+        let mgr = SessionManager::new(core_eval, 100);
+
+        // 未注入：会话无版本归属（零锚定事实）
+        let id_none = mgr.create_session().unwrap();
+        assert_eq!(mgr.get_session(id_none).unwrap().ruleset_version, None);
+
+        // 注入初值 → 快照读取 → 新会话锚定
+        mgr.set_ruleset_version("v1".to_string());
+        assert_eq!(mgr.current_ruleset_version(), Some("v1".to_string()));
+        let id_v1 = mgr.create_session().unwrap();
+
+        // 动态锚覆盖写（reload 节奏）：旧会话保留旧版本，新会话锚定新版本
+        mgr.set_ruleset_version("v2".to_string());
+        assert_eq!(mgr.current_ruleset_version(), Some("v2".to_string()));
+        let id_v2 = mgr.create_session().unwrap();
+
+        let s1 = mgr.get_session(id_v1).unwrap();
+        let s2 = mgr.get_session(id_v2).unwrap();
+        assert_eq!(
+            s1.ruleset_version,
+            Some("v1".to_string()),
+            "旧会话保留创建时锚定版本"
+        );
+        assert_eq!(
+            s2.ruleset_version,
+            Some("v2".to_string()),
+            "新会话锚定覆盖后版本"
+        );
+
+        // 归属快照：逐会话枚举（含无归属会话，升序）
+        let rows = mgr.list_session_ruleset_versions();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().any(|(id, v)| *id == id_none && v.is_none()));
+        assert!(rows
+            .iter()
+            .any(|(id, v)| *id == id_v1 && *v == Some("v1".to_string())));
+        assert!(rows
+            .iter()
+            .any(|(id, v)| *id == id_v2 && *v == Some("v2".to_string())));
     }
 
     #[tokio::test]

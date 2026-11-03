@@ -32,13 +32,17 @@
 //! reactor `TransitionTrace` 同构（不推进会话版本）；链文件与 wal-dir 同级
 //! 配置面（`companion_chain.jsonl`），无 wal-dir（纯内存/测试）时内存链兜底。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
+
+use evorule_inference_services::conflict::ConflictReport;
+use evorule_inference_services::cycle::CycleReport;
+use evorule_inference_services::rw_extract::RuleRw;
 
 use super::server::SessionApi;
 
@@ -72,6 +76,160 @@ pub(crate) const TRIGGER_WATCH: &str = "watch";
 
 /// 落盘连续失败降级阈值（达到即落 ChainDegraded 降级事实 + status 呈现）
 const CHAIN_DEGRADE_THRESHOLD: u64 = 3;
+
+// ── lint 增量分析状态面（rw 读写集缓存 + per-file 摘要表）──
+
+/// 上次分析成功的 lint 状态快照（单表有界：只留最近一次成功分析的
+/// per-file 摘要 + per-file 读写集；下次分析 diff 之即得变更文件集）
+///
+/// 键 = 文件来源标注（rules_dir 内相对路径或 `core_eval`）；值：
+/// - `digests`：per-file 内容摘要（后过滤口径——跨文件重叠防线会因其他
+///   文件变更改变本文件的后过滤规则集，故缓存有效性键必须锚定后过滤
+///   分组而非装载器文档哈希；摘要原语=evorule_hash json_digest 族，
+///   与 ruleset_version 同源）
+/// - `rws`：per-file 规则读写集（合并序下标已回填；宪法段含 excluded 条目）
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LintRwCache {
+    pub digests: BTreeMap<String, String>,
+    pub rws: BTreeMap<String, Vec<RuleRw>>,
+}
+
+impl LintRwCache {
+    /// diff 新旧摘要表 → 变更/新增/删除文件集合（升序，确定性）
+    pub fn diff_changed_files(&self, new_digests: &BTreeMap<String, String>) -> Vec<String> {
+        let mut changed: Vec<String> = new_digests
+            .iter()
+            .filter(|(k, v)| self.digests.get(*k) != Some(*v))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in self.digests.keys() {
+            if !new_digests.contains_key(k) {
+                changed.push(k.clone());
+            }
+        }
+        changed.sort();
+        changed.dedup();
+        changed
+    }
+}
+
+/// RuleRw → JSON（增量路径序列化器：与 inference-services 服务输出同形——
+/// 服务实现冻结零改，对拍测试锚定逐字段一致）
+pub(crate) fn rw_entry_to_json(rw: &RuleRw) -> serde_json::Value {
+    let set_json = |s: &std::collections::BTreeSet<String>| {
+        serde_json::Value::Array(
+            s.iter()
+                .map(|v| serde_json::Value::String(v.clone()))
+                .collect(),
+        )
+    };
+    let const_pairs: Vec<serde_json::Value> = rw
+        .const_writes
+        .iter()
+        .map(|(k, v)| {
+            json!({
+                "path": k,
+                "literal": v,
+            })
+        })
+        .collect();
+    let io_pairs: Vec<serde_json::Value> = rw
+        .ios
+        .iter()
+        .map(|e| {
+            json!({
+                "io_type": &e.io_type,
+                "service_name": &e.service_name,
+            })
+        })
+        .collect();
+    json!({
+        "id": &rw.id,
+        "source": &rw.source,
+        "index": i64::try_from(rw.index).unwrap_or(-1),
+        "reads": set_json(&rw.reads),
+        "writes": set_json(&rw.writes),
+        "const_writes": const_pairs,
+        "ios": io_pairs,
+        "instr_types": set_json(&rw.instr_types),
+        "domain_dyn": rw.domain_dyn,
+        "write_dyn": rw.write_dyn,
+        "domain_universal": rw.domain_universal,
+        "excluded": rw.excluded,
+    })
+}
+
+/// 合并读写集 → rw_extract 服务输出形态（status/determinism 信封 + results）
+pub(crate) fn rw_results_to_json(rws: &[RuleRw]) -> serde_json::Value {
+    let results: Vec<serde_json::Value> = rws.iter().map(rw_entry_to_json).collect();
+    json!({
+        "status": "determined",
+        "determinism": "bitwise_replayable",
+        "results": results,
+    })
+}
+
+/// CycleReport → cycle_detect 服务输出形态（统一信封 v1）
+pub(crate) fn cycle_report_to_json(report: &CycleReport) -> serde_json::Value {
+    let cycle_list = |cycles: &[Vec<String>]| {
+        serde_json::Value::Array(
+            cycles
+                .iter()
+                .map(|c| {
+                    serde_json::Value::Array(
+                        c.iter()
+                            .map(|id| serde_json::Value::String(id.clone()))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+    };
+    let id_list = |ids: &[String]| {
+        serde_json::Value::Array(
+            ids.iter()
+                .map(|id| serde_json::Value::String(id.clone()))
+                .collect(),
+        )
+    };
+    json!({
+        "status": "determined",
+        "determinism": "bitwise_replayable",
+        "has_cycles": report.has_cycles,
+        "cycle_count": i64::try_from(report.cycle_count).unwrap_or(-1),
+        "static_cycles": cycle_list(&report.static_cycles),
+        "conservative_cycles": cycle_list(&report.conservative_cycles),
+        "topological_order": id_list(&report.topological_order),
+        "safe_rules": id_list(&report.safe_rules),
+        "unsafe_rules": id_list(&report.unsafe_rules),
+        "excluded": id_list(&report.excluded),
+    })
+}
+
+/// ConflictReport → conflict_detect 服务输出形态（统一信封 v1）
+pub(crate) fn conflict_report_to_json(report: &ConflictReport) -> serde_json::Value {
+    let items: Vec<serde_json::Value> = report
+        .conflicts
+        .iter()
+        .map(|c| {
+            json!({
+                "rule_id_1": &c.rule_id_1,
+                "rule_id_2": &c.rule_id_2,
+                "conflict_type": &c.conflict_type,
+                "description": &c.description,
+                "conservative": c.conservative,
+            })
+        })
+        .collect();
+    json!({
+        "status": "determined",
+        "determinism": "bitwise_replayable",
+        "has_conflicts": report.has_conflicts,
+        "conflict_count": i64::try_from(report.conflict_count).unwrap_or(-1),
+        "conflicts": items,
+        "excluded": &report.excluded,
+    })
+}
 
 /// 伴跑状态（验收骨架「状态链可见」五态链）
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,10 +273,18 @@ struct ChainState {
 /// 内存链尾部保留上限（status 呈现面，防无界增长；全量以链文件为准）
 const CHAIN_MEM_CAP: usize = 64;
 
+/// 认证条目：认证时刻 + clean 标记（两级证书：clean ⊆ certified 由
+/// 单窗口单条目结构保证——clean 是条目上的属性，不是平行集合）
+#[derive(Debug, Clone, Copy)]
+struct CertifiedEntry {
+    at: u64,
+    clean: bool,
+}
+
 /// 有界认证集：锚定版本常驻 + 最近 [`CERTIFIED_MAX_EXTRA`] 条（淘汰者由
 /// 调用方落链 `CompanionCertExpired` 记录性事实——认证集是窗口不是全集）
 struct CertifiedSet {
-    map: HashMap<String, u64>,
+    map: HashMap<String, CertifiedEntry>,
     order: VecDeque<String>,
     anchor: Option<String>,
 }
@@ -136,6 +302,11 @@ impl CertifiedSet {
         self.map.contains_key(v)
     }
 
+    /// clean 标记读取（仅对在窗口内的版本有意义；窗口外恒 false）
+    fn is_clean(&self, v: &str) -> bool {
+        self.map.get(v).is_some_and(|e| e.clean)
+    }
+
     fn len(&self) -> usize {
         self.map.len()
     }
@@ -144,9 +315,26 @@ impl CertifiedSet {
         self.map.keys().cloned().collect()
     }
 
-    /// 插入认证；超限淘汰最旧的非锚版本并返回之（供落链）
-    fn insert(&mut self, version: &str, at: u64) -> Option<String> {
-        if self.map.insert(version.to_string(), at).is_none() {
+    /// clean 版本清单（升序，呈现面确定性）
+    fn clean_versions(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .map
+            .iter()
+            .filter(|(_, e)| e.clean)
+            .map(|(k, _)| k.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// 插入认证（含 clean 标记）；超限淘汰最旧的非锚版本并返回之
+    /// （`(版本, 认证时刻)`，供落链记录性事实）
+    fn insert(&mut self, version: &str, at: u64, clean: bool) -> Option<(String, u64)> {
+        if self
+            .map
+            .insert(version.to_string(), CertifiedEntry { at, clean })
+            .is_none()
+        {
             self.order.push_back(version.to_string());
         }
         let cap = CERTIFIED_MAX_EXTRA + usize::from(self.anchor.is_some());
@@ -168,15 +356,17 @@ impl CertifiedSet {
                 match next {
                     Some(i) => {
                         if let Some(v) = self.order.remove(i) {
-                            self.map.remove(&v);
-                            evicted = Some(v);
+                            if let Some(entry) = self.map.remove(&v) {
+                                evicted = Some((v, entry.at));
+                            }
                         }
                     }
                     None => break, // 全是锚（理论不可达）
                 }
             } else {
-                self.map.remove(&old);
-                evicted = Some(old);
+                if let Some(entry) = self.map.remove(&old) {
+                    evicted = Some((old, entry.at));
+                }
             }
         }
         evicted
@@ -259,6 +449,9 @@ pub struct CompanionHub {
     append_fail_streak: AtomicU64,
     /// Prometheus 指标面（None=完全关闭；只读计数零控制面——硬边界）
     metrics: Mutex<Option<CompanionMetrics>>,
+    /// lint 增量状态（上次成功分析的 per-file 摘要+读写集；None=尚无基线，
+    /// 下次分析走全量；成功分析后提交——单表有界，不随版本增长）
+    lint_cache: Mutex<Option<LintRwCache>>,
 }
 
 impl CompanionHub {
@@ -324,6 +517,7 @@ impl CompanionHub {
             chain_write_degraded: AtomicBool::new(false),
             append_fail_streak: AtomicU64::new(0),
             metrics: Mutex::new(None),
+            lint_cache: Mutex::new(None),
         });
         // 坏链隔离重建：告警事实为重启后新链首条（error 日志已在重放时落）
         if let Some(alert) = replay_alert {
@@ -579,29 +773,90 @@ impl CompanionHub {
                     .collect()
             })
             .unwrap_or_default();
+        // severity 两级判定（只读 analyses 输出，服务实现零改）：
+        // conflict 有发现→alert > cycle 有发现→warn > 全净→clean；
+        // rw excluded/异常形态为 info 级，不阻断 clean（弱化语义）；
+        // 服务失败（ok=false）无发现数据可读→warn（不确定性下限，阻断 clean）
+        let mut severity = "clean";
+        let mut findings_conflicts: i64 = 0;
+        let mut findings_cycles: i64 = 0;
+        let mut findings_rw_excluded: i64 = 0;
+        if let Some(items) = report.get("analyses").and_then(|a| a.as_array()) {
+            for a in items {
+                let service = a.get("service").and_then(|v| v.as_str()).unwrap_or("");
+                let result = a.get("result");
+                match (service, a.get("ok").and_then(|v| v.as_bool())) {
+                    (_, Some(false)) | (_, None) => severity = "warn",
+                    ("inference_conflict_detect", Some(true)) => {
+                        if let Some(r) = result {
+                            if r.get("has_conflicts").and_then(|v| v.as_bool()) == Some(true) {
+                                severity = "alert";
+                            }
+                            findings_conflicts += r
+                                .get("conflict_count")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+                        }
+                    }
+                    ("inference_cycle_detect", Some(true)) => {
+                        if let Some(r) = result {
+                            if r.get("has_cycles").and_then(|v| v.as_bool()) == Some(true)
+                                && severity != "alert"
+                            {
+                                severity = "warn";
+                            }
+                            findings_cycles +=
+                                r.get("cycle_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                        }
+                    }
+                    ("inference_rw_extract", Some(true)) => {
+                        if let Some(items) = result
+                            .and_then(|r| r.get("results"))
+                            .and_then(|v| v.as_array())
+                        {
+                            findings_rw_excluded += items
+                                .iter()
+                                .filter(|x| {
+                                    x.get("excluded").and_then(|v| v.as_bool()) == Some(true)
+                                })
+                                .count() as i64;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let clean = severity == "clean";
         let seq_report = self.append_chain_with_artifact(
             "CompanionReport",
             json!({
                 "ruleset_version": version,
                 "rule_count": report.get("rule_count"),
                 "constitution_excluded_count": report.get("constitution_excluded_count"),
+                "severity": severity,
+                "findings": {
+                    "conflicts": findings_conflicts,
+                    "cycles": findings_cycles,
+                    "rw_excluded": findings_rw_excluded,
+                },
                 "analyses": analyses,
                 "trigger": lock_poem(&self.last_trigger).clone(),
             }),
             Some((report, &report_digest)),
         );
-        // 认证集有界插入；淘汰者落链记录性事实（窗口语义可见）
-        let evicted = lock_poem(&self.certified).insert(version, now_secs());
-        if let Some(old) = evicted {
+        // 认证集有界插入（含 clean 标记）；淘汰者落链记录性事实（窗口语义可见）
+        let evicted = lock_poem(&self.certified).insert(version, now_secs(), clean);
+        if let Some((old, old_at)) = evicted {
             self.append_chain(
                 "CompanionCertExpired",
-                json!({ "version": old, "superseded_by": version }),
+                json!({ "version": old, "certified_at": old_at, "superseded_by": version }),
             );
         }
         *lock_poem(&self.last_report) = Some(json!({
             "report": report,
             "report_json_digest": report_digest,
             "chain_seq": seq_report,
+            "severity": severity,
         }));
         lock_poem(&self.errors).clear();
         *lock_poem(&self.dirty_since) = None;
@@ -756,6 +1011,7 @@ impl CompanionHub {
             "errors": errors.iter().cloned().collect::<Vec<_>>(),
             "last_report": lock_poem(&self.last_report).clone(),
             "certified_versions": lock_poem(&self.certified).versions(),
+            "clean_versions": lock_poem(&self.certified).clean_versions(),
             "counters": {
                 "analyses_started": self.analyses_started.load(Ordering::Relaxed),
                 "analyses_ok": self.analyses_ok.load(Ordering::Relaxed),
@@ -774,15 +1030,43 @@ impl CompanionHub {
         })
     }
 
-    /// 覆盖率呈现（版本认证制；会话归属=锚定版本∈认证集）
-    pub fn coverage_json(&self, sessions_total: usize) -> serde_json::Value {
+    /// 上次成功分析的 lint 增量基线快照（None=尚无基线）
+    pub(crate) fn lint_cache_snapshot(&self) -> Option<LintRwCache> {
+        lock_poem(&self.lint_cache).clone()
+    }
+
+    /// 提交 lint 增量基线（成功分析收尾时调用——单表覆盖写，不随版本增长）
+    pub(crate) fn commit_lint_cache(&self, cache: LintRwCache) {
+        *lock_poem(&self.lint_cache) = Some(cache);
+    }
+
+    /// 覆盖率呈现（版本认证制；会话归属=创建时锚定版本∈认证集）
+    ///
+    /// `session_versions`：每会话的版本归属快照（session_id, 锚定版本），
+    /// 由调用方从 SessionManager 分片快照枚举。逐会话统计：
+    /// - `sessions_total` = 快照行数（含无版本归属会话）
+    /// - `per_version` = 版本 → {sessions, certified}（无归属会话不入桶）
+    /// - `sessions_covered` = 锚定版本∈认证集的会话数
+    ///
+    /// `anchor_certified` 二值口径保留（兼容旧消费方）。
+    pub fn coverage_json(&self, session_versions: &[(u64, Option<String>)]) -> serde_json::Value {
         let certified = lock_poem(&self.certified);
         let anchor = lock_poem(&self.anchor_version).clone();
         let anchor_certified = anchor
             .as_ref()
             .map(|v| certified.contains(v))
             .unwrap_or(false);
-        let sessions_covered = if anchor_certified { sessions_total } else { 0 };
+        let sessions_total = session_versions.len();
+        let mut per_version: BTreeMap<String, usize> = BTreeMap::new();
+        let mut sessions_covered = 0usize;
+        for (_, version) in session_versions {
+            if let Some(v) = version {
+                *per_version.entry(v.clone()).or_insert(0) += 1;
+                if certified.contains(v) {
+                    sessions_covered += 1;
+                }
+            }
+        }
         let ratio = if sessions_total == 0 {
             None
         } else {
@@ -794,6 +1078,21 @@ impl CompanionHub {
                 m.coverage_ratio_permille.set((r * 1000.0) as i64);
             }
         }
+        let per_version_json: BTreeMap<String, serde_json::Value> = per_version
+            .into_iter()
+            .map(|(v, n)| {
+                let certified_flag = certified.contains(v.as_str());
+                let clean_flag = certified_flag && certified.is_clean(v.as_str());
+                (
+                    v,
+                    json!({
+                        "sessions": n,
+                        "certified": certified_flag,
+                        "clean": clean_flag,
+                    }),
+                )
+            })
+            .collect();
         json!({
             "certified_versions": certified.versions(),
             "certified_count": certified.len(),
@@ -802,6 +1101,7 @@ impl CompanionHub {
             "sessions_total": sessions_total,
             "sessions_covered": sessions_covered,
             "companion_coverage_ratio": ratio,
+            "per_version": per_version_json,
         })
     }
 
@@ -1252,12 +1552,12 @@ mod tests {
     #[test]
     fn certified_set_bounded_anchor_never_evicted() {
         let mut set = CertifiedSet::new(Some("anchor".to_string()));
-        set.insert("anchor", 1);
+        set.insert("anchor", 1, false);
         let mut evicted_any = false;
         for i in 0..14 {
             let v = format!("v{i}");
-            if let Some(old) = set.insert(&v, 2) {
-                assert_ne!(old, "anchor", "锚永不淘汰");
+            if let Some(old) = set.insert(&v, 2, true) {
+                assert_ne!(old.0, "anchor", "锚永不淘汰");
                 evicted_any = true;
             }
         }
@@ -1275,9 +1575,186 @@ mod tests {
     fn certified_set_bounded_without_anchor() {
         let mut set = CertifiedSet::new(None);
         for i in 0..12 {
-            set.insert(&format!("v{i}"), 1);
+            set.insert(&format!("v{i}"), 1, true);
         }
         assert_eq!(set.len(), CERTIFIED_MAX_EXTRA, "无锚认证集硬上限=最近 N 条");
+    }
+
+    /// 两级证书契约①：clean 是认证条目属性，clean 集 ⊆ certified 集（单窗口
+    /// 结构保证，无平行集合）；未认证/窗口外/淘汰版本 clean 恒 false
+    #[test]
+    fn clean_is_subset_of_certified_single_window() {
+        let mut set = CertifiedSet::new(None);
+        set.insert("clean-v", 1, true);
+        set.insert("dirty-v", 2, false);
+        assert!(set.contains("clean-v") && set.is_clean("clean-v"));
+        assert!(set.contains("dirty-v") && !set.is_clean("dirty-v"));
+        assert!(!set.is_clean("never-certified"));
+        // 淘汰后 clean/certified 同生共死（单条目删除，无残留 clean 标记）
+        for i in 0..(CERTIFIED_MAX_EXTRA + 2) {
+            set.insert(&format!("w{i}"), 3, true);
+        }
+        assert!(
+            !set.contains("clean-v") && !set.is_clean("clean-v"),
+            "淘汰版本 certified 与 clean 一并消失"
+        );
+        let clean = set.clean_versions();
+        assert!(
+            clean.iter().all(|v| set.contains(v)),
+            "clean_versions ⊆ certified_versions"
+        );
+    }
+
+    /// 覆盖呈现 per_version：逐会话版本归属统计（认证/clean 双维度），
+    /// 无归属会话计入 total 但不入桶
+    #[test]
+    fn coverage_per_version_counts_sessions_and_flags() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, Some("vA".to_string()));
+        let started = std::time::Instant::now();
+        let lint_report = |analyses: serde_json::Value| {
+            serde_json::json!({
+                "kind": "CompanionReport",
+                "ruleset_version": "v",
+                "rule_count": 3,
+                "constitution_excluded_count": 0,
+                "analyses": analyses,
+            })
+        };
+        let clean = lint_report(serde_json::json!([
+            {"service": "inference_conflict_detect", "ok": true,
+             "result": {"has_conflicts": false, "conflict_count": 0}},
+            {"service": "inference_cycle_detect", "ok": true,
+             "result": {"has_cycles": false, "cycle_count": 0}},
+            {"service": "inference_rw_extract", "ok": true, "result": {"results": []}},
+        ]));
+        let dirty = lint_report(serde_json::json!([
+            {"service": "inference_conflict_detect", "ok": true,
+             "result": {"has_conflicts": true, "conflict_count": 1, "conflicts": []}},
+            {"service": "inference_cycle_detect", "ok": true,
+             "result": {"has_cycles": false, "cycle_count": 0}},
+            {"service": "inference_rw_extract", "ok": true, "result": {"results": []}},
+        ]));
+        hub.certify_success("vA", &clean, started);
+        hub.certify_success("vB", &dirty, started);
+
+        let snap = vec![
+            (1u64, Some("vA".to_string())),
+            (2u64, Some("vA".to_string())),
+            (3u64, Some("vB".to_string())),
+            (4u64, None),
+        ];
+        let cov = hub.coverage_json(&snap);
+        assert_eq!(cov["sessions_total"], json!(4), "总数含无归属会话");
+        assert_eq!(cov["sessions_covered"], json!(3), "覆盖=锚定版本∈认证集");
+        let pv = &cov["per_version"];
+        assert_eq!(pv["vA"]["sessions"], json!(2));
+        assert_eq!(pv["vA"]["certified"], json!(true));
+        assert_eq!(pv["vA"]["clean"], json!(true), "vA 全净→clean");
+        assert_eq!(pv["vB"]["sessions"], json!(1));
+        assert_eq!(pv["vB"]["certified"], json!(true));
+        assert_eq!(pv["vB"]["clean"], json!(false), "vB 有发现→不 clean");
+        assert!(pv.get("unknown-version").is_none(), "无归属会话不入桶");
+        // 认证窗口外版本：certified=false、clean=false（窗口语义）
+        let cov2 = hub.coverage_json(&[(9u64, Some("expired".to_string()))]);
+        assert_eq!(cov2["per_version"]["expired"]["certified"], json!(false));
+        assert_eq!(cov2["per_version"]["expired"]["clean"], json!(false));
+        assert_eq!(cov2["sessions_covered"], json!(0));
+    }
+    /// 两级证书契约②：severity 判定（certify_success 输入形态）——
+    /// 有 conflict 发现→alert 不误报 clean；有 cycle 发现→warn；
+    /// rw excluded 发现不阻断 clean；全净→clean
+    #[test]
+    fn severity_mapping_conflict_alert_cycle_warn_clean() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        let report = |analyses: serde_json::Value| {
+            serde_json::json!({
+                "kind": "CompanionReport",
+                "ruleset_version": "v",
+                "rule_count": 3,
+                "constitution_excluded_count": 0,
+                "analyses": analyses,
+            })
+        };
+        let chain_payload = |seq: u64| -> serde_json::Value {
+            let chain = lock_poem(&hub.chain);
+            chain
+                .mem
+                .iter()
+                .find(|e| e["seq"] == json!(seq))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        };
+        // 带矛盾：conflict has_conflicts=true → alert 且不误报 clean
+        let started = std::time::Instant::now();
+        let with_conflict = report(serde_json::json!([
+            {"service": "inference_conflict_detect", "ok": true,
+             "result": {"has_conflicts": true, "conflict_count": 2, "conflicts": []}},
+            {"service": "inference_cycle_detect", "ok": true,
+             "result": {"has_cycles": false, "cycle_count": 0}},
+            {"service": "inference_rw_extract", "ok": true,
+             "result": {"results": []}},
+        ]));
+        hub.certify_success("v-conflict", &with_conflict, started);
+        let seq_after = lock_poem(&hub.chain).seq;
+        let entry = chain_payload(seq_after);
+        assert_eq!(entry["payload"]["severity"], json!("alert"));
+        assert_eq!(entry["payload"]["findings"]["conflicts"], json!(2));
+        assert!(
+            !lock_poem(&hub.certified).is_clean("v-conflict"),
+            "有发现不误报 clean"
+        );
+        // 带环路：cycle has_cycles=true → warn
+        let with_cycle = report(serde_json::json!([
+            {"service": "inference_conflict_detect", "ok": true,
+             "result": {"has_conflicts": false, "conflict_count": 0}},
+            {"service": "inference_cycle_detect", "ok": true,
+             "result": {"has_cycles": true, "cycle_count": 1}},
+            {"service": "inference_rw_extract", "ok": true,
+             "result": {"results": []}},
+        ]));
+        hub.certify_success("v-cycle", &with_cycle, started);
+        let seq_after = lock_poem(&hub.chain).seq;
+        let entry = chain_payload(seq_after);
+        assert_eq!(entry["payload"]["severity"], json!("warn"));
+        assert!(!lock_poem(&hub.certified).is_clean("v-cycle"));
+        // 全净（含 rw excluded 发现）→ clean（rw 弱化语义不阻断）
+        let clean_with_rw = report(serde_json::json!([
+            {"service": "inference_conflict_detect", "ok": true,
+             "result": {"has_conflicts": false, "conflict_count": 0}},
+            {"service": "inference_cycle_detect", "ok": true,
+             "result": {"has_cycles": false, "cycle_count": 0}},
+            {"service": "inference_rw_extract", "ok": true,
+             "result": {"results": [{"id": "r1", "excluded": true}, {"id": "r2", "excluded": false}]}},
+        ]));
+        hub.certify_success("v-clean", &clean_with_rw, started);
+        let seq_after = lock_poem(&hub.chain).seq;
+        let entry = chain_payload(seq_after);
+        assert_eq!(entry["payload"]["severity"], json!("clean"));
+        assert_eq!(entry["payload"]["findings"]["rw_excluded"], json!(1));
+        // 服务失败 → 不确定性下限 warn（阻断 clean）
+        let with_failure = report(serde_json::json!([
+            {"service": "inference_conflict_detect", "ok": false, "error": "boom"},
+        ]));
+        hub.certify_success("v-failed", &with_failure, started);
+        let seq_after = lock_poem(&hub.chain).seq;
+        let entry = chain_payload(seq_after);
+        assert_eq!(entry["payload"]["severity"], json!("warn"));
+        // clean_versions ⊆ certified_versions 且逐项一致
+        let status = hub.status_json();
+        let certified: Vec<String> = status["certified_versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        for v in status["clean_versions"].as_array().unwrap() {
+            assert!(certified.contains(&v.as_str().unwrap().to_string()));
+        }
+        assert_eq!(
+            status["clean_versions"],
+            json!(["v-clean"]),
+            "仅全净版本入 clean 集"
+        );
     }
 
     #[test]

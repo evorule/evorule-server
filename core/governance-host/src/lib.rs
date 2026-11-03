@@ -9,7 +9,7 @@
 //! 从 governance 0.10.0 fork 出 `session`（SessionManager）与 `auditor`
 //! （Auditor）两个模块，承接原 vendored patch 独有的三族服务端能力：
 //!
-//! - **G6 规则集锚定**：`ruleset_version` 一次性锚点写入审计链
+//! - **G6 规则集锚定**：`ruleset_version` 动态锚点（可覆盖写，reload 换锚）
 //!   （`__ruleset__.version` 哨兵事实，FactId `u64::MAX - 1`）
 //! - **rehydrate 崩溃复活**：同 sid WAL 重放复活会话
 //!   （`rehydrate_session_from_wal`，FactId 从历史最大值续跑防重号）
