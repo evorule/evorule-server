@@ -7956,12 +7956,16 @@ async fn session_state(
 
     params(
         ("id" = u64, Path, description = "会话 ID"),
-        ("include_content" = Option<bool>, Query, description = "F5: 为 true 时每条审计条目附加 content_json（完整 Fact 内容 JSON，含 IoRequest params / IoResponse result 等）；默认 false 保持轻量响应")
+        ("from_fact" = Option<u64>, Query, description = "起始 fact_id（含），缺省从头；仅摘要态生效"),
+        ("to_fact" = Option<u64>, Query, description = "截止 fact_id（含），缺省到尾；仅摘要态生效"),
+        ("limit" = Option<usize>, Query, description = "摘要态返回条数上限，默认 200、上限 10000；仅摘要态生效"),
+        ("full" = Option<bool>, Query, description = "为 true 时回全量报告（不筛不裁，含 fact 全文；向后兼容逃生口）。默认 false=摘要态：条目仅含哈希/因果元数据（不含 fact 全文），按 from_fact/to_fact 过滤后取前 limit 条，并附 total_in_range/returned/truncated 分页元信息"),
+        ("include_content" = Option<bool>, Query, description = "F5: 为 true 时每条审计条目附加 content_json（完整 Fact 内容 JSON，含 IoRequest params / IoResponse result 等）；仅 full=true 时生效")
     ),
 
     responses(
 
-        (status = 200, description = "审计报告（含 fact_count / last_hash / verified / entries）", body = AuditResponse),
+        (status = 200, description = "审计报告（含 fact_count / last_hash / verified / entries；摘要态另含 total_in_range / returned / truncated）", body = AuditResponse),
 
         (status = 404, description = "会话不存在")
 
@@ -7995,24 +7999,6 @@ async fn session_audit(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // F5（audit-chain 专项 2026-08-28）：按需注入完整 Fact 内容。
-    // Auditor 自持条目只含哈希/因果元数据（P1-F4 设计），不存内容——
-    // 外部审计者此前无法从 API 重建"LLM 看到什么/回了什么"（P3-N1）。
-    // include_content=true 时从 FactsLog 内存投影按 fact_id 关联，
-    // 注入 content_json（Fact::to_json 完整内容）。默认关闭，保持轻量。
-
-    let content_index: std::collections::BTreeMap<u64, serde_json::Value> =
-        if query.include_content.unwrap_or(false) {
-            session
-                .facts_log
-                .history()
-                .iter()
-                .map(|f| (f.id().0, tcb_to_serde(&f.to_json())))
-                .collect()
-        } else {
-            std::collections::BTreeMap::new()
-        };
-
     // 重新映射字段名以符合 API 文档规范
 
     let mut normalized = serde_json::Map::new();
@@ -8042,32 +8028,85 @@ async fn session_audit(
         .cloned()
         .unwrap_or(serde_json::json!([]));
 
-    if !content_index.is_empty() {
-        if let Some(arr) = entries.as_array_mut() {
-            for entry in arr.iter_mut() {
-                if let Some(fid) = entry.get("fact_id").and_then(|v| v.as_u64()) {
-                    if let Some(content) = content_index.get(&fid) {
-                        if let Some(obj) = entry.as_object_mut() {
-                            obj.insert("content_json".into(), content.clone());
+    if query.full.unwrap_or(false) {
+        // 全量态（向后兼容逃生口）：不筛不裁，保持既有行为。
+        // F5（audit-chain 专项 2026-08-28）：include_content=true 时从
+        // FactsLog 内存投影按 fact_id 关联，注入 content_json
+        // （Fact::to_json 完整内容）。仅全量态生效。
+        if query.include_content.unwrap_or(false) {
+            let content_index: std::collections::BTreeMap<u64, serde_json::Value> = session
+                .facts_log
+                .history()
+                .iter()
+                .map(|f| (f.id().0, tcb_to_serde(&f.to_json())))
+                .collect();
+            if !content_index.is_empty() {
+                if let Some(arr) = entries.as_array_mut() {
+                    for entry in arr.iter_mut() {
+                        if let Some(fid) = entry.get("fact_id").and_then(|v| v.as_u64()) {
+                            if let Some(content) = content_index.get(&fid) {
+                                if let Some(obj) = entry.as_object_mut() {
+                                    obj.insert("content_json".into(), content.clone());
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        normalized.insert("entries".into(), entries);
+    } else {
+        // 摘要态（默认）：条目仅含哈希/因果元数据（去 fact 全文），
+        // 按 [from_fact, to_fact]（含端点）过滤后取前 limit 条；
+        // 附 total_in_range/returned/truncated 分页元信息——
+        // 调用方以 returned 末条 fact_id+1 作下页 from_fact 翻页。
+        let (from_fact, to_fact) = (query.from_fact, query.to_fact);
+        let in_range = |e: &serde_json::Value| {
+            e.get("fact_id").and_then(|v| v.as_u64()).is_some_and(|fid| {
+                from_fact.map_or(true, |lo| fid >= lo) && to_fact.map_or(true, |hi| fid <= hi)
+            })
+        };
+        let limit = query.limit.unwrap_or(200).clamp(1, 10000);
+        if let Some(arr) = entries.as_array_mut() {
+            let total_in_range = arr.iter().filter(|e| in_range(e)).count();
+            arr.retain(|e| in_range(e));
+            arr.truncate(limit);
+            for entry in arr.iter_mut() {
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.remove("fact");
+                }
+            }
+            let returned = arr.len();
+            normalized.insert("total_in_range".into(), serde_json::json!(total_in_range));
+            normalized.insert("returned".into(), serde_json::json!(returned));
+            normalized.insert("truncated".into(), serde_json::json!(returned < total_in_range));
+        }
+        normalized.insert("entries".into(), entries);
     }
-
-    normalized.insert("entries".into(), entries);
 
     Ok(Json(serde_json::Value::Object(normalized)))
 }
 
-/// F5：审计报告查询参数
+/// 审计报告查询参数（F5 include_content + 分页/摘要族）
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 
 pub struct AuditReportQuery {
-    /// 为 true 时每条审计条目附加 content_json（完整 Fact 内容）
+    /// 为 true 时每条审计条目附加 content_json（完整 Fact 内容）。
+    /// 活跃会话端点仅 full=true 时生效；archive 端点独立生效（无分页语义）。
     #[serde(default)]
     pub include_content: Option<bool>,
+    /// 起始 fact_id（含），缺省从头；仅摘要态生效
+    #[serde(default)]
+    pub from_fact: Option<u64>,
+    /// 截止 fact_id（含），缺省到尾；仅摘要态生效
+    #[serde(default)]
+    pub to_fact: Option<u64>,
+    /// 摘要态返回条数上限（默认 200，钳制到 [1, 10000]）
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// 为 true 时回全量报告（不筛不裁，向后兼容逃生口）
+    #[serde(default)]
+    pub full: Option<bool>,
 }
 
 /// 审计档案会话列表 handler
@@ -16911,6 +16950,199 @@ mod tests {
         (status, json)
     }
 
+    // --- 审计报告分页/摘要（session_audit 摘要态/全量态） ---
+
+    /// 摘要态（默认）：去 fact 全文、from_fact/to_fact 过滤、limit 截断、
+    /// 分页元信息（total_in_range/returned/truncated）；full=true 回全量
+    /// （含 fact 全文，向后兼容逃生口）；include_content 仅全量态生效。
+    #[tokio::test]
+    async fn audit_report_summary_paging_and_full_escape() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        let (status, body) = oneshot_json(router.clone(), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let sid = body["session_id"].as_u64().unwrap();
+
+        // 造 ≥2 条审计条目（两条 noop 指令；command 经 channel 异步进
+        // reactor，与 F5 测试同款轮询等待条目出现）
+        for _ in 0..2 {
+            let (status, body) = oneshot_json(
+                router.clone(),
+                "POST",
+                &format!("/api/sessions/{sid}/command"),
+                Some(r#"{"instruction":{"type":"noop"}}"#),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "基线命令应成功: {body}");
+        }
+
+        let mut summary = serde_json::Value::Null;
+        for _ in 0..40 {
+            let (status, s) = oneshot_json(
+                router.clone(),
+                "GET",
+                &format!("/api/sessions/{sid}/audit"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            summary = s;
+            if summary["entries"]
+                .as_array()
+                .is_some_and(|a| a.len() >= 2)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let entries = summary["entries"]
+            .as_array()
+            .expect("摘要态应有条目（轮询后）");
+        assert!(entries.len() >= 2, "前置：至少 2 条审计条目: {summary}");
+
+        // 全量态基准：含 fact 全文、无分页元信息
+        let (status, full) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/audit?full=true"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let full_entries = full["entries"].as_array().expect("全量态应有条目");
+        assert!(full_entries.len() >= 2, "前置：至少 2 条审计条目: {full}");
+        assert!(
+            full_entries.iter().all(|e| e.get("fact").is_some()),
+            "全量态条目应含 fact 全文: {full_entries:?}"
+        );
+        assert!(full.get("total_in_range").is_none(), "全量态无分页元信息");
+
+        // 摘要态（默认）：去 fact 全文 + 分页元信息齐全
+        let (status, summary) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/audit"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let entries = summary["entries"].as_array().expect("摘要态应有条目");
+        assert_eq!(
+            entries.len(),
+            full_entries.len(),
+            "默认 limit=200 应容纳全部条目"
+        );
+        assert!(
+            entries.iter().all(|e| e.get("fact").is_none()),
+            "摘要态条目不应含 fact 全文: {entries:?}"
+        );
+        assert!(entries.iter().all(|e| e.get("fact_id").is_some()));
+        assert_eq!(
+            summary["total_in_range"],
+            serde_json::json!(full_entries.len())
+        );
+        assert_eq!(
+            summary["returned"],
+            serde_json::json!(full_entries.len())
+        );
+        assert_eq!(summary["truncated"], serde_json::json!(false));
+        assert_eq!(summary["fact_count"], serde_json::json!(full_entries.len()));
+
+        // fact_id 升序基准
+        let mut ids: Vec<u64> = entries
+            .iter()
+            .filter_map(|e| e["fact_id"].as_u64())
+            .collect();
+        ids.sort_unstable();
+        assert!(ids.len() >= 2);
+
+        // from_fact 过滤：从次小 id 起（含端点）
+        let (status, page) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/audit?from_fact={}", ids[1]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let p = page["entries"].as_array().unwrap();
+        assert!(!p.is_empty());
+        assert!(p.iter().all(|e| e["fact_id"].as_u64().unwrap() >= ids[1]));
+        assert_eq!(
+            page["total_in_range"],
+            serde_json::json!(ids.len() - ids.iter().filter(|i| **i < ids[1]).count())
+        );
+
+        // to_fact 过滤：只到最小 id（含端点）
+        let (status, head) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/audit?to_fact={}", ids[0]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            head["total_in_range"],
+            serde_json::json!(ids.iter().filter(|i| **i <= ids[0]).count())
+        );
+
+        // limit 截断：returned=1 + truncated=true
+        let (status, lim) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/audit?limit=1"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lim["returned"], serde_json::json!(1));
+        assert_eq!(lim["truncated"], serde_json::json!(true));
+        assert_eq!(lim["entries"].as_array().unwrap().len(), 1);
+
+        // limit=0 钳制到 1（不报错）
+        let (status, lim0) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/audit?limit=0"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lim0["returned"], serde_json::json!(1));
+
+        // include_content 仅全量态生效：摘要态带 include_content 也不注入
+        let (status, s2) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/audit?include_content=true"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(s2["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e.get("content_json").is_none()));
+
+        // 全量态 + include_content：content_json 注入
+        let (status, f2) = oneshot_json(
+            router.clone(),
+            "GET",
+            &format!("/api/sessions/{sid}/audit?full=true&include_content=true"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(f2["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.get("content_json").is_some()));
+    }
+
     // --- 会话级干预端点（pause/heartbeat/gc） ---
 
     /// pause 准入闸：paused 会话拒新 Command（SESSION_PAUSED），resume 恢复；
@@ -18355,9 +18587,10 @@ mod tests {
             "默认响应不得包含 content_json"
         );
 
-        // 4. include_content=true：entries 附 content_json，且能找到提交的命令内容
+        // 4. full=true&include_content=true：entries 附 content_json，且能找到提交的命令内容
+        // （include_content 仅全量态生效——分页/摘要改造后摘要态不再注入内容）
 
-        let uri = format!("/api/sessions/{session_id}/audit?include_content=true");
+        let uri = format!("/api/sessions/{session_id}/audit?full=true&include_content=true");
 
         let (status, json) = oneshot_json(make_test_router(&state), "GET", &uri, None).await;
 
