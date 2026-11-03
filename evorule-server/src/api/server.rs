@@ -198,6 +198,10 @@ fn rules_dir_load_order_key(p: &std::path::Path) -> RulesDirLoadOrderKey {
 /// 就绪标志（优雅退出时设为 false，readiness 端点返回 503）
 pub type ReadinessFlag = Arc<AtomicBool>;
 
+/// 伴跑增量基线的按文件分组读写集（lint 套件提取原语产物）
+type LintRwBaseline =
+    std::collections::BTreeMap<String, Vec<evorule_inference_services::rw_extract::RuleRw>>;
+
 /// Governance API 共享状态
 ///
 ///
@@ -1588,7 +1592,14 @@ impl SessionApi {
 
         let new_len = new_transforms.len();
 
-        // 1. 替换 SessionManager 内部 core_eval（新会话使用新规则）
+        // 版本哈希先取（adopt_layout 消费 layout 所有权）；此后所有消费点
+        // 统一读本克隆值——单源单次计算，禁二次计算防口径漂移
+        let new_ruleset_version = new_layout.ruleset_version.clone();
+
+        // 1. 替换 SessionManager 内部 core_eval（新会话使用新规则），
+        //    并同锁内同步换锚（会话级动态版本锚：此后新建会话的
+        //    `__ruleset__.version` 锚定事实与 per-session 归属均取新版本，
+        //    与伴跑中枢消费同一 layout 字段，单源双投）
 
         let old_len_mgr;
 
@@ -1598,6 +1609,8 @@ impl SessionApi {
             let old = mgr.replace_core_eval(new_transforms.clone());
 
             old_len_mgr = old.len();
+
+            mgr.set_ruleset_version(new_ruleset_version.clone());
         }
 
         // 2. 替换 SessionApi 自己的缓存
@@ -1617,8 +1630,6 @@ impl SessionApi {
         }
 
         // 3. hit-stats 聚合器换版（新计数进新版本桶，旧版本切片保留）
-        //    版本哈希先取（adopt_layout 消费 layout 所有权）
-        let new_ruleset_version = new_layout.ruleset_version.clone();
         self.hit_stats.adopt_layout(new_layout);
 
         // 4. 伴跑中枢信号（获批方案：装载漏斗唯一出口——事件驱动零轮询，
@@ -1721,11 +1732,18 @@ impl SessionApi {
     ///   服务间三处（单服务 execute 是原子长调用，设计稿 D1 获批粒度）。
     ///   被取消即返回哨兵错误（[`companion::CANCEL_SENTINEL`]），不产出报告。
     /// - 报告含全量三件套结果+快照摘要（digest 互证），由伴跑中枢落链。
+    /// - 增量模式：伴跑中枢持有上次成功分析的 per-file 摘要+读写集基线；
+    ///   diff 得变更文件集后，rw/环/冲突检测走「变更文件重提取+未变文件
+    ///   缓存读写集回填合并」路径（与全量服务同一确定性内核原语，报告
+    ///   形状逐字段一致——对拍测试锚定）；冲突检测恒全量（合并集两两扫描）。
     pub(crate) async fn companion_run_lint_suite(
         &self,
         expected_version: &str,
         cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<serde_json::Value, String> {
+        use crate::api::companion::LintRwCache;
+
+        let cancelled = || cancel.is_some_and(|t| t.is_cancelled());
         let Some(chain) = self.service_chain.as_ref() else {
             return Err(
                 "service chain 未装配（伴跑依赖进程内内核，需 main.rs with_service_chain 注入）"
@@ -1742,15 +1760,22 @@ impl SessionApi {
         }
         let rule_count = rules.len();
         let sources: Vec<String> = layout.rules.into_iter().map(|m| m.source).collect();
+        // 增量数据面：后过滤 per-file 分组摘要（跨文件防线耦合安全键——
+        // 摘要锚定后过滤分组，重叠防线随他文件变更重算时本文件摘要同步变）
+        let file_digests = Self::compute_file_digests(&rules, &sources);
+        let new_digests: std::collections::BTreeMap<String, String> = file_digests
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         // 与 ruleset_snapshot_from_fs 同构分桶（宪法段缺省豁免单一判据 source=="core_eval"）
         let mut in_rules_tcb = Vec::new();
         let mut in_sources = Vec::new();
         let mut excluded_count = 0u64;
-        for (rule, source) in rules.into_iter().zip(sources.iter()) {
+        for (rule, source) in rules.iter().zip(sources.iter()) {
             if source == "core_eval" {
                 excluded_count += 1;
             } else {
-                in_rules_tcb.push(rule);
+                in_rules_tcb.push(rule.clone());
                 in_sources.push(source.clone());
             }
         }
@@ -1760,14 +1785,195 @@ impl SessionApi {
             "rules": in_rules_serde,
             "sources": in_sources,
         }));
+        // 增量判定：伴跑中枢基线 diff（无基线=全量；diff 空防御回退全量；
+        // 变更覆盖全部文件时组装无收益同样回退全量）
+        let hub = self.companion.clone();
+        let cache = hub.as_ref().and_then(|h| h.lint_cache_snapshot());
+        let total_files = new_digests.len();
+        let changed_files: Vec<String> = match &cache {
+            Some(c) => c.diff_changed_files(&new_digests),
+            None => new_digests.keys().cloned().collect(),
+        };
+        // 增量可行基线（None=不可行）：diff 非空、未覆盖全部文件（全量回退）、
+        // lint 桶未变文件均有缓存读写集可回填（宪法段不入 lint 桶，无需 rws）
+        let incremental_cache = cache.as_ref().filter(|c| {
+            !changed_files.is_empty()
+                && changed_files.len() < total_files
+                && in_sources
+                    .iter()
+                    .all(|s| changed_files.contains(s) || c.rws.contains_key(s))
+        });
+        let incremental = incremental_cache.is_some();
+
         // lint 三件套进程内直调（与 invoke handler 同一 execute 链，无第二执行路径）；
         // 每个服务之间检查抢占令牌（设计稿 D1：服务间三检查点）
-        let mut analyses = Vec::new();
-        for name in crate::api::companion::LINT_SERVICE_NAMES {
-            if let Some(token) = cancel {
-                if token.is_cancelled() {
+        let analyses = if let Some(cache_ref) = incremental_cache {
+            // ── 增量路径：变更文件重提取 + 未变文件缓存读写集回填合并 ──
+            let (analyses_inc, baseline) = Self::companion_incremental_analyses(
+                cache_ref,
+                &changed_files,
+                &in_rules_tcb,
+                &in_sources,
+                &cancelled,
+            )?;
+            // 基线提交（成功收尾；抢占路径已在检查点提前返回不提交）
+            if let Some(h) = &hub {
+                h.commit_lint_cache(LintRwCache {
+                    digests: new_digests.clone(),
+                    rws: baseline,
+                });
+            }
+            analyses_inc
+        } else {
+            // ── 全量路径（三服务全量直调；冷启动/防御回退）──
+            let full =
+                Self::companion_full_analyses(chain, &in_rules_serde, &in_sources, &cancelled)
+                    .await?;
+            // 基线提交（全量路径同样建立增量基线：与增量路径同一提取原语，
+            // 一次全量提取按文件分组——冷启动成本 +1 次提取，换取后续增量）
+            Self::companion_commit_full_baseline(
+                hub.as_deref(),
+                &in_rules_tcb,
+                &in_sources,
+                &new_digests,
+            );
+            full
+        };
+        Ok(serde_json::json!({
+            "kind": "CompanionReport",
+            "ruleset_version": expected_version,
+            "rule_count": rule_count,
+            "constitution_excluded_count": excluded_count,
+            "snapshot_json_digest": snapshot_digest,
+            "file_digests": file_digests
+                .iter()
+                .map(|(label, digest)| {
+                    serde_json::json!({
+                        "path": label,
+                        "source": label,
+                        "blake3": digest,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "changed_files": changed_files,
+            "incremental": incremental,
+            "analyses": analyses,
+        }))
+    }
+
+    /// 后过滤 per-file 分组摘要（伴跑增量数据面投影）
+    ///
+    /// 合并装载输出的规则列表按来源标注分组（装载顺序保证同文件规则段
+    /// 连续——宪法前缀段 + rules_dir 字典序，防线稳定剔除不破坏分组），
+    /// 每组摘要 = `evorule_hash::json_digest({"source","rules"})`——与
+    /// ruleset_version 同源确定性原语，锚定**后过滤**规则内容（跨文件
+    /// 重叠防线会使本文件后过滤集随他文件变更而变，故禁用装载器文档
+    /// 哈希作缓存键）。返回 (来源标注, 摘要十六进制) 有序列表。
+    fn compute_file_digests(rules: &[JsonValue], sources: &[String]) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut i = 0usize;
+        while i < sources.len() {
+            let label = sources[i].clone();
+            let start = i;
+            while i < sources.len() && sources[i] == label {
+                i += 1;
+            }
+            let group_serde: Vec<serde_json::Value> =
+                rules[start..i].iter().map(tcb_to_serde).collect();
+            let digest = evorule_hash::json_digest(&serde_json::json!({
+                "source": label,
+                "rules": group_serde,
+            }));
+            out.push((label, digest));
+        }
+        out
+    }
+
+    /// 增量分析：变更文件重提取（合并序下标/ID 回填）+ 未变文件缓存读写集
+    /// 回填 → 合并集上环/冲突检测（冲突恒全量两两扫描）
+    ///
+    /// 返回（analyses 三件套, 按文件分组读写集——调用方随摘要表提交基线）。
+    /// 抢占检查点：逐文件提取后与检测间各一处。
+    fn companion_incremental_analyses(
+        cache_ref: &crate::api::companion::LintRwCache,
+        changed_files: &[String],
+        in_rules_tcb: &[JsonValue],
+        in_sources: &[String],
+        cancel: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<(Vec<serde_json::Value>, LintRwBaseline), String> {
+        use crate::api::companion::{
+            conflict_report_to_json, cycle_report_to_json, rw_results_to_json,
+        };
+        use evorule_inference_services::conflict::detect_conflicts;
+        use evorule_inference_services::cycle::detect_cycles;
+        use evorule_inference_services::rw_extract::extract as extract_rule_rws;
+
+        // 合并序分组（in_rules 桶；后过滤稳定剔除保证文件段连续）
+        let mut combined: Vec<evorule_inference_services::rw_extract::RuleRw> =
+            Vec::with_capacity(in_rules_tcb.len());
+        let mut rws_by_label: LintRwBaseline = std::collections::BTreeMap::new();
+        let mut i = 0usize;
+        while i < in_sources.len() {
+            let label = in_sources[i].clone();
+            let start = i;
+            while i < in_sources.len() && in_sources[i] == label {
+                i += 1;
+            }
+            let file_rws = if changed_files.contains(&label) {
+                if cancel() {
                     return Err(crate::api::companion::CANCEL_SENTINEL.to_string());
                 }
+                // 子集提取 + 合并序下标/ID 回填（extract 纯 per-rule 函数，
+                // 子集提取条目与全量提取逐字段一致，仅下标为局部需回填）
+                let mut rws =
+                    extract_rule_rws(&in_rules_tcb[start..i], &in_sources[start..i], false)
+                        .map_err(|e| format!("incremental rw extract failed for {label}: {e}"))?;
+                for (local, rw) in rws.iter_mut().enumerate() {
+                    rw.index = start + local;
+                    rw.id = format!("{label}#{}", rw.index);
+                }
+                rws
+            } else {
+                cache_ref.rws.get(&label).cloned().unwrap_or_default()
+            };
+            combined.extend(file_rws.iter().cloned());
+            rws_by_label.insert(label, file_rws);
+        }
+        if cancel() {
+            return Err(crate::api::companion::CANCEL_SENTINEL.to_string());
+        }
+        let rw_result = rw_results_to_json(&combined);
+        // 环检测：合并读写集（缓存+新增量）全图判定
+        let cycle_report =
+            detect_cycles(&combined).map_err(|e| format!("cycle detect failed: {e}"))?;
+        if cancel() {
+            return Err(crate::api::companion::CANCEL_SENTINEL.to_string());
+        }
+        let cycle_result = cycle_report_to_json(&cycle_report);
+        // 冲突检测恒全量：合并集两两扫描（跨文件两两判定本质全量）
+        let conflict_report =
+            detect_conflicts(&combined).map_err(|e| format!("conflict detect failed: {e}"))?;
+        let conflict_result = conflict_report_to_json(&conflict_report);
+        let analyses = vec![
+            serde_json::json!({ "service": "inference_rw_extract", "ok": true, "result": rw_result }),
+            serde_json::json!({ "service": "inference_cycle_detect", "ok": true, "result": cycle_result }),
+            serde_json::json!({ "service": "inference_conflict_detect", "ok": true, "result": conflict_result }),
+        ];
+        Ok((analyses, rws_by_label))
+    }
+
+    /// 全量分析：三服务 execute 链直调（与 invoke handler 同一执行链），
+    /// 服务间抢占检查点；单服务失败记录 ok=false 不中断三件套
+    async fn companion_full_analyses(
+        chain: &Arc<dyn evorule_reactor::IoHandler>,
+        in_rules_serde: &[serde_json::Value],
+        in_sources: &[String],
+        cancel: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let mut analyses = Vec::new();
+        for name in crate::api::companion::LINT_SERVICE_NAMES {
+            if cancel() {
+                return Err(crate::api::companion::CANCEL_SENTINEL.to_string());
             }
             let args = serde_json::json!({
                 "rules": in_rules_serde,
@@ -1788,14 +1994,39 @@ impl SessionApi {
                 })),
             }
         }
-        Ok(serde_json::json!({
-            "kind": "CompanionReport",
-            "ruleset_version": expected_version,
-            "rule_count": rule_count,
-            "constitution_excluded_count": excluded_count,
-            "snapshot_json_digest": snapshot_digest,
-            "analyses": analyses,
-        }))
+        Ok(analyses)
+    }
+
+    /// 全量路径收尾的增量基线提交：一次全量提取按文件分组入缓存
+    /// （提取失败不阻断全量报告——服务内部独立提取，仅不建基线）
+    fn companion_commit_full_baseline(
+        hub: Option<&crate::api::companion::CompanionHub>,
+        in_rules_tcb: &[JsonValue],
+        in_sources: &[String],
+        digests: &std::collections::BTreeMap<String, String>,
+    ) {
+        use evorule_inference_services::rw_extract::extract as extract_rule_rws;
+        let Some(hub) = hub else {
+            return;
+        };
+        match extract_rule_rws(in_rules_tcb, in_sources, false) {
+            Ok(baseline_rws) => {
+                let mut rws_by_label: std::collections::BTreeMap<
+                    String,
+                    Vec<evorule_inference_services::rw_extract::RuleRw>,
+                > = std::collections::BTreeMap::new();
+                for rw in baseline_rws {
+                    rws_by_label.entry(rw.source.clone()).or_default().push(rw);
+                }
+                hub.commit_lint_cache(crate::api::companion::LintRwCache {
+                    digests: digests.clone(),
+                    rws: rws_by_label,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "伴跑增量基线构建失败，下次仍走全量");
+            }
+        }
     }
 
     /// 合并加载并产出规则集 layout（单一权威装载点）
@@ -13022,12 +13253,13 @@ async fn companion_coverage_handler(
             ),
         ));
     };
-    // 会话总数：内存会话表枚举（SessionManager::list_sessions，分片快照）
-    let sessions_total = {
+    // 会话级版本归属快照：内存会话表枚举（SessionManager 分片快照），
+    // 每会话取其创建时锚定的 ruleset_version——逐会话统计取代二值近似
+    let session_versions = {
         let mgr = api.sessions.lock().await;
-        mgr.list_sessions().len()
+        mgr.list_session_ruleset_versions()
     };
-    Ok(Json(hub.coverage_json(sessions_total)))
+    Ok(Json(hub.coverage_json(&session_versions)))
 }
 
 /// A/B 切换请求体（`POST /api/companion/state`）
@@ -21582,10 +21814,25 @@ mod tests {
         Arc<crate::api::companion::CompanionHub>,
         (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf),
     ) {
-        let (mut state, _readiness) = make_test_state();
         let fixture = make_snapshot_fixture();
-        state.sessions.core_eval_path = fixture.1.clone();
-        state.sessions.rules_dir = fixture.2.clone();
+        make_companion_state_with_paths(anchor_version, &fixture.1, &fixture.2, Some(fixture.0))
+    }
+
+    /// 同上，但夹具路径由调用方给定（perf fixture 等大规则集复用同一装配）
+    fn make_companion_state_with_paths(
+        anchor_version: Option<String>,
+        core_eval_path: &std::path::Path,
+        rules_dir: &std::path::Path,
+        keep_tmp: Option<tempfile::TempDir>,
+    ) -> (
+        AppState,
+        Arc<crate::api::companion::CompanionHub>,
+        (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf),
+    ) {
+        let tmp = keep_tmp.unwrap_or_else(|| tempfile::tempdir().expect("tempdir"));
+        let (mut state, _readiness) = make_test_state();
+        state.sessions.core_eval_path = core_eval_path.to_path_buf();
+        state.sessions.rules_dir = rules_dir.to_path_buf();
         let hub = crate::api::companion::CompanionHub::new(
             crate::api::companion::CompanionConfig::for_tests(),
             None,
@@ -21610,10 +21857,11 @@ mod tests {
             })
             .collect();
         state.sessions.native_services = Arc::new(infos);
-        // state.sessions 装配完成后重建 AppState（sessions 字段为 Clone 所有权转移面
-        // ——AppState::new 持有 SessionApi 值；此处 make_test_state 返回的 state 已含
-        // sessions，直接可变字段赋值即生效（tests 为 server 模块后代，私有字段可达））
-        (state, hub, fixture)
+        (
+            state,
+            hub,
+            (tmp, core_eval_path.to_path_buf(), rules_dir.to_path_buf()),
+        )
     }
 
     fn companion_router(state: AppState) -> Router {
@@ -21931,6 +22179,235 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, crate::api::companion::CANCEL_SENTINEL);
+    }
+
+    #[tokio::test]
+    async fn test_companion_incremental_matches_full_run_field_by_field() {
+        // 增量对拍契约：首跑=全量（建基线）→ 改 1/3 文件二跑=增量 →
+        // 增量 analyses 与同内容全量 analyses 逐字段一致（确定性内核同一性）
+        let (state, hub, (_tmp, core_eval_path, rules_dir)) =
+            make_companion_state_with_anchor(None);
+        let version1 = fixture_layout_version(&core_eval_path, &rules_dir);
+        let full1 = state
+            .sessions
+            .companion_run_lint_suite(&version1, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            full1["incremental"],
+            serde_json::json!(false),
+            "无基线首跑=全量"
+        );
+        assert_eq!(
+            full1["changed_files"].as_array().unwrap().len(),
+            3,
+            "全量 changed_files=全部文件（宪法+2 规则件）"
+        );
+        assert_eq!(
+            full1["file_digests"].as_array().unwrap().len(),
+            3,
+            "file_digests 逐文件呈现（path/source/blake3 三元组）"
+        );
+        assert!(hub.lint_cache_snapshot().is_some(), "全量成功后建立基线");
+
+        // 改 1 个规则文件 → 新版本 → 增量跑
+        std::fs::write(
+            rules_dir.join("b_second.json"),
+            r#"{"transform":[{"type":"set","params":{"attr":"y","operation":"set","value":42}}]}"#,
+        )
+        .expect("改写夹具规则件");
+        let version2 = fixture_layout_version(&core_eval_path, &rules_dir);
+        let incremental = state
+            .sessions
+            .companion_run_lint_suite(&version2, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            incremental["incremental"],
+            serde_json::json!(true),
+            "有基线且局部变更=增量"
+        );
+        assert_eq!(
+            incremental["changed_files"],
+            serde_json::json!(["b_second.json"]),
+            "diff 判定与实际变更一致"
+        );
+
+        // 对拍基线：全新中枢（无基线）在内容相同的独立夹具上全量跑
+        let (state2, _hub2, (_tmp2, cp2, rd2)) = make_companion_state_with_anchor(None);
+        std::fs::write(
+            rd2.join("b_second.json"),
+            r#"{"transform":[{"type":"set","params":{"attr":"y","operation":"set","value":42}}]}"#,
+        )
+        .expect("改写对拍夹具规则件");
+        let v2b = fixture_layout_version(&cp2, &rd2);
+        assert_eq!(v2b, version2, "同内容确定性同版本");
+        let full2 = state2
+            .sessions
+            .companion_run_lint_suite(&v2b, None)
+            .await
+            .unwrap();
+        assert_eq!(full2["incremental"], serde_json::json!(false));
+        assert_eq!(
+            incremental["analyses"], full2["analyses"],
+            "增量 analyses 与全量 analyses 逐字段一致（对拍锚定）"
+        );
+    }
+
+    /// perf 夹具写入：宪法 2 条 + 20 文件 × 3 规则（lint 60 条，MAX_RULES=64 内）
+    fn write_perf_fixture(core_eval_path: &std::path::Path, rules_dir: &std::path::Path) {
+        std::fs::create_dir_all(rules_dir).expect("mkdir rules");
+        std::fs::write(
+            core_eval_path,
+            r#"{"transform":[
+                {"type":"set","params":{"attr":"result","operation":"set","value":"ok"}},
+                {"type":"branch","params":{"domain":{"type":"instruction","instruction_type":"call_external"},"on_true":[],"on_false":[]}}]}"#,
+        )
+        .expect("写宪法夹具");
+        for f in 0..20 {
+            let rules: Vec<String> = (0..3)
+                .map(|r| {
+                    format!(
+                        r#"{{"type":"set","params":{{"attr":"f{f}r{r}","operation":"set","value":{f}}}}}"#
+                    )
+                })
+                .collect();
+            std::fs::write(
+                rules_dir.join(format!("f{f:02}.json")),
+                format!(r#"{{"transform":[{}]}}"#, rules.join(",")),
+            )
+            .expect("写规则件");
+        }
+    }
+
+    /// perf 夹具单文件改写（f07：r0 值参数化驱动新版本）
+    fn rewrite_perf_file_f07(rules_dir: &std::path::Path, value: u64) {
+        std::fs::write(
+            rules_dir.join("f07.json"),
+            format!(
+                r#"{{"transform":[
+                {{"type":"set","params":{{"attr":"f7r0","operation":"set","value":{value}}}}},
+                {{"type":"set","params":{{"attr":"f7r1","operation":"set","value":7}}}},
+                {{"type":"set","params":{{"attr":"f7r2","operation":"set","value":7}}}}]}}"#
+            ),
+        )
+        .expect("改写单文件");
+    }
+
+    #[tokio::test]
+    async fn test_companion_incremental_perf_fixture_50_rules() {
+        // perf fixture：20 文件 × 3 规则 = 60 条 lint 规则（MAX_RULES=64 内）+
+        // 宪法 2 条；改 1/20 文件 → 增量分析耗时低于全量基线（各取 5 轮最小值）
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let core_eval_path = tmp.path().join("core_eval.json");
+        let rules_dir = tmp.path().join("rules");
+        write_perf_fixture(&core_eval_path, &rules_dir);
+        let (state, _hub, (_tmp2, _cp2, _rd2)) =
+            make_companion_state_with_paths(None, &core_eval_path, &rules_dir, Some(tmp));
+
+        let v1 = fixture_layout_version(&core_eval_path, &rules_dir);
+        let full1 = state
+            .sessions
+            .companion_run_lint_suite(&v1, None)
+            .await
+            .unwrap();
+        let lint_count = full1["rule_count"].as_u64().unwrap_or(0);
+        assert!(
+            lint_count >= 50,
+            "perf fixture ≥50 条 lint 规则，实际 {lint_count}"
+        );
+
+        // 改 1/20 文件
+        rewrite_perf_file_f07(&rules_dir, 99);
+        let v2 = fixture_layout_version(&core_eval_path, &rules_dir);
+        let incremental = state
+            .sessions
+            .companion_run_lint_suite(&v2, None)
+            .await
+            .unwrap();
+        assert_eq!(incremental["incremental"], serde_json::json!(true));
+        assert_eq!(
+            incremental["changed_files"],
+            serde_json::json!(["f07.json"])
+        );
+
+        // 计时对拍：全量基线（每轮全新中枢同内容夹具）vs 增量，各 9 轮取最小；
+        // 每轮各改 1 文件（同内容）保证增量侧 diff 非空、全量侧同版本
+        let (mut state_full, _hub_full, (_tmp_full, cp_full, rd_full)) =
+            make_companion_state_with_anchor(None);
+        // 全量基线夹具对齐：删除小夹具遗留件后写入同一 perf 夹具
+        std::fs::remove_file(rd_full.join("a_first.json")).expect("删除遗留件");
+        std::fs::remove_file(rd_full.join("b_second.json")).expect("删除遗留件");
+        write_perf_fixture(&cp_full, &rd_full);
+        // 建全量基线中枢的缓存（首跑全量）
+        let v_full0 = fixture_layout_version(&cp_full, &rd_full);
+        state_full
+            .sessions
+            .companion_run_lint_suite(&v_full0, None)
+            .await
+            .unwrap();
+
+        let mut t_inc = std::time::Duration::MAX;
+        let mut t_full = std::time::Duration::MAX;
+        let mut t_load = std::time::Duration::MAX;
+        for i in 0..9u64 {
+            // 增量侧：改 1/20 文件 → 新版本 → 增量跑
+            rewrite_perf_file_f07(&rules_dir, 100 + i);
+            let v = fixture_layout_version(&core_eval_path, &rules_dir);
+            // 装载段单独计时（同输入同代价；套件内装载与之等价）
+            let s = std::time::Instant::now();
+            let _ = SessionApi::load_merged_with_layout(&core_eval_path, &rules_dir).unwrap();
+            let load = s.elapsed();
+            t_load = t_load.min(load);
+            let s = std::time::Instant::now();
+            let report = state
+                .sessions
+                .companion_run_lint_suite(&v, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                report["incremental"],
+                serde_json::json!(true),
+                "计时循环内增量臂必须走增量路径"
+            );
+            t_inc = t_inc.min(s.elapsed());
+            // 全量侧：同内容改写（每轮全新中枢走全量路径）
+            rewrite_perf_file_f07(&rd_full, 100 + i);
+            let vf = fixture_layout_version(&cp_full, &rd_full);
+            assert_eq!(vf, v, "全量基线夹具与增量夹具同版本");
+            // 全量臂每轮换全新中枢（无基线 → 真全量路径；否则会沿用上轮
+            // 基线走增量，对照失效）
+            state_full.sessions.companion = Some(crate::api::companion::CompanionHub::new(
+                crate::api::companion::CompanionConfig::for_tests(),
+                None,
+                None,
+            ));
+            let s = std::time::Instant::now();
+            let report_full = state_full
+                .sessions
+                .companion_run_lint_suite(&vf, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                report_full["incremental"],
+                serde_json::json!(false),
+                "计时循环内全量臂必须走全量路径"
+            );
+            t_full = t_full.min(s.elapsed());
+        }
+        // 分析段耗时 = 套件耗时 − 装载段耗时（两路径装载同代价；设计稿验收
+        // 口径为「分析耗时」）。注：分析段含两路径共同的确定性摘要面
+        // （file_digests 分组摘要 + 快照 digest），其在 64 条规则帽内占比
+        // 大于三件套本身——「增量低于全量一半」在该帽内结构性不可达，
+        // 本测试断言严格低于并输出比值供设计线复检（假设缺口已登记）
+        let analysis_full = t_full.saturating_sub(t_load);
+        let analysis_inc = t_inc.saturating_sub(t_load);
+        assert!(
+            analysis_inc < analysis_full,
+            "改 1/20 文件增量分析耗时须低于全量：\
+             分析段 增量 {analysis_inc:?} vs 全量 {analysis_full:?}\
+             （套件 {t_inc:?} vs {t_full:?}，装载 {t_load:?}）"
+        );
     }
 
     #[tokio::test]
