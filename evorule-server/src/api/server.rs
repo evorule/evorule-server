@@ -7960,7 +7960,7 @@ async fn session_state(
         ("to_fact" = Option<u64>, Query, description = "截止 fact_id（含），缺省到尾；仅摘要态生效"),
         ("limit" = Option<usize>, Query, description = "摘要态返回条数上限，默认 200、上限 10000；仅摘要态生效"),
         ("full" = Option<bool>, Query, description = "为 true 时回全量报告（不筛不裁，含 fact 全文；向后兼容逃生口）。默认 false=摘要态：条目仅含哈希/因果元数据（不含 fact 全文），按 from_fact/to_fact 过滤后取前 limit 条，并附 total_in_range/returned/truncated 分页元信息"),
-        ("include_content" = Option<bool>, Query, description = "F5: 为 true 时每条审计条目附加 content_json（完整 Fact 内容 JSON，含 IoRequest params / IoResponse result 等）；仅 full=true 时生效")
+        ("include_content" = Option<bool>, Query, description = "F5: 为 true 时每条审计条目附加 content_json（完整 Fact 内容 JSON，含 IoRequest params / IoResponse result 等）；独立旋钮，摘要态与全量态均生效（摘要态仍受 limit 约束）")
     ),
 
     responses(
@@ -8028,32 +8028,38 @@ async fn session_audit(
         .cloned()
         .unwrap_or(serde_json::json!([]));
 
-    if query.full.unwrap_or(false) {
-        // 全量态（向后兼容逃生口）：不筛不裁，保持既有行为。
-        // F5（audit-chain 专项 2026-08-28）：include_content=true 时从
-        // FactsLog 内存投影按 fact_id 关联，注入 content_json
-        // （Fact::to_json 完整内容）。仅全量态生效。
-        if query.include_content.unwrap_or(false) {
-            let content_index: std::collections::BTreeMap<u64, serde_json::Value> = session
-                .facts_log
-                .history()
-                .iter()
-                .map(|f| (f.id().0, tcb_to_serde(&f.to_json())))
-                .collect();
-            if !content_index.is_empty() {
-                if let Some(arr) = entries.as_array_mut() {
-                    for entry in arr.iter_mut() {
-                        if let Some(fid) = entry.get("fact_id").and_then(|v| v.as_u64()) {
-                            if let Some(content) = content_index.get(&fid) {
-                                if let Some(obj) = entry.as_object_mut() {
-                                    obj.insert("content_json".into(), content.clone());
-                                }
+    // F5（audit-chain 专项 2026-08-28）：include_content=true 时从 FactsLog
+    // 内存投影按 fact_id 关联，注入 content_json（Fact::to_json 完整内容）。
+    // 独立旋钮：摘要态与全量态均生效（摘要态仍受 limit 约束，注入只及于
+    // 返回条目）；默认关闭，保持轻量。
+    let inject_content = |entries: &mut serde_json::Value| {
+        if !query.include_content.unwrap_or(false) {
+            return;
+        }
+        let content_index: std::collections::BTreeMap<u64, serde_json::Value> = session
+            .facts_log
+            .history()
+            .iter()
+            .map(|f| (f.id().0, tcb_to_serde(&f.to_json())))
+            .collect();
+        if !content_index.is_empty() {
+            if let Some(arr) = entries.as_array_mut() {
+                for entry in arr.iter_mut() {
+                    if let Some(fid) = entry.get("fact_id").and_then(|v| v.as_u64()) {
+                        if let Some(content) = content_index.get(&fid) {
+                            if let Some(obj) = entry.as_object_mut() {
+                                obj.insert("content_json".into(), content.clone());
                             }
                         }
                     }
                 }
             }
         }
+    };
+
+    if query.full.unwrap_or(false) {
+        // 全量态（向后兼容逃生口）：不筛不裁，保持既有行为
+        inject_content(&mut entries);
         normalized.insert("entries".into(), entries);
     } else {
         // 摘要态（默认）：条目仅含哈希/因果元数据（去 fact 全文），
@@ -8086,6 +8092,7 @@ async fn session_audit(
                 serde_json::json!(returned < total_in_range),
             );
         }
+        inject_content(&mut entries);
         normalized.insert("entries".into(), entries);
     }
 
@@ -8097,7 +8104,7 @@ async fn session_audit(
 
 pub struct AuditReportQuery {
     /// 为 true 时每条审计条目附加 content_json（完整 Fact 内容）。
-    /// 活跃会话端点仅 full=true 时生效；archive 端点独立生效（无分页语义）。
+    /// 独立旋钮：摘要态与全量态均生效（摘要态仍受 limit 约束）。
     #[serde(default)]
     pub include_content: Option<bool>,
     /// 起始 fact_id（含），缺省从头；仅摘要态生效
@@ -17156,7 +17163,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(lim0["returned"], serde_json::json!(1));
 
-        // include_content 仅全量态生效：摘要态带 include_content 也不注入
+        // include_content 独立旋钮：摘要态显式请求也注入（受 limit 约束）
         let (status, s2) = oneshot_json(
             router.clone(),
             "GET",
@@ -17169,7 +17176,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .all(|e| e.get("content_json").is_none()));
+            .all(|e| e.get("content_json").is_some()));
 
         // 全量态 + include_content：content_json 注入
         let (status, f2) = oneshot_json(
