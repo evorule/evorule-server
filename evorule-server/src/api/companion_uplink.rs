@@ -16,6 +16,11 @@
 //!
 //! 上行请求体形态照治理 propose 服务信封（`dataset_id` + `entry` + `cause`，
 //! K3 出站同款调用形态：`POST {base}/api/services/knowledge-propose/invoke`）。
+//! entry 载荷照 K3 先例（A 案获批重塑）：`builtin:knowledge/fact` 壳同构
+//! ——entry_id（fnv1a64 幂等锚）/version=1/tags 三段定位/payload
+//! （statement 摘要定式 + title + confidence=0.6 + findings 全文）/
+//! schema_ref；凭据头双发（`X-Api-Key` 兼容现部署 + `Authorization: Bearer`
+//! 兼容 engine 统一鉴权开启后的中间件通道，D3①）。
 
 use serde_json::{json, Value};
 
@@ -27,7 +32,10 @@ pub struct CompanionUplinkConfig {
     pub base_url: String,
     /// X-Api-Key（治理侧 scoped key，entries:propose 族）
     pub api_key: String,
-    /// 候选入账目标数据集（可选；未配置时请求体省略 `dataset_id` 键）
+    /// 治理面入账目标数据集（rule serve ingest 契约 `dataset_id` 必填；
+    /// desktop orchestrator 武装门固定注入 `companion-governance`。未配置时
+    /// 请求体省略 `dataset_id` 键——rule serve 侧将以校验错误拒收，上行状态
+    /// 面可见，非静默）
     pub dataset: Option<String>,
 }
 
@@ -73,26 +81,35 @@ pub fn companion_uplink_entry_id(proposal_id: &str) -> String {
     format!("cc-{:016x}", h)
 }
 
-/// 上行 entry 载荷（字段面照获批设计：entry_id 派生自 proposal_id、
-/// 规则集版本、findings 摘要与全文、提案/裁决时点、裁决人、来源标注）
+/// 上行 entry 载荷（A 案获批重塑：照 K3 先例 `k3_candidate_entry` 同构——
+/// `builtin:knowledge/fact` 壳 required=["statement"]，tags 三段定位
+/// （消费器/分类/原始类型），confidence=0.6 规则驱动缺省，statement 摘要
+/// 定式「伴跑提案 {id} 于规则集 {version} 裁决通过：findings {digest}」，
+/// findings 全文随 payload 附加字段入账（fact 壳 additionalProperties=true）。
+/// 裁决时点/裁决人不出 entry——引擎侧 CompanionAdjudication 链事实已在案，
+/// cause 行保留 actor 标注）
 pub fn companion_uplink_entry(
     proposal_id: &str,
     ruleset_version: &str,
     findings_digest: &str,
     findings: &Value,
-    proposed_at: u64,
-    adjudicated_at: Option<u64>,
-    actor: &str,
 ) -> Value {
     json!({
         "entry_id": companion_uplink_entry_id(proposal_id),
-        "ruleset_version": ruleset_version,
-        "findings_digest": findings_digest,
-        "findings": findings,
-        "proposed_at": proposed_at,
-        "adjudicated_at": adjudicated_at,
-        "actor": actor,
-        "source": "companion",
+        "version": 1,
+        "tags": ["companion-uplink", "proposal", "approve"],
+        "payload": {
+            "statement": format!(
+                "伴跑提案 {} 于规则集 {} 裁决通过：findings {}",
+                proposal_id, ruleset_version, findings_digest
+            ),
+            "title": format!(
+                "Companion uplink: proposal {proposal_id} @ ruleset {ruleset_version}"
+            ),
+            "confidence": 0.6,
+            "findings": findings,
+        },
+        "schema_ref": "builtin:knowledge/fact",
     })
 }
 
@@ -117,6 +134,9 @@ pub fn companion_uplink_payload(
 
 /// 出站 POST（reqwest 直连治理面；5s 超时照 K3 出站口径）。返回 HTTP
 /// 终态码，Err=传输层失败（含超时；非 2xx 是 Ok 终态由调用方判级）。
+/// 凭据头双发（D3①）：`X-Api-Key` 兼容现部署（rule serve 原生鉴权通道），
+/// `Authorization: Bearer` 兼容 engine 统一鉴权开启后的
+/// `unified_auth_middleware`（其只认 Bearer 三通道，同值同 scope 语义）。
 pub async fn post_propose(cfg: &CompanionUplinkConfig, body: &Value) -> Result<u16, String> {
     let url = format!("{}/api/services/knowledge-propose/invoke", cfg.base_url);
     let client = reqwest::Client::new();
@@ -124,6 +144,7 @@ pub async fn post_propose(cfg: &CompanionUplinkConfig, body: &Value) -> Result<u
         .post(&url)
         .timeout(std::time::Duration::from_secs(5))
         .header("X-Api-Key", &cfg.api_key)
+        .header("Authorization", format!("Bearer {}", cfg.api_key))
         .json(body)
         .send()
         .await
@@ -165,7 +186,8 @@ mod tests {
         assert!(cfg.dataset.is_none(), "dataset 空白=可选未配置");
     }
 
-    /// payload：dataset 已配置携带 dataset_id；未配置省略该键
+    /// payload：dataset 已配置携带 dataset_id；未配置省略该键（rule serve
+    /// ingest 契约 dataset_id 必填——未配置属部署缺配，上行状态面可见）
     #[test]
     fn payload_dataset_key_conditional() {
         let cfg_with = CompanionUplinkConfig {
@@ -178,15 +200,28 @@ mod tests {
             api_key: "k".into(),
             dataset: None,
         };
-        let entry =
-            companion_uplink_entry("prop-1", "v1", "dg", &json!({"a": 1}), 1, Some(2), "op");
+        let entry = companion_uplink_entry("prop-1", "v1", "dg", &json!({"a": 1}));
         let body_with = companion_uplink_payload(&cfg_with, entry.clone(), "prop-1", "op");
         assert_eq!(body_with["dataset_id"], json!("gov-ds"));
+        let e = &body_with["entry"];
+        assert_eq!(e["entry_id"], json!(companion_uplink_entry_id("prop-1")));
+        // A 案重塑：K3 同构 fact 壳形态
+        assert_eq!(e["version"], json!(1));
         assert_eq!(
-            body_with["entry"]["entry_id"],
-            json!(companion_uplink_entry_id("prop-1"))
+            e["tags"],
+            json!(["companion-uplink", "proposal", "approve"])
         );
-        assert_eq!(body_with["entry"]["source"], json!("companion"));
+        assert_eq!(e["schema_ref"], json!("builtin:knowledge/fact"));
+        assert_eq!(
+            e["payload"]["statement"],
+            json!("伴跑提案 prop-1 于规则集 v1 裁决通过：findings dg")
+        );
+        assert_eq!(e["payload"]["confidence"], json!(0.6));
+        assert_eq!(
+            e["payload"]["findings"],
+            json!({"a": 1}),
+            "findings 全文随 payload"
+        );
         let body_without = companion_uplink_payload(&cfg_without, entry, "prop-1", "op");
         assert!(
             body_without.get("dataset_id").is_none(),

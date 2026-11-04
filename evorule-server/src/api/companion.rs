@@ -1297,9 +1297,6 @@ impl CompanionHub {
                 &rec.ruleset_version,
                 &rec.findings_digest,
                 &rec.findings,
-                rec.proposed_at,
-                rec.adjudicated_at,
-                &actor,
             );
             (entry, actor)
         };
@@ -2541,7 +2538,7 @@ mod tests {
         delay_ms: u64,
     ) -> (
         std::net::SocketAddr,
-        tokio::sync::mpsc::UnboundedReceiver<String>,
+        tokio::sync::mpsc::UnboundedReceiver<(String, String)>, // (headers, body)
     ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2583,7 +2580,8 @@ mod tests {
                     buf.extend_from_slice(&tmp[..n]);
                 }
                 let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
-                let _ = tx.send(body);
+                // 头面一并回传（D3① 凭据双发断言用；小写归一如上行）
+                let _ = tx.send((headers, body));
                 if delay_ms > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 }
@@ -2625,8 +2623,8 @@ mod tests {
     }
 
     /// 上行成功链路：approve 后出站 2xx → 状态 ok + CompanionUplink 落链
-    /// （outcome/entry_id/http 终态齐）；请求体载荷面照获批设计（entry_id
-    /// 幂等派生/source=companion/findings 同源/dataset 携带）
+    /// （outcome/entry_id/http 终态齐）；请求体载荷面照 A 案重塑（K3 同构
+    /// fact 壳/findings 全文随 payload/凭据双发 X-Api-Key+Bearer/dataset 携带）
     #[tokio::test]
     async fn uplink_success_chain_fact_and_payload() {
         let (addr, mut rx) = spawn_propose_stub(200, 0).await;
@@ -2668,19 +2666,38 @@ mod tests {
         assert_eq!(pl["http_status"], serde_json::json!(200));
         assert!(hub.verify_chain().is_ok(), "上行落链后链完整可验");
 
-        let body: serde_json::Value =
-            serde_json::from_str(&rx.recv().await.expect("stub 收到请求体"))
-                .expect("请求体为合法 JSON");
+        let (headers, raw): (String, String) = rx.recv().await.expect("stub 收到出站请求");
+        // D3① 凭据双发：X-Api-Key（rule serve 原生通道）+ Bearer（engine
+        // 统一鉴权中间件通道），同值
+        assert!(
+            headers.contains("x-api-key: test-scoped-key"),
+            "X-Api-Key 头在场: {headers}"
+        );
+        assert!(
+            headers.contains("authorization: bearer test-scoped-key"),
+            "Authorization Bearer 头在场: {headers}"
+        );
+        let body: serde_json::Value = serde_json::from_str(&raw).expect("请求体为合法 JSON");
         assert_eq!(body["dataset_id"], serde_json::json!("gov-ds"));
         let entry = &body["entry"];
         assert_eq!(entry["entry_id"], serde_json::json!(entry_id));
-        assert_eq!(entry["ruleset_version"], serde_json::json!("vUp"));
-        assert_eq!(entry["source"], serde_json::json!("companion"));
-        assert_eq!(entry["actor"], serde_json::json!("op-up"));
-        assert!(entry["adjudicated_at"].as_u64().is_some(), "裁决时点在场");
+        // A 案重塑：K3 同构 fact 壳（statement/title/confidence/findings 全文）
+        assert_eq!(entry["version"], serde_json::json!(1));
+        assert_eq!(
+            entry["schema_ref"],
+            serde_json::json!("builtin:knowledge/fact")
+        );
+        assert_eq!(entry["payload"]["confidence"], serde_json::json!(0.6));
         assert!(
-            !entry["findings_digest"].as_str().unwrap_or("").is_empty(),
-            "findings 摘要在场"
+            !entry["payload"]["statement"]
+                .as_str()
+                .unwrap_or("")
+                .is_empty(),
+            "statement 摘要定式在场"
+        );
+        assert!(
+            entry["payload"]["findings"].is_object(),
+            "findings 全文随 payload 入账"
         );
 
         let st = hub.status_json();
@@ -2753,7 +2770,7 @@ mod tests {
         let term2 = wait_uplink_terminal(&hub, &id).await;
         assert_eq!(term2["state"], serde_json::json!("ok"));
         let body: serde_json::Value =
-            serde_json::from_str(&rx.recv().await.expect("stub 收到重试请求体"))
+            serde_json::from_str(&rx.recv().await.expect("stub 收到重试出站请求").1)
                 .expect("请求体为合法 JSON");
         assert!(
             body.get("dataset_id").is_none(),
