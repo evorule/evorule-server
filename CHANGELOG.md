@@ -27,6 +27,10 @@
 
 ## [Unreleased]
 
+### 🐛 修复
+
+- 🐛 **会话复活对悬挂 io 请求的终结处置与哨兵 FactId 隔离**：`rehydrate_session_from_wal` 的最大 FactId 扫描此前未排除哨兵 ID 事实——每个会话 WAL 自创建起即含规则集锚定哨兵（`u64::MAX-1`），复活后反应器计数器从哨兵+1 续起，首个新事实 ID 即撞保留哨兵（`u64::MAX`），再次分配溢出回绕。修复后扫描跳过哨兵区（`>= u64::MAX-1`），复活后新事实 ID 回到普通计数区连续分配；同趟扫描收集无应答 io 请求（已发射 IoRequest、无对应 IoResponse 的崩溃悬挂），复活时以显式 error IoResponse 落链终结——审计链自解释，悬挂语义不带入复活后生命周期（落链失败仅告警不阻断复活）；复活日志 `replayed_facts` 改报真实重放事实条数（此前以最大 FactId 冒充，哨兵污染时报出天文数字）
+
 ### 🆕 新增
 
 - 🆕 **审计导出 EVID 字段 `fact_json_stable`**：`Auditor::export()` 每条目内嵌 content_hash 的原字节输入（fact_to_stable_json 紧凑序列化，string 类型）——第三方/移动端验证器对字符串值按 UTF-8 取字节直接算 blake3 即可逐条重算 content_hash，零重序列化、零字段序假设；原文缺失（旧 WAL/旧导出兼容）时为 null，验证器退化为仅链折叠验证；`import()` 对该字段与 fact 原文逐字节深比，漂移即篡改信号 fail-fast 拒收

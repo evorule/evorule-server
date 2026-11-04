@@ -1238,19 +1238,82 @@ impl SessionManager {
         // 与反应器自身 ID（低位区）分属两个独立计数器共享的同一 ID 空间——
         // 复活时两类计数器必须各自按类续起（跳过 Command），防新事实 ID
         // 与恢复历史在 fact_id_index 内碰撞。
+        // 哨兵 ID 事实（规则集锚定 u64::MAX-1 等）不占用普通计数区，必须一并
+        // 跳过——否则计数器从哨兵+1 续起，复活后首个新事实即撞保留哨兵
+        // （u64::MAX），再次分配将溢出回绕。
+        // 同趟扫描收集无应答 io_request（已发射 IoRequest、无对应 IoResponse），
+        // 复活时以显式 error IoResponse 落链终结——审计链自解释，悬挂语义
+        // 不带入复活后生命周期。
         let mut max_fact_id: u64 = 0;
+        let mut replayed_facts: u64 = 0;
+        let mut dangling_io_requests: Vec<(u64, String)> = Vec::new();
+        let mut answered_io: std::collections::HashSet<u64> = std::collections::HashSet::new();
         facts_log.for_each_fact_from(0, |_, fact| {
-            if !matches!(fact, Fact::Command { .. }) {
-                max_fact_id = max_fact_id.max(fact.id().0);
+            if matches!(fact, Fact::Command { .. }) {
+                return; // API 层计数器，另续
+            }
+            let fid = fact.id().0;
+            if fid >= u64::MAX - 1 {
+                return; // 哨兵区（规则集锚定等），不占普通计数区
+            }
+            replayed_facts += 1;
+            max_fact_id = max_fact_id.max(fid);
+            match fact {
+                Fact::IoRequest { id, io_type, .. } => {
+                    dangling_io_requests.push((id.0, io_type.as_str().to_string()));
+                }
+                Fact::IoResponse { request_id, .. } => {
+                    answered_io.insert(request_id.0);
+                }
+                _ => {}
             }
         });
+        dangling_io_requests.retain(|(rid, _)| !answered_io.contains(rid));
+
+        // 悬挂 io_request 终结处置：合成 error IoResponse 落链（id 顺延普通
+        // 计数区，不落链进反应器运行时通道）。失败仅告警——审计链终结是
+        // 复活处置义务，但不阻断复活本身（反应器运行态不携带悬挂）。
+        let mut next_fact_id = max_fact_id + 1;
+        for (rid, io_type) in &dangling_io_requests {
+            let terminal = Fact::IoResponse {
+                id: FactId(next_fact_id),
+                request_id: FactId(*rid),
+                result: JsonValue::null(),
+                error: Some(
+                    "session resurrected before io_response arrived; \
+                     request terminally answered by resurrection reconciliation"
+                        .to_string(),
+                ),
+            };
+            match facts_log.append(terminal) {
+                Ok(_) => {
+                    tracing::info!(
+                        session_id,
+                        request_id = rid,
+                        io_type = %io_type,
+                        "复活对账：悬挂 io_request 以合成 error IoResponse 显式终结"
+                    );
+                    next_fact_id += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        session_id,
+                        request_id = rid,
+                        error = %e,
+                        "复活对账：悬挂 io_request 终结事实落链失败（不阻断复活）"
+                    );
+                }
+            }
+        }
+        // 终结事实落链后计数器续起点前移，防新事实 ID 与合成事实碰撞
+        let fact_id_start = next_fact_id.max(max_fact_id + 1);
 
         let reactor = Reactor::builder(self.core_eval.clone())
             .max_rounds(self.max_rounds)
             .io_warn_timeout(self.io_warn_timeout)
             .io_error_timeout(self.io_error_timeout)
             .io_timeout_check_interval(self.io_timeout_check_interval)
-            .fact_id_start(max_fact_id + 1)
+            .fact_id_start(fact_id_start)
             .facts_log(facts_log)
             .build();
         let (command_tx, _event_rx, event_tx, handle, facts_log) = reactor.spawn();
@@ -1282,7 +1345,8 @@ impl SessionManager {
         let active = self.count.load(Ordering::Relaxed);
         tracing::info!(
             session_id,
-            replayed_facts = max_fact_id,
+            replayed_facts,
+            dangling_io_terminated = dangling_io_requests.len(),
             active,
             max = self.max_sessions,
             "Session rehydrated from WAL archive (same-id resurrection)"
@@ -2970,6 +3034,7 @@ mod tests {
                  计数器必须续起而非归零碰撞"
             );
         }
+
         // 全链 FactId 无碰撞（fact_id_index 唯一性不变量）
         let mut sorted = after_ids.clone();
         sorted.sort_unstable();
@@ -2978,6 +3043,144 @@ mod tests {
             sorted.len(),
             after_ids.len(),
             "复活续写后非 Command FactId 不得重复"
+        );
+
+        let _ = mgr.close_session(sid);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 复活对悬挂 io_request 的终结处置与哨兵 FactId 隔离：
+    /// WAL 含无应答 io_request 时，复活必须——
+    /// （1）以显式 error IoResponse 落链终结悬挂请求（审计链自解释，
+    ///      悬挂语义不带入复活后生命周期）；
+    /// （2）复活后 pending 为零、新命令可执行（门控不残留）；
+    /// （3）复活后新事实 FactId 避开哨兵区（规则集锚定 u64::MAX-1 等
+    ///      保留 ID），合成终结事实与后续新事实连续分配不溢出。
+    #[tokio::test]
+    async fn rehydrate_terminates_dangling_io_and_skips_sentinel_ids() {
+        let dir =
+            std::env::temp_dir().join(format!("evorule_rehydrate_dangling_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // core_eval = io_request 元指令（求值即发射 call_external 请求）
+        let mut io_params = BTreeMap::new();
+        io_params.insert("io_type".to_string(), JsonValue::string("call_external"));
+        io_params.insert("prompt".to_string(), JsonValue::string("hi"));
+        let mut io_instr = BTreeMap::new();
+        io_instr.insert("type".to_string(), JsonValue::string("io_request"));
+        io_instr.insert("params".to_string(), JsonValue::Object(io_params));
+        let mgr = SessionManager::with_limits_and_wal_and_auto_verify(
+            vec![JsonValue::Object(io_instr)],
+            100,
+            100,
+            Duration::from_millis(100),
+            Some(dir.clone()),
+            4,
+            false,
+            0,
+            false,
+            1000,
+            1,
+        );
+
+        let sid = mgr.create_session().unwrap();
+        let session = mgr.get_session(sid).unwrap();
+        submit_tick(&session, 30000);
+
+        // 等 IoRequest 发射悬挂（无应答），记录悬挂请求 id
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if session.handle.pending_io_count() == Some(1) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "io_request never became pending"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let mut dangling_rid = 0u64;
+        session.facts_log.for_each_fact_from(0, |_, fact| {
+            if let Fact::IoRequest { id, .. } = fact {
+                dangling_rid = id.0;
+            }
+        });
+        assert!(dangling_rid > 0, "WAL 必须已含悬挂 IoRequest");
+        drop(session);
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(mgr.reap_expired(), 1);
+
+        let revived = mgr.rehydrate_session_from_wal(sid).unwrap();
+
+        // （1）审计链显式终结：存在对悬挂 request_id 的 error IoResponse
+        let mut terminal_seen = false;
+        revived.facts_log.for_each_fact_from(0, |_, fact| {
+            if let Fact::IoResponse {
+                request_id,
+                error: Some(_),
+                ..
+            } = fact
+            {
+                if request_id.0 == dangling_rid {
+                    terminal_seen = true;
+                }
+            }
+        });
+        assert!(
+            terminal_seen,
+            "复活必须以显式 error IoResponse 终结悬挂 io_request（request_id={dangling_rid}）"
+        );
+
+        // （2）pending 为零、新命令可执行（新事实落链）
+        assert_eq!(
+            revived.handle.pending_io_count(),
+            Some(0),
+            "复活后不得残留待答 io"
+        );
+        let facts_before = {
+            let mut n = 0usize;
+            revived.facts_log.for_each_fact_from(0, |_, _| n += 1);
+            n
+        };
+        submit_tick(&revived, 30001);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut executed = false;
+        loop {
+            let mut n = 0usize;
+            revived.facts_log.for_each_fact_from(0, |_, _| n += 1);
+            if n > facts_before {
+                executed = true;
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(executed, "复活后新命令必须可执行（门控不残留）");
+
+        // （3）复活后新事实（合成终结事实 + 新 IoRequest）FactId 避开哨兵区
+        let mut new_fact_ids: Vec<u64> = Vec::new();
+        revived.facts_log.for_each_fact_from(0, |_, fact| {
+            let fid = fact.id().0;
+            if fid != dangling_rid && !matches!(fact, Fact::Command { .. }) {
+                new_fact_ids.push(fid);
+            }
+        });
+        let post_rehydrate_ids: Vec<u64> = new_fact_ids
+            .into_iter()
+            .filter(|fid| *fid != dangling_rid)
+            .collect();
+        for fid in &post_rehydrate_ids {
+            assert!(
+                *fid < u64::MAX - 1,
+                "复活后新事实 FactId ({fid}) 必须避开哨兵保留区（>= u64::MAX-1）"
+            );
+        }
+        assert!(
+            post_rehydrate_ids.len() >= 2,
+            "合成终结事实与新 IoRequest 至少构成两次连续分配（证不溢出）"
         );
 
         let _ = mgr.close_session(sid);
