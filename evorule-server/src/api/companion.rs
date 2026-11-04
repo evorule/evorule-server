@@ -373,6 +373,39 @@ impl CertifiedSet {
     }
 }
 
+/// 提案内存呈现窗容量上限（提案记录是链事实的有界呈现窗；链事实
+/// 永久留痕可审计，超限淘汰最旧——与链条目内存窗同纪律）
+const PROPOSALS_CAP: usize = 64;
+
+/// C 态提案记录（内存呈现面）：机器观测（alert 级发现）自动产生，
+/// 人工处置（approve/reject）只完成提案生命周期——零拦截红线：
+/// 处置不改变伴跑分析/认证/报告行为
+struct ProposalRecord {
+    proposal_id: String,
+    ruleset_version: String,
+    findings_digest: String,
+    findings: serde_json::Value,
+    proposed_at: u64,
+    status: &'static str,
+    adjudicated_at: Option<u64>,
+    actor: Option<String>,
+}
+
+impl ProposalRecord {
+    fn render(&self) -> serde_json::Value {
+        json!({
+            "proposal_id": self.proposal_id,
+            "ruleset_version": self.ruleset_version,
+            "findings_digest": self.findings_digest,
+            "findings": self.findings,
+            "proposed_at": self.proposed_at,
+            "status": self.status,
+            "adjudicated_at": self.adjudicated_at,
+            "actor": self.actor,
+        })
+    }
+}
+
 /// 伴跑配置（获批设计稿 D3 参数，配置面可调）
 #[derive(Debug, Clone)]
 pub struct CompanionConfig {
@@ -452,6 +485,8 @@ pub struct CompanionHub {
     /// lint 增量状态（上次成功分析的 per-file 摘要+读写集；None=尚无基线，
     /// 下次分析走全量；成功分析后提交——单表有界，不随版本增长）
     lint_cache: Mutex<Option<LintRwCache>>,
+    /// C 态提案记录（有界呈现窗；链事实永久留痕）
+    proposals: Mutex<Vec<ProposalRecord>>,
 }
 
 impl CompanionHub {
@@ -518,6 +553,7 @@ impl CompanionHub {
             append_fail_streak: AtomicU64::new(0),
             metrics: Mutex::new(None),
             lint_cache: Mutex::new(None),
+            proposals: Mutex::new(Vec::new()),
         });
         // 坏链隔离重建：告警事实为重启后新链首条（error 日志已在重放时落）
         if let Some(alert) = replay_alert {
@@ -827,6 +863,11 @@ impl CompanionHub {
             }
         }
         let clean = severity == "clean";
+        let findings = json!({
+            "conflicts": findings_conflicts,
+            "cycles": findings_cycles,
+            "rw_excluded": findings_rw_excluded,
+        });
         let seq_report = self.append_chain_with_artifact(
             "CompanionReport",
             json!({
@@ -834,16 +875,17 @@ impl CompanionHub {
                 "rule_count": report.get("rule_count"),
                 "constitution_excluded_count": report.get("constitution_excluded_count"),
                 "severity": severity,
-                "findings": {
-                    "conflicts": findings_conflicts,
-                    "cycles": findings_cycles,
-                    "rw_excluded": findings_rw_excluded,
-                },
+                "findings": &findings,
                 "analyses": analyses,
                 "trigger": lock_poem(&self.last_trigger).clone(),
             }),
             Some((report, &report_digest)),
         );
+        // C 态提案化（alert-only 口径）：alert 级发现自动产提案——
+        // 记录性动作，不改变本报告的认证/呈现语义（零拦截红线）
+        if severity == "alert" {
+            self.maybe_propose(version, &findings);
+        }
         // 认证集有界插入（含 clean 标记）；淘汰者落链记录性事实（窗口语义可见）
         let evicted = lock_poem(&self.certified).insert(version, now_secs(), clean);
         if let Some((old, old_at)) = evicted {
@@ -1000,6 +1042,12 @@ impl CompanionHub {
 
     /// status 呈现（验收骨架「状态链可见」查询面）
     pub fn status_json(&self) -> serde_json::Value {
+        // 锁序纪律：proposals 先于 chain（与 maybe_propose/adjudicate 的
+        // proposals→chain 获取顺序一致，防交叉死锁）
+        let proposals = lock_poem(&self.proposals)
+            .iter()
+            .map(|p| p.render())
+            .collect::<Vec<_>>();
         let chain = lock_poem(&self.chain);
         let errors = lock_poem(&self.errors).clone();
         json!({
@@ -1027,7 +1075,106 @@ impl CompanionHub {
                 "tail": chain.mem.iter().rev().take(8).cloned().collect::<Vec<_>>(),
             },
             "last_trigger": lock_poem(&self.last_trigger).to_string(),
+            "proposals": proposals,
         })
+    }
+
+    /// C 态提案产出（幂等去重：`version + findings digest` 幂等键，同一
+    /// 规则集版本的同族 findings 合并一条提案——重复 alert 不重复产提案，
+    /// 同键已处置亦不重复产）。确定性 proposal_id 由幂等键派生；链落
+    /// `CompanionProposal` 记录性事实。返回提案 ID（None=幂等跳过）。
+    pub(crate) fn maybe_propose(
+        &self,
+        version: &str,
+        findings: &serde_json::Value,
+    ) -> Option<String> {
+        let findings_digest = evorule_hash::json_digest(findings);
+        let proposal_id = format!("prop-{version}-{}", &findings_digest[..12]);
+        let mut proposals = lock_poem(&self.proposals);
+        if proposals.iter().any(|p| p.proposal_id == proposal_id) {
+            return None;
+        }
+        let record = ProposalRecord {
+            proposal_id: proposal_id.clone(),
+            ruleset_version: version.to_string(),
+            findings_digest: findings_digest.clone(),
+            findings: findings.clone(),
+            proposed_at: now_secs(),
+            status: "proposed",
+            adjudicated_at: None,
+            actor: None,
+        };
+        let id = record.proposal_id.clone();
+        self.append_chain(
+            "CompanionProposal",
+            json!({
+                "proposal_id": &record.proposal_id,
+                "ruleset_version": record.ruleset_version,
+                "findings_digest": &record.findings_digest,
+                "findings": &record.findings,
+                "proposed_at": record.proposed_at,
+                "status": record.status,
+            }),
+        );
+        proposals.push(record);
+        let cap = proposals.len().saturating_sub(PROPOSALS_CAP);
+        if cap > 0 {
+            proposals.drain(0..cap);
+        }
+        tracing::info!(
+            proposal_id = %id,
+            ruleset_version = version,
+            "companion proposal created (alert findings)"
+        );
+        Some(id)
+    }
+
+    /// 提案人工处置（approve/reject）：完成提案生命周期并落链
+    /// `CompanionAdjudication` 裁决事实。零拦截红线：处置是记录性动作，
+    /// 不改变伴跑分析/认证/报告行为。outcome 取 "approved"/"rejected"
+    /// （由管理面端点映射，二值封闭）。错误：未找到 / 已处置（不重复裁决）。
+    pub(crate) fn adjudicate(
+        &self,
+        proposal_id: &str,
+        outcome: &'static str,
+        actor: &str,
+    ) -> Result<serde_json::Value, String> {
+        let mut proposals = lock_poem(&self.proposals);
+        let rec = proposals
+            .iter_mut()
+            .find(|p| p.proposal_id == proposal_id)
+            .ok_or_else(|| format!("proposal not found: {proposal_id}"))?;
+        if rec.status != "proposed" {
+            return Err(format!(
+                "proposal already adjudicated: {proposal_id} ({})",
+                rec.status
+            ));
+        }
+        rec.status = outcome;
+        rec.adjudicated_at = Some(now_secs());
+        rec.actor = Some(actor.to_string());
+        let payload = json!({
+            "proposal_id": proposal_id,
+            "outcome": outcome,
+            "adjudicated_at": rec.adjudicated_at,
+            "actor": actor,
+        });
+        self.append_chain("CompanionAdjudication", payload);
+        tracing::info!(
+            proposal_id = %proposal_id,
+            outcome,
+            actor,
+            "companion proposal adjudicated"
+        );
+        Ok(rec.render())
+    }
+
+    /// 提案清单呈现（只读管理面；与 status 的 proposals 键同源）
+    pub(crate) fn proposals_list(&self) -> Vec<serde_json::Value> {
+        lock_poem(&self.proposals)
+            .iter()
+            .map(|p| p.render())
+            .collect()
     }
 
     /// 上次成功分析的 lint 增量基线快照（None=尚无基线）
@@ -1695,8 +1842,21 @@ mod tests {
              "result": {"results": []}},
         ]));
         hub.certify_success("v-conflict", &with_conflict, started);
-        let seq_after = lock_poem(&hub.chain).seq;
-        let entry = chain_payload(seq_after);
+        // alert 级收尾额外落 CompanionProposal（C 态提案化）——链尾不再是
+        // 报告条目，报告按 kind 定位；提案事实紧跟其后
+        let tail_kind = lock_poem(&hub.chain).mem.last().map(|e| e["kind"].clone());
+        assert_eq!(
+            tail_kind,
+            Some(json!("CompanionProposal")),
+            "alert 级发现自动产提案（链尾）"
+        );
+        let entry = lock_poem(&hub.chain)
+            .mem
+            .iter()
+            .rev()
+            .find(|e| e["kind"] == "CompanionReport")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         assert_eq!(entry["payload"]["severity"], json!("alert"));
         assert_eq!(entry["payload"]["findings"]["conflicts"], json!(2));
         assert!(
@@ -1986,5 +2146,191 @@ mod tests {
             serde_json::json!(TRIGGER_WATCH),
             "同版本早退不改 last_trigger"
         );
+    }
+
+    /// alert 报告夹具（conflict 有发现 → severity=alert）
+    fn alert_report() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "CompanionReport",
+            "ruleset_version": "v",
+            "rule_count": 3,
+            "constitution_excluded_count": 0,
+            "analyses": [
+                {"service": "inference_conflict_detect", "ok": true,
+                 "result": {"has_conflicts": true, "conflict_count": 2, "conflicts": []}},
+                {"service": "inference_cycle_detect", "ok": true,
+                 "result": {"has_cycles": false, "cycle_count": 0}},
+                {"service": "inference_rw_extract", "ok": true, "result": {"results": []}},
+            ],
+        })
+    }
+
+    /// C 态提案契约：alert 级发现自动产提案——链落 CompanionProposal
+    /// 记录性事实（payload 齐）+ 内存呈现窗一条；同 version 同族 findings
+    /// 重复 alert 幂等不重复产
+    #[test]
+    fn proposal_alert_creates_chain_fact_and_dedups() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        let started = std::time::Instant::now();
+        hub.certify_success("vAlert", &alert_report(), started);
+
+        let chain_entries = |hub: &CompanionHub| -> Vec<serde_json::Value> {
+            lock_poem(&hub.chain)
+                .mem
+                .iter()
+                .filter(|e| e["kind"] == "CompanionProposal")
+                .cloned()
+                .collect()
+        };
+        let entries = chain_entries(&hub);
+        assert_eq!(entries.len(), 1, "alert 产恰一条提案事实");
+        let payload = &entries[0]["payload"];
+        assert!(
+            payload["proposal_id"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("prop-vAlert-"),
+            "确定性 ID 由幂等键派生"
+        );
+        assert_eq!(payload["ruleset_version"], serde_json::json!("vAlert"));
+        assert!(
+            !payload["findings_digest"].as_str().unwrap_or("").is_empty(),
+            "findings digest 在场"
+        );
+        assert_eq!(payload["findings"]["conflicts"], serde_json::json!(2));
+        assert_eq!(payload["status"], serde_json::json!("proposed"));
+        assert!(payload["proposed_at"].as_u64().unwrap_or(0) > 0);
+        // status 呈现（与链同源）
+        let st = hub.status_json();
+        assert_eq!(st["proposals"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            st["proposals"][0]["proposal_id"], payload["proposal_id"],
+            "status 与链事实同源"
+        );
+        // 幂等：同 version 同族 findings 重复 alert 不重复产
+        hub.certify_success("vAlert", &alert_report(), started);
+        assert_eq!(
+            chain_entries(&hub).len(),
+            1,
+            "重复 alert 幂等去重（version+findings digest 同键）"
+        );
+        assert_eq!(hub.status_json()["proposals"].as_array().unwrap().len(), 1);
+        // 同 version 不同 findings（不同族）→ 新提案
+        let mut other = alert_report();
+        other["analyses"][0]["result"]["conflict_count"] = serde_json::json!(5);
+        hub.certify_success("vAlert", &other, started);
+        assert_eq!(
+            chain_entries(&hub).len(),
+            2,
+            "同版本不同族 findings 产新提案"
+        );
+    }
+
+    /// 口径钉死：warn/clean 级不产提案；clean 认证路径零变化
+    /// （零拦截回归：提案机制的存在不影响既有认证语义）
+    #[test]
+    fn proposal_only_alert_warn_and_clean_never_propose() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        let started = std::time::Instant::now();
+        let report_with = |conflicts: bool, cycles: bool| {
+            serde_json::json!({
+                "kind": "CompanionReport",
+                "ruleset_version": "v",
+                "rule_count": 3,
+                "constitution_excluded_count": 0,
+                "analyses": [
+                    {"service": "inference_conflict_detect", "ok": true,
+                     "result": {"has_conflicts": conflicts, "conflict_count": 0}},
+                    {"service": "inference_cycle_detect", "ok": true,
+                     "result": {"has_cycles": cycles, "cycle_count": 1}},
+                    {"service": "inference_rw_extract", "ok": true, "result": {"results": []}},
+                ],
+            })
+        };
+        hub.certify_success("vClean", &report_with(false, false), started);
+        hub.certify_success("vWarn", &report_with(false, true), started);
+        let chain_count = lock_poem(&hub.chain)
+            .mem
+            .iter()
+            .filter(|e| e["kind"] == "CompanionProposal")
+            .count();
+        assert_eq!(chain_count, 0, "warn/clean 级不产提案");
+        let st = hub.status_json();
+        assert_eq!(st["proposals"].as_array().unwrap().len(), 0);
+        // 零拦截回归：clean/warn 认证照常（certified 双版本在册）
+        assert_eq!(st["certified_versions"].as_array().unwrap().len(), 2);
+        assert_eq!(st["clean_versions"], serde_json::json!(["vClean"]));
+    }
+
+    /// 处置生命周期：approve/reject 落链 CompanionAdjudication（payload 齐）、
+    /// 生命周期守卫（未找到=Err，已处置不重复裁决）、零拦截回归
+    /// （处置前后认证/报告语义零变化）
+    #[test]
+    fn adjudication_lifecycle_and_guards() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        let started = std::time::Instant::now();
+        hub.certify_success("vAlert", &alert_report(), started);
+        let status_before = hub.status_json();
+        let id = hub.status_json()["proposals"][0]["proposal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // approve：状态推进+裁决事实落链
+        let rendered = hub.adjudicate(&id, "approved", "op-1").expect("approve ok");
+        assert_eq!(rendered["status"], serde_json::json!("approved"));
+        assert_eq!(rendered["actor"], serde_json::json!("op-1"));
+        assert!(rendered["adjudicated_at"].as_u64().is_some());
+        let chain = lock_poem(&hub.chain);
+        let adj = chain
+            .mem
+            .iter()
+            .find(|e| e["kind"] == "CompanionAdjudication")
+            .expect("裁决事实在链");
+        assert_eq!(adj["payload"]["proposal_id"], serde_json::json!(id));
+        assert_eq!(adj["payload"]["outcome"], serde_json::json!("approved"));
+        assert_eq!(adj["payload"]["actor"], serde_json::json!("op-1"));
+        assert!(adj["payload"]["adjudicated_at"].as_u64().is_some());
+        drop(chain);
+        assert!(hub.verify_chain().is_ok(), "裁决落链后链完整可验");
+
+        // 守卫：已处置不重复裁决（approve/reject 皆拒）+ 未找到
+        assert!(hub.adjudicate(&id, "approved", "op-1").is_err());
+        assert!(hub.adjudicate(&id, "rejected", "op-1").is_err());
+        assert!(hub
+            .adjudicate("prop-nonexistent", "approved", "op-1")
+            .unwrap_err()
+            .contains("not found"));
+
+        // reject 路径：不同族提案独立处置
+        let id2 = hub
+            .maybe_propose("vOther", &serde_json::json!({"conflicts": 9}))
+            .expect("新族提案");
+        let rendered2 = hub.adjudicate(&id2, "rejected", "op-2").expect("reject ok");
+        assert_eq!(rendered2["status"], serde_json::json!("rejected"));
+        let outcomes: Vec<_> = lock_poem(&hub.chain)
+            .mem
+            .iter()
+            .filter(|e| e["kind"] == "CompanionAdjudication")
+            .map(|e| e["payload"]["outcome"].clone())
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec![serde_json::json!("approved"), serde_json::json!("rejected")],
+            "两裁决事实独立在链"
+        );
+
+        // 零拦截回归：处置前后认证集/报告呈现逐字节不变
+        let status_after = hub.status_json();
+        assert_eq!(
+            status_before["certified_versions"],
+            status_after["certified_versions"]
+        );
+        assert_eq!(
+            status_before["clean_versions"],
+            status_after["clean_versions"]
+        );
+        assert_eq!(status_before["last_report"], status_after["last_report"]);
+        assert_eq!(status_before["state"], status_after["state"]);
     }
 }

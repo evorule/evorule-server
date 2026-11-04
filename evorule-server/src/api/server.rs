@@ -12686,6 +12686,15 @@ impl GovernanceServer {
             .route("/api/companion/status", get(companion_status_handler))
             .route("/api/companion/coverage", get(companion_coverage_handler))
             .route("/api/companion/state", post(companion_state_handler))
+            .route("/api/companion/proposals", get(companion_proposals_handler))
+            .route(
+                "/api/companion/proposals/{id}/approve",
+                post(companion_proposal_approve_handler),
+            )
+            .route(
+                "/api/companion/proposals/{id}/reject",
+                post(companion_proposal_reject_handler),
+            )
             .route(
                 "/api/sessions/{id}/evolution-signals",
                 get(session_evolution_signals),
@@ -13303,6 +13312,109 @@ async fn companion_state_handler(
         "actor": actor_id,
         "status": hub.status_json(),
     })))
+}
+
+/// C 态提案管理面（人工处置入口）：人批的是提案不是拦截——
+/// approve/reject 只完成提案生命周期并落链裁决事实，
+/// 不改变伴跑分析/认证/报告行为（零拦截红线）
+#[utoipa::path(
+    get,
+    path = "/api/companion/proposals",
+    tag = "companion",
+    responses(
+        (status = 200, description = "提案清单（与 status 的 proposals 键同源呈现）"),
+        (status = 503, description = "伴跑中枢未装配（测试/桥接路径）")
+    )
+)]
+async fn companion_proposals_handler(
+    State(api): State<SessionApi>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(hub) = api.companion.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                serde_json::json!({ "error": "companion hub 未装配（伴跑状态机仅生产装配路径启用）" }),
+            ),
+        ));
+    };
+    Ok(Json(
+        serde_json::json!({ "proposals": hub.proposals_list() }),
+    ))
+}
+
+/// 提案处置共享内核：actor 真实化（同 state 端点纪律）+ 生命周期
+/// 守卫（未找到=404 / 已处置=409，不重复裁决）
+async fn companion_proposal_adjudicate(
+    api: &SessionApi,
+    id: &str,
+    outcome: &'static str,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(hub) = api.companion.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                serde_json::json!({ "error": "companion hub 未装配（伴跑状态机仅生产装配路径启用）" }),
+            ),
+        ));
+    };
+    let actor_id = actor
+        .map(|Extension(a)| a.0)
+        .unwrap_or_else(|| "local:unauthenticated".to_string());
+    match hub.adjudicate(id, outcome, &actor_id) {
+        Ok(rendered) => Ok(Json(serde_json::json!({
+            "proposal": rendered,
+            "actor": actor_id,
+        }))),
+        Err(e) => {
+            let status = if e.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::CONFLICT
+            };
+            Err((status, Json(serde_json::json!({ "error": e }))))
+        }
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/companion/proposals/{id}/approve",
+    tag = "companion",
+    params(("id" = String, Path, description = "提案 ID")),
+    responses(
+        (status = 200, description = "处置完成（链落裁决事实，提案生命周期终结）"),
+        (status = 404, description = "提案不存在"),
+        (status = 409, description = "提案已处置（不重复裁决）"),
+        (status = 503, description = "伴跑中枢未装配（测试/桥接路径）")
+    )
+)]
+async fn companion_proposal_approve_handler(
+    State(api): State<SessionApi>,
+    Path(id): Path<String>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    companion_proposal_adjudicate(&api, &id, "approved", actor).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/companion/proposals/{id}/reject",
+    tag = "companion",
+    params(("id" = String, Path, description = "提案 ID")),
+    responses(
+        (status = 200, description = "处置完成（链落裁决事实，提案生命周期终结）"),
+        (status = 404, description = "提案不存在"),
+        (status = 409, description = "提案已处置（不重复裁决）"),
+        (status = 503, description = "伴跑中枢未装配（测试/桥接路径）")
+    )
+)]
+async fn companion_proposal_reject_handler(
+    State(api): State<SessionApi>,
+    Path(id): Path<String>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    companion_proposal_adjudicate(&api, &id, "rejected", actor).await
 }
 
 /// 进化信号查询参数（`GET /api/sessions/{id}/evolution-signals`）
@@ -21951,6 +22063,74 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["status"]["state"], serde_json::json!("disabled"));
+    }
+
+    #[tokio::test]
+    async fn test_companion_proposals_endpoints_503_without_hub() {
+        let (state, _) = make_test_state();
+        let router = companion_router(state);
+        for (method, path) in [
+            ("GET", "/api/companion/proposals"),
+            ("POST", "/api/companion/proposals/p1/approve"),
+            ("POST", "/api/companion/proposals/p1/reject"),
+        ] {
+            let (status, json) = oneshot_json(router.clone(), method, path, None).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{method} {path}");
+            assert!(json["error"].as_str().unwrap_or("").contains("未装配"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_companion_proposals_lifecycle_over_http() {
+        // 全生命周期：提案在档 → GET 清单呈现 → approve 落裁决 →
+        // 已处置 409 / 未知 404 → 链完整可验（零拦截：处置只动提案面）
+        let (state, hub, _fixture) = make_companion_state_with_anchor(None);
+        let proposal_id = hub
+            .maybe_propose(
+                "vX",
+                &serde_json::json!({"conflicts": 1, "cycles": 0, "rw_excluded": 0}),
+            )
+            .expect("测试提案产出");
+        let router = companion_router(state);
+
+        // GET 清单：同源呈现一条 proposed
+        let (status, json) =
+            oneshot_json(router.clone(), "GET", "/api/companion/proposals", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let list = json["proposals"].as_array().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["proposal_id"], serde_json::json!(proposal_id));
+        assert_eq!(list[0]["status"], serde_json::json!("proposed"));
+
+        // approve：200 + 提案推进 approved + actor 真实化兜底
+        let path = format!("/api/companion/proposals/{proposal_id}/approve");
+        let (status, json) = oneshot_json(router.clone(), "POST", &path, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["proposal"]["status"], serde_json::json!("approved"));
+        assert_eq!(json["actor"], serde_json::json!("local:unauthenticated"));
+
+        // 生命周期守卫：重复 approve/reject=409；未知提案=404
+        let (status, _) = oneshot_json(router.clone(), "POST", &path, None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "已处置不重复裁决");
+        let (status, _) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/companion/proposals/prop-nonexistent/reject",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // 链面：CompanionProposal + CompanionAdjudication 双事实在链且完整
+        let st = hub.status_json();
+        let tail = st["chain"]["tail"].as_array().unwrap();
+        assert!(
+            tail.iter().any(|e| e["kind"] == "CompanionAdjudication"
+                && e["payload"]["proposal_id"] == serde_json::json!(proposal_id)
+                && e["payload"]["outcome"] == serde_json::json!("approved")),
+            "裁决事实落链: {tail:?}"
+        );
+        assert!(hub.verify_chain().is_ok(), "处置后链完整可验");
     }
 
     #[tokio::test]
