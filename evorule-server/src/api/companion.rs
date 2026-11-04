@@ -44,6 +44,10 @@ use evorule_inference_services::conflict::ConflictReport;
 use evorule_inference_services::cycle::CycleReport;
 use evorule_inference_services::rw_extract::RuleRw;
 
+use super::companion_uplink::{
+    companion_uplink_entry, companion_uplink_entry_id, companion_uplink_payload, post_propose,
+    CompanionUplinkConfig,
+};
 use super::server::SessionApi;
 
 /// lint 三件套（设计稿：全部非 sensitive，REST 直调合法，进程内直调同权）
@@ -413,6 +417,56 @@ pub struct CompanionConfig {
     pub min_interval: Duration,
 }
 
+/// C 态提案治理链上行状态（键=proposal_id；D2 状态呈现面）。
+/// `pending`=出站任务在途；终态 `ok`/`failed` 由出站任务写回。
+/// 有界性：键域=提案呈现窗（同源 PROPOSALS_CAP 淘汰节奏，提案淘汰后
+/// 残留状态条目随同提案窗一致有界——状态仅经 uplink_proposal 写入，
+/// 写入前提是提案在窗内）
+struct UplinkState {
+    state: &'static str,
+    attempted_at: u64,
+    last_error: Option<String>,
+    http_status: Option<u16>,
+}
+
+impl UplinkState {
+    fn render(&self) -> serde_json::Value {
+        json!({
+            "state": self.state,
+            "attempted_at": self.attempted_at,
+            "last_error": self.last_error,
+            "http_status": self.http_status,
+        })
+    }
+}
+
+/// 上行请求守卫错误（管理面映射 HTTP 语义：未配置=400 / 未找到=404 /
+/// 非 approved 或 in-flight=409）。零拦截红线：错误只影响上行动作本身，
+/// 绝不影响裁决结果（裁决在先已完成）。
+#[derive(Debug)]
+pub(crate) enum UplinkError {
+    NotConfigured,
+    NotFound,
+    NotApproved(String),
+    InFlight,
+}
+
+impl std::fmt::Display for UplinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UplinkError::NotConfigured => write!(
+                f,
+                "companion uplink not configured (governance uplink disabled)"
+            ),
+            UplinkError::NotFound => write!(f, "proposal not found"),
+            UplinkError::NotApproved(status) => {
+                write!(f, "proposal not approved (status: {status}); only approved proposals can be uplinked")
+            }
+            UplinkError::InFlight => write!(f, "uplink already in flight for this proposal"),
+        }
+    }
+}
+
 impl Default for CompanionConfig {
     fn default() -> Self {
         Self {
@@ -487,6 +541,11 @@ pub struct CompanionHub {
     lint_cache: Mutex<Option<LintRwCache>>,
     /// C 态提案记录（有界呈现窗；链事实永久留痕）
     proposals: Mutex<Vec<ProposalRecord>>,
+    /// C 态提案治理链上行状态（键=proposal_id；缺省空=上行面零行为）
+    uplink: Mutex<HashMap<String, UplinkState>>,
+    /// 治理链上行配置（None=未配置=上行面完全关闭；main.rs 启动期 env
+    /// 读取注入，测试可注入环回 stub。缺省关：未配置时提案/裁决照常）
+    uplink_config: Mutex<Option<CompanionUplinkConfig>>,
 }
 
 impl CompanionHub {
@@ -554,6 +613,8 @@ impl CompanionHub {
             metrics: Mutex::new(None),
             lint_cache: Mutex::new(None),
             proposals: Mutex::new(Vec::new()),
+            uplink: Mutex::new(HashMap::new()),
+            uplink_config: Mutex::new(None),
         });
         // 坏链隔离重建：告警事实为重启后新链首条（error 日志已在重放时落）
         if let Some(alert) = replay_alert {
@@ -566,6 +627,13 @@ impl CompanionHub {
     /// 构造后运行前调用，重复调用以最后一次为准）
     pub fn with_metrics(self: &Arc<Self>, registry: &prometheus::Registry) {
         *lock_poem(&self.metrics) = CompanionMetrics::register(registry);
+    }
+
+    /// 注入治理链上行配置（main.rs 启动期 env 读取产物；None=保持关闭）。
+    /// 缺省关：未配置时上行面零行为（提案/裁决/分析/认证照常）；测试可
+    /// 注入环回 stub 地址（同 `with_metrics` 构造后运行前调用形态）。
+    pub fn with_uplink_config(self: &Arc<Self>, cfg: Option<CompanionUplinkConfig>) {
+        *lock_poem(&self.uplink_config) = cfg;
     }
 
     /// 注入分析执行 runtime（单 worker 线程承载三件套 CPU 密集段；构造后
@@ -1046,8 +1114,16 @@ impl CompanionHub {
         // proposals→chain 获取顺序一致，防交叉死锁）
         let proposals = lock_poem(&self.proposals)
             .iter()
-            .map(|p| p.render())
+            .map(|p| {
+                let mut v = p.render();
+                v["uplink"] = self.uplink_json_for(&p.proposal_id);
+                v
+            })
             .collect::<Vec<_>>();
+        let uplinks: BTreeMap<String, serde_json::Value> = lock_poem(&self.uplink)
+            .iter()
+            .map(|(k, s)| (k.clone(), s.render()))
+            .collect();
         let chain = lock_poem(&self.chain);
         let errors = lock_poem(&self.errors).clone();
         json!({
@@ -1076,6 +1152,7 @@ impl CompanionHub {
             },
             "last_trigger": lock_poem(&self.last_trigger).to_string(),
             "proposals": proposals,
+            "uplinks": uplinks,
         })
     }
 
@@ -1169,12 +1246,133 @@ impl CompanionHub {
         Ok(rec.render())
     }
 
-    /// 提案清单呈现（只读管理面；与 status 的 proposals 键同源）
+    /// 提案清单呈现（只读管理面；与 status 的 proposals 键同源；各条附
+    /// uplink 字段——无上行记录=null）
     pub(crate) fn proposals_list(&self) -> Vec<serde_json::Value> {
         lock_poem(&self.proposals)
             .iter()
-            .map(|p| p.render())
+            .map(|p| {
+                let mut v = p.render();
+                v["uplink"] = self.uplink_json_for(&p.proposal_id);
+                v
+            })
             .collect()
+    }
+
+    /// 提案的 uplink 状态呈现值（无记录=null；锁序：proposals→uplink）
+    fn uplink_json_for(&self, proposal_id: &str) -> serde_json::Value {
+        lock_poem(&self.uplink)
+            .get(proposal_id)
+            .map(UplinkState::render)
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// 提案治理链上行（D1=approve 后自动触发；D2=手动重试同入口）。
+    /// 守卫序：已配置 → 提案在窗且 status=approved（仅 approved 可上行/
+    /// 重试）→ 无 in-flight。置 pending 后 spawn 出站任务（fire-and-forget：
+    /// 终态 ok/failed 写回状态面+落 `CompanionUplink` 链事实）。
+    ///
+    /// 零拦截红线：裁决在先已完成（CompanionAdjudication 已落链），本方法
+    /// 任何失败路径只影响上行动作本身——不回滚裁决、不改分析/认证/呈现。
+    /// 返回 pending 态信息（含幂等 entry_id）供管理面呈现。
+    pub(crate) fn uplink_proposal(
+        self: &Arc<Self>,
+        proposal_id: &str,
+    ) -> Result<serde_json::Value, UplinkError> {
+        let cfg = lock_poem(&self.uplink_config)
+            .clone()
+            .ok_or(UplinkError::NotConfigured)?;
+        let (entry, actor) = {
+            let proposals = lock_poem(&self.proposals);
+            let rec = proposals
+                .iter()
+                .find(|p| p.proposal_id == proposal_id)
+                .ok_or(UplinkError::NotFound)?;
+            if rec.status != "approved" {
+                return Err(UplinkError::NotApproved(rec.status.to_string()));
+            }
+            let actor = rec.actor.clone().unwrap_or_else(|| "unknown".to_string());
+            let entry = companion_uplink_entry(
+                proposal_id,
+                &rec.ruleset_version,
+                &rec.findings_digest,
+                &rec.findings,
+                rec.proposed_at,
+                rec.adjudicated_at,
+                &actor,
+            );
+            (entry, actor)
+        };
+        {
+            let mut uplinks = lock_poem(&self.uplink);
+            if uplinks
+                .get(proposal_id)
+                .is_some_and(|s| s.state == "pending")
+            {
+                return Err(UplinkError::InFlight);
+            }
+            uplinks.insert(
+                proposal_id.to_string(),
+                UplinkState {
+                    state: "pending",
+                    attempted_at: now_secs(),
+                    last_error: None,
+                    http_status: None,
+                },
+            );
+        }
+        let entry_id = companion_uplink_entry_id(proposal_id);
+        let body = companion_uplink_payload(&cfg, entry, proposal_id, &actor);
+        let hub = Arc::clone(self);
+        let pid = proposal_id.to_string();
+        let chain_entry_id = entry_id.clone();
+        tokio::spawn(async move {
+            let outcome = post_propose(&cfg, &body).await;
+            let (state, last_error, http_status): (&'static str, Option<String>, Option<u16>) =
+                match &outcome {
+                    Ok(code) if (200..300).contains(code) => ("ok", None, Some(*code)),
+                    Ok(code) => (
+                        "failed",
+                        Some(format!("governance propose rejected with status {code}")),
+                        Some(*code),
+                    ),
+                    Err(e) => ("failed", Some(e.clone()), None),
+                };
+            {
+                let mut uplinks = lock_poem(&hub.uplink);
+                if let Some(s) = uplinks.get_mut(&pid) {
+                    s.state = state;
+                    s.last_error = last_error.clone();
+                    s.http_status = http_status;
+                }
+            }
+            hub.append_chain(
+                "CompanionUplink",
+                json!({
+                    "proposal_id": pid,
+                    "entry_id": chain_entry_id,
+                    "outcome": state,
+                    "http_status": http_status,
+                    "last_error": last_error,
+                }),
+            );
+            if state == "ok" {
+                tracing::info!(
+                    proposal_id = %pid,
+                    "companion proposal uplinked to governance (adjudication recorded)"
+                );
+            } else {
+                tracing::warn!(
+                    proposal_id = %pid,
+                    error = ?last_error,
+                    "companion proposal uplink failed (adjudication unaffected; retry via management endpoint)"
+                );
+            }
+        });
+        Ok(json!({
+            "state": "pending",
+            "entry_id": entry_id,
+        }))
     }
 
     /// 上次成功分析的 lint 增量基线快照（None=尚无基线）
@@ -2332,5 +2530,344 @@ mod tests {
         );
         assert_eq!(status_before["last_report"], status_after["last_report"]);
         assert_eq!(status_before["state"], status_after["state"]);
+    }
+
+    // ===== 治理链上行（出站适配器；缺省关；环回 stub 实测）=====
+
+    /// 治理 propose 环回 stub：按 Content-Length 收 POST 体、回固定状态码
+    /// （可配回包延迟，制造 pending 窗口）、请求体经 channel 交测试断言。
+    async fn spawn_propose_stub(
+        status: u16,
+        delay_ms: u64,
+    ) -> (
+        std::net::SocketAddr,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut served = 0usize;
+            while served < 8 {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                served += 1;
+                let mut buf: Vec<u8> = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let header_end = loop {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break buf.len();
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+                let len: usize = headers
+                    .lines()
+                    .find(|l| l.starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                while buf.len() < header_end + len {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
+                let _ = tx.send(body);
+                if delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+        (addr, rx)
+    }
+
+    fn uplink_cfg(addr: std::net::SocketAddr, dataset: Option<&str>) -> CompanionUplinkConfig {
+        CompanionUplinkConfig {
+            base_url: format!("http://{addr}"),
+            api_key: "test-scoped-key".to_string(),
+            dataset: dataset.map(|d| d.to_string()),
+        }
+    }
+
+    /// 轮询等待上行出站任务到达终态（stub 环回即时回包，上限 3s 兜底）
+    async fn wait_uplink_terminal(
+        hub: &std::sync::Arc<CompanionHub>,
+        pid: &str,
+    ) -> serde_json::Value {
+        for _ in 0..300 {
+            {
+                let up = lock_poem(&hub.uplink);
+                if let Some(s) = up.get(pid) {
+                    if s.state != "pending" {
+                        return s.render();
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("uplink 未在时限内到达终态");
+    }
+
+    /// 上行成功链路：approve 后出站 2xx → 状态 ok + CompanionUplink 落链
+    /// （outcome/entry_id/http 终态齐）；请求体载荷面照获批设计（entry_id
+    /// 幂等派生/source=companion/findings 同源/dataset 携带）
+    #[tokio::test]
+    async fn uplink_success_chain_fact_and_payload() {
+        let (addr, mut rx) = spawn_propose_stub(200, 0).await;
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        hub.with_uplink_config(Some(uplink_cfg(addr, Some("gov-ds"))));
+        let started = std::time::Instant::now();
+        hub.certify_success("vUp", &alert_report(), started);
+        let id = hub.status_json()["proposals"][0]["proposal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        hub.adjudicate(&id, "approved", "op-up")
+            .expect("approve ok");
+
+        let info = hub.uplink_proposal(&id).expect("上行受理");
+        assert_eq!(info["state"], serde_json::json!("pending"));
+        let entry_id = info["entry_id"].as_str().unwrap().to_string();
+        assert_eq!(
+            entry_id,
+            companion_uplink_entry_id(&id),
+            "entry_id 由 proposal_id 确定性派生"
+        );
+
+        let term = wait_uplink_terminal(&hub, &id).await;
+        assert_eq!(term["state"], serde_json::json!("ok"));
+        assert_eq!(term["http_status"], serde_json::json!(200));
+
+        let facts: Vec<_> = lock_poem(&hub.chain)
+            .mem
+            .iter()
+            .filter(|e| e["kind"] == "CompanionUplink")
+            .cloned()
+            .collect();
+        assert_eq!(facts.len(), 1, "恰一条上行链事实");
+        let pl = &facts[0]["payload"];
+        assert_eq!(pl["proposal_id"], serde_json::json!(id));
+        assert_eq!(pl["entry_id"], serde_json::json!(entry_id));
+        assert_eq!(pl["outcome"], serde_json::json!("ok"));
+        assert_eq!(pl["http_status"], serde_json::json!(200));
+        assert!(hub.verify_chain().is_ok(), "上行落链后链完整可验");
+
+        let body: serde_json::Value =
+            serde_json::from_str(&rx.recv().await.expect("stub 收到请求体"))
+                .expect("请求体为合法 JSON");
+        assert_eq!(body["dataset_id"], serde_json::json!("gov-ds"));
+        let entry = &body["entry"];
+        assert_eq!(entry["entry_id"], serde_json::json!(entry_id));
+        assert_eq!(entry["ruleset_version"], serde_json::json!("vUp"));
+        assert_eq!(entry["source"], serde_json::json!("companion"));
+        assert_eq!(entry["actor"], serde_json::json!("op-up"));
+        assert!(entry["adjudicated_at"].as_u64().is_some(), "裁决时点在场");
+        assert!(
+            !entry["findings_digest"].as_str().unwrap_or("").is_empty(),
+            "findings 摘要在场"
+        );
+
+        let st = hub.status_json();
+        assert_eq!(st["uplinks"][id.as_str()]["state"], serde_json::json!("ok"));
+        assert_eq!(
+            st["proposals"][0]["uplink"]["state"],
+            serde_json::json!("ok"),
+            "提案条目附 uplink 字段"
+        );
+    }
+
+    /// 零拦截降级链路：出站指向死端口 → 状态 failed+last_error、落链
+    /// failed 事实、裁决/认证照常；重试改投活 stub → 同 entry_id 幂等
+    /// 复用、状态转 ok、第二落链事实齐
+    #[tokio::test]
+    async fn uplink_degraded_adjudication_intact_and_retry_recovers() {
+        // 占一个空闲端口再释放：随后连接该端口即遭拒（快败，不挂 5s 超时）
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").expect("占位取空闲端口");
+        let dead_addr = dead.local_addr().expect("addr");
+        drop(dead);
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        hub.with_uplink_config(Some(uplink_cfg(dead_addr, None)));
+        let started = std::time::Instant::now();
+        hub.certify_success("vDeg", &alert_report(), started);
+        let id = hub.status_json()["proposals"][0]["proposal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        hub.adjudicate(&id, "approved", "op-deg")
+            .expect("approve ok");
+
+        let info = hub
+            .uplink_proposal(&id)
+            .expect("受理（守卫只看配置与提案态，不预检网络）");
+        let term = wait_uplink_terminal(&hub, &id).await;
+        assert_eq!(term["state"], serde_json::json!("failed"));
+        assert!(
+            term["last_error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("uplink transport error"),
+            "last_error 记录传输层失败"
+        );
+
+        // 零拦截：裁决事实照常在链，失败不回滚裁决
+        assert!(
+            lock_poem(&hub.chain)
+                .mem
+                .iter()
+                .any(|e| e["kind"] == "CompanionAdjudication"),
+            "裁决事实在场"
+        );
+        let facts: Vec<_> = lock_poem(&hub.chain)
+            .mem
+            .iter()
+            .filter(|e| e["kind"] == "CompanionUplink")
+            .cloned()
+            .collect();
+        assert_eq!(facts.len(), 1, "failed 上行事实落链");
+        assert_eq!(facts[0]["payload"]["outcome"], serde_json::json!("failed"));
+
+        // 重试恢复：改投活 stub，同 entry_id 幂等复用
+        let (addr, mut rx) = spawn_propose_stub(200, 0).await;
+        hub.with_uplink_config(Some(uplink_cfg(addr, None)));
+        let info2 = hub.uplink_proposal(&id).expect("重试受理");
+        assert_eq!(
+            info2["entry_id"], info["entry_id"],
+            "重试幂等：同提案恒同 entry_id"
+        );
+        let term2 = wait_uplink_terminal(&hub, &id).await;
+        assert_eq!(term2["state"], serde_json::json!("ok"));
+        let body: serde_json::Value =
+            serde_json::from_str(&rx.recv().await.expect("stub 收到重试请求体"))
+                .expect("请求体为合法 JSON");
+        assert!(
+            body.get("dataset_id").is_none(),
+            "dataset 未配置时省略 dataset_id 键"
+        );
+        let facts2 = lock_poem(&hub.chain)
+            .mem
+            .iter()
+            .filter(|e| e["kind"] == "CompanionUplink")
+            .count();
+        assert_eq!(facts2, 2, "failed+ok 两条上行事实独立在链");
+        assert!(hub.verify_chain().is_ok());
+    }
+
+    /// 未配置零行为回归：上行面无状态、无链事实、裁决照常、status
+    /// uplinks 空、proposals 条目 uplink=null
+    #[tokio::test]
+    async fn uplink_unconfigured_zero_behavior() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        let started = std::time::Instant::now();
+        hub.certify_success("vZ", &alert_report(), started);
+        let id = hub.status_json()["proposals"][0]["proposal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        hub.adjudicate(&id, "approved", "op-z").expect("approve ok");
+
+        match hub.uplink_proposal(&id) {
+            Err(UplinkError::NotConfigured) => {}
+            other => panic!("未配置应 NotConfigured，实际 {other:?}"),
+        }
+        // 守卫序前置：配置核先于提案核（未找到同报 NotConfigured）
+        assert!(matches!(
+            hub.uplink_proposal("prop-x"),
+            Err(UplinkError::NotConfigured)
+        ));
+
+        let st = hub.status_json();
+        assert_eq!(
+            st["uplinks"].as_object().expect("uplinks 键在场").len(),
+            0,
+            "上行状态面为空"
+        );
+        assert_eq!(
+            st["proposals"][0]["uplink"],
+            serde_json::Value::Null,
+            "提案条目 uplink=null"
+        );
+        assert!(
+            !lock_poem(&hub.chain)
+                .mem
+                .iter()
+                .any(|e| e["kind"] == "CompanionUplink"),
+            "无上行链事实"
+        );
+    }
+
+    /// 守卫面：proposed/rejected 皆拒上行、未找到拒、in-flight（pending
+    /// 窗口内二次上行）拒
+    #[tokio::test]
+    async fn uplink_guards_not_approved_notfound_inflight() {
+        let (addr, _rx) = spawn_propose_stub(200, 0).await;
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        hub.with_uplink_config(Some(uplink_cfg(addr, None)));
+        let started = std::time::Instant::now();
+        hub.certify_success("vG", &alert_report(), started);
+        let id = hub.status_json()["proposals"][0]["proposal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(
+            matches!(
+                hub.uplink_proposal(&id),
+                Err(UplinkError::NotApproved(s)) if s == "proposed"
+            ),
+            "proposed 态拒上行"
+        );
+        assert!(
+            matches!(hub.uplink_proposal("prop-nope"), Err(UplinkError::NotFound)),
+            "未找到拒"
+        );
+        hub.adjudicate(&id, "rejected", "op-g").expect("reject ok");
+        assert!(
+            matches!(
+                hub.uplink_proposal(&id),
+                Err(UplinkError::NotApproved(s)) if s == "rejected"
+            ),
+            "rejected 态拒上行"
+        );
+
+        // in-flight：慢 stub 拉住 pending 窗口，窗口内二次上行拒
+        hub.certify_success("vG2", &alert_report(), started);
+        let id2 = hub.status_json()["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| {
+                p["proposal_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("prop-vG2-")
+            })
+            .map(|p| p["proposal_id"].as_str().unwrap().to_string())
+            .expect("vG2 提案在窗");
+        hub.adjudicate(&id2, "approved", "op-g")
+            .expect("approve ok");
+        let (slow_addr, _slow_rx) = spawn_propose_stub(200, 300).await;
+        hub.with_uplink_config(Some(uplink_cfg(slow_addr, None)));
+        hub.uplink_proposal(&id2).expect("首次上行受理");
+        assert!(
+            matches!(hub.uplink_proposal(&id2), Err(UplinkError::InFlight)),
+            "pending 窗口内二次上行拒"
+        );
+        wait_uplink_terminal(&hub, &id2).await;
     }
 }

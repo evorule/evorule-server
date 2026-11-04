@@ -12696,6 +12696,10 @@ impl GovernanceServer {
                 post(companion_proposal_reject_handler),
             )
             .route(
+                "/api/companion/proposals/{id}/uplink/retry",
+                post(companion_proposal_uplink_retry_handler),
+            )
+            .route(
                 "/api/sessions/{id}/evolution-signals",
                 get(session_evolution_signals),
             )
@@ -13362,10 +13366,26 @@ async fn companion_proposal_adjudicate(
         .map(|Extension(a)| a.0)
         .unwrap_or_else(|| "local:unauthenticated".to_string());
     match hub.adjudicate(id, outcome, &actor_id) {
-        Ok(rendered) => Ok(Json(serde_json::json!({
-            "proposal": rendered,
-            "actor": actor_id,
-        }))),
+        Ok(rendered) => {
+            let mut resp = serde_json::json!({
+                "proposal": rendered,
+                "actor": actor_id,
+            });
+            // D1：approve 后自动上行（记录性转发）。零拦截红线：上行守卫
+            // 失败不影响处置响应语义（200 照常），仅按配置态如实呈现——
+            // 未配置（缺省关）不附加 uplink 键（全链零行为变化）。
+            if outcome == "approved" {
+                match hub.uplink_proposal(id) {
+                    Ok(info) => {
+                        resp["uplink"] = info;
+                    }
+                    Err(e) => {
+                        resp["uplink_error"] = serde_json::json!(e.to_string());
+                    }
+                }
+            }
+            Ok(Json(resp))
+        }
         Err(e) => {
             let status = if e.contains("not found") {
                 StatusCode::NOT_FOUND
@@ -13373,6 +13393,53 @@ async fn companion_proposal_adjudicate(
                 StatusCode::CONFLICT
             };
             Err((status, Json(serde_json::json!({ "error": e }))))
+        }
+    }
+}
+
+/// C 态提案治理链上行重试（D2）：失败/待行的 approved 提案重发出站。
+/// 守卫语义：上行未配置=400 / 提案未找到=404 / 非 approved 或 in-flight=409。
+#[utoipa::path(
+    post,
+    path = "/api/companion/proposals/{id}/uplink/retry",
+    tag = "companion",
+    params(("id" = String, Path, description = "Companion proposal id")),
+    responses(
+        (status = 200, description = "Uplink re-dispatched (pending)"),
+        (status = 400, description = "Uplink not configured"),
+        (status = 404, description = "Proposal not found"),
+        (status = 409, description = "Proposal not approved or uplink in flight"),
+        (status = 503, description = "Companion hub not wired"),
+    )
+)]
+async fn companion_proposal_uplink_retry_handler(
+    State(api): State<SessionApi>,
+    actor: Option<Extension<crate::api::platform_auth::AuthedActor>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // 认证扩展同 approve/reject 形态（Option 注入；上行守卫走 uplink_proposal）
+    let _ = actor.map(|Extension(a)| a.0);
+    let Some(hub) = api.companion.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                serde_json::json!({ "error": "companion hub 未装配（伴跑状态机仅生产装配路径启用）" }),
+            ),
+        ));
+    };
+    match hub.uplink_proposal(&id) {
+        Ok(info) => Ok(Json(serde_json::json!({
+            "proposal_id": id,
+            "uplink": info,
+        }))),
+        Err(e) => {
+            let status = match &e {
+                crate::api::companion::UplinkError::NotConfigured => StatusCode::BAD_REQUEST,
+                crate::api::companion::UplinkError::NotFound => StatusCode::NOT_FOUND,
+                crate::api::companion::UplinkError::NotApproved(_)
+                | crate::api::companion::UplinkError::InFlight => StatusCode::CONFLICT,
+            };
+            Err((status, Json(serde_json::json!({ "error": e.to_string() }))))
         }
     }
 }
