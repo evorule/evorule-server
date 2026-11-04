@@ -145,7 +145,8 @@ thiserror = "2"
 
 # OpenAPI 单一真相源 (P2-1): utoipa 从代码生成规范，运行时经 /api/openapi.json 导出
 utoipa = { version = "5", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+# vendored: swagger-ui 资源包由 crates.io 伴随 crate 携带，构建期零外网下载
+utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
 
 # CLI 参数解析
 clap = { version = "4", features = ["derive", "env"] }
