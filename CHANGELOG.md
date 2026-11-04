@@ -27,6 +27,10 @@
 
 ## [Unreleased]
 
+### 🆕 新增
+
+- 🆕 **伴跑提案治理链上行（出站适配器，缺省关）**：人工 approve 裁决完成后自动将提案内容确定性转发至治理面提案入库端点（`X-Api-Key` scoped key），失败可经管理端点重试。配置仅 env 外置（`EVORULE_COMPANION_UPLINK_URL` / `EVORULE_COMPANION_UPLINK_KEY` / `EVORULE_COMPANION_UPLINK_DATASET` 可选），URL 未配置=上行面完全关闭（提案/裁决/分析/认证全链零行为变化）；上行失败不回滚裁决（记录性转发），终态 ok/failed 写入 status 呈现面（`uplinks` 键+提案条目 `uplink` 字段）并落 `CompanionUplink` 审计链事实（outcome/entry_id/http 终态）；`entry_id` 为确定性幂等 slug（fnv1a64，K3 出站同构——同提案重复上行不重复入库）；新增管理端点 `POST /api/companion/proposals/{id}/uplink/retry`（未配置=400/未找到=404/非 approved 或在途=409）
+
 ### 🐛 修复
 
 - 🐛 **会话复活对悬挂 io 请求的终结处置与哨兵 FactId 隔离**：`rehydrate_session_from_wal` 的最大 FactId 扫描此前未排除哨兵 ID 事实——每个会话 WAL 自创建起即含规则集锚定哨兵（`u64::MAX-1`），复活后反应器计数器从哨兵+1 续起，首个新事实 ID 即撞保留哨兵（`u64::MAX`），再次分配溢出回绕。修复后扫描跳过哨兵区（`>= u64::MAX-1`），复活后新事实 ID 回到普通计数区连续分配；同趟扫描收集无应答 io 请求（已发射 IoRequest、无对应 IoResponse 的崩溃悬挂），复活时以显式 error IoResponse 落链终结——审计链自解释，悬挂语义不带入复活后生命周期（落链失败仅告警不阻断复活）；复活日志 `replayed_facts` 改报真实重放事实条数（此前以最大 FactId 冒充，哨兵污染时报出天文数字）

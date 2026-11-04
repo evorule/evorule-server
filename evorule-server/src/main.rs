@@ -76,7 +76,7 @@ use evorule_verification_services::NATIVE_SERVICES as VERIFICATION_NATIVE_SERVIC
 // H6: SharedMetrics trait object 类型来自核心层，PrometheusMetrics 实现来自本地 metrics_impl
 use evorule_governance::metrics::SharedMetrics;
 use evorule_governance::shared_facts_log::SharedFactsLog;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
 /// 优雅退出超时（等待进行中请求的最长时间）
@@ -2961,6 +2961,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if companion_start_enabled {
         companion_hub.set_enabled(true, "local:startup-flag");
     }
+    // 治理链上行配置（env 外置缺省关：EVORULE_COMPANION_UPLINK_URL 空=
+    // 上行面零行为，提案/裁决照常；URL 已配置=approve 后自动上行，失败
+    // 降级只写状态面+落链，不回滚裁决）
+    let companion_uplink_cfg =
+        evorule_server::api::companion_uplink::CompanionUplinkConfig::from_env();
+    match &companion_uplink_cfg {
+        Some(c) => info!("伴跑治理链上行已启用（治理面基址 {}）", c.base_url),
+        None => debug!("伴跑治理链上行未配置（缺省关）"),
+    }
+    companion_hub.with_uplink_config(companion_uplink_cfg);
 
     let session_api = SessionApi::new_with_full_config(
         core_eval,
