@@ -34,6 +34,7 @@
 ### 🔄 变更
 
 - 🔄 **evorule 注册表依赖升 0.12.1**：tcb / audit-chain / governance / reactor / discipline 五件自 0.12.0 升至 0.12.1（semver 声明面不变，Cargo.lock 钉版）。reactor 0.12.1 修复事件循环悬死根因——WAL 落盘迁 blocking 线程池（`append_async`，append 本体语义不变：写锁/write-ahead 序/哈希链逐条一致，三性零扰动），同步 flush 慢不再拖冻共享 runtime
+- 🔄 **FactsLog 读/管理路径 blocking 池迁移（读路径残余面收口）**：约 17 处 handler 直呼同步方法（snapshot ×3 / history ×2 / history_with_versions ×3 / history_last_with_versions ×1 / facts_by_path_prefix ×1 / compact+compacted_info / rotate_wal ×2 / Violation 落账 append ×2 改走 `append_async`）统经 `facts_blocking` helper 迁 blocking 池——慢 flush / compact / rotate 的锁持有窗口内不再冻结 handler worker（写路径修复后的对称收口，锁语义与返回值不变，纯执行线程迁移）；`version()`（原子读）与测试代码不迁
 
 - 🆕 **伴跑提案治理链上行（出站适配器，缺省关）**：人工 approve 裁决完成后自动将提案内容确定性转发至治理面提案入库端点（`X-Api-Key` scoped key），失败可经管理端点重试。配置仅 env 外置（`EVORULE_COMPANION_UPLINK_URL` / `EVORULE_COMPANION_UPLINK_KEY` / `EVORULE_COMPANION_UPLINK_DATASET` 可选），URL 未配置=上行面完全关闭（提案/裁决/分析/认证全链零行为变化）；上行失败不回滚裁决（记录性转发），终态 ok/failed 写入 status 呈现面（`uplinks` 键+提案条目 `uplink` 字段）并落 `CompanionUplink` 审计链事实（outcome/entry_id/http 终态）；`entry_id` 为确定性幂等 slug（fnv1a64，K3 出站同构——同提案重复上行不重复入库）；新增管理端点 `POST /api/companion/proposals/{id}/uplink/retry`（未配置=400/未找到=404/非 approved 或在途=409）
 
