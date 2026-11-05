@@ -202,6 +202,30 @@ pub type ReadinessFlag = Arc<AtomicBool>;
 type LintRwBaseline =
     std::collections::BTreeMap<String, Vec<evorule_inference_services::rw_extract::RuleRw>>;
 
+/// FactsLog 同步读/管理操作的 blocking 池迁移（读路径残余面收口）。
+///
+/// 背景：写路径的 WAL 落盘已迁 blocking 池（reactor 0.12.1 `append_async`），
+/// 但慢 flush / compact / rotate 的**锁持有窗口**仍会挡住拿读锁的同步调用。
+/// handler 在 async 上下文直呼这些同步方法时，等锁会冻结自己的 worker——
+/// 本 helper 把执行线程一并迁到 blocking 池：等锁与磁盘重活都不再占 worker，
+/// runtime 保持可调度。纯执行线程迁移，锁语义与返回值不变。
+///
+/// join 失败仅见于闭包内 panic（磁盘/内存状态由 append 的写锁+write-ahead 序
+/// 保证一致性），按 500 上抛。
+async fn facts_blocking<T, F>(log: &FactsLog, op: F) -> Result<T, StatusCode>
+where
+    F: FnOnce(&FactsLog) -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let log = log.clone();
+    tokio::task::spawn_blocking(move || op(&log))
+        .await
+        .map_err(|e| {
+            tracing::error!("facts blocking op join failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 /// Governance API 共享状态
 ///
 ///
@@ -283,8 +307,8 @@ impl GovernanceApi {
     }
 
     /// 获取当前状态快照
-    pub fn snapshot(&self) -> (JsonValue, Vec<JsonValue>, u64) {
-        self.facts_log.snapshot()
+    pub async fn snapshot(&self) -> Result<(JsonValue, Vec<JsonValue>, u64), StatusCode> {
+        facts_blocking(&self.facts_log, FactsLog::snapshot).await
     }
 
     /// 获取 FactsLog 引用
@@ -4371,7 +4395,9 @@ impl evorule_workspace::SessionOps for SessionApi {
             }
         })?;
 
-        let (payload, queue, version) = session.facts_log.snapshot();
+        let (payload, queue, version) = facts_blocking(&session.facts_log, FactsLog::snapshot)
+            .await
+            .map_err(|e| evorule_workspace::WorkspaceError::internal(e.to_string()))?;
 
         let mut obj = serde_json::Map::new();
 
@@ -6740,8 +6766,10 @@ async fn update_payload(
 
 )]
 
-async fn get_state(State(api): State<GovernanceApi>) -> Json<serde_json::Value> {
-    let (payload, queue, version) = api.snapshot();
+async fn get_state(
+    State(api): State<GovernanceApi>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let (payload, queue, version) = api.snapshot().await?;
 
     let mut obj = serde_json::Map::new();
 
@@ -6761,7 +6789,7 @@ async fn get_state(State(api): State<GovernanceApi>) -> Json<serde_json::Value> 
 
     api.audit_new().await;
 
-    Json(serde_json::Value::Object(obj))
+    Ok(Json(serde_json::Value::Object(obj)))
 }
 
 /// 获取审计报告 handler
@@ -7835,7 +7863,12 @@ async fn wait_for_command_verdict(
 ) -> CommandVerdict {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        for (_, fact) in facts_log.history_last_with_versions(COMMAND_WAIT_SCAN_WINDOW) {
+        let recent = facts_blocking(facts_log, |l| {
+            l.history_last_with_versions(COMMAND_WAIT_SCAN_WINDOW)
+        })
+        .await
+        .unwrap_or_default();
+        for (_, fact) in recent {
             match fact {
                 Fact::StateTransition { cause, .. } if cause.0 == fact_id => {
                     return CommandVerdict::Accepted {
@@ -8111,7 +8144,7 @@ async fn session_state(
         rej.to_status()
     })?;
 
-    let (payload, queue, version) = session.facts_log.snapshot();
+    let (payload, queue, version) = facts_blocking(&session.facts_log, FactsLog::snapshot).await?;
 
     metrics.set_facts_log_version(version);
 
@@ -8676,8 +8709,8 @@ async fn session_gc(
     let session = sessions
         .get_session(session_id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let ratio = session.facts_log.compact();
-    let info = session.facts_log.compacted_info();
+    let (ratio, info) =
+        facts_blocking(&session.facts_log, |l| (l.compact(), l.compacted_info())).await?;
     drop(sessions);
     // 操作落账：压缩改变链可见历史，平台事件报表须可追溯
     crate::api::platform_auth::append_platform_event(
@@ -8838,16 +8871,19 @@ async fn session_invariants_scan(
     let mut recorded = 0usize;
     for v in &report.violations {
         let id = api.next_id();
-        let appended = session.facts_log.append(evorule_reactor::Fact::Violation {
-            id,
-            cause: evorule_reactor::FactId(0),
-            rule_index: u64::MAX,
-            reason: v.as_str().to_string(),
-            instruction: evorule_tcb::JsonValue::object_from_pairs_owned(vec![(
-                "scan_steps".to_string(),
-                evorule_tcb::JsonValue::Integer(report.steps as i64),
-            )]),
-        });
+        let appended = session
+            .facts_log
+            .append_async(evorule_reactor::Fact::Violation {
+                id,
+                cause: evorule_reactor::FactId(0),
+                rule_index: u64::MAX,
+                reason: v.as_str().to_string(),
+                instruction: evorule_tcb::JsonValue::object_from_pairs_owned(vec![(
+                    "scan_steps".to_string(),
+                    evorule_tcb::JsonValue::Integer(report.steps as i64),
+                )]),
+            })
+            .await;
         if appended.is_ok() {
             recorded += 1;
         }
@@ -8939,7 +8975,7 @@ async fn session_wal_rotate(
     let session = sessions
         .get_session(session_id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let rotate_result = session.facts_log.rotate_wal();
+    let rotate_result = facts_blocking(&session.facts_log, FactsLog::rotate_wal).await?;
     // WAL 观察面（P1 W-3）：轮换调用计数（未注册观察面 → 零操作）
     if let Some(obs) = crate::wal_observation::WalObservation::global() {
         obs.record_rotate("session", rotate_result.is_ok());
@@ -9008,7 +9044,11 @@ async fn admin_wal_checkpoint(
         for sid in sessions.list_sessions() {
             match sessions.get_session(sid) {
                 Some(s) => {
-                    let r = s.facts_log.rotate_wal();
+                    let r = facts_blocking(&s.facts_log, FactsLog::rotate_wal)
+                        .await
+                        .unwrap_or(Err(evorule_reactor::FactsLogError::Internal(
+                            "blocking rotate join failed".into(),
+                        )));
                     // WAL 观察面（P1 W-3）：逐会话轮换计数（未注册 → 零操作）
                     if let Some(obs) = crate::wal_observation::WalObservation::global() {
                         obs.record_rotate("session", r.is_ok());
@@ -10518,7 +10558,7 @@ async fn session_replay(
 
     let to = params.to.unwrap_or_else(|| session.facts_log.version());
 
-    let all_facts = session.facts_log.history_with_versions();
+    let all_facts = facts_blocking(&session.facts_log, FactsLog::history_with_versions).await?;
 
     let result: Vec<FactEnvelope> = all_facts
         .into_iter()
@@ -10803,7 +10843,7 @@ async fn session_history(
         rej.to_status()
     })?;
 
-    let all_facts = session.facts_log.history_with_versions();
+    let all_facts = facts_blocking(&session.facts_log, FactsLog::history_with_versions).await?;
 
     let result: Vec<FactEnvelope> = all_facts
         .into_iter()
@@ -10876,7 +10916,7 @@ async fn session_rewind(
         .get_session(session_id)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let facts = session.facts_log.history();
+    let facts = facts_blocking(&session.facts_log, FactsLog::history).await?;
 
     let snapshot = evorule_governance::time_machine::rewind(&facts, params.version);
 
@@ -10942,7 +10982,7 @@ async fn session_diff(
         rej.to_status()
     })?;
 
-    let facts = session.facts_log.history();
+    let facts = facts_blocking(&session.facts_log, FactsLog::history).await?;
 
     // B8b 配套（evorule-governance 0.4.1）：diff 对 rewind 不可达版本
     // 由静默回退空 payload 改为返回 Err(TimeMachineError)——与 rewind 端点
@@ -11045,7 +11085,8 @@ async fn session_facts_by_prefix(
 
     let prefix = params.prefix.unwrap_or_default();
 
-    let facts = session.facts_log.facts_by_path_prefix(&prefix);
+    let facts =
+        facts_blocking(&session.facts_log, move |l| l.facts_by_path_prefix(&prefix)).await?;
 
     // D-S3 修复(2026-08-03):非 PayloadUpdate 的 fact 跳过(filter),不再返回空对象 {}。
 
@@ -12146,13 +12187,16 @@ async fn session_io_response(
             // Violation 为记录性事实（不 bump version）；rule_index=u64::MAX
             // 为保留值，标记特征表命中（区别于规则层 enforce 的规则下标）；
             // cause 指向被拒的 IoResponse 事实
-            let _ = session.facts_log.append(evorule_reactor::Fact::Violation {
-                id: violation_id,
-                cause: request_id,
-                rule_index: u64::MAX,
-                reason: reason.clone(),
-                instruction,
-            });
+            let _ = session
+                .facts_log
+                .append_async(evorule_reactor::Fact::Violation {
+                    id: violation_id,
+                    cause: request_id,
+                    rule_index: u64::MAX,
+                    reason: reason.clone(),
+                    instruction,
+                })
+                .await;
 
             tracing::info!(
                 session_id,
@@ -13525,7 +13569,7 @@ async fn session_evolution_signals(
     })?;
 
     // ① 违规事实只读采集（FactsLog 单调版本号 = 确定性时钟）
-    let facts = session.facts_log.history_with_versions();
+    let facts = facts_blocking(&session.facts_log, FactsLog::history_with_versions).await?;
     let mut snapshots: Vec<ViolationSnapshot> = Vec::new();
     for (version, fact) in &facts {
         if let Fact::Violation {
