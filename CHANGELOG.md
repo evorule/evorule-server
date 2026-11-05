@@ -29,6 +29,12 @@
 
 ### 🆕 新增
 
+- 🆕 **引擎自 watchdog（运行时冻结兜底面）**：进程内自监测「进程存活而 runtime 全冻结」的悬死形态——tokio 心跳任务每 5s 原子计数 +1（runtime 冻结即计数断流），独立 std::thread 监测（async 冻结拖不死同步线程）计数断流超过 120s → `error!` 告警落盘 + 退出码 3 交壳 guard 组重启；启动宽限 600s 防启动期误杀，宽限耗尽仅告警；watchdog 线程启动失败仅告警不杀进程（兜底缺席≠进程不可用）；日志初始化后启动（告警走持久化面）
+
+### 🔄 变更
+
+- 🔄 **evorule 注册表依赖升 0.12.1**：tcb / audit-chain / governance / reactor / discipline 五件自 0.12.0 升至 0.12.1（semver 声明面不变，Cargo.lock 钉版）。reactor 0.12.1 修复事件循环悬死根因——WAL 落盘迁 blocking 线程池（`append_async`，append 本体语义不变：写锁/write-ahead 序/哈希链逐条一致，三性零扰动），同步 flush 慢不再拖冻共享 runtime
+
 - 🆕 **伴跑提案治理链上行（出站适配器，缺省关）**：人工 approve 裁决完成后自动将提案内容确定性转发至治理面提案入库端点（`X-Api-Key` scoped key），失败可经管理端点重试。配置仅 env 外置（`EVORULE_COMPANION_UPLINK_URL` / `EVORULE_COMPANION_UPLINK_KEY` / `EVORULE_COMPANION_UPLINK_DATASET` 可选），URL 未配置=上行面完全关闭（提案/裁决/分析/认证全链零行为变化）；上行失败不回滚裁决（记录性转发），终态 ok/failed 写入 status 呈现面（`uplinks` 键+提案条目 `uplink` 字段）并落 `CompanionUplink` 审计链事实（outcome/entry_id/http 终态）；`entry_id` 为确定性幂等 slug（fnv1a64，K3 出站同构——同提案重复上行不重复入库）；新增管理端点 `POST /api/companion/proposals/{id}/uplink/retry`（未配置=400/未找到=404/非 approved 或在途=409）
 
 ### 🐛 修复

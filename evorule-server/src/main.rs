@@ -2105,6 +2105,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 会被 drop,导致文件日志写入全部丢失。
     let _log_guard = init_logging(&cfg.log_level, &cfg.log_format, cfg.log_file.as_ref());
 
+    // 引擎自 watchdog（运行时冻结兜底面）：心跳断流 >120s = runtime 疑似全冻结，
+    // 退出码 3 交壳 guard 组重启。须在日志初始化后（告警落盘）。
+    evorule_server::watchdog::start();
+
     let start_time = Instant::now();
     info!("=== evorule-server 启动中 ===");
     info!(
