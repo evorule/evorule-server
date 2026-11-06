@@ -14551,6 +14551,27 @@ async fn validate_rules_handler(
 
 // ============================================================================
 
+/// 规则集容量预警双档（治理常数与 TCB `MAX_TRANSFORM_RULES` 同源，见 rule_schema）：
+/// ≥80% 上限=容纳方案立项预警（首触发 103 条），≥92%=立法冻结线（首触发 118 条）；
+/// 同步更新 Prometheus gauge `evorule_ruleset_rule_count`（随 reload 刷新）
+fn report_ruleset_capacity(count: usize) {
+    crate::metrics_impl::set_ruleset_rule_count(count as i64);
+    let cap = evorule_rule_schema::MAX_TRANSFORM_RULES;
+    if count * 100 >= cap * 92 {
+        tracing::warn!(
+            count = count,
+            cap = cap,
+            "ruleset rule count reached >= 92% of engine cap (legislation freeze line)"
+        );
+    } else if count * 100 >= cap * 80 {
+        tracing::warn!(
+            count = count,
+            cap = cap,
+            "ruleset rule count reached >= 80% of engine cap (accommodation plan trigger)"
+        );
+    }
+}
+
 /// 装载期 I/O 权利面独占防线：被拒条目的单条重叠明细
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RejectedOverlapDetail {
@@ -14705,24 +14726,27 @@ async fn reload_rules_handler(
     let old_len = sessions.core_eval_len();
 
     match sessions.reload_from_disk().await {
-        Ok((old, new_len, rejected_overlaps, rejected_domains, rejected_gate_files)) => Ok((
-            StatusCode::OK,
-            Json(RulesReloadedResponse {
-                reload_ok: true,
+        Ok((old, new_len, rejected_overlaps, rejected_domains, rejected_gate_files)) => {
+            report_ruleset_capacity(new_len);
+            Ok((
+                StatusCode::OK,
+                Json(RulesReloadedResponse {
+                    reload_ok: true,
 
-                previous_rules: old,
+                    previous_rules: old,
 
-                current_rules: new_len,
+                    current_rules: new_len,
 
-                error: None,
+                    error: None,
 
-                rejected_overlaps,
+                    rejected_overlaps,
 
-                rejected_domains,
+                    rejected_domains,
 
-                rejected_gate_files,
-            }),
-        )),
+                    rejected_gate_files,
+                }),
+            ))
+        }
 
         Err(e) => {
             tracing::error!("rules reload failed: {}", e);
@@ -16562,11 +16586,11 @@ mod tests {
     #[tokio::test]
 
     async fn test_validate_transform_count_exceeds_limit() {
-        // transform 数量超过 64 条上限
+        // transform 数量超过 128 条上限
 
-        // 用合法 set 填充 65 条（超过 TCB 上限 64）
+        // 用合法 set 填充 129 条（超过 TCB 上限 128）
 
-        let transforms: Vec<serde_json::Value> = (0..65)
+        let transforms: Vec<serde_json::Value> = (0..129)
             .map(|_| {
                 serde_json::json!({"type": "set", "params": {"attr": "x", "operation": "set", "value": 1}})
             })
@@ -16580,7 +16604,7 @@ mod tests {
 
         assert_eq!(body["passed"], false);
 
-        // Schema 门禁:transform 数量超限（maxItems=64 / 引擎上限）
+        // Schema 门禁:transform 数量超限（maxItems=128 / 引擎上限）
 
         assert_eq!(body["schema_gate"], "failed");
 
@@ -22569,7 +22593,7 @@ mod tests {
         );
     }
 
-    /// perf 夹具写入：宪法 2 条 + 20 文件 × 3 规则（lint 60 条，MAX_RULES=64 内）
+    /// perf 夹具写入：宪法 2 条 + 20 文件 × 3 规则（lint 60 条，MAX_RULES=128 内）
     fn write_perf_fixture(core_eval_path: &std::path::Path, rules_dir: &std::path::Path) {
         std::fs::create_dir_all(rules_dir).expect("mkdir rules");
         std::fs::write(
@@ -22611,7 +22635,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_companion_incremental_perf_fixture_50_rules() {
-        // perf fixture：20 文件 × 3 规则 = 60 条 lint 规则（MAX_RULES=64 内）+
+        // perf fixture：20 文件 × 3 规则 = 60 条 lint 规则（MAX_RULES=128 内）+
         // 宪法 2 条；改 1/20 文件 → 增量分析耗时低于全量基线（各取 5 轮最小值）
         let tmp = tempfile::tempdir().expect("tempdir");
         let core_eval_path = tmp.path().join("core_eval.json");
@@ -22712,7 +22736,7 @@ mod tests {
         }
         // 分析段耗时 = 套件耗时 − 装载段耗时（两路径装载同代价；设计稿验收
         // 口径为「分析耗时」）。注：分析段含两路径共同的确定性摘要面
-        // （file_digests 分组摘要 + 快照 digest），其在 64 条规则帽内占比
+        // （file_digests 分组摘要 + 快照 digest），其在 128 条规则帽内占比
         // 大于三件套本身——「增量低于全量一半」在该帽内结构性不可达，
         // 本测试断言严格低于并输出比值供设计线复检（假设缺口已登记）
         let analysis_full = t_full.saturating_sub(t_load);

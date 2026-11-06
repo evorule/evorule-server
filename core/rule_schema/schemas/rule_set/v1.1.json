@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evorule.org/schemas/rule_set/v1.1.json",
+  "title": "evorule rule_set v1.1（约束放宽：transform 上限 128）",
+  "description": "业务规则集合 / TCB 规则集合。v1.1 相对 v1.0 为纯约束放宽（完全兼容零迁移）：transform 数组上限 64→128（与引擎 TCB MAX_TRANSFORM_RULES 常量同步），其余逐字段与 v1.0 一致；v1.0 冻结存量零迁移可用。body 语义同 v1.0：引擎原生 transform[]（元指令层，与 core_eval.json 同构，zero-translation），branch.on_true/on_false 装元指令层 transform_rule；push.instructions 装指令层业务指令。domain/instruction/transform_rule 定义引用 _shared/v1.0.json（SSOT）。本 schema 是 rule_translate 的输出契约与 server 侧规则拦截门禁基准。",
+  "x_legal_authority_notice": "本 schema 由 EvoRule 团队维护,以 CC0 1.0 公共领域奉献(见 schemas/LICENSE-SCHEMAS.md);通过本 schema 校验或创作的 system JSON 内容 IP 归作者所有,evorule 不主张。详见 ../../LEGAL_NOTES.md 与 ../../docs/adr/scope-split-ip-model.md",
+  "allOf": [
+    { "$ref": "../_meta/v1.0.json" },
+    {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "rule_set" },
+        "transform": {
+          "type": "array",
+          "description": "引擎原生 transform 规则数组（元指令层）。上限 128（TCB MAX_TRANSFORM_RULES）。",
+          "maxItems": 128,
+          "minItems": 1,
+          "items": { "$ref": "../_shared/v1.0.json#/$defs/transform_rule" }
+        }
+      },
+      "required": ["transform"],
+      "additionalProperties": true
+    }
+  ]
+}

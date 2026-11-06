@@ -104,7 +104,7 @@ pub fn detect_conflicts(rws: &[RuleRw]) -> Result<ConflictReport, String> {
 
     let mut conflicts: Vec<Conflict> = Vec::new();
 
-    // ── 写路径配对检测（O(n²)，n ≤ MAX_TRANSFORM_RULES=64 有上界保护）──
+    // ── 写路径配对检测（O(n²)，n ≤ MAX_TRANSFORM_RULES=128 有上界保护）──
     for i in 0..active.len() {
         for j in (i + 1)..active.len() {
             let a = active[i];

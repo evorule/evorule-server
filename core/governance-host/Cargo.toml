@@ -9,9 +9,9 @@ publish = false
 homepage = "https://github.com/evorule/evorule-server"
 
 [dependencies]
-evorule-governance = { version = "0.12", features = ["persistence"] }
-evorule-reactor = { version = "0.12", features = ["persistence"] }
-evorule-tcb = "0.12"
+evorule-governance = { version = "0.13", features = ["persistence"] }
+evorule-reactor = { version = "0.13", features = ["persistence"] }
+evorule-tcb = "0.13"
 serde_json = "1"
 flate2 = "1"
 tracing = "0.1"

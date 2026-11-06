@@ -1126,6 +1126,15 @@ impl CompanionHub {
             .collect();
         let chain = lock_poem(&self.chain);
         let errors = lock_poem(&self.errors).clone();
+        let last_report = lock_poem(&self.last_report).clone();
+        // 容量透出：现役条数取最近报告实测值（None=尚无报告）；上限与双档
+        // 阈值随治理常数派生（与 TCB MAX_TRANSFORM_RULES 同源，见 rule_schema）
+        let rule_count = last_report
+            .as_ref()
+            .and_then(|r| r.get("report"))
+            .and_then(|r| r.get("rule_count"))
+            .and_then(|v| v.as_u64());
+        let cap = evorule_rule_schema::MAX_TRANSFORM_RULES;
         json!({
             "enabled": self.enabled.load(Ordering::Relaxed),
             "state": lock_poem(&self.phase).as_str(),
@@ -1133,7 +1142,13 @@ impl CompanionHub {
             "dirty_since": lock_poem(&self.dirty_since).clone(),
             "last_error": errors.back().cloned(),
             "errors": errors.iter().cloned().collect::<Vec<_>>(),
-            "last_report": lock_poem(&self.last_report).clone(),
+            "last_report": last_report,
+            "ruleset_capacity": {
+                "rule_count": rule_count,
+                "cap": cap,
+                "warn_80": (cap * 80).div_ceil(100),
+                "freeze_92": (cap * 92).div_ceil(100),
+            },
             "certified_versions": lock_poem(&self.certified).versions(),
             "clean_versions": lock_poem(&self.certified).clean_versions(),
             "counters": {
