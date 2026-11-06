@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evorule.org/schemas/law_set/_meta/v1.0.json",
+  "title": "evorule Law Set Meta v1.0",
+  "description": "law_set 文档的顶层治理骨架（照 rule_schema 家族 _meta 形态精简裁制）。kind 封闭为 law_set；$id 归 law_set 家族命名空间（与 rule_schema 顶层 _meta 全量件隔离，防同 $id 异内容漂移）。metadata 开放向前兼容。",
+  "type": "object",
+  "required": ["$schema", "kind", "id", "version", "metadata"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "指向 evorule schema 文件 URL（v<主>.<次> 两段式，与 rule_schema 家族口径一致）",
+      "pattern": "^https://evorule\\.org/schemas/[a-z_]+/v\\d+\\.\\d+\\.json$"
+    },
+    "kind": {
+      "type": "string",
+      "const": "law_set",
+      "description": "law_set 家族封闭 kind（治理判定语义 rule_set 与等式恒真语义 law_set 的分野锚）"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "命名空间唯一 ID（形态与 law_set/v1.0.json 顶层 id 同规）"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[a-z0-9.-]+)?(\\+[a-z0-9.-]+)?$",
+      "description": "semver 内容版本（与 $schema 主版本正交）"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "治理标注元数据（title/authors/license 等；开放向前兼容）",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -437,7 +437,12 @@ fn load_one(
     // 按内嵌 v1.0 校验器静默通过（D4：版本协商缺位）。允许显式声明 v1.0；
     // 未来版本按此处白名单逐版登记，未登记版本 fail-fast。
     if let Some(schema_uri) = doc.get("$schema").and_then(|s| s.as_str()) {
-        const KNOWN_VERSIONS: [&str; 1] = ["https://evorule.org/schemas/rule_set/v1.0.json"];
+        // law_set 为独立部署件（不经本装载路径消费，装载面在 law_schema crate）；
+        // 登记入协商面使声明该 $schema 的文档在此报「形态不识别」而非「版本未协商」。
+        const KNOWN_VERSIONS: [&str; 2] = [
+            "https://evorule.org/schemas/rule_set/v1.0.json",
+            "https://evorule.org/schemas/law_set/v1.0.json",
+        ];
         if !KNOWN_VERSIONS.contains(&schema_uri) {
             return Err(ConstitutionError::SchemaViolation(four_part(
                 &format!(
@@ -1379,6 +1384,27 @@ mod tests {
         let mut partial = json!({ "transform": valid_rule_set()["transform"].clone() });
         partial["metadata"] = json!({ "title": "传统部分壳" });
         load_rule_set(&partial, &ctx).expect("无 $schema 部分壳应过（分期兼容）");
+    }
+
+    #[test]
+    fn schema_version_negotiation_law_set_recognized_but_shape_rejected() {
+        // law_set $schema 已登记协商面（独立部署件）：过版本协商门后
+        // 因非 rule_set 形态（无 transform）被「形态不识别」拒——
+        // 报因必须落在形态层而非版本协商层（rule_set 回归零变化）
+        let mut doc = valid_rule_set();
+        doc.as_object_mut()
+            .expect("valid_rule_set 为 object")
+            .remove("transform");
+        doc["kind"] = json!("law_set");
+        doc["$schema"] = json!("https://evorule.org/schemas/law_set/v1.0.json");
+        let ctx = LoadContext::business_file("law.json");
+        let err = load_rule_set(&doc, &ctx).expect_err("law_set 非本装载路径形态应拒");
+        let msg = format!("{err}");
+        assert!(
+            !msg.contains("版本未协商"),
+            "law_set $schema 已登记，不得报版本协商失败: {msg}"
+        );
+        assert!(msg.contains("无法识别"), "报因应落在形态层: {msg}");
     }
 
     // ===== [CON-S-003] 来源指纹收编（D3）=====

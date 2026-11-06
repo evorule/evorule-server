@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evorule.org/schemas/law_set/_shared/v1.0.json",
+  "title": "evorule Law Set 共享定义 v1.0",
+  "description": "law_set 家族跨文件共享 $defs（SSOT）。v1.0 定稿的 law $def 内嵌于 law_set/v1.0.json（单文件自洽，无跨文件 $ref）；本文件预留家族演进位——后续 law_set 变体 schema 的共享 $defs 落此处经 $ref 引用，禁复制粘贴漂移。",
+  "$defs": {}
+}
