@@ -1477,6 +1477,7 @@ dependencies = [
  "evorule-tcb",
  "evorule-template-services",
  "evorule-verification-services",
+ "evorule-video-services",
  "evorule-workspace",
  "fs4",
  "futures-core",
@@ -1530,6 +1531,18 @@ dependencies = [
 [[package]]
 name = "evorule-verification-services"
 version = "0.11.0"
+dependencies = [
+ "async-trait",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "evorule-video-services"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
