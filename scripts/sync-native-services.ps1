@@ -65,6 +65,7 @@ $plugins = @(
     @{ Id = "legal-services"; Crate = "evorule-legal-services" }
     @{ Id = "export-services"; Crate = "evorule-export-services" }
     @{ Id = "verification-services"; Crate = "evorule-verification-services" }
+    @{ Id = "video-services"; Crate = "evorule-video-services" }
 )
 
 if (-not (Test-Path (Join-Path $RepoRule "Cargo.toml"))) { Write-Host "[FAIL] 治理仓不存在: $RepoRule" -ForegroundColor Red; exit 1 }
