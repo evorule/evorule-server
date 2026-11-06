@@ -4,6 +4,7 @@ members = [
     "core/auth",
     "core/governance-host",
     "core/io_handlers",
+    "core/law_schema",
     "core/plugin-kit",
     "core/rule_loader",
     "core/rule_schema",

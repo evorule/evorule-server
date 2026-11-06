@@ -1,0 +1,49 @@
+{
+  "$schema": "https://evorule.org/schemas/law_set/v1.0.json",
+  "$id": "https://evorule.org/schemas/law_set/v1.0.json",
+  "title": "Evorule Law Set",
+  "type": "object",
+  "required": ["$schema", "kind", "id", "version", "laws"],
+  "properties": {
+    "$schema": { "const": "https://evorule.org/schemas/law_set/v1.0.json" },
+    "kind": { "const": "law_set" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "metadata": { "type": "object" },
+    "laws": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/law" },
+      "maxItems": 128
+    }
+  },
+  "$defs": {
+    "law": {
+      "type": "object",
+      "required": ["id", "formula", "symbols", "si_units"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "formula": { "type": "string", "minLength": 3 },
+        "symbols": {
+          "type": "object",
+          "minProperties": 2,
+          "additionalProperties": { "type": "string" }
+        },
+        "si_units": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "symbol -> pint-parseable SI unit expression"
+        },
+        "domain": { "type": "string" },
+        "solvable": { "type": "array", "items": { "type": "string" } },
+        "derivation": { "type": "array", "items": { "type": "string" } },
+        "tier": { "enum": ["light", "full"], "default": "full" },
+        "metadata": {
+          "type": "object",
+          "required": ["source"],
+          "properties": { "source": { "type": "string" }, "verified": { "type": "string" } }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
