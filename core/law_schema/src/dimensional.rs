@@ -22,10 +22,11 @@
 //! ```text
 //! expr   := factor (('*' | '/') factor)*
 //! factor := base ('^' ['-'] digits)?
-//! base   := identifier | number
+//! base   := identifier | number | '(' expr ')'
 //! ```
+//! 括号子表达式按同一文法递归求值（可嵌套，深度上限 [`MAX_PAREN_DEPTH`]）；
 //! 结构层已保证 formula 无判定形态运算符且引用符号已声明；本模块对文法外
-//! 记号（如 `+`、括号）不猜测语义——按不可解析跳过，保持确定性。
+//! 记号（如 `+`）不猜测语义——按不可解析跳过，保持确定性。
 //!
 //! # 选型注记
 //! 单位解析未引入 crates.io 单位库（`uom`/`pint` 系均为编译期类型层单位系统，
@@ -152,14 +153,24 @@ fn unit_dimensions(name: &str) -> Option<DimensionVector> {
 /// 因子叶子解析：标识符 → 量纲向量；`Err` = 该标识符不可解析（含原因）
 type LeafResolver<'a> = &'a mut dyn FnMut(&str) -> Result<DimensionVector, String>;
 
+/// 括号嵌套深度上限（formula 为治理侧提交字符串：超出即显式报错，
+/// 不放任失控递归打爆栈，保持 fail-fast 确定性口径）
+const MAX_PAREN_DEPTH: usize = 64;
+
 struct ExprParser<'a> {
     src: &'a str,
     pos: usize,
+    /// 当前括号嵌套深度（parse_base 括号分支递归计数）
+    depth: usize,
 }
 
 impl<'a> ExprParser<'a> {
     fn new(src: &'a str) -> Self {
-        ExprParser { src, pos: 0 }
+        ExprParser {
+            src,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -212,7 +223,7 @@ impl<'a> ExprParser<'a> {
         Ok(base)
     }
 
-    /// `base := 数值常量（量纲一）| 标识符（叶子解析）`
+    /// `base := 数值常量（量纲一）| 标识符（叶子解析）| '(' expr ')'（括号子表达式）`
     fn parse_base(&mut self, leaf: LeafResolver<'_>) -> Result<DimensionVector, String> {
         self.skip_ws();
         match self.peek() {
@@ -228,10 +239,29 @@ impl<'a> ExprParser<'a> {
                 }
                 leaf(&self.src[start..self.pos])
             }
+            Some(b'(') => self.parse_paren_subexpr(leaf),
             Some(b) if b.is_ascii() => Err(format!("非法记号 `{}`", b as char)),
             Some(_) => Err("非 ASCII 记号（仅允许 ASCII 标识符与运算符）".to_string()),
             None => Err("表达式意外结束".to_string()),
         }
+    }
+
+    /// 括号子表达式：`'(' expr ')'`——括号内同一文法递归求值，天然支持嵌套；
+    /// 整体作为一个因子（parse_factor 的 `^` 幂次可继续作用于其上）。
+    fn parse_paren_subexpr(&mut self, leaf: LeafResolver<'_>) -> Result<DimensionVector, String> {
+        self.depth += 1;
+        if self.depth > MAX_PAREN_DEPTH {
+            return Err(format!("括号嵌套过深（上限 {MAX_PAREN_DEPTH} 层）"));
+        }
+        self.pos += 1; // 消费 '('
+        let dims = self.parse_expr(leaf)?;
+        self.skip_ws();
+        if self.peek() != Some(b')') {
+            return Err("括号子表达式缺右括号 `)`".to_string());
+        }
+        self.pos += 1; // 消费 ')'
+        self.depth -= 1;
+        Ok(dims)
     }
 
     /// `number := digits ('.' digits)?`
@@ -477,6 +507,76 @@ mod tests {
         assert!(parse_unit_expr("0.")
             .unwrap_err()
             .contains("小数点后缺数字"));
+    }
+
+    // ── 括号子表达式 ──
+
+    #[test]
+    fn unit_expr_parenthesized_subexpressions() {
+        // 括号整体作因子：可再接幂次
+        assert_eq!(
+            parse_unit_expr("(kg*m)^2").unwrap(),
+            dims([2, 2, 0, 0, 0, 0, 0])
+        );
+        // 括号内乘除混合
+        assert_eq!(
+            parse_unit_expr("kg*(m/s)").unwrap(),
+            dims([1, 1, -1, 0, 0, 0, 0])
+        );
+        // 括号内数值除法（量纲中性）
+        assert_eq!(
+            parse_unit_expr("(1/2)*kg").unwrap(),
+            dims([1, 0, 0, 0, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn unit_expr_nested_parens() {
+        assert_eq!(
+            parse_unit_expr("(kg*(m/s))^2").unwrap(),
+            dims([2, 2, -2, 0, 0, 0, 0])
+        );
+        assert_eq!(
+            parse_unit_expr("((kg))").unwrap(),
+            dims([1, 0, 0, 0, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn unit_expr_paren_errors() {
+        assert!(parse_unit_expr("(kg*m").unwrap_err().contains("缺右括号"));
+        assert!(parse_unit_expr("kg)")
+            .unwrap_err()
+            .contains("尾随未解析内容"));
+        let deep = format!("{}kg{}", "(".repeat(65), ")".repeat(65));
+        assert!(parse_unit_expr(&deep).unwrap_err().contains("嵌套过深"));
+    }
+
+    #[test]
+    fn check_law_parenthesized_formulas_consistent() {
+        // 动能：括号内数值除法量纲中性，`(1/2)` 不改变量纲
+        let kinetic = law_from_json(json!({
+            "id": "kinetic", "formula": "E = (1/2)*m*v^2",
+            "symbols": { "E": "动能", "m": "质量", "v": "速度" },
+            "si_units": { "E": "kg*m^2*s^-2", "m": "kg", "v": "m*s^-1" }
+        }));
+        assert_eq!(check_law(&kinetic), DimensionalVerdict::Consistent);
+
+        // 万有引力：括号分子 `(m1*m2)` 作整体再除以 `r^2`
+        let gravity = law_from_json(json!({
+            "id": "gravity", "formula": "F = G*(m1*m2)/r^2",
+            "symbols": { "F": "引力", "G": "引力常量", "m1": "质量一", "m2": "质量二", "r": "距离" },
+            "si_units": { "F": "newton", "G": "m^3*kg^-1*s^-2", "m1": "kg", "m2": "kg", "r": "m" }
+        }));
+        assert_eq!(check_law(&gravity), DimensionalVerdict::Consistent);
+
+        // 嵌套括号：`((m*g)*h)/t` 与功率量纲一致
+        let power = law_from_json(json!({
+            "id": "power", "formula": "P = ((m*g)*h)/t",
+            "symbols": { "P": "功率", "m": "质量", "g": "重力加速度", "h": "高度", "t": "时间" },
+            "si_units": { "P": "watt", "m": "kg", "g": "m*s^-2", "h": "m", "t": "s" }
+        }));
+        assert_eq!(check_law(&power), DimensionalVerdict::Consistent);
     }
 
     // ── 规范渲染 ──
