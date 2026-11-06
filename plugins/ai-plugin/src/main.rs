@@ -614,7 +614,22 @@ async fn web_search(
     }
 }
 
-async fn ai_plugin_chat(State(st): State<PluginState>, Json(body): Json<Value>) -> Response {
+async fn ai_plugin_chat(State(st): State<PluginState>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+    // 调用方令牌校验（A2-④ 修复：原端点裸奔——本机任意进程可触发审计链 LLM
+    // 消耗。opt-in 语义与 /llm/execute 四端点一致：未配置 caller_token 时放行，
+    // 零配置部署不断；配置后无令牌/mismatch 401）
+    if let Some(expected) = st.caller_token.as_deref() {
+        let present = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        if present != Some(&format!("Bearer {expected}")) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(json!({ "error": "caller token missing or mismatched" })),
+            )
+                .into_response();
+        }
+    }
     // 请求体校验：消费方错误 → 400
     let req = match ChatRequest::from_value(&body) {
         Ok(r) => r,
@@ -630,7 +645,7 @@ async fn ai_plugin_chat(State(st): State<PluginState>, Json(body): Json<Value>) 
         .audit_purpose
         .clone()
         .unwrap_or_else(|| "chat".to_string());
-    match run_audited_chat(&st.cfg, &st.http, &req).await {
+    match run_audited_chat(&st.cfg, &st.http, &req, &st.allowlist).await {
         Ok(outcome) => {
             tracing::info!(
                 "ai_plugin_chat 完成: session={} purpose={purpose} reply_chars={}",
@@ -1286,5 +1301,69 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ---------- ai_plugin_chat 端点 caller_token 门（A2-④ 修复） ----------
+
+    /// chat 端点测试 state（allowlist None：令牌面测试在 400/401 层，不触 LLM）
+    fn chat_state(caller_token: Option<String>) -> PluginState {
+        let cfg = json!({
+            "listen_addr": "127.0.0.1:0",
+            "server_base_url": "http://127.0.0.1:18080",
+            "llm_endpoint": "https://example.invalid/v1",
+            "llm_api_key": "unused-in-test",
+            "llm_model": "test-model",
+            "tools_enabled": []
+        });
+        let cfg =
+            PluginConfig::from_value_with_env(&cfg, &|_| None).expect("test config must parse");
+        PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(reqwest::Client::new()),
+            allowlist: Arc::new(None),
+            caller_token,
+        }
+    }
+
+    #[tokio::test]
+    async fn ai_plugin_chat_requires_caller_token_when_configured() {
+        let body = json!({"messages": [{"role": "user", "content": "hi"}]});
+        // 配置令牌后：无令牌 → 401；错令牌 → 401（门先于请求体校验语义？否——
+        // 实现序为门先执行，故无效体+无令牌也是 401，见末段）
+        let st = chat_state(Some("secret-token".into()));
+        let resp = ai_plugin_chat(State(st), axum::http::HeaderMap::new(), Json(body.clone())).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let st = chat_state(Some("secret-token".into()));
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer wrong"),
+        );
+        let resp = ai_plugin_chat(State(st), headers, Json(body.clone())).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // 未配置令牌（零配置部署）：放行进业务面 → server_base_url 指向空端口，
+        // 表现为 5xx 上抛（错误已回写 io_response 由 lib 保证），绝非 401
+        let st = chat_state(None);
+        let resp = ai_plugin_chat(State(st), axum::http::HeaderMap::new(), Json(body)).await;
+        let status = resp.status();
+        assert!(
+            status.is_server_error() || status.is_client_error(),
+            "零配置须进入业务面（连接失败 5xx），不得 401: {status}"
+        );
+        assert_ne!(status, StatusCode::UNAUTHORIZED, "零配置不得 401");
+        // 正确令牌 → 同样进入业务面（非 401）
+        let st = chat_state(Some("secret-token".into()));
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer secret-token"),
+        );
+        let resp = ai_plugin_chat(State(st), headers, Json(json!({"messages": []}))).await;
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "正确令牌不得 401"
+        );
     }
 }
