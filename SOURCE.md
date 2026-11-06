@@ -12,8 +12,8 @@
 
 | 字段 | 值 |
 |---|---|
-| 版本 | v0.10.0 |
-| 发布 tag | `v0.10.0`（随下个发布打 tag；打包时以本次发布对应的值覆盖） |
+| 版本 | v0.11.0 |
+| 发布 tag | `v0.11.0`（随下个发布打 tag；打包时以本次发布对应的值覆盖） |
 | 源码归档（GitHub，main 分支） | <https://github.com/evorule/evorule-server/archive/refs/heads/main.tar.gz> |
 | 源码 tarball SHA256 | 见发布 Release 说明的 `sha256-checks.txt` |
 
