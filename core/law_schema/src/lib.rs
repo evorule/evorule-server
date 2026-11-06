@@ -10,13 +10,16 @@
 //!   law_set/v1.0 为定稿全文（单文件自洽，$defs/law 内嵌，无跨文件 $ref）；
 //!   _meta/_shared 归 law_set 家族命名空间（$id 隔离，防与 rule_schema 全量件双写漂移）。
 //!
-//! # 校验两层
+//! # 校验三层
 //! - **schema 层**：内嵌 law_set/v1.0.json 全文校验（jsonschema Draft202012）。
 //! - **formula 结构层**（schema 表达不了的语义边界）：
 //!   等式恒真语义以单个 `=` 连接符表达（编译期由消费侧重写为 `==`）；
 //!   判定形态运算符（`==` 族）禁入——law_set 与 rule_set 的语义分野结构保证；
 //!   formula 引用的标识符必须已在 symbols 声明（结构完整性）。
-//!   量纲一致性校验属能力层（依赖单位解析选型），本 crate **不做**。
+//! - **量纲能力层**（`dimensional` 模块，可选启用）：law 引用符号全部有
+//!   si_units 时校验等式两侧量纲一致性（不一致硬拒收并报两侧量纲向量）；
+//!   缺 si_units / 单位不可解析的定律跳过并记 warning 级结果，不硬拒
+//!   （兼容 G 类纯数学定律）。
 //!
 //! # 正确性保证
 //! - 构建期由 build.rs 校验三件合法性 + $id 自洽 + 定稿锚；运行期缓存校验器。
@@ -27,6 +30,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::collections::{BTreeMap, BTreeSet};
+
+pub mod dimensional;
 
 use jsonschema::{Draft, Retrieve, UriRef, Validator};
 use once_cell::sync::Lazy;
@@ -116,6 +121,9 @@ pub struct SchemaReport {
     pub mode: &'static str,
     /// 错误列表（每条含实例路径 + 具体原因）
     pub errors: Vec<String>,
+    /// warning 级结果（量纲能力层跳过等；不影响 valid，不构成拒收）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl SchemaReport {
@@ -124,6 +132,7 @@ impl SchemaReport {
             valid: true,
             mode,
             errors: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -132,6 +141,7 @@ impl SchemaReport {
             valid: false,
             mode,
             errors,
+            warnings: Vec::new(),
         }
     }
 }
@@ -219,8 +229,7 @@ fn formula_identifiers(formula: &str) -> Vec<String> {
 /// - 判定形态运算符（`==` 族）禁入：law_set 与 rule_set 的语义分野结构保证。
 ///   命中后跳过等式计数检查（避免误导性报因），符号完整性照查。
 /// - 恰好一个 `=` 连接符且两侧非空（等式恒真语义；编译期由消费侧重写为 `==`）。
-/// - 引用的标识符必须已在 symbols 声明（结构完整性；
-///   量纲一致性属能力层，本 crate 不做）。
+/// - 引用的标识符必须已在 symbols 声明（结构完整性）。
 fn check_formula_structure(idx: usize, law: &Law, errors: &mut Vec<String>) {
     let at = format!("laws[{idx}] (id={}): ", law.id);
     let f = law.formula.as_str();
@@ -259,12 +268,37 @@ fn check_formula_structure(idx: usize, law: &Law, errors: &mut Vec<String>) {
 }
 
 // ============================================================================
+// 量纲能力层接线
+// ============================================================================
+
+/// 单条定律的量纲能力层接线：不一致 → 硬错误；跳过 → warning 级结果（不拒收）
+fn apply_dimensional_verdict(
+    idx: usize,
+    law: &Law,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let at = format!("laws[{idx}] (id={}): ", law.id);
+    match dimensional::check_law(law) {
+        dimensional::DimensionalVerdict::Consistent => {}
+        dimensional::DimensionalVerdict::Mismatch { lhs, rhs } => errors.push(format!(
+            "{at}等式两侧量纲不一致（按 SI 七基本量纲展开）：{lhs}；{rhs}"
+        )),
+        dimensional::DimensionalVerdict::Skipped(reason) => {
+            warnings.push(format!("{at}量纲校验跳过（warning 级，不拒收）：{reason}"));
+        }
+    }
+}
+
+// ============================================================================
 // 公共 API
 // ============================================================================
 
-/// 校验完整 law_set 文档（治理骨架 + laws 数组 + formula 结构层）。
+/// 校验完整 law_set 文档（治理骨架 + laws 数组 + formula 结构层 + 量纲能力层）。
 ///
 /// 用于：law_set 部署件装载、API 提交、golden 验证。
+/// 量纲能力层为可选启用（law 引用符号全部有 si_units 才生效），
+/// 跳过情况记入 `SchemaReport.warnings`（warning 级，不影响 valid）。
 pub fn validate_law_set(doc: &Value) -> SchemaReport {
     let mut errors: Vec<String> = match VALIDATORS.law_set.validate(doc) {
         Ok(()) => Vec::new(),
@@ -274,22 +308,26 @@ pub fn validate_law_set(doc: &Value) -> SchemaReport {
     };
     // formula 结构层（schema 表达不了的语义边界）：schema 校验失败条目的
     // formula 可能不可反序列化，逐条 best-effort；反序列化失败处 schema 层已报因。
+    let mut warnings: Vec<String> = Vec::new();
     if let Some(laws) = doc.get("laws").and_then(|v| v.as_array()) {
         for (idx, item) in laws.iter().enumerate() {
             if let Ok(law) = serde_json::from_value::<Law>(item.clone()) {
                 check_formula_structure(idx, &law, &mut errors);
+                apply_dimensional_verdict(idx, &law, &mut errors, &mut warnings);
             }
         }
     }
-    if errors.is_empty() {
+    let mut report = if errors.is_empty() {
         SchemaReport::ok("law_set")
     } else {
         SchemaReport::fail("law_set", errors)
-    }
+    };
+    report.warnings = warnings;
+    report
 }
 
 // ============================================================================
-// 测试（golden 四件 + 结构反例 + schema 自洽）
+// 测试（golden 四件 + 量纲五件 + 结构反例 + schema 自洽）
 // ============================================================================
 
 #[cfg(test)]
@@ -409,6 +447,113 @@ mod tests {
                 .any(|e| e.contains("未声明符号") && e.contains("v")),
             "报因须指明未声明符号 v: {:?}",
             report.errors
+        );
+    }
+
+    // ── 量纲能力层 golden（G5-G9：一致过/不一致拒收报两侧量纲/缺 si_units 跳过）──
+
+    #[test]
+    fn golden_dim_g5_mismatch_rejected_reporting_both_vectors() {
+        // G5 反例（07 档 G4 量纲版）：F = m * v，v 已声明且带 si_units。
+        // 结构层过、量纲层拒收，报因含两侧量纲向量（kg*m*s^-2 vs kg*m*s^-1）。
+        let mut doc = golden_newton();
+        doc["laws"][0]["formula"] = json!("F = m * v");
+        doc["laws"][0]["symbols"] = json!({ "F": "合外力", "m": "质量", "v": "速度" });
+        doc["laws"][0]["si_units"] = json!({
+            "F": "newton", "m": "kilogram", "v": "m*s^-1"
+        });
+        let report = validate_law_set(&doc);
+        assert!(!report.valid, "量纲不一致应硬拒收");
+        let msg = report
+            .errors
+            .iter()
+            .find(|e| e.contains("量纲不一致"))
+            .unwrap_or_else(|| panic!("报因须指明量纲不一致: {:?}", report.errors));
+        assert!(
+            msg.contains("kg*m*s^-2") && msg.contains("m*s^-1"),
+            "报因须含两侧量纲向量: {msg}"
+        );
+    }
+
+    #[test]
+    fn golden_dim_g6_missing_si_units_symbol_warns_but_not_rejected() {
+        // G6：formula 引用符号缺 si_units → 跳过量纲校验记 warning，不硬拒
+        // （G 类纯数学定律兼容；valid 保持 true）
+        let mut doc = golden_newton();
+        doc["laws"][0]["formula"] = json!("F = m * x");
+        doc["laws"][0]["symbols"] = json!({ "F": "合外力", "m": "质量", "x": "任意标量" });
+        let report = validate_law_set(&doc);
+        assert!(
+            report.valid,
+            "缺 si_units 符号应跳过不拒收: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains('x') && w.contains("缺 si_units")),
+            "warning 须指明缺 si_units 的符号: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn golden_dim_g7_pure_math_law_without_si_units_warns_not_rejected() {
+        // G7：si_units 为空（纯数学定律）→ 全符号缺 si_units，整体跳过不拒收
+        let mut doc = golden_newton();
+        doc["laws"][0]["formula"] = json!("y = a * x");
+        doc["laws"][0]["symbols"] = json!({ "y": "因变量", "a": "系数", "x": "自变量" });
+        doc["laws"][0]["si_units"] = json!({});
+        let report = validate_law_set(&doc);
+        assert!(
+            report.valid,
+            "纯数学定律应跳过量纲校验不拒收: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("y") && w.contains("a") && w.contains("x")),
+            "warning 须列出全部缺 si_units 符号: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn golden_dim_g8_division_and_number_literal_pass() {
+        // G8：除法连接（v = d / t）+ 数值常量因子量纲中性（E = 0.5 * m * v^2）
+        let mut doc = golden_newton();
+        doc["laws"][0]["formula"] = json!("v = d / t");
+        doc["laws"][0]["symbols"] = json!({ "v": "速度", "d": "距离", "t": "时间" });
+        doc["laws"][0]["si_units"] = json!({ "v": "m*s^-1", "d": "m", "t": "s" });
+        let report = validate_law_set(&doc);
+        assert!(report.valid, "除法量纲一致应过: {:?}", report.errors);
+        assert!(report.warnings.is_empty(), "不应有跳过 warning");
+
+        let mut doc = golden_einstein();
+        doc["laws"][0]["formula"] = json!("E = 0.5 * m * v^2");
+        doc["laws"][0]["symbols"] = json!({ "E": "动能", "m": "质量", "v": "速度" });
+        doc["laws"][0]["si_units"] = json!({ "E": "joule", "m": "kilogram", "v": "m*s^-1" });
+        let report = validate_law_set(&doc);
+        assert!(report.valid, "数值常量应量纲中性: {:?}", report.errors);
+    }
+
+    #[test]
+    fn golden_dim_g9_unparseable_unit_name_warns_but_not_rejected() {
+        // G9：si_units 单位名不可解析（拼写错误）→ 跳过记 warning，不硬拒
+        let mut doc = golden_newton();
+        doc["laws"][0]["si_units"]["F"] = json!("newtn");
+        let report = validate_law_set(&doc);
+        assert!(report.valid, "未知单位应跳过不拒收: {:?}", report.errors);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("未知单位") && w.contains("newtn")),
+            "warning 须指明不可解析单位: {:?}",
+            report.warnings
         );
     }
 
