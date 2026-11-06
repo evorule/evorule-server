@@ -450,6 +450,11 @@ pub struct SessionApi {
     /// 规则，但数据面异常必须可见；经 `knowledge_load_error` 暴露，导入刷新成功即清除）
     knowledge_load_error: Arc<std::sync::RwLock<Option<String>>>,
 
+    /// law_set 装配面（独立部署件，不经 rule_loader）：law_host 双键
+    /// （dataset_id+law_id）查询注册点，供后续验证注入面消费。
+    /// None=未配置 law_set 装配目录（缺省行为不变）。
+    law_host: Option<Arc<crate::law_host::LawHost>>,
+
     /// I/O 分发器（clone 给每个新 session 的 IoSubscriber，共享底层 handler）
 
     /// None 时 session 的 IoRequest 无人处理（纯计算场景）
@@ -817,6 +822,9 @@ impl SessionApi {
 
             knowledge_load_error: Arc::new(std::sync::RwLock::new(knowledge_load_error)),
 
+            // law_set 装配面：默认未配置（main.rs 经 with_law_host 注入）
+            law_host: None,
+
             dispatcher: None,
 
             shared_facts: SharedFactsLog::new(),
@@ -899,6 +907,18 @@ impl SessionApi {
     pub fn with_session_rehydrate(mut self, enabled: bool) -> Self {
         self.rehydrate_enabled = enabled;
         self
+    }
+
+    /// 注入 law_set 装配面（main.rs 启动期 law_host 装配产物；None=未配置）。
+    /// 纯注册点：装配失败已在启动报告逐集列明，本注入不改变规则装载语义。
+    pub fn with_law_host(mut self, law_host: Option<Arc<crate::law_host::LawHost>>) -> Self {
+        self.law_host = law_host;
+        self
+    }
+
+    /// law_set 装配面只读访问（None=未配置 law_set 装配目录）
+    pub fn law_host(&self) -> Option<Arc<crate::law_host::LawHost>> {
+        self.law_host.clone()
     }
 
     /// 注入规则集版本哈希（G6 最小修透传）：会话创建落 `__ruleset__.version`

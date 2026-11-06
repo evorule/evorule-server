@@ -19,6 +19,7 @@ pub mod api;
 pub mod auth;
 pub mod input_sanitizer;
 pub mod knowledge_store;
+pub mod law_host;
 pub mod metrics_impl;
 pub mod wal_observation;
 pub mod watchdog;

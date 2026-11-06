@@ -1450,6 +1450,7 @@ dependencies = [
  "evorule-indicator-services",
  "evorule-inference-services",
  "evorule-io-handlers",
+ "evorule-law-schema",
  "evorule-legal-services",
  "evorule-mechanics-services",
  "evorule-metrology-services",
