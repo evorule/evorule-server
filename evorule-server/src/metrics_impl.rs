@@ -15,13 +15,14 @@
 //! | `evorule_io_errors_total` | Counter | `io_type` | I/O 调用失败总数 |
 //! | `evorule_facts_log_version` | Gauge | — | FactsLog 当前版本号 |
 //! | `evorule_sse_connections_active` | Gauge | — | 当前活跃 SSE 连接数 |
+//! | `evorule_ruleset_rule_count` | Gauge | — | 现役规则集规则条数（随 reload 更新；容量预警面） |
 //! | `evorule_http_requests_total` | Counter | `method`, `path`, `status` | HTTP 请求总数 |
 //! | `evorule_sanitize_hits_total` | Counter | `rule` | L1 输入净化命中数（P5-A1，2026-08-27） |
 //! | `evorule_auto_verify_failures_total` | Counter | — | 实时审计验证失败次数（P5-A2，2026-08-27） |
 //! | `evorule_auto_verify_skips_total` | Counter | — | 自动审计验证跳过次数（P5-A2，2026-08-27） |
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use evorule_governance::metrics::IoMetrics;
@@ -88,6 +89,18 @@ pub struct PrometheusMetrics {
     auto_verify_skips_total: prometheus::IntCounter,
 }
 
+/// 进程级共享的规则集条数 gauge 句柄（reload 接线用；首个 `PrometheusMetrics::new()`
+/// 实例注册进应用 registry，此后跨实例共享同一 gauge 状态）
+static RULESET_RULE_COUNT_SHARED: OnceLock<IntGauge> = OnceLock::new();
+
+/// 更新现役规则集规则条数（reload 成功路径调用；未初始化时 noop——
+/// 测试/桥接构造无应用 registry，行为与 noop 指标兜底一致）
+pub fn set_ruleset_rule_count(n: i64) {
+    if let Some(gauge) = RULESET_RULE_COUNT_SHARED.get() {
+        gauge.set(n);
+    }
+}
+
 impl PrometheusMetrics {
     /// 只读访问内部 registry（hit-stats 聚合器自行注册指标用）
     pub fn registry(&self) -> &Registry {
@@ -139,6 +152,12 @@ impl PrometheusMetrics {
             "Current active SSE connections",
         )
         .map_err(|_| MetricsError::GaugeCreation("evorule_sse_connections_active".to_string()))?;
+        let ruleset_rule_count = IntGauge::new(
+            "evorule_ruleset_rule_count",
+            "Current rule count in the active ruleset (updated on reload; capacity alerting face)",
+        )
+        .map_err(|_| MetricsError::GaugeCreation("evorule_ruleset_rule_count".to_string()))?;
+        let _ = RULESET_RULE_COUNT_SHARED.set(ruleset_rule_count.clone());
         let http_requests_total = IntCounterVec::new(
             Opts::new(
                 "evorule_http_requests_total",
@@ -200,6 +219,11 @@ impl PrometheusMetrics {
             .register(Box::new(sse_connections_active.clone()))
             .map_err(|_| {
                 MetricsError::RegistryRegistration("evorule_sse_connections_active".to_string())
+            })?;
+        registry
+            .register(Box::new(ruleset_rule_count.clone()))
+            .map_err(|_| {
+                MetricsError::RegistryRegistration("evorule_ruleset_rule_count".to_string())
             })?;
         registry
             .register(Box::new(http_requests_total.clone()))
@@ -338,6 +362,7 @@ mod tests {
 
         let output = m.render_as_text();
         assert!(output.contains("evorule_sessions_active"));
+        assert!(output.contains("evorule_ruleset_rule_count"));
         assert!(output.contains("evorule_commands_total"));
         assert!(output.contains("evorule_io_duration_seconds"));
         assert!(output.contains("evorule_io_errors_total"));
@@ -353,6 +378,7 @@ mod tests {
         m.inc_commands("increment");
         let output = m.render_as_text();
         assert!(output.contains("evorule_sessions_active"));
+        assert!(output.contains("evorule_ruleset_rule_count"));
         assert!(output.contains("evorule_commands_total"));
         assert!(output.contains("1"));
     }

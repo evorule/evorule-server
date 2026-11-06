@@ -34,7 +34,7 @@ use crate::error::{WorkspaceError, WorkspaceResult};
 // 本层常量是"非权威 UX 预校验"口径, 对齐 console 侧 ruleValidator.ts,
 // 与 evorule-governance 权威校验是"口径一致"关系, 而非"数值相同"关系。
 // 权威拦截者: core 仓 build.rs + evorule-governance/src/rule_validation.rs
-//   (MAX_TRANSFORM_RULES=64 / MAX_NESTING_DEPTH=64(对齐 TCB MAX_BRANCH_DEPTH, P2-02) /
+//   (MAX_TRANSFORM_RULES=128 / MAX_NESTING_DEPTH=64(对齐 TCB MAX_BRANCH_DEPTH, P2-02) /
 //    MAX_IO_PARAMS_SIZE=10KB)。
 //
 // # 同步提醒 (方案 A: 显式锚定, 消静默漂移)

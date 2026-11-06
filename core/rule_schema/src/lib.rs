@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 规则 Schema 门禁 —— 基于固化的 evorule-system-rules v1.0 Schema 的确定性校验
+//! 规则 Schema 门禁 —— 基于固化的 evorule-system-rules Schema 的确定性校验
+//! （现役 v1.1；v1.0 冻结伴面内嵌保留）
 //!
 //! # 定位（records/77 边界与防御原则）
 //! - TCB（evorule-tcb）不设防：只保证确定性执行，不保证用户规则正确性。
@@ -34,18 +35,23 @@ use serde_json::Value;
 // 内嵌 Schema（SSOT：与 evorule-system-rules/schemas 同步）
 // ============================================================================
 
-const RULE_SET_JSON: &str = include_str!("../schemas/rule_set/v1.0.json");
+/// v1.0 冻结伴面（历史版原样保留，供 $ref 解析；装载门禁不再以此为准）
+const RULE_SET_V10_JSON: &str = include_str!("../schemas/rule_set/v1.0.json");
+/// v1.1 现役门禁本（双版本协议：相对 v1.0 唯一变化 transform.maxItems 64→128）
+const RULE_SET_JSON: &str = include_str!("../schemas/rule_set/v1.1.json");
 const META_JSON: &str = include_str!("../schemas/_meta/v1.0.json");
 const SHARED_JSON: &str = include_str!("../schemas/_shared/v1.0.json");
 const KNOWLEDGE_JSON: &str = include_str!("../schemas/knowledge/v1.0.json");
 
-const RULE_SET_ID: &str = "https://evorule.org/schemas/rule_set/v1.0.json";
+const RULE_SET_V10_ID: &str = "https://evorule.org/schemas/rule_set/v1.0.json";
+const RULE_SET_ID: &str = "https://evorule.org/schemas/rule_set/v1.1.json";
 const META_ID: &str = "https://evorule.org/schemas/_meta/v1.0.json";
 const SHARED_ID: &str = "https://evorule.org/schemas/_shared/v1.0.json";
 const KNOWLEDGE_ID: &str = "https://evorule.org/schemas/knowledge/v1.0.json";
 
-/// 最大 transform 规则数（与 TCB MAX_TRANSFORM_RULES 一致；schema maxItems 亦约束）
-const MAX_TRANSFORM_RULES: usize = 64;
+/// 最大 transform 规则数（与 TCB MAX_TRANSFORM_RULES 一致；schema maxItems 亦约束）。
+/// 变更=项目方裁决事件（治理常数，禁静默扩容）
+pub const MAX_TRANSFORM_RULES: usize = 128;
 
 // ============================================================================
 // 宪法锚常量（[CON-X-003]：注入器与 is_case_group 同锚 _shared $def，禁双写）
@@ -213,6 +219,7 @@ impl Retrieve for EmbeddedRetriever {
         let id = uri.as_str();
         let raw = match id {
             RULE_SET_ID => RULE_SET_JSON,
+            RULE_SET_V10_ID => RULE_SET_V10_JSON,
             META_ID => META_JSON,
             SHARED_ID => SHARED_JSON,
             KNOWLEDGE_ID => KNOWLEDGE_JSON,
@@ -250,7 +257,7 @@ fn build_validators() -> Validators {
         "title": "裸 transform 数组门禁（引擎 native 结构）",
         "type": "array",
         "items": { "$ref": "https://evorule.org/schemas/_shared/v1.0.json#/$defs/transform_rule" },
-        "maxItems": 64,
+        "maxItems": 128,
         "minItems": 1
     });
 
@@ -447,6 +454,61 @@ mod tests {
             "metadata": { "title": "测试" },
             "transform": transform
         })
+    }
+
+    fn set_rules(n: usize) -> Vec<Value> {
+        (0..n)
+            .map(|_| {
+                serde_json::json!({
+                    "type": "set",
+                    "params": { "attr": "x", "operation": "set", "value": 1 }
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn transform_list_boundary_128_passes() {
+        let arr = serde_json::Value::Array(set_rules(128));
+        let report = validate_transform_list(&arr);
+        assert!(report.valid, "128 条应过引擎上限: {:?}", report.errors);
+    }
+
+    #[test]
+    fn transform_list_boundary_129_rejected() {
+        let arr = serde_json::Value::Array(set_rules(129));
+        let report = validate_transform_list(&arr);
+        assert!(!report.valid, "129 条应被拒（超上限）");
+        assert!(
+            report.errors.iter().any(|e| e.contains("上限")),
+            "拒因须列明引擎上限: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn rule_set_v1_1_declared_128_passes() {
+        let mut doc = rs(serde_json::Value::Array(set_rules(128)));
+        doc["$schema"] = serde_json::json!("https://evorule.org/schemas/rule_set/v1.1.json");
+        let report = validate_rule_set(&doc);
+        assert!(
+            report.valid,
+            "v1.1 声明文档 128 条应过（v1.1 maxItems=128）: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn rule_set_v1_0_declared_128_passes_backward_compat() {
+        // 向后兼容放宽：v1.0 冻结件原样保留，但装载门禁随现役 v1.1 承接 128 上限
+        // （原先拒绝的 65-128 条规则集转为接受，无存量破坏）
+        let doc = rs(serde_json::Value::Array(set_rules(128)));
+        let report = validate_rule_set(&doc);
+        assert!(
+            report.valid,
+            "v1.0 声明文档 128 条应随 v1.1 门禁放行: {:?}",
+            report.errors
+        );
     }
 
     #[test]

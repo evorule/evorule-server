@@ -8,7 +8,7 @@
 
 # evorule-rule-schema
 
-**规则 Schema 门禁 —— 基于固化的 evorule-system-rules v1.0 Schema 的确定性校验**
+**规则 Schema 门禁 —— 基于固化的 evorule-system-rules Schema 的确定性校验（现役 v1.1；v1.0 冻结伴面保留）**
 
 > **crate 类型**: 内部 lib（`publish = false`，不进 crates.io）
 > **引入版本**: v0.3.0
@@ -47,13 +47,14 @@ Schema 源文件：`schemas/` 下三个文件（`rule_set` / `_meta` / `_shared`
 
 ```
 schemas/
-├── rule_set/v1.0.json    # 完整规则集 Schema（allOf 引用 meta + shared）
+├── rule_set/v1.0.json    # 完整规则集 Schema 冻结伴面（allOf 引用 meta + shared）
+├── rule_set/v1.1.json    # 完整规则集 Schema 现役门禁本（唯一变化 transform.maxItems 64→128）
 ├── _meta/v1.0.json       # 元数据字段 Schema（id/name/version/author/description）
 └── _shared/v1.0.json     # 共享定义 Schema（transform_rule / domain / meta_instruction 等）
 ```
 
 **$id 自洽**：
-- `rule_set`: `https://evorule.org/schemas/rule_set/v1.0.json`
+- `rule_set`: `https://evorule.org/schemas/rule_set/v1.0.json`（冻结伴面）+ `v1.1.json`（现役）
 - `_meta`: `https://evorule.org/schemas/_meta/v1.0.json`
 - `_shared`: `https://evorule.org/schemas/_shared/v1.0.json`
 
@@ -78,7 +79,7 @@ schemas/
 - 元指令/域类型/必填参数等全部由 Schema 表达（SSOT），不维护手写常量表
 - 构建期由 `build.rs` 校验三文件合法性 + `$id` 自洽
 - 运行期缓存校验器（`once_cell::sync::Lazy`）
-- 最大 transform 规则数 = 64（与 TCB `MAX_TRANSFORM_RULES` 一致；schema `maxItems` 亦约束）
+- 最大 transform 规则数 = 128（与 TCB `MAX_TRANSFORM_RULES` 一致；schema `maxItems` 亦约束；变更=项目方裁决事件）
 - 真实文件合规性由 `evorule-system-rules` `_verify_schemas.py` 闭环验证
 
 ---

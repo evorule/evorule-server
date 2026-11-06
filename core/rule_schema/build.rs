@@ -14,11 +14,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const RULE_SET: &str = "schemas/rule_set/v1.0.json";
+const RULE_SET_V11: &str = "schemas/rule_set/v1.1.json";
 const META: &str = "schemas/_meta/v1.0.json";
 const SHARED: &str = "schemas/_shared/v1.0.json";
 const KNOWLEDGE: &str = "schemas/knowledge/v1.0.json";
 
 const RULE_SET_ID: &str = "https://evorule.org/schemas/rule_set/v1.0.json";
+const RULE_SET_V11_ID: &str = "https://evorule.org/schemas/rule_set/v1.1.json";
 const META_ID: &str = "https://evorule.org/schemas/_meta/v1.0.json";
 const SHARED_ID: &str = "https://evorule.org/schemas/_shared/v1.0.json";
 const KNOWLEDGE_ID: &str = "https://evorule.org/schemas/knowledge/v1.0.json";
@@ -71,6 +73,16 @@ fn run() -> Result<(), String> {
     if rs_id != RULE_SET_ID {
         return Err(format!("rule_set $id 漂移: {rs_id}"));
     }
+
+    // v1.1 现役门禁本：合法性 + $id 自洽 + 与 v1.0 同构的结构检查
+    let rs_v11 = load_json(&manifest_dir.join(RULE_SET_V11))?;
+    if id_of(&rs_v11, "rule_set v1.1")? != RULE_SET_V11_ID {
+        return Err(format!(
+            "rule_set v1.1 $id 漂移: {}",
+            id_of(&rs_v11, "rule_set v1.1")?
+        ));
+    }
+    check_rule_set_structure(&rs_v11)?;
     if meta_id != META_ID {
         return Err(format!("_meta $id 漂移: {meta_id}"));
     }
@@ -96,7 +108,16 @@ fn run() -> Result<(), String> {
     }
 
     // rule_set 的 allOf[0] 必须指向 meta，transform.items 必须指向 shared#/$defs/transform_rule
-    let all_of = rs
+    check_rule_set_structure(&rs)?;
+
+    println!("cargo:rerun-if-changed=build.rs");
+    Ok(())
+}
+
+/// rule_set 结构检查（v1.0/v1.1 同构复用）：allOf[0] 指向 _meta，
+/// transform.items 指向 _shared transform_rule
+fn check_rule_set_structure(doc: &serde_json::Value) -> Result<(), String> {
+    let all_of = doc
         .get("allOf")
         .and_then(|v| v.as_array())
         .ok_or_else(|| "rule_set 缺 allOf".to_string())?;
@@ -109,10 +130,8 @@ fn run() -> Result<(), String> {
         return Err(format!("rule_set allOf[0] 未指向 _meta: {first_ref}"));
     }
 
-    let items_ref = rs
-        .get("allOf")
-        .and_then(|v| v.as_array())
-        .and_then(|v| v.get(1))
+    let items_ref = all_of
+        .get(1)
         .and_then(|v| v.get("properties"))
         .and_then(|v| v.get("transform"))
         .and_then(|v| v.get("items"))
@@ -124,7 +143,5 @@ fn run() -> Result<(), String> {
             "transform.items 未指向 shared transform_rule: {items_ref}"
         ));
     }
-
-    println!("cargo:rerun-if-changed=build.rs");
     Ok(())
 }

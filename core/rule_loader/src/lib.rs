@@ -434,13 +434,15 @@ fn load_one(
     // ── 步骤 0：$schema 版本协商（[CON-S-004]）──
     // 带壳文档声明 $schema 时，必须命中本 crate 内嵌校验器认识的版本。
     // _meta pattern 只查 URL 形态（任意 v主.次 均过）——若无此门，v2.0 文档会
-    // 按内嵌 v1.0 校验器静默通过（D4：版本协商缺位）。允许显式声明 v1.0；
+    // 按内嵌校验器静默通过（D4：版本协商缺位）。允许显式声明 v1.0/v1.1
+    // （v1.1 为现役门禁本，相对 v1.0 唯一变化 transform.maxItems 64→128）；
     // 未来版本按此处白名单逐版登记，未登记版本 fail-fast。
     if let Some(schema_uri) = doc.get("$schema").and_then(|s| s.as_str()) {
         // law_set 为独立部署件（不经本装载路径消费，装载面在 law_schema crate）；
         // 登记入协商面使声明该 $schema 的文档在此报「形态不识别」而非「版本未协商」。
-        const KNOWN_VERSIONS: [&str; 2] = [
+        const KNOWN_VERSIONS: [&str; 3] = [
             "https://evorule.org/schemas/rule_set/v1.0.json",
+            "https://evorule.org/schemas/rule_set/v1.1.json",
             "https://evorule.org/schemas/law_set/v1.0.json",
         ];
         if !KNOWN_VERSIONS.contains(&schema_uri) {

@@ -584,7 +584,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -895,7 +895,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -930,9 +930,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-audit-chain"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7ba4b9e774ed362ec6cefbcc3726fcaf5bf6e4bffd218d82d63c2f4106ffc26"
+checksum = "c60321f12131b70e163f34a1ffccb3c4d61a847e837d6a9cc0d627ee243647c4"
 dependencies = [
  "blake3",
  "evorule-tcb",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-auth"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "axum",
  "chrono",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-browser-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-checksum-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-cny-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-demo-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-io-handlers",
@@ -1033,9 +1033,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-discipline"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d9fc1927702cc989c407d8380119d151c139ed6b1ef4a37180ff70f3096c0b9"
+checksum = "d8067d5d2abd17f3ebe3f045e6f5203644afe3f7247455d877cd5d2398ea3df1"
 dependencies = [
  "evorule-reactor",
  "evorule-tcb",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-export-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "docx-rs",
  "evorule-hash",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-fluid-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-geometry-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-gnss-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1105,7 +1105,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-gov-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1121,9 +1121,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-governance"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeb2675e4a9fff721aab005a174e330c740769b912cdb9644fb1670bf980b40f"
+checksum = "bab4032ce20687b7ecf93e5650f4cd831292b8a19c67b392200f0608706c85c0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-governance-host"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "blake3",
  "evorule-governance",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-grav-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-indicator-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
@@ -1195,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-inference-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-io-handlers"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-reactor",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-law-schema"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "jsonschema",
  "once_cell",
@@ -1235,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-legal-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-mechanics-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-metrology-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1283,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-numeric-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-inference-services",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-physics-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-plugin-kit"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-reactor",
@@ -1323,7 +1323,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-quantum-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-numeric-services",
@@ -1339,9 +1339,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-reactor"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af67641448e4baade278e4a33507285843b1170624c48971fcf416db5fa2f4fd"
+checksum = "b978b1d5e9af01f7263179fb292fc8acec27ce535907de568d7ce1a15df34135"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule-schema"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "jsonschema",
  "once_cell",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-rule-tools"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "axum",
  "clap",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-server"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "argon2",
  "async-stream",
@@ -1491,20 +1491,20 @@ dependencies = [
 
 [[package]]
 name = "evorule-setup"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "sha2 0.10.9",
 ]
 
 [[package]]
 name = "evorule-tcb"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6c35de04354cdcfa0d47ae1eb3a144473a445d3247e16a447640adf8183b70a"
+checksum = "403ff7662c37a0e49471fc83caa9176ba67a5756ddc08186960712503ade30da"
 
 [[package]]
 name = "evorule-template-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
@@ -1516,7 +1516,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-verification-services"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "evorule-plugin-kit",
@@ -1528,7 +1528,7 @@ dependencies = [
 
 [[package]]
 name = "evorule-workspace"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2715,7 +2715,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3213,7 +3213,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3601,7 +3601,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4207,7 +4207,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5057,7 +5057,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -29,10 +29,13 @@
 
 ### 🆕 新增
 
+- 🆕 **规则集容量预警双档**：reload 成功路径按现役条数触发两档告警日志（≥80% 上限=容纳方案立项预警 103 条 / ≥92%=立法冻结线 118 条），治理常数单源自 rule_schema（与 TCB `MAX_TRANSFORM_RULES` 同值）；新增 Prometheus gauge `evorule_ruleset_rule_count`（随 reload 更新）；伴跑 status 呈现面新增 `ruleset_capacity` 键（现役条数/上限/双档阈值透出）
 - 🆕 **引擎自 watchdog（运行时冻结兜底面）**：进程内自监测「进程存活而 runtime 全冻结」的悬死形态——tokio 心跳任务每 5s 原子计数 +1（runtime 冻结即计数断流），独立 std::thread 监测（async 冻结拖不死同步线程）计数断流超过 120s → `error!` 告警落盘 + 退出码 3 交壳 guard 组重启；启动宽限 600s 防启动期误杀，宽限耗尽仅告警；watchdog 线程启动失败仅告警不杀进程（兜底缺席≠进程不可用）；日志初始化后启动（告警走持久化面）
 
 ### 🔄 变更
 
+- 🔄 **规则 Schema 门禁升 v1.1（transform 上限 64→128）**：内嵌校验器切至 evorule-system-rules `rule_set/v1.1.json`（相对 v1.0 唯一变化 `transform.maxItems` 64→128），v1.0 冻结伴面内嵌保留（$ref 解析面不缺位）；`rule_loader` 版本协商白名单登记 v1.1；本地治理常数 `MAX_TRANSFORM_RULES` 与提取插件 `MAX_RULES` 同步 64→128；向后兼容=原先拒绝的 65-128 条规则集转为接受，存量 ≤64 条规则集零行为变化。上游注册表同步 evorule-tcb 0.13.0 承接（128 为引擎侧终值，本仓为门禁侧随动）
+- 🔄 **evorule 注册表依赖升 0.13.0**：tcb / audit-chain / governance / reactor / discipline 五件自 0.12.1 升至 0.13.0（25 个成员 Cargo.toml req 扫改 + governance-host 裸串形态 tcb 一并升级，双版本并存 JsonValue 类型分裂随单版归一消除），Cargo.lock 重解析
 - 🔄 **evorule 注册表依赖升 0.12.1**：tcb / audit-chain / governance / reactor / discipline 五件自 0.12.0 升至 0.12.1（semver 声明面不变，Cargo.lock 钉版）。reactor 0.12.1 修复事件循环悬死根因——WAL 落盘迁 blocking 线程池（`append_async`，append 本体语义不变：写锁/write-ahead 序/哈希链逐条一致，三性零扰动），同步 flush 慢不再拖冻共享 runtime
 - 🔄 **FactsLog 读/管理路径 blocking 池迁移（读路径残余面收口）**：约 17 处 handler 直呼同步方法（snapshot ×3 / history ×2 / history_with_versions ×3 / history_last_with_versions ×1 / facts_by_path_prefix ×1 / compact+compacted_info / rotate_wal ×2 / Violation 落账 append ×2 改走 `append_async`）统经 `facts_blocking` helper 迁 blocking 池——慢 flush / compact / rotate 的锁持有窗口内不再冻结 handler worker（写路径修复后的对称收口，锁语义与返回值不变，纯执行线程迁移）；`version()`（原子读）与测试代码不迁
 
@@ -48,6 +51,7 @@
 
 ### 🧪 测试
 
+- 🧪 规则 Schema 上限边界四测：transform_list 128 过 / 129 拒（拒因列明引擎上限）；v1.1 声明文档 128 条过；v1.0 声明文档 128 条随现役门禁放行（向后兼容放宽实证）
 - 🧪 审计导出黄金向量双端闸：server 侧 vendored governance 自证闸（live export == 冻结向量，11 样本与 Fact 契约闸同构，CI vendored patches golden gates job 承载）+ integration-tests 侧 SSOT 复算对账闸（include_str! 读同一向量，EVID 三步判定——逐条重算 content_hash / 原文深比 / genesis 链折叠——的零知识预演）
 
 ---

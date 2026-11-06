@@ -47,7 +47,7 @@ use evorule_tcb::JsonValue;
 pub const MAX_TREE_DEPTH: usize = 64;
 
 /// 规则数上限（与 TCB `MAX_TRANSFORM_RULES` 同口径；超限显式 Err）
-pub const MAX_RULES: usize = 64;
+pub const MAX_RULES: usize = 128;
 
 /// I/O 出边：一次 `io_request` 的类型与（静态可提取时的）服务名
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

@@ -642,7 +642,7 @@ bundle-ds-yuanze-01-v3/
 ├── rule-audit-alert.json     # 规则文件
 ├── rule-audit-compactor.json
 ├── rule-compute-ik.json
-└── ... (最多 64 条规则，受 MAX_TRANSFORM_RULES 限制)
+└── ... (最多 128 条规则，受 MAX_TRANSFORM_RULES 限制)
 ```
 
 > **注意**: 规则包导入使用 `evorule-bundle` crate 的 6 项校验链 + 逐条 Schema 门禁 + 原子落盘机制（跨仓集成契约）。任何一条规则校验失败，整个包导入回滚，不会部分生效。
