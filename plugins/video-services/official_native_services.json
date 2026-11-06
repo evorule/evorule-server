@@ -1,7 +1,6 @@
 {
-  "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/video-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 video-services 插件本地声明,与其他插件的声明文件分仓分文件、由治理侧聚合。",
-  "version": 1,
   "services": [
-    { "name": "video_service_skeleton_probe", "sensitive": false, "description": "插件组骨架探针(回显输入并恒返固定结构,验证装载与路由链路;无业务语义,确定性)" }
+    { "name": "video_service_skeleton_probe", "sensitive": false, "description": "插件组骨架探针(回显输入并恒返固定结构,验证装载与路由链路;无业务语义,确定性)" },
+    { "name": "video_timeline_consistency_check", "sensitive": false, "description": "字幕时间轴一致性校验(镜头时间轴+字幕cue,整数毫秒判定:出镜/重叠/缝隙/超总时长;overlap_policy显式入参;确定性)" }
   ]
 }
