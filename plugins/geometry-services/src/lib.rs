@@ -70,7 +70,7 @@ pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 
 use crate::services::{
     mk_clearance_check, mk_collision_check, mk_figure_audit, mk_iso_project, mk_occlusion_check,
-    mk_tube_route,
+    mk_safe_zone_check, mk_tube_route,
 };
 
 // ============================================================================
@@ -134,6 +134,15 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
             r#"{"type":"object","properties":{"solids":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"实体对象数组,每项 {id: 非空唯一, kind: prism|tube};prism 形态含 points=[[x,y],...] 且 ≥3 顶点 + base/top(top−base 须大于 ε);tube 形态含 waypoints=[[x,y,z],...] ≥2 点 + radius ≥0;管路零长段拒绝"},"min_clearance":{"type":"number","minimum":0,"description":"可选,实体对间隙下限,数值 ≥0;缺省仅报告实际间隙不判限;间隙产出为保守下界(gap_semantics=lower_bound,下界达标即真达标,下界不足须人工复核)"},"require_support":{"type":"boolean","description":"可选,缺省 false;true 时启用管端支撑判定,无支撑端产出 unsupported_end 违规"}},"required":["solids"]}"#,
         ),
         make: mk_figure_audit,
+    },
+    NativeServiceDef {
+        name: "geometry_safe_zone_check",
+        sensitive: false,
+        description: "安全区版式合规检查(画布+命名安全区+待检元素,元素须完全落在必选区内,越界量与越界边如实报告,容差显式入参,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"canvas":{"type":"object","description":"画布尺寸 {w,h},均须为正数"},"zones":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"命名安全区数组,每项 {id: 非空唯一, kind: title|subtitle|logo|action|safe, x,y,w,h: 数值且 w/h 为正, required: 布尔};required=true 的区为必选区(元素须完全落在其内)"},"elements":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"待检元素数组,每项 {id: 非空唯一, bbox: {x,y,w,h} 且 w/h 为正}"},"tolerance":{"type":"number","minimum":0,"description":"可选,越界宽容量,数值 ≥0,显式入参无魔法数;越界量 ≤ tolerance 视为达标;缺省 0"}},"required":["canvas","zones","elements"]}"#,
+        ),
+        make: mk_safe_zone_check,
     },
 ];
 

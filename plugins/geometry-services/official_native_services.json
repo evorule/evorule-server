@@ -7,6 +7,7 @@
     { "name": "geometry_occlusion_check", "sensitive": false, "description": "几何遮挡序检查(重叠零件绘制序vs声明z层,画家算法语义,确定性)" },
     { "name": "geometry_iso_project", "sensitive": false, "description": "等距投影(三维点集→屏幕坐标,方位角/仰角/视口适配,契约化变换,确定性)" },
     { "name": "geometry_tube_route", "sensitive": false, "description": "管路走线校核(转折点序列→段长/转角/弯径切线需求,弯径超限违规,确定性)" },
-    { "name": "geometry_figure_audit", "sensitive": false, "description": "图样场景审计(棱柱/管路成对间隙下界+端点承托,保守方向声明,确定性)" }
+    { "name": "geometry_figure_audit", "sensitive": false, "description": "图样场景审计(棱柱/管路成对间隙下界+端点承托,保守方向声明,确定性)" },
+    { "name": "geometry_safe_zone_check", "sensitive": false, "description": "安全区版式合规检查(画布+命名安全区+待检元素,元素须完全落在必选区内,越界量与越界边如实报告,容差显式入参,确定性)" }
   ]
 }
