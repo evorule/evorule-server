@@ -161,6 +161,8 @@ struct FileAuthConfig {
 struct FilePathsConfig {
     core_eval: Option<PathBuf>,
     rules_dir: Option<PathBuf>,
+    /// law_set 部署目录（可选；未配置=装配面关闭）
+    law_sets_dir: Option<PathBuf>,
     db_path: Option<PathBuf>,
     memory_dir: Option<PathBuf>,
     /// WAL 文件存储目录（可选，指定后启用 WAL 持久化）
@@ -316,6 +318,11 @@ struct Cli {
     /// 业务规则目录（热重载监听目录）
     #[arg(long, env = "EVORULE_RULES_DIR")]
     rules_dir: Option<PathBuf>,
+
+    /// law_set 部署目录（可选；配置后启动扫描逐集装载，逐集隔离拒收。
+    /// 未配置=law_set 装配面关闭，现行为不变）
+    #[arg(long, env = "EVORULE_LAW_SETS_DIR")]
+    law_sets_dir: Option<PathBuf>,
 
     /// SQLite 数据库文件路径
     #[arg(long, env = "EVORULE_DB_PATH")]
@@ -556,6 +563,8 @@ struct ResolvedConfig {
     service_token: Option<String>,
     core_eval: PathBuf,
     rules_dir: PathBuf,
+    /// law_set 部署目录（可选；CLI > env > file > default None）
+    law_sets_dir: Option<PathBuf>,
     db_path: PathBuf,
     memory_dir: PathBuf,
     max_rounds: usize,
@@ -654,6 +663,7 @@ impl ResolvedConfig {
                 .rules_dir
                 .or(file.paths.rules_dir)
                 .unwrap_or_else(|| PathBuf::from("./rules")),
+            law_sets_dir: cli.law_sets_dir.or(file.paths.law_sets_dir),
             db_path: cli
                 .db_path
                 .or(file.paths.db_path)
@@ -2123,6 +2133,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("监听地址: {}", cfg.addr);
     info!("宪法路径: {}", cfg.core_eval.display());
     info!("规则目录: {}", cfg.rules_dir.display());
+    if let Some(d) = &cfg.law_sets_dir {
+        info!("law_set 部署目录: {}（启动扫描逐集装配）", d.display());
+    }
     info!("数据库: {}", cfg.db_path.display());
     info!("Memory 目录: {}", cfg.memory_dir.display());
     // 1.5 认证策略早期预检（回归验证）：在 WAL/DB/会话等资源初始化之前 fail-fast，
@@ -2976,6 +2989,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     companion_hub.with_uplink_config(companion_uplink_cfg);
 
+    // law_set 装配面（独立部署件，不经 rule_loader）：--law-sets-dir 显式配置
+    // 才启用（缺省关=现行为不变）。启动扫描逐集 validate_law_set 装配：
+    // 逐集隔离拒收（一库校验失败不阻断他库装载），装配报告逐集列明
+    // （拒绝静默降级）；结论同步伴跑 status 投影（纯呈现面，零触 lint 漏斗）。
+    let law_host: Option<Arc<evorule_server::law_host::LawHost>> = match cfg.law_sets_dir.as_deref()
+    {
+        Some(dir) => {
+            let (host, report) = evorule_server::law_host::LawHost::load_dir(dir);
+            for st in report.statuses() {
+                if st.valid {
+                    info!(
+                        "law_set 装配 [{}]: valid=true laws={} warnings={} digest={}",
+                        st.dataset_id,
+                        st.law_count,
+                        st.warning_count,
+                        st.content_digest.as_deref().unwrap_or("-")
+                    );
+                } else {
+                    warn!(
+                        "law_set 装配 [{}] 拒收（逐集隔离，不阻断他库）: {:?}",
+                        st.dataset_id, st.errors
+                    );
+                }
+            }
+            if let Some(e) = &report.dir_error {
+                warn!("law_set 装配目录不可用（fail-visible）: {e}");
+            }
+            for w in host.cross_set_id_warnings() {
+                warn!("law_set 跨库同 id 告警: {w}");
+            }
+            info!(
+                "law_set 装配完成: {} 集装载 / {} 集拒收（目录 {}）",
+                report.loaded_count(),
+                report.rejected_count(),
+                dir.display()
+            );
+            // 伴跑 status 最小投影：逐集结论（valid/warn 计数+blake3 锚）
+            let projection = report
+                .statuses()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_or_default();
+            companion_hub.with_law_sets_projection(projection);
+            Some(Arc::new(host))
+        }
+        None => None,
+    };
+
     let session_api = SessionApi::new_with_full_config(
         core_eval,
         cfg.max_rounds,
@@ -3014,6 +3075,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 插件契约 v1：声明式 pack 资产注册表注入（资产面三 API 数据源）
     .with_plugin_packs(pack_registry)
     .with_service_chain(call_handler.clone())
+    // law_set 装配面注册（None=未配置；双键查询点供后续验证注入面消费）
+    .with_law_host(law_host)
     // 伴跑状态机（获批设计稿）：审计链驱动的确定性
     // 旁路消费者——装载漏斗信号（事件驱动零轮询）→ 去抖/单飞/节流 → lint
     // 三件套进程内直调（同一确定性内核）→ 报告落伴随域哈希链。独立 task

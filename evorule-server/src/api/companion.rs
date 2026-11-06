@@ -546,6 +546,10 @@ pub struct CompanionHub {
     /// 治理链上行配置（None=未配置=上行面完全关闭；main.rs 启动期 env
     /// 读取注入，测试可注入环回 stub。缺省关：未配置时提案/裁决照常）
     uplink_config: Mutex<Option<CompanionUplinkConfig>>,
+    /// law_set 装配投影（启动期 law_host 装配结论逐集列明；纯呈现面，
+    /// 零触 lint 漏斗——law_set 走独立部署件通道不进本中枢分析面）。
+    /// 缺省空数组=未配置 law_set 装配面（现行为不变）。
+    law_sets: Mutex<Vec<serde_json::Value>>,
 }
 
 impl CompanionHub {
@@ -615,6 +619,7 @@ impl CompanionHub {
             proposals: Mutex::new(Vec::new()),
             uplink: Mutex::new(HashMap::new()),
             uplink_config: Mutex::new(None),
+            law_sets: Mutex::new(Vec::new()),
         });
         // 坏链隔离重建：告警事实为重启后新链首条（error 日志已在重放时落）
         if let Some(alert) = replay_alert {
@@ -640,6 +645,13 @@ impl CompanionHub {
     /// 运行前调用；不注入=内联执行缺省兜底）
     pub fn with_exec_runtime(self: &Arc<Self>, handle: tokio::runtime::Handle) {
         *lock_poem(&self.exec) = Some(handle);
+    }
+
+    /// 注入 law_set 装配投影（main.rs 启动期 law_host 装配结论；构造后
+    /// 运行前调用，启动后不变）。逐集列明（loaded+rejected），空切片=
+    /// 未配置 law_set 装配面（status 呈现空数组，缺省不变式）。
+    pub fn with_law_sets_projection(self: &Arc<Self>, sets: Vec<serde_json::Value>) {
+        *lock_poem(&self.law_sets) = sets;
     }
 
     /// 装载漏斗信号入口（启动=reload=watch 同一漏斗；事件驱动零轮询）。
@@ -1168,6 +1180,7 @@ impl CompanionHub {
             "last_trigger": lock_poem(&self.last_trigger).to_string(),
             "proposals": proposals,
             "uplinks": uplinks,
+            "law_sets": lock_poem(&self.law_sets).clone(),
         })
     }
 
