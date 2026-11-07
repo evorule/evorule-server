@@ -70,7 +70,7 @@ pub use evorule_plugin_kit::{NativeService, NativeServiceDef};
 
 use crate::services::{
     mk_clearance_check, mk_collision_check, mk_figure_audit, mk_iso_project, mk_occlusion_check,
-    mk_tube_route,
+    mk_safe_zone_check, mk_timeline_consistency_check, mk_tube_route,
 };
 
 // ============================================================================
@@ -134,6 +134,24 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
             r#"{"type":"object","properties":{"solids":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"实体对象数组,每项 {id: 非空唯一, kind: prism|tube};prism 形态含 points=[[x,y],...] 且 ≥3 顶点 + base/top(top−base 须大于 ε);tube 形态含 waypoints=[[x,y,z],...] ≥2 点 + radius ≥0;管路零长段拒绝"},"min_clearance":{"type":"number","minimum":0,"description":"可选,实体对间隙下限,数值 ≥0;缺省仅报告实际间隙不判限;间隙产出为保守下界(gap_semantics=lower_bound,下界达标即真达标,下界不足须人工复核)"},"require_support":{"type":"boolean","description":"可选,缺省 false;true 时启用管端支撑判定,无支撑端产出 unsupported_end 违规"}},"required":["solids"]}"#,
         ),
         make: mk_figure_audit,
+    },
+    NativeServiceDef {
+        name: "geometry_safe_zone_check",
+        sensitive: false,
+        description: "安全区版式合规(元素bbox×required判定区区间包含判定,生存带按中心y落带归属,整数/十进制坐标,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"canvas":{"type":"object","description":"画布 {w: 正数, h: 正数}"},"zones":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":64,"description":"判定区数组,每项 {id: 非空唯一, kind: title|subtitle|safe|action|logo, x,y,w,h: 数值, required?: 布尔(缺省 false=仅声明不判)};title/subtitle 生存带按元素 bbox 中心 y 落带归属判定"},"elements":{"type":"array","maxItems":4096,"description":"元素数组,每项 {id: 非空唯一, bbox: {x,y,w,h}};可为空数组(all_clean=true)"},"required":["canvas","zones","elements"]}"#,
+        ),
+        make: mk_safe_zone_check,
+    },
+    NativeServiceDef {
+        name: "video_timeline_consistency_check",
+        sensitive: false,
+        description: "视频时间轴一致性(镜头交叠相邻扫描+字幕cue归属/包含/总量越界,整数毫秒口径,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"shots":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":4096,"description":"镜头数组,每项 {id: 非空唯一, start: 整数毫秒, end: 整数毫秒(start<end)};数组序=声明序,交叠按 start 排序后相邻扫描"},"cues":{"type":"array","items":{"type":"object"},"maxItems":8192,"description":"字幕 cue 数组,每项 {id: 非空唯一, shot_id: 非空, start: 整数毫秒, end: 整数毫秒};须归屑已声明镜头且被其区间完整包含"},"total_duration":{"type":"integer","minimum":1,"description":"可选,总时长毫秒;提供时逐镜头/逐 cue 判总量越界"},"overlap_policy":{"type":"string","description":"可选,缺省 forbid;镜头交叠一律产出 shot_overlap 违规(转场交叠豁免在消费方语义层)"}},"required":["shots","cues"]}"#,
+        ),
+        make: mk_timeline_consistency_check,
     },
 ];
 

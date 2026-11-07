@@ -793,6 +793,536 @@ pub fn mk_figure_audit() -> Arc<dyn NativeService> {
 }
 
 // ============================================================================
+// 视频质检判定核二服务（safe_zone / timeline_consistency）
+// ============================================================================
+
+// 适用域（regime，逐服务声明；域外一律 Err 显式拒绝，不静默降维）：
+// - GeometrySafeZoneCheck：2D 平面像素级版式合规；区间判定语义（含端 EPS
+//   容差）；required 区才判，非 required 区仅声明不判；title/subtitle 生存
+//   带按元素 bbox 中心 y 落带归属判定（元素无 kind 字段，落带即判——
+//   既不误伤异带元素，也不漏判本带元素）；
+// - VideoTimelineConsistencyCheck：整数毫秒时间轴一致性；镜头交叠相邻
+//   扫描（按 start 排序后相邻对即全覆盖）；字幕 cue 归属镜头须存在且被
+//   镜头区间完整包含；overlap_policy 仅支持 "forbid"（转场交叠的豁免是
+//   消费方语义，不是判定语义——宿主只报事实）。
+
+/// QC 判定核容量硬上限（超限 fail-fast 并附自诊断指引）
+pub const MAX_QC_ZONES: usize = 64;
+pub const MAX_QC_ELEMENTS: usize = 4096;
+pub const MAX_QC_SHOTS: usize = 4096;
+pub const MAX_QC_CUES: usize = 8192;
+
+#[derive(Clone, Copy)]
+struct QcRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+impl QcRect {
+    fn right(&self) -> f64 {
+        self.x + self.w
+    }
+    fn bottom(&self) -> f64 {
+        self.y + self.h
+    }
+    fn center_y(&self) -> f64 {
+        self.y + self.h / 2.0
+    }
+    /// 区间包含（含端 EPS 容差）：inner 完全落在 self 内
+    fn contains_rect(&self, inner: &QcRect) -> bool {
+        inner.x >= self.x - EPS
+            && inner.y >= self.y - EPS
+            && inner.right() <= self.right() + EPS
+            && inner.bottom() <= self.bottom() + EPS
+    }
+    fn contains_y(&self, y: f64) -> bool {
+        y >= self.y - EPS && y <= self.bottom() + EPS
+    }
+    /// 四边越界量的最大值（包含成立时 ≤ 0）
+    fn max_overflow(&self, inner: &QcRect) -> f64 {
+        (self.x - inner.x)
+            .max(inner.right() - self.right())
+            .max(self.y - inner.y)
+            .max(inner.bottom() - self.bottom())
+    }
+    fn overflowing_edges(&self, inner: &QcRect) -> Vec<JsonValue> {
+        let mut edges = Vec::new();
+        if inner.x < self.x - EPS {
+            edges.push(JsonValue::string("left"));
+        }
+        if inner.right() > self.right() + EPS {
+            edges.push(JsonValue::string("right"));
+        }
+        if inner.y < self.y - EPS {
+            edges.push(JsonValue::string("top"));
+        }
+        if inner.bottom() > self.bottom() + EPS {
+            edges.push(JsonValue::string("bottom"));
+        }
+        edges
+    }
+}
+
+/// 解析 bbox 对象 {x,y,w,h}（数值或十进制字符串，f64 承载；负宽高拒绝）
+fn parse_qc_rect(v: &JsonValue, what: &str) -> Result<QcRect, String> {
+    let mut r = QcRect {
+        x: 0.0,
+        y: 0.0,
+        w: 0.0,
+        h: 0.0,
+    };
+    for (k, slot) in [("x", 0usize), ("y", 1), ("w", 2), ("h", 3)] {
+        let jv = v.get(k).ok_or_else(|| {
+            format!("{what} 缺 {k} — 自诊断指引: bbox 形如 {{\"x\":0,\"y\":0,\"w\":100,\"h\":40}}")
+        })?;
+        let n = num_f64(jv).ok_or_else(|| {
+            format!("{what}.{k} 须为数值或十进制字符串 — 自诊断指引: 不接受布尔/嵌套对象")
+        })?;
+        if !n.is_finite() {
+            return Err(format!("{what}.{k} 非有限数值（NaN/Inf 域外拒绝）"));
+        }
+        match slot {
+            0 => r.x = n,
+            1 => r.y = n,
+            2 => r.w = n,
+            _ => r.h = n,
+        }
+    }
+    if r.w < 0.0 || r.h < 0.0 {
+        return Err(format!("{what} w/h 不可为负 — 自诊断指引: 尺寸非负是区间判定前提"));
+    }
+    Ok(r)
+}
+
+/// 解析非空字符串字段
+fn parse_id(v: &JsonValue, what: &str) -> Result<String, String> {
+    let s = v
+        .as_str()
+        .ok_or_else(|| format!("{what} 须为字符串"))?;
+    if s.trim().is_empty() {
+        return Err(format!("{what} 不可为空 — 自诊断指引: 非空唯一 id 是违规项可定位的前提"));
+    }
+    Ok(s.to_string())
+}
+
+/// 解析整数毫秒（events/1.0 口径：整毫秒整数；小数须为整值，否则拒绝）
+fn parse_ms(v: &JsonValue, what: &str) -> Result<i64, String> {
+    let n = num_f64(v).ok_or_else(|| {
+        format!("{what} 须为整数毫秒数值 — 自诊断指引: events/1.0 口径为整数毫秒")
+    })?;
+    if !n.is_finite() || n.fract() != 0.0 {
+        return Err(format!(
+            "{what} 须为整数毫秒 — 自诊断指引: 小数毫秒不在判定口径内（上游应先整化）"
+        ));
+    }
+    if n.abs() > i64::MAX as f64 {
+        return Err(format!("{what} 超出整数毫秒量程"));
+    }
+    Ok(n as i64)
+}
+
+struct QcZone {
+    id: String,
+    kind: String,
+    rect: QcRect,
+    required: bool,
+}
+
+struct QcElement {
+    id: String,
+    rect: QcRect,
+}
+
+fn parse_zones(args: &JsonValue) -> Result<Vec<QcZone>, String> {
+    let arr = args
+        .get("zones")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| {
+            "缺少必填参数 zones — 自诊断指引: 形如 [{\"id\":\"frame_safe\",\"kind\":\"safe\",\"x\":0,\"y\":0,\"w\":1280,\"h\":720,\"required\":true}, ...]"
+                .to_string()
+        })?;
+    if arr.is_empty() {
+        return Err("zones 不可为空 — 自诊断指引: 至少 1 个判定区".to_string());
+    }
+    if arr.len() > MAX_QC_ZONES {
+        return Err(format!(
+            "zones 超容量（{} > {MAX_QC_ZONES}）— 自诊断指引: 判定区按平台规格裁剪后再判",
+            arr.len()
+        ));
+    }
+    let mut out = Vec::new();
+    for (i, z) in arr.iter().enumerate() {
+        let id = parse_id(
+            z.get("id")
+                .ok_or_else(|| format!("zones[{i}] 缺 id"))?,
+            &format!("zones[{i}].id"),
+        )?;
+        let kind = z
+            .get("kind")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| format!("zones[{i}]({id}) 缺 kind — 自诊断指引: title|subtitle|safe|action|logo"))?
+            .to_string();
+        let rect = parse_qc_rect(z, &format!("zones[{i}]({id})"))?;
+        let required = z.get("required").and_then(JsonValue::as_bool).unwrap_or(false);
+        out.push(QcZone {
+            id,
+            kind,
+            rect,
+            required,
+        });
+    }
+    let mut ids: Vec<&str> = out.iter().map(|z| z.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() != out.len() {
+        return Err("zones 存在重复 id — 自诊断指引: id 唯一是违规项可定位的前提".to_string());
+    }
+    Ok(out)
+}
+
+fn parse_elements(args: &JsonValue) -> Result<Vec<QcElement>, String> {
+    let arr = args
+        .get("elements")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| {
+            "缺少必填参数 elements — 自诊断指引: 形如 [{\"id\":\"cue000\",\"bbox\":{\"x\":100,\"y\":600,\"w\":300,\"h\":40}}, ...]"
+                .to_string()
+        })?;
+    if arr.len() > MAX_QC_ELEMENTS {
+        return Err(format!(
+            "elements 超容量（{} > {MAX_QC_ELEMENTS}）— 自诊断指引: 超量元素先抽样再判",
+            arr.len()
+        ));
+    }
+    let mut out = Vec::new();
+    for (i, e) in arr.iter().enumerate() {
+        let id = parse_id(
+            e.get("id")
+                .ok_or_else(|| format!("elements[{i}] 缺 id"))?,
+            &format!("elements[{i}].id"),
+        )?;
+        let bbox = e
+            .get("bbox")
+            .ok_or_else(|| format!("elements[{i}]({id}) 缺 bbox — 自诊断指引: 元素形如 {{\"id\":\"cue000\",\"bbox\":{{\"x\":0,\"y\":0,\"w\":100,\"h\":40}}}}"))?;
+        let rect = parse_qc_rect(bbox, &format!("elements[{i}]({id}).bbox"))?;
+        out.push(QcElement { id, rect });
+    }
+    let mut ids: Vec<&str> = out.iter().map(|e| e.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() != out.len() {
+        return Err("elements 存在重复 id — 自诊断指引: id 唯一是违规项可定位的前提".to_string());
+    }
+    Ok(out)
+}
+
+/// 安全区判定核心：required 区逐一判包含
+/// （title/subtitle 生存带仅对中心 y 落带元素判——落带归属语义）
+fn safe_zone_check(args: &JsonValue) -> Result<JsonValue, String> {
+    let canvas = args.get("canvas").ok_or_else(|| {
+        "缺少必填参数 canvas — 自诊断指引: 形如 {\"w\":1280,\"h\":720}".to_string()
+    })?;
+    let cw = num_f64(canvas.get("w").ok_or_else(|| "canvas 缺 w")?)
+        .ok_or_else(|| "canvas.w 须为数值")?;
+    let ch = num_f64(canvas.get("h").ok_or_else(|| "canvas 缺 h")?)
+        .ok_or_else(|| "canvas.h 须为数值")?;
+    if cw <= 0.0 || ch <= 0.0 || !cw.is_finite() || !ch.is_finite() {
+        return Err("canvas.w/h 须为正数 — 自诊断指引: 画布尺寸非正是判定前提".to_string());
+    }
+    let zones = parse_zones(args)?;
+    let elements = parse_elements(args)?;
+
+    let mut violations: Vec<JsonValue> = Vec::new();
+    let mut checked_pairs = 0usize;
+    for el in &elements {
+        for z in &zones {
+            if !z.required {
+                continue;
+            }
+            // title/subtitle 生存带:按元素 bbox 中心 y 落带归属——
+            // 不落带的生存带不判(异带元素不误伤)
+            if (z.kind == "title" || z.kind == "subtitle")
+                && !z.rect.contains_y(el.rect.center_y())
+            {
+                continue;
+            }
+            checked_pairs += 1;
+            if !z.rect.contains_rect(&el.rect) {
+                violations.push(JsonValue::object_from_pairs(&[
+                    ("element_id", JsonValue::string(el.id.clone())),
+                    ("zone_id", JsonValue::string(z.id.clone())),
+                    ("overflow", crate::figure::fnum(z.rect.max_overflow(&el.rect).max(0.0))),
+                    ("edges", JsonValue::Array(z.rect.overflowing_edges(&el.rect))),
+                ]));
+            }
+        }
+    }
+    let all_clean = violations.is_empty();
+    Ok(JsonValue::object_from_pairs(&[
+        ("status", JsonValue::string("determined")),
+        ("determinism", JsonValue::string("corpus_locked")),
+        ("canvas", JsonValue::object_from_pairs(&[
+            ("w", crate::figure::fnum(cw)),
+            ("h", crate::figure::fnum(ch)),
+        ])),
+        ("checked_pairs", JsonValue::Integer(checked_pairs as i64)),
+        ("violations", JsonValue::Array(violations)),
+        ("all_clean", JsonValue::Bool(all_clean)),
+    ]))
+}
+
+struct QcShotMs {
+    id: String,
+    start: i64,
+    end: i64,
+}
+
+struct QcCueMs {
+    id: String,
+    shot_id: String,
+    start: i64,
+    end: i64,
+}
+
+fn parse_shots(args: &JsonValue) -> Result<Vec<QcShotMs>, String> {
+    let arr = args
+        .get("shots")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| {
+            "缺少必填参数 shots — 自诊断指引: 形如 [{\"id\":\"s1\",\"start\":0,\"end\":3000}, ...]（整数毫秒）"
+                .to_string()
+        })?;
+    if arr.is_empty() {
+        return Err("shots 不可为空 — 自诊断指引: 至少 1 个镜头才能构成时间轴".to_string());
+    }
+    if arr.len() > MAX_QC_SHOTS {
+        return Err(format!(
+            "shots 超容量（{} > {MAX_QC_SHOTS}）",
+            arr.len()
+        ));
+    }
+    let mut out = Vec::new();
+    for (i, s) in arr.iter().enumerate() {
+        let id = parse_id(
+            s.get("id")
+                .ok_or_else(|| format!("shots[{i}] 缺 id"))?,
+            &format!("shots[{i}].id"),
+        )?;
+        let start = parse_ms(
+            s.get("start")
+                .ok_or_else(|| format!("shots[{i}]({id}) 缺 start"))?,
+            &format!("shots[{i}]({id}).start"),
+        )?;
+        let end = parse_ms(
+            s.get("end")
+                .ok_or_else(|| format!("shots[{i}]({id}) 缺 end"))?,
+            &format!("shots[{i}]({id}).end"),
+        )?;
+        if start >= end {
+            return Err(format!(
+                "shots[{i}]({id}) 区间退化（start ≥ end）— 自诊断指引: start < end 是镜头时间轴前提"
+            ));
+        }
+        out.push(QcShotMs { id, start, end });
+    }
+    let mut ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() != out.len() {
+        return Err("shots 存在重复 id — 自诊断指引: id 唯一是违规项可定位的前提".to_string());
+    }
+    Ok(out)
+}
+
+fn parse_cues(args: &JsonValue) -> Result<Vec<QcCueMs>, String> {
+    let arr = args
+        .get("cues")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| {
+            "缺少必填参数 cues — 自诊断指引: 形如 [{\"id\":\"cue000\",\"shot_id\":\"s1\",\"start\":100,\"end\":2500}, ...]（整数毫秒）"
+                .to_string()
+        })?;
+    if arr.len() > MAX_QC_CUES {
+        return Err(format!(
+            "cues 超容量（{} > {MAX_QC_CUES}）",
+            arr.len()
+        ));
+    }
+    let mut out = Vec::new();
+    for (i, c) in arr.iter().enumerate() {
+        let id = parse_id(
+            c.get("id")
+                .ok_or_else(|| format!("cues[{i}] 缺 id"))?,
+            &format!("cues[{i}].id"),
+        )?;
+        let shot_id = parse_id(
+            c.get("shot_id")
+                .ok_or_else(|| format!("cues[{i}]({id}) 缺 shot_id"))?,
+            &format!("cues[{i}]({id}).shot_id"),
+        )?;
+        let start = parse_ms(
+            c.get("start")
+                .ok_or_else(|| format!("cues[{i}]({id}) 缺 start"))?,
+            &format!("cues[{i}]({id}).start"),
+        )?;
+        let end = parse_ms(
+            c.get("end")
+                .ok_or_else(|| format!("cues[{i}]({id}) 缺 end"))?,
+            &format!("cues[{i}]({id}).end"),
+        )?;
+        out.push(QcCueMs {
+            id,
+            shot_id,
+            start,
+            end,
+        });
+    }
+    Ok(out)
+}
+
+/// 时间轴一致性判定核心：镜头交叠相邻扫描 + cue 归属/包含/总量越界
+fn timeline_consistency_check(args: &JsonValue) -> Result<JsonValue, String> {
+    let policy = match args.get("overlap_policy") {
+        None | Some(JsonValue::Null) => "forbid",
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| "overlap_policy 须为字符串".to_string())?,
+    };
+    if policy != "forbid" {
+        return Err(format!(
+            "overlap_policy 仅支持 \"forbid\" — 自诊断指引: 收到 '{policy}'；转场交叠的豁免在消费方语义层"
+        ));
+    }
+    let shots = parse_shots(args)?;
+    let cues = parse_cues(args)?;
+    let total = match args.get("total_duration") {
+        None | Some(JsonValue::Null) => None,
+        Some(v) => Some(parse_ms(v, "total_duration")?),
+    };
+
+    let mut violations: Vec<JsonValue> = Vec::new();
+
+    // a) 镜头交叠(相邻扫描:按 start 排序后相邻对即全覆盖)——只报事实,
+    //    豁免与否是消费方语义(转场交叠由调用方按 overlap 声明注解)
+    let mut order: Vec<&QcShotMs> = shots.iter().collect();
+    order.sort_by_key(|s| (s.start, s.end));
+    for pair in order.windows(2) {
+        let (prev, next) = (pair[0], pair[1]);
+        if next.start < prev.end {
+            violations.push(JsonValue::object_from_pairs(&[
+                ("type", JsonValue::string("shot_overlap")),
+                ("a", JsonValue::string(prev.id.clone())),
+                ("b", JsonValue::string(next.id.clone())),
+                ("overlap_ms", JsonValue::Integer((prev.end - next.start) as i64)),
+            ]));
+        }
+    }
+
+    // b/c) cue 归属镜头存在 + 区间被镜头完整包含
+    let by_id = |id: &str| shots.iter().find(|s| s.id == id);
+    for c in &cues {
+        if c.start >= c.end {
+            violations.push(JsonValue::object_from_pairs(&[
+                ("type", JsonValue::string("cue_invalid_range")),
+                ("cue", JsonValue::string(c.id.clone())),
+                ("start", JsonValue::Integer(c.start)),
+                ("end", JsonValue::Integer(c.end)),
+            ]));
+            continue;
+        }
+        match by_id(&c.shot_id) {
+            None => {
+                violations.push(JsonValue::object_from_pairs(&[
+                    ("type", JsonValue::string("cue_unknown_shot")),
+                    ("cue", JsonValue::string(c.id.clone())),
+                    ("shot_id", JsonValue::string(c.shot_id.clone())),
+                ]));
+            }
+            Some(shot) => {
+                if c.start < shot.start || c.end > shot.end {
+                    violations.push(JsonValue::object_from_pairs(&[
+                        ("type", JsonValue::string("cue_out_of_shot")),
+                        ("cue", JsonValue::string(c.id.clone())),
+                        ("shot_id", JsonValue::string(c.shot_id.clone())),
+                        ("cue_start", JsonValue::Integer(c.start)),
+                        ("cue_end", JsonValue::Integer(c.end)),
+                        ("shot_start", JsonValue::Integer(shot.start)),
+                        ("shot_end", JsonValue::Integer(shot.end)),
+                    ]));
+                }
+            }
+        }
+        // d) 总时长越界(cue)
+        if let Some(total) = total {
+            if c.end > total {
+                violations.push(JsonValue::object_from_pairs(&[
+                    ("type", JsonValue::string("beyond_total")),
+                    ("kind", JsonValue::string("cue")),
+                    ("id", JsonValue::string(c.id.clone())),
+                    ("end", JsonValue::Integer(c.end)),
+                    ("total", JsonValue::Integer(total)),
+                ]));
+            }
+        }
+    }
+    // d) 总时长越界(shot)
+    if let Some(total) = total {
+        for s in &shots {
+            if s.end > total {
+                violations.push(JsonValue::object_from_pairs(&[
+                    ("type", JsonValue::string("beyond_total")),
+                    ("kind", JsonValue::string("shot")),
+                    ("id", JsonValue::string(s.id.clone())),
+                    ("end", JsonValue::Integer(s.end)),
+                    ("total", JsonValue::Integer(total)),
+                ]));
+            }
+        }
+    }
+
+    let all_clean = violations.is_empty();
+    Ok(JsonValue::object_from_pairs(&[
+        ("status", JsonValue::string("determined")),
+        ("determinism", JsonValue::string("corpus_locked")),
+        ("overlap_policy", JsonValue::string(policy)),
+        ("counts", JsonValue::object_from_pairs(&[
+            ("shots", JsonValue::Integer(shots.len() as i64)),
+            ("cues", JsonValue::Integer(cues.len() as i64)),
+        ])),
+        ("violations", JsonValue::Array(violations)),
+        ("all_clean", JsonValue::Bool(all_clean)),
+    ]))
+}
+
+pub struct GeometrySafeZoneCheck;
+
+impl NativeService for GeometrySafeZoneCheck {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        safe_zone_check(args)
+    }
+}
+
+pub struct VideoTimelineConsistencyCheck;
+
+impl NativeService for VideoTimelineConsistencyCheck {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        timeline_consistency_check(args)
+    }
+}
+
+/// 声明表构造子：安全区版式合规
+pub fn mk_safe_zone_check() -> Arc<dyn NativeService> {
+    Arc::new(GeometrySafeZoneCheck)
+}
+
+/// 声明表构造子：时间轴一致性
+pub fn mk_timeline_consistency_check() -> Arc<dyn NativeService> {
+    Arc::new(VideoTimelineConsistencyCheck)
+}
+
+// ============================================================================
 // 等距图样三服务测试
 // ============================================================================
 
@@ -1256,4 +1786,221 @@ mod tests {
             Some(true)
         );
     }
+
+// ---- 视频质检判定核二服务测试（黄金向量：手算可溯） ----
+
+/// 构造 safe_zone 判定入参（画布 1280×720；main_band=y[489,720)；frame_safe=x[128,1152]y[72,648)）
+fn safe_zone_arg(elements: Vec<JsonValue>) -> JsonValue {
+    JsonValue::object_from_pairs(&[
+        ("canvas", JsonValue::object_from_pairs(&[
+            ("w", JsonValue::Integer(1280)),
+            ("h", JsonValue::Integer(720)),
+        ])),
+        ("zones", JsonValue::Array(vec![
+            JsonValue::object_from_pairs(&[
+                ("id", JsonValue::string("main_band")),
+                ("kind", JsonValue::string("subtitle")),
+                ("x", JsonValue::Integer(0)),
+                ("y", JsonValue::Integer(489)),
+                ("w", JsonValue::Integer(1280)),
+                ("h", JsonValue::Integer(231)),
+                ("required", JsonValue::Bool(true)),
+            ]),
+            JsonValue::object_from_pairs(&[
+                ("id", JsonValue::string("frame_safe")),
+                ("kind", JsonValue::string("safe")),
+                ("x", JsonValue::Integer(128)),
+                ("y", JsonValue::Integer(72)),
+                ("w", JsonValue::Integer(1024)),
+                ("h", JsonValue::Integer(576)),
+                ("required", JsonValue::Bool(true)),
+            ]),
+        ])),
+        ("elements", JsonValue::Array(elements)),
+    ])
+}
+
+fn cue_el(id: &str, x: i64, y: i64, w: i64, h: i64) -> JsonValue {
+    JsonValue::object_from_pairs(&[
+        ("id", JsonValue::string(id)),
+        ("bbox", JsonValue::object_from_pairs(&[
+            ("x", JsonValue::Integer(x)),
+            ("y", JsonValue::Integer(y)),
+            ("w", JsonValue::Integer(w)),
+            ("h", JsonValue::Integer(h)),
+        ])),
+    ])
+}
+
+#[test]
+fn safe_zone_clean_when_contained() {
+    // 正例:cue 落 main_band∩frame_safe 交集(560..600 ⊂ 489..720 且 ⊂ 72..648)
+    let out = GeometrySafeZoneCheck
+        .execute(&safe_zone_arg(vec![cue_el("cue000", 200, 560, 400, 40)]))
+        .unwrap();
+    assert_eq!(out.get("status").and_then(JsonValue::as_str), Some("determined"));
+    assert_eq!(out.get("all_clean").and_then(JsonValue::as_bool), Some(true));
+    assert_eq!(out.get("checked_pairs").and_then(JsonValue::as_i64), Some(2));
+}
+
+#[test]
+fn safe_zone_flags_overflow_with_edges() {
+    // 负例:cue 底部越 frame_safe 下缘(660..700 ⊄ 72..648,bottom 溢 52px)
+    // 同 cue 中心 y=680 落 main_band → 判 main_band(含) 不判 title_band(落带归属)
+    let out = GeometrySafeZoneCheck
+        .execute(&safe_zone_arg(vec![cue_el("cue001", 200, 660, 400, 40)]))
+        .unwrap();
+    assert_eq!(out.get("all_clean").and_then(JsonValue::as_bool), Some(false));
+    let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].get("zone_id").and_then(JsonValue::as_str), Some("frame_safe"));
+    assert_eq!(v[0].get("element_id").and_then(JsonValue::as_str), Some("cue001"));
+    let edges = v[0].get("edges").and_then(JsonValue::as_array).unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].as_str(), Some("bottom"));
+}
+
+#[test]
+fn safe_zone_title_band_positional_matching() {
+    // 顶部 cue(中心 y=70 落 title_band 0..201.6)→判 title_band+frame_safe;
+    // y=50 越 frame_safe 上缘(72) → top 溢出;title_band 含 ✓
+    let out = GeometrySafeZoneCheck
+        .execute(&safe_zone_arg(vec![cue_el("topcue", 200, 50, 300, 40)]))
+        .unwrap();
+    let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].get("zone_id").and_then(JsonValue::as_str), Some("frame_safe"));
+    assert_eq!(v[0].get("edges").and_then(JsonValue::as_array).unwrap()[0].as_str(), Some("top"));
+}
+
+#[test]
+fn safe_zone_double_run_bitwise_stable() {
+    let args = safe_zone_arg(vec![cue_el("cue000", 200, 560, 400, 40), cue_el("cue001", 200, 660, 400, 40)]);
+    let a = GeometrySafeZoneCheck.execute(&args).unwrap();
+    let b = GeometrySafeZoneCheck.execute(&args).unwrap();
+    assert_eq!(format!("{a:?}"), format!("{b:?}"));
+}
+
+/// 构造 timeline 判定入参
+fn timeline_arg(shots: Vec<JsonValue>, cues: Vec<JsonValue>, total: Option<i64>) -> JsonValue {
+    let mut out = vec![
+        ("shots", JsonValue::Array(shots)),
+        ("cues", JsonValue::Array(cues)),
+        ("overlap_policy", JsonValue::string("forbid")),
+    ];
+    if let Some(t) = total {
+        out.push(("total_duration", JsonValue::Integer(t)));
+    }
+    JsonValue::object_from_pairs(&out)
+}
+
+fn shot(id: &str, start: i64, end: i64) -> JsonValue {
+    JsonValue::object_from_pairs(&[
+        ("id", JsonValue::string(id)),
+        ("start", JsonValue::Integer(start)),
+        ("end", JsonValue::Integer(end)),
+    ])
+}
+
+fn cue(id: &str, shot_id: &str, start: i64, end: i64) -> JsonValue {
+    JsonValue::object_from_pairs(&[
+        ("id", JsonValue::string(id)),
+        ("shot_id", JsonValue::string(shot_id)),
+        ("start", JsonValue::Integer(start)),
+        ("end", JsonValue::Integer(end)),
+    ])
+}
+
+#[test]
+fn timeline_clean_when_contained() {
+    // 正例:无交叠镜头+cue 完整落于归属镜头区间
+    let out = VideoTimelineConsistencyCheck
+        .execute(&timeline_arg(
+            vec![shot("s1", 0, 3000), shot("s2", 3000, 6000)],
+            vec![cue("c1", "s1", 500, 2500), cue("c2", "s2", 3500, 5500)],
+            Some(6000),
+        ))
+        .unwrap();
+    assert_eq!(out.get("all_clean").and_then(JsonValue::as_bool), Some(true));
+    assert_eq!(out.get("status").and_then(JsonValue::as_str), Some("determined"));
+    assert_eq!(
+        out.get("counts").and_then(|c| c.get("shots")).and_then(JsonValue::as_i64),
+        Some(2)
+    );
+}
+
+#[test]
+fn timeline_flags_overlap_unknown_shot_and_out_of_shot() {
+    // 负例:s2 与 s1 交叠(2800<3000, 200ms)+c3 越镜头尾+c4 归属未知镜头
+    let out = VideoTimelineConsistencyCheck
+        .execute(&timeline_arg(
+            vec![shot("s1", 0, 3000), shot("s2", 2800, 6000)],
+            vec![
+                cue("c1", "s1", 500, 2500),
+                cue("c3", "s2", 5000, 7000),
+                cue("c4", "s9", 100, 200),
+            ],
+            Some(6500),
+        ))
+        .unwrap();
+    assert_eq!(out.get("all_clean").and_then(JsonValue::as_bool), Some(false));
+    let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+    let types: Vec<&str> = v.iter().map(|x| x.get("type").and_then(JsonValue::as_str).unwrap()).collect();
+    assert!(types.contains(&"shot_overlap"));
+    assert!(types.contains(&"cue_out_of_shot"));
+    assert!(types.contains(&"cue_unknown_shot"));
+    // 交叠对与重叠时长可定位
+    let ov = v.iter().find(|x| x.get("type").and_then(JsonValue::as_str) == Some("shot_overlap")).unwrap();
+    assert_eq!(ov.get("a").and_then(JsonValue::as_str), Some("s1"));
+    assert_eq!(ov.get("b").and_then(JsonValue::as_str), Some("s2"));
+    assert_eq!(ov.get("overlap_ms").and_then(JsonValue::as_i64), Some(200));
+}
+
+#[test]
+fn timeline_flags_beyond_total_for_shot_and_cue() {
+    let out = VideoTimelineConsistencyCheck
+        .execute(&timeline_arg(
+            vec![shot("s1", 0, 3000)],
+            vec![cue("c1", "s1", 500, 3200)],
+            Some(2900),
+        ))
+        .unwrap();
+    let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+    let beyond: Vec<&str> = v
+        .iter()
+        .filter(|x| x.get("type").and_then(JsonValue::as_str) == Some("beyond_total"))
+        .map(|x| x.get("kind").and_then(JsonValue::as_str).unwrap())
+        .collect();
+    assert!(beyond.contains(&"shot"));
+    assert!(beyond.contains(&"cue"));
+}
+
+#[test]
+fn timeline_rejects_unsupported_policy_and_bad_ranges() {
+    // overlap_policy 非 forbid → Err 显式拒绝
+    let args = JsonValue::object_from_pairs(&[
+        ("shots", JsonValue::Array(vec![shot("s1", 0, 3000)])),
+        ("cues", JsonValue::Array(vec![])),
+        ("overlap_policy", JsonValue::string("allow")),
+    ]);
+    assert!(VideoTimelineConsistencyCheck.execute(&args).is_err());
+    // 镜头区间退化(start ≥ end)拒绝
+    let args = JsonValue::object_from_pairs(&[
+        ("shots", JsonValue::Array(vec![shot("s1", 3000, 3000)])),
+        ("cues", JsonValue::Array(vec![])),
+    ]);
+    assert!(VideoTimelineConsistencyCheck.execute(&args).is_err());
+}
+
+#[test]
+fn timeline_double_run_bitwise_stable() {
+    let args = timeline_arg(
+        vec![shot("s1", 0, 3000), shot("s2", 2800, 6000)],
+        vec![cue("c1", "s1", 500, 2500)],
+        Some(6500),
+    );
+    let a = VideoTimelineConsistencyCheck.execute(&args).unwrap();
+    let b = VideoTimelineConsistencyCheck.execute(&args).unwrap();
+    assert_eq!(format!("{a:?}"), format!("{b:?}"));
+}
 }
