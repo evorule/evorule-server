@@ -353,6 +353,16 @@ impl Session {
     }
 }
 
+/// 当前 unix 毫秒（会话号时间基下限源）
+///
+/// 系统时钟早于 unix 纪元（极端异常）时回落 0，交由 WAL 账面钳制兜底。
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 /// 会话管理器
 ///
 /// 管理多个反应器会话，每个会话拥有独立的 state 和通道。
@@ -364,8 +374,14 @@ pub struct SessionManager {
     max_rounds: usize,
     /// 会话表分片（每片独立锁）
     shards: Vec<Arc<Mutex<BTreeMap<SessionId, Session>>>>,
-    /// 下一个会话 ID（无锁分配）
+    /// 下一个会话 ID（无锁分配；计数器语义=下一候选号）
     next_session_id: AtomicU64,
+    /// 会话号时间基下限源（unix 毫秒；测试经 `with_session_id_floor_for_test` 注入固定值）
+    ///
+    /// 新分配号恒 ≥ 本下限：账面恢复视野仅限当前 wal_dir（目录切换/纯内存
+    /// 模式/归档清档都会让账面归零），时间基下限使任何历史时代遗留的小序号
+    /// 都不可能再被分配，是防回退的结构性兜底。
+    id_floor_ms: Box<dyn Fn() -> u64 + Send + Sync>,
     /// 最大会话数
     max_sessions: usize,
     /// 会话 TTL（无活动超时）
@@ -616,17 +632,24 @@ impl SessionManager {
         // AUDIT-A3 修复（2026-08-27）：配置 wal_dir 时扫描既有 session_*.wal
         // 恢复会话 ID 计数器。否则重启后 next_session_id 归 1，首个新会话会以
         // truncate 模式覆盖已存在的 session_1.wal，静默清除上一轮审计链。
-        let initial_session_id = wal_dir
+        //
+        // 防回退双兜底：账面恢复视野仅限当前 wal_dir（目录切换/纯内存模式/
+        // 归档清档都会让账面归零），因此计数器再叠加时间基下限——新分配号
+        // 恒 ≥ unix 毫秒，任何历史时代遗留的小序号都不可再被分配。
+        let wal_floor = wal_dir
             .as_deref()
             .map(Self::scan_max_session_id)
             .unwrap_or(0)
             + 1;
+        let id_floor_ms: Box<dyn Fn() -> u64 + Send + Sync> = Box::new(unix_now_ms);
+        let initial_session_id = wal_floor.max(id_floor_ms());
 
         Self {
             core_eval,
             max_rounds,
             shards,
             next_session_id: AtomicU64::new(initial_session_id),
+            id_floor_ms,
             max_sessions,
             session_ttl,
             wal_dir,
@@ -656,6 +679,23 @@ impl SessionManager {
     /// 已存在会话不受影响。不调用本方法=锚点关（与旧版行为逐位一致）。
     pub fn with_anchor_config(mut self, config: SessionAnchorConfig) -> Self {
         self.anchor_config = Some(config);
+        self
+    }
+
+    /// 测试注入缝：替换时间基下限源并按注入下限重导计数器（确定性断言用）
+    ///
+    /// 重导 = 账面钳制与注入下限取大，与生产构造同式。仅测试可见。
+    #[cfg(test)]
+    fn with_session_id_floor_for_test(mut self, floor: Box<dyn Fn() -> u64 + Send + Sync>) -> Self {
+        let floor_val = floor();
+        self.id_floor_ms = floor;
+        let wal_floor = self
+            .wal_dir
+            .as_deref()
+            .map(Self::scan_max_session_id)
+            .unwrap_or(0)
+            + 1;
+        self.next_session_id = AtomicU64::new(wal_floor.max(floor_val));
         self
     }
 
@@ -836,6 +876,35 @@ impl SessionManager {
         max
     }
 
+    /// 分配下一个会话号（防回退三重下限：进程内单调 + WAL 账面恢复 + 时间基）
+    ///
+    /// 计数器语义=下一候选号（与 `fetch_add` 旧值语义一致，保持「首个会话号=
+    /// 初始化值」不变）。候选号先抬升到时间基下限再返回，返回后计数器推进到
+    /// 候选号+1：进程内严格单调；下限源回落被上一号+1 顶住，下限源快进把
+    /// 号域抬到新下限——分配器结构性不回退。
+    ///
+    /// 以 CAS 自旋替代"先 load 检查、后 fetch_add"的两步模式——检查与递增
+    /// 之间无窗口，高并发创建不重号。
+    fn allocate_session_id(&self) -> SessionId {
+        loop {
+            let prev = self.next_session_id.load(Ordering::Relaxed);
+            let candidate = prev.max((self.id_floor_ms)());
+            if self
+                .next_session_id
+                .compare_exchange_weak(
+                    prev,
+                    candidate.saturating_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return candidate;
+            }
+            // CAS 失败 = 并发竞争，重读重试
+        }
+    }
+
     /// 获取分片索引
     fn get_shard_idx(&self, id: SessionId) -> usize {
         (id as usize) % self.shards.len()
@@ -898,7 +967,7 @@ impl SessionManager {
         // B4：先原子预留名额，再做慢操作（create_facts_log/spawn）；失败路径必须归还
         self.reserve_session_slot()?;
 
-        let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
+        let session_id = self.allocate_session_id();
 
         let facts_log = match self.create_facts_log(session_id) {
             Ok(fl) => fl,
@@ -1100,7 +1169,7 @@ impl SessionManager {
         // B4：先原子预留名额，再做慢操作（create_facts_log/spawn）；失败路径必须归还
         self.reserve_session_slot()?;
 
-        let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
+        let session_id = self.allocate_session_id();
 
         // 审计⑥ C2: 锚哈希统一到审计链口径（带口径标记,旧验证方按 scheme 分派）
         let (initial_content_hash, content_hash_scheme) = compute_initial_hash(&initial_payload);
@@ -1891,8 +1960,8 @@ mod tests {
     use evorule_reactor::Fact;
     use std::collections::BTreeMap;
 
-    /// AUDIT-A3 回归：重启后从 wal_dir 恢复会话 ID 计数器，
-    /// 新会话不得以 truncate 覆盖既有审计链。
+    /// AUDIT-A3 回归（时间基时代）：重启后从 wal_dir 恢复会话 ID 计数器，
+    /// 新会话不得以 truncate 覆盖既有审计链；账面钳制与时间基下限取最大。
     #[tokio::test]
     async fn test_session_id_counter_restored_from_wal_dir() {
         let dir = std::env::temp_dir().join(format!("evorule_audit_a3_{}", std::process::id()));
@@ -1917,11 +1986,12 @@ mod tests {
             false,
             1000,
             1,
-        );
+        )
+        .with_session_id_floor_for_test(Box::new(|| 500));
 
-        // 首个新会话必须是 8（= max+1），不能复用 1~7 中任何一个
+        // 首个新会话必须是 500（= max(账面 7+1, 时间基 500)），不能复用 1~7 中任何一个
         let id = mgr.create_session().unwrap();
-        assert_eq!(id, 8, "重启后首个会话 ID 必须接续既有 WAL 最大序号");
+        assert_eq!(id, 500, "首个会话号必须取账面钳制与时间基下限的较大者");
 
         // 旧审计链文件必须原样保留
         assert_eq!(
@@ -1930,7 +2000,7 @@ mod tests {
             "既有 WAL 被覆盖：AUDIT-A3 回归失败"
         );
 
-        // 模拟二次重启：计数器应继续接续
+        // 模拟二次重启：本轮 500.wal 账面把钳制抬到 501，与时间基取大后仍接续
         drop(mgr);
         let core_eval2 = make_core_eval();
         let mgr2 = SessionManager::with_limits_and_wal_and_auto_verify(
@@ -1945,12 +2015,78 @@ mod tests {
             false,
             1000,
             1,
-        );
+        )
+        .with_session_id_floor_for_test(Box::new(|| 500));
         let id2 = mgr2.create_session().unwrap();
-        assert_eq!(id2, 9, "二次重启后计数器必须继续接续");
+        assert_eq!(id2, 501, "二次重启后计数器必须继续接续");
 
         let _handle = mgr2.close_session(id2).unwrap();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ===== 会话号防回退（时间基下限）=====
+
+    /// 时间基下限：全新 wal 目录（账面归零，模拟目录切换/归档清档断裂）下，
+    /// 新会话号仍落在时间基下限，不可能复用任何历史时代遗留的小序号。
+    #[tokio::test]
+    async fn session_id_floor_holds_when_ledger_is_empty() {
+        let dir =
+            std::env::temp_dir().join(format!("evorule_sid_floor_empty_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = SessionManager::with_limits_and_wal_and_auto_verify(
+            make_core_eval(),
+            100,
+            100,
+            Duration::from_secs(3600),
+            Some(dir.clone()),
+            4,
+            false,
+            0,
+            false,
+            1000,
+            1,
+        )
+        .with_session_id_floor_for_test(Box::new(|| 500));
+
+        let id = mgr.create_session().unwrap();
+        assert_eq!(id, 500, "账面归零时首个会话号必须落在时间基下限");
+        let id2 = mgr.create_session().unwrap();
+        assert_eq!(id2, 501, "同毫秒内顺序分配严格 +1");
+
+        let _ = mgr.close_session(id2).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 时钟回拨/快进下分配器结构性不回退：候选号 = max(上一号+1, 下限)，
+    /// 下限源回落只会被上一号+1 顶住；下限源快进把号域抬到新下限。
+    #[tokio::test]
+    async fn session_id_never_rolls_back_on_floor_regression() {
+        let clock = std::sync::Arc::new(AtomicU64::new(500));
+        let floor_source = clock.clone();
+        let mgr = SessionManager::with_limits(make_core_eval(), 100, 8, Duration::from_secs(60))
+            .with_session_id_floor_for_test(Box::new(move || floor_source.load(Ordering::Relaxed)));
+
+        assert_eq!(mgr.allocate_session_id(), 500);
+        assert_eq!(mgr.allocate_session_id(), 501);
+
+        // 时钟猛回拨：号域必须被上一号+1 顶住，绝不回退
+        clock.store(100, Ordering::Relaxed);
+        assert_eq!(mgr.allocate_session_id(), 502, "时钟回拨不得使会话号回退");
+
+        // 时钟快进：号域抬到新下限
+        clock.store(900, Ordering::Relaxed);
+        assert_eq!(mgr.allocate_session_id(), 900, "时钟快进把会话号抬到新下限");
+        assert_eq!(mgr.allocate_session_id(), 901);
+    }
+
+    /// 纯内存模式（无 wal 目录，历史撞号事故形态之一）下时间基下限同样生效。
+    #[tokio::test]
+    async fn session_id_floor_holds_in_memory_only_mode() {
+        let mgr = SessionManager::with_limits(make_core_eval(), 100, 8, Duration::from_secs(60))
+            .with_session_id_floor_for_test(Box::new(|| 500));
+        let id = mgr.create_session().unwrap();
+        assert_eq!(id, 500, "纯内存模式新会话号必须 ≥ 时间基下限");
+        mgr.close_session(id).ok();
     }
 
     fn make_core_eval() -> Vec<JsonValue> {
