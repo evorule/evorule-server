@@ -18,6 +18,7 @@ pub mod anchor_setup;
 pub mod api;
 pub mod auth;
 pub mod criticality_api;
+pub mod equilibrium_obs;
 pub mod input_sanitizer;
 pub mod knowledge_store;
 pub mod law_host;
