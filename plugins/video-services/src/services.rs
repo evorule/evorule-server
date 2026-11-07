@@ -1245,3 +1245,563 @@ mod frame_seq_tests {
         assert!(VideoFrameSequenceEval.execute(&c).is_err());
     }
 }
+// ============================================================================
+// 主体轨迹守恒判定（video_track_consistency_eval）— V5' 判定核
+// ============================================================================
+
+/// 主体轨迹守恒判定核：参考 bbox + 逐帧主体 bbox 序列（引擎侧感知检出/
+/// 跟踪产物结构化喂入）→ 判定每帧位移/尺度漂移是否越限。
+///
+/// 判定语义（宿主侧视频能力需求方案 V5' 契约）：
+/// - 位移 = 帧框中心 − 参考框中心，按 metric（`l2` 缺省/`linf`）取值，
+///   超 `max_translation`（px）即违例 `translation_exceeded`；
+/// - 尺度漂移 = |帧框面积 − 参考框面积| / 参考框面积，超
+///   `max_scale_delta` 即违例 `scale_exceeded`；
+/// - 参考框由引擎侧显式给出（感知禁令：无 auto_from_first_frame 模式）。
+///
+/// 确定性实现：
+/// - 坐标限形：整数段 <=7 位 + 小数段 <=6 位纯数字（非负）→ 1e6 定点
+///   整**精确**表示（零舍入零浮点）；max_scale_delta 整数段 <=2 位；
+/// - l2 判定面 = dx^2+dy^2 与 limit^2 纯整数精确比较（零开方）；
+///   显示值 = 确定性整数 Newton isqrt（floor，纯整数迭代）；
+/// - 尺度判定 = 交叉相乘整比较；限形下峰值积 <=1e35 << i128 上限
+///   （1.7e38），零溢出；
+/// - 帧号非负整数必填唯一，判定按帧号升序（输入序不敏感）。
+struct VideoTrackConsistencyEval;
+
+/// 轨迹核定点标度（1e6，坐标小数 <=6 位 → 全量精确）
+const TRK_SCALE: i128 = 1_000_000;
+
+/// 坐标/阈值有理数解析（非负）：整数段 <=max_i 位、小数段 <=max_f 位。
+/// 返回 TRK_SCALE 精确定点值（scale 整除 1e6，零舍入）。
+fn parse_trk_rational(raw: &str, ctx: &str, max_i: usize, max_f: usize) -> Result<i128, String> {
+    let s = raw.trim();
+    let (ip, fp) = match s.split_once('.') {
+        None => (s, ""),
+        Some((a, b)) => (a, b),
+    };
+    if s.is_empty()
+        || (ip.is_empty() && fp.is_empty())
+        || ip.len() > max_i
+        || fp.len() > max_f
+        || !ip.bytes().all(|b| b.is_ascii_digit())
+        || !fp.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(format!(
+            "{ctx} 非法数值 {raw:?} — 自诊断指引: 十进制形如 \"100.5\"（整数 <={max_i} 位 + 小数 <={max_f} 位纯数字,非负）"
+        ));
+    }
+    let mut v: i128 = 0;
+    for b in ip.bytes() {
+        v = v * 10 + (b - b'0') as i128;
+    }
+    let mut scale: i128 = 1;
+    for b in fp.bytes() {
+        v = v * 10 + (b - b'0') as i128;
+        scale *= 10;
+    }
+    Ok(v * (TRK_SCALE / scale))
+}
+
+/// bbox 解析：{x,y,w,h} 字符串有理数（非负；w/h 须 >0）；返回 1e6 定点 [x,y,w,h]
+fn parse_trk_bbox(v: &JsonValue, ctx: &str) -> Result<[i128; 4], String> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| format!("{ctx} 须为对象 {{x,y,w,h}} — 自诊断指引: 四字段字符串有理数"))?;
+    let mut out = [0i128; 4];
+    for (k, idx) in [("x", 0usize), ("y", 1), ("w", 2), ("h", 3)] {
+        let s = obj
+            .get(k)
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| format!("{ctx}.{k} 须为字符串有理数 — 自诊断指引: 如 \"120.5\""))?;
+        out[idx] = parse_trk_rational(s, &format!("{ctx}.{k}"), 7, 6)?;
+    }
+    if out[2] <= 0 || out[3] <= 0 {
+        return Err(format!(
+            "{ctx} 宽高须 >0 — 自诊断指引: w/h 正值（面积零/负无法作尺度基准）"
+        ));
+    }
+    Ok(out)
+}
+
+/// 帧号解析：非负整数（数值形入参,契约层标注）
+fn parse_trk_frame(v: &JsonValue) -> Result<i64, String> {
+    let n = match v {
+        JsonValue::Integer(n) => Some(*n),
+        JsonValue::U64(u) => i64::try_from(*u).ok(),
+        _ => None,
+    }
+    .ok_or_else(|| "tracks[].frame 须为非负整数 — 自诊断指引: 帧号必填（数值形）".to_string())?;
+    if n < 0 {
+        return Err(format!("tracks[].frame={n} 须非负"));
+    }
+    Ok(n)
+}
+
+/// 确定性整数 Newton isqrt（floor(sqrt(n))，纯整数迭代零浮点）
+fn isqrt(n: i128) -> i128 {
+    if n < 2 {
+        return n;
+    }
+    let mut x: i128 = 1 << (128 - (n as u128).leading_zeros() as usize).div_ceil(2);
+    loop {
+        let y = (x + n / x) / 2;
+        if y >= x {
+            break;
+        }
+        x = y;
+    }
+    x
+}
+
+/// 1e6 定点值 → 精确 6 位小数字符串（值本身 1e6 精确,零舍入）
+fn fmt_trk(v: i128) -> String {
+    format!("{}.{:06}", v / TRK_SCALE, v % TRK_SCALE)
+}
+
+/// 1e4 标度值 → 4 位小数字符串（判定精确,显示截断尾数）
+fn fmt_trk4(v: i128) -> String {
+    format!("{}.{:04}", v / 10_000, v % 10_000)
+}
+
+impl NativeService for VideoTrackConsistencyEval {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let reference = args.get("reference").ok_or(
+            "缺少必填参数 reference — 自诊断指引: {x,y,w,h} 字符串有理数（引擎侧感知检出显式给出）",
+        )?;
+        let tracks = args
+            .get("tracks")
+            .and_then(JsonValue::as_array)
+            .ok_or("缺少必填参数 tracks — 自诊断指引: 逐帧数组 [{frame, bbox},...],帧号必填")?;
+        if tracks.is_empty() {
+            return Err("tracks 须为非空数组 — 自诊断指引: 至少 1 帧主体 bbox".to_string());
+        }
+        let metric = match args.get("metric") {
+            None | Some(JsonValue::Null) => "l2",
+            Some(v) => v
+                .as_str()
+                .ok_or("metric 须为字符串 \"l2\" 或 \"linf\" — 自诊断指引: 缺省 l2")?,
+        };
+        if metric != "l2" && metric != "linf" {
+            return Err(format!(
+                "metric={metric} 未知 — 自诊断指引: 仅 \"l2\"（欧氏）或 \"linf\"（切比雪夫）,缺省 l2"
+            ));
+        }
+        let max_t_raw = args
+            .get("max_translation")
+            .and_then(JsonValue::as_str)
+            .ok_or("缺少必填参数 max_translation — 自诊断指引: 位移上限 px,字符串如 \"40\"")?;
+        let max_t = parse_trk_rational(max_t_raw, "max_translation", 7, 6)?;
+        let max_s_raw = args
+            .get("max_scale_delta")
+            .and_then(JsonValue::as_str)
+            .ok_or("缺少必填参数 max_scale_delta — 自诊断指引: 尺度漂移上限,字符串如 \"0.2\"")?;
+        let max_s = parse_trk_rational(max_s_raw, "max_scale_delta", 2, 6)?;
+
+        let reference = parse_trk_bbox(reference, "reference")?;
+        let ref_cx = reference[0] + reference[2] / 2;
+        let ref_cy = reference[1] + reference[3] / 2;
+        let ref_area = reference[2] * reference[3];
+
+        // 解析全部帧（帧号唯一性守卫+按帧号升序判定,输入序不敏感）
+        let mut frames: Vec<(i64, [i128; 4])> = Vec::with_capacity(tracks.len());
+        for (i, t) in tracks.iter().enumerate() {
+            let frame = parse_trk_frame(
+                t.get("frame")
+                    .ok_or_else(|| format!("tracks[{i}] 缺 frame — 自诊断指引: 帧号必填"))?,
+            )
+            .map_err(|e| format!("tracks[{i}] {e}"))?;
+            let bbox = parse_trk_bbox(
+                t.get("bbox")
+                    .ok_or_else(|| format!("tracks[{i}] 缺 bbox — 自诊断指引: {{x,y,w,h}}"))?,
+                &format!("tracks[{i}].bbox"),
+            )?;
+            frames.push((frame, bbox));
+        }
+        frames.sort_by_key(|(f, _)| *f);
+        for w in frames.windows(2) {
+            if w[0].0 == w[1].0 {
+                return Err(format!(
+                    "tracks 帧号重复: {} — 自诊断指引: 每帧恰一条,重复条目判据歧义故拒绝",
+                    w[0].0
+                ));
+            }
+        }
+
+        // 逐帧判定
+        let mut per_frame: Vec<JsonValue> = Vec::with_capacity(frames.len());
+        let mut violations: Vec<JsonValue> = Vec::new();
+        let mut max_trans_obs: i128 = 0;
+        let mut max_scale_obs: i128 = 0;
+        for (frame, bbox) in &frames {
+            let cx = bbox[0] + bbox[2] / 2;
+            let cy = bbox[1] + bbox[3] / 2;
+            let dx = (cx - ref_cx).abs();
+            let dy = (cy - ref_cy).abs();
+            // 位移：linf=max(|dx|,|dy|)；l2=sqrt(dx^2+dy^2)（判定面=平方整比较）
+            let (trans, trans_exceeded) = match metric {
+                "linf" => {
+                    let v = dx.max(dy);
+                    (v, v > max_t)
+                }
+                _ => {
+                    let sq = dx * dx + dy * dy;
+                    (isqrt(sq), sq > max_t * max_t)
+                }
+            };
+            if trans > max_trans_obs {
+                max_trans_obs = trans;
+            }
+            // 尺度漂移：比较 drift > max_s <=> dn*1e6 > max_s*ref_area（交叉乘,精确）
+            let area = bbox[2] * bbox[3];
+            let dn = (area - ref_area).abs();
+            let scale_exceeded = dn * TRK_SCALE > max_s * ref_area;
+            let drift = dn * 10_000 / ref_area; // 1e4 标度显示值（截断尾数）
+            if drift > max_scale_obs {
+                max_scale_obs = drift;
+            }
+            if trans_exceeded {
+                violations.push(JsonValue::object_from_pairs(&[
+                    ("frame", JsonValue::Integer(*frame)),
+                    ("kind", JsonValue::string("translation_exceeded")),
+                    ("value", JsonValue::string(fmt_trk(trans))),
+                    ("limit", JsonValue::string(fmt_trk(max_t))),
+                ]));
+            }
+            if scale_exceeded {
+                violations.push(JsonValue::object_from_pairs(&[
+                    ("frame", JsonValue::Integer(*frame)),
+                    ("kind", JsonValue::string("scale_exceeded")),
+                    ("value", JsonValue::string(fmt_trk4(drift))),
+                    (
+                        "limit",
+                        JsonValue::string(fmt_trk4(max_s * 10_000 / TRK_SCALE)),
+                    ),
+                ]));
+            }
+            per_frame.push(JsonValue::object_from_pairs(&[
+                ("frame", JsonValue::Integer(*frame)),
+                ("translation", JsonValue::string(fmt_trk(trans))),
+                ("scale_drift", JsonValue::string(fmt_trk4(drift))),
+            ]));
+        }
+
+        let all_clean = violations.is_empty();
+        Ok(envelope(&[
+            ("service", JsonValue::string("video_track_consistency_eval")),
+            ("all_clean", JsonValue::Bool(all_clean)),
+            ("per_frame", JsonValue::Array(per_frame)),
+            ("violations", JsonValue::Array(violations)),
+            (
+                "max_translation_observed",
+                JsonValue::string(fmt_trk(max_trans_obs)),
+            ),
+            (
+                "max_scale_observed",
+                JsonValue::string(fmt_trk4(max_scale_obs)),
+            ),
+        ]))
+    }
+}
+
+/// 声明表构造子：主体轨迹守恒判定
+pub fn mk_video_track_consistency_eval() -> Arc<dyn NativeService> {
+    Arc::new(VideoTrackConsistencyEval)
+}
+// ============================================================================
+// 轨迹守恒判定测试（golden：匀速合法/单帧跳变/尺度渐变 + 边界 + 双跑一致）
+// ============================================================================
+
+#[cfg(test)]
+mod track_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn bbox(x: &str, y: &str, w: &str, h: &str) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            ("x", JsonValue::string(x)),
+            ("y", JsonValue::string(y)),
+            ("w", JsonValue::string(w)),
+            ("h", JsonValue::string(h)),
+        ])
+    }
+
+    fn trk(frame: i64, b: JsonValue) -> JsonValue {
+        JsonValue::object_from_pairs(&[("frame", JsonValue::Integer(frame)), ("bbox", b)])
+    }
+
+    fn args(
+        reference: JsonValue,
+        tracks: Vec<JsonValue>,
+        max_t: &str,
+        max_s: &str,
+        metric: Option<&str>,
+    ) -> JsonValue {
+        let mut pairs: Vec<(&str, JsonValue)> = vec![
+            ("reference", reference),
+            ("tracks", JsonValue::Array(tracks)),
+            ("max_translation", JsonValue::string(max_t)),
+            ("max_scale_delta", JsonValue::string(max_s)),
+        ];
+        if let Some(m) = metric {
+            pairs.push(("metric", JsonValue::string(m)));
+        }
+        JsonValue::object_from_pairs(&pairs)
+    }
+
+    fn run(a: &JsonValue) -> JsonValue {
+        VideoTrackConsistencyEval.execute(a).unwrap()
+    }
+
+    #[test]
+    fn track_uniform_clean_golden() {
+        // 匀速合法轨迹: 帧框恒等于参考框 → 全清洁
+        let r = bbox("100", "100", "40", "20");
+        let a = args(
+            r.clone(),
+            vec![trk(0, r.clone()), trk(1, r.clone()), trk(2, r.clone())],
+            "40",
+            "0.2",
+            None,
+        );
+        let out = run(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("violations")
+                .and_then(JsonValue::as_array)
+                .map(|v| v.len()),
+            Some(0)
+        );
+        assert_eq!(
+            out.get("max_translation_observed")
+                .and_then(JsonValue::as_str),
+            Some("0.000000")
+        );
+        assert_eq!(
+            out.get("max_scale_observed").and_then(JsonValue::as_str),
+            Some("0.0000")
+        );
+        let pf = out.get("per_frame").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(pf.len(), 3);
+        assert_eq!(
+            pf[0].get("translation").and_then(JsonValue::as_str),
+            Some("0.000000")
+        );
+        assert_eq!(
+            pf[0].get("scale_drift").and_then(JsonValue::as_str),
+            Some("0.0000")
+        );
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+    }
+
+    #[test]
+    fn track_jump_violation_golden() {
+        // 单帧跳变: 帧 5 中心横移 80px > 40px 上限 → translation_exceeded
+        let r = bbox("100", "100", "40", "20");
+        let a = args(
+            r.clone(),
+            vec![trk(0, r.clone()), trk(5, bbox("180", "100", "40", "20"))],
+            "40",
+            "0.2",
+            None,
+        );
+        let out = run(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].get("frame").and_then(JsonValue::as_i64), Some(5));
+        assert_eq!(
+            v[0].get("kind").and_then(JsonValue::as_str),
+            Some("translation_exceeded")
+        );
+        assert_eq!(
+            v[0].get("value").and_then(JsonValue::as_str),
+            Some("80.000000")
+        );
+        assert_eq!(
+            v[0].get("limit").and_then(JsonValue::as_str),
+            Some("40.000000")
+        );
+        assert_eq!(
+            out.get("max_translation_observed")
+                .and_then(JsonValue::as_str),
+            Some("80.000000")
+        );
+    }
+
+    #[test]
+    fn track_scale_gradient_violation_golden() {
+        // 尺度渐变: 100x100 → 110x110, 漂移 21% > 20% 上限 → scale_exceeded
+        let r = bbox("0", "0", "100", "100");
+        let a = args(
+            r.clone(),
+            vec![trk(0, r.clone()), trk(1, bbox("0", "0", "110", "110"))],
+            "500",
+            "0.2",
+            None,
+        );
+        let out = run(&a);
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(
+            v[0].get("kind").and_then(JsonValue::as_str),
+            Some("scale_exceeded")
+        );
+        assert_eq!(
+            v[0].get("value").and_then(JsonValue::as_str),
+            Some("0.2100")
+        );
+        assert_eq!(
+            v[0].get("limit").and_then(JsonValue::as_str),
+            Some("0.2000")
+        );
+        assert_eq!(
+            out.get("max_scale_observed").and_then(JsonValue::as_str),
+            Some("0.2100")
+        );
+    }
+
+    #[test]
+    fn track_boundary_strict_and_metrics() {
+        // 边界: 漂移恰等于上限不算超（严格大于）; 超一丝即超
+        let r = bbox("0", "0", "10", "10");
+        let exact = args(
+            r.clone(),
+            vec![trk(0, bbox("0", "0", "10", "12"))],
+            "500",
+            "0.2",
+            None,
+        );
+        assert_eq!(
+            run(&exact).get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        let over = args(
+            r.clone(),
+            vec![trk(0, bbox("0", "0", "10", "12.000001"))],
+            "500",
+            "0.2",
+            None,
+        );
+        assert_eq!(
+            run(&over).get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+
+        // l2/linf: 3-4-5 三角精确锚 — 位移 (30,40): l2=50, linf=40
+        let r2 = bbox("0", "0", "10", "10");
+        let mv = bbox("30", "40", "10", "10");
+        let l2 = args(
+            r2.clone(),
+            vec![trk(0, mv.clone())],
+            "100",
+            "0.5",
+            Some("l2"),
+        );
+        assert_eq!(
+            run(&l2)
+                .get("per_frame")
+                .and_then(JsonValue::as_array)
+                .unwrap()[0]
+                .get("translation")
+                .and_then(JsonValue::as_str),
+            Some("50.000000")
+        );
+        let linf = args(r2, vec![trk(0, mv)], "100", "0.5", Some("linf"));
+        assert_eq!(
+            run(&linf)
+                .get("per_frame")
+                .and_then(JsonValue::as_array)
+                .unwrap()[0]
+                .get("translation")
+                .and_then(JsonValue::as_str),
+            Some("40.000000")
+        );
+    }
+
+    #[test]
+    fn track_order_insensitive_and_double_run() {
+        // 乱序入参 → 按帧号升序判定; 双跑位元一致
+        let r = bbox("0", "0", "10", "10");
+        let a = args(
+            r.clone(),
+            vec![trk(7, r.clone()), trk(2, r.clone()), trk(4, r.clone())],
+            "40",
+            "0.2",
+            None,
+        );
+        let x = run(&a);
+        let y = run(&a);
+        assert_eq!(x, y, "同参双跑须位元一致");
+        let pf = x.get("per_frame").and_then(JsonValue::as_array).unwrap();
+        let frames: Vec<i64> = pf
+            .iter()
+            .filter_map(|v| v.get("frame").and_then(JsonValue::as_i64))
+            .collect();
+        assert_eq!(frames, vec![2, 4, 7], "须按帧号升序: {frames:?}");
+    }
+
+    #[test]
+    fn track_rejects_bad_input() {
+        let r = bbox("0", "0", "10", "10");
+        // 空 tracks
+        assert!(VideoTrackConsistencyEval
+            .execute(&args(r.clone(), vec![], "40", "0.2", None))
+            .is_err());
+        // 缺必填
+        assert!(VideoTrackConsistencyEval
+            .execute(&JsonValue::object_from_pairs(&[("reference", r.clone())]))
+            .is_err());
+        // 帧号重复
+        let dup = args(
+            r.clone(),
+            vec![trk(3, r.clone()), trk(3, r.clone())],
+            "40",
+            "0.2",
+            None,
+        );
+        assert!(VideoTrackConsistencyEval.execute(&dup).is_err());
+        // 负帧号
+        let negf = args(r.clone(), vec![trk(-1, r.clone())], "40", "0.2", None);
+        assert!(VideoTrackConsistencyEval.execute(&negf).is_err());
+        // 零宽 bbox
+        let zw = args(
+            r.clone(),
+            vec![trk(0, bbox("0", "0", "0", "10"))],
+            "40",
+            "0.2",
+            None,
+        );
+        assert!(VideoTrackConsistencyEval.execute(&zw).is_err());
+        // 未知 metric
+        let badm = args(r.clone(), vec![trk(0, r.clone())], "40", "0.2", Some("l1"));
+        assert!(VideoTrackConsistencyEval.execute(&badm).is_err());
+        // 负值坐标
+        let negc = args(
+            bbox("-1", "0", "10", "10"),
+            vec![trk(0, r.clone())],
+            "40",
+            "0.2",
+            None,
+        );
+        assert!(VideoTrackConsistencyEval.execute(&negc).is_err());
+        // 超 7 位整数段
+        let bigc = args(
+            bbox("12345678", "0", "10", "10"),
+            vec![trk(0, r.clone())],
+            "40",
+            "0.2",
+            None,
+        );
+        assert!(VideoTrackConsistencyEval.execute(&bigc).is_err());
+    }
+}
