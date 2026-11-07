@@ -899,9 +899,10 @@ mod parameters_contract_tests {
     fn deterministic_families_carry_parsed_parameters_contract() {
         const EXPECTED: &[(&str, usize)] = &[
             ("indicator-services", 4),
-            ("geometry-services", 6),
+            ("geometry-services", 7),
             ("physics-services", 3),
             ("template-services", 1),
+            ("video-services", 2),
         ];
         for (plugin_id, expected_count) in EXPECTED {
             let def = PLUGIN_DEFS
@@ -933,14 +934,19 @@ mod parameters_contract_tests {
                     "服务 {} 契约缺 properties",
                     info.name
                 );
-                assert!(
-                    params
-                        .get("required")
-                        .map(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
-                        .unwrap_or(false),
-                    "服务 {} 契约缺非空 required 数组",
-                    info.name
-                );
+                // 基础设施探针豁免：probe 类服务无业务必填参数（echo 可选），
+                // required 非空断言只约束确定性判定服务（大法：判定服务契约可机判）。
+                const REQUIRED_EXEMPT: &[&str] = &["video_service_skeleton_probe"];
+                if !REQUIRED_EXEMPT.contains(&info.name.as_str()) {
+                    assert!(
+                        params
+                            .get("required")
+                            .map(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+                            .unwrap_or(false),
+                        "服务 {} 契约缺非空 required 数组",
+                        info.name
+                    );
+                }
             }
         }
         // 抽样断言：indicator_sma 的 window 为可选整数（series 必填）

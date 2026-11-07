@@ -52,8 +52,14 @@ pub fn mk_skeleton_probe() -> Arc<dyn NativeService> {
 struct TimelineConsistencyCheck;
 
 fn req_i64(obj: &evorule_tcb::ObjectMap, key: &str, ctx: &str) -> Result<i64, String> {
+    // tcb 0.13: 整数分 Integer(i64)/U64(u64) 两形态（跨形态 PartialEq 故意不等）。
+    // 归一受理两形态的正整数毫秒；U64 超 i64::MAX 仍拒（判定语义不变：合法毫秒域内才受理）。
     obj.get(key)
-        .and_then(JsonValue::as_i64)
+        .and_then(|v| match v {
+            JsonValue::Integer(n) => Some(*n),
+            JsonValue::U64(u) => i64::try_from(*u).ok(),
+            _ => None,
+        })
         .ok_or_else(|| format!("{ctx} 缺整数毫秒字段 {key} — 自诊断指引: 时间量一律整数毫秒"))
 }
 
@@ -129,7 +135,11 @@ impl NativeService for TimelineConsistencyCheck {
     fn execute(&self, args: &JsonValue) -> IoResult {
         let shots = parse_shots(args)?;
         let cues = parse_cues(args)?;
-        let total_duration = args.get("total_duration").and_then(JsonValue::as_i64);
+        let total_duration = args.get("total_duration").and_then(|v| match v {
+        JsonValue::Integer(n) => Some(*n),
+        JsonValue::U64(u) => i64::try_from(*u).ok(),
+        _ => None,
+    });
         let overlap_forbid = match args.get("overlap_policy") {
             None | Some(JsonValue::Null) => true,
             Some(v) => match v.as_str() {
