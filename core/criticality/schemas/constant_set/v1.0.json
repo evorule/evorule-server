@@ -1,0 +1,86 @@
+{
+  "$id": "https://evorule.org/schemas/criticality/constant_set/v1.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0",
+  "owner": "Mr. Damu Zheng",
+  "reviewed_by": "Mr. Damu Zheng",
+  "consumer": "evorule-server law_host constant arm (deployment-dir loading)",
+  "title": "Evorule constant set deployment document",
+  "description": "Server-side deployment form mirroring the rule-repo constant entry contract (law_set-constant-v1.0 payload: value number + si_unit string + metadata {source required, uncertainty, verified}). A constant set document lives in the law_set deployment directory alongside law sets and is distinguished by kind=constant_set. Uncertainty is declared as a string per the rule-repo contract and must parse to a non-negative finite number (structural layer).",
+  "type": "object",
+  "required": ["$schema", "kind", "id", "version", "constants"],
+  "properties": {
+    "$schema": {
+      "const": "https://evorule.org/schemas/criticality/constant_set/v1.0.json"
+    },
+    "kind": {
+      "const": "constant_set"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "constants": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/constant" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "constant": {
+      "type": "object",
+      "required": ["id", "value", "si_unit", "metadata"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "maxLength": 64,
+          "description": "Constant identifier; matched against law symbol names by exact string equality"
+        },
+        "value": {
+          "type": "number"
+        },
+        "si_unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "SI unit expression (unit-engine parseable), e.g. \"m^3*kg^-1*s^-2\""
+        },
+        "metadata": {
+          "type": "object",
+          "required": ["source"],
+          "properties": {
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Provenance (required, iron rule 2: no-source constants are rejected)"
+            },
+            "uncertainty": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "Standard uncertainty sigma as a non-negative finite number literal, e.g. \"0.00066\""
+            },
+            "verified": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

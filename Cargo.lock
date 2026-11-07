@@ -1016,6 +1016,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-criticality"
+version = "0.11.0"
+dependencies = [
+ "evorule-law-schema",
+ "jsonschema",
+ "once_cell",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "evorule-demo-services"
 version = "0.11.0"
 dependencies = [
@@ -1436,6 +1447,7 @@ dependencies = [
  "evorule-bundle",
  "evorule-checksum-services",
  "evorule-cny-services",
+ "evorule-criticality",
  "evorule-demo-services",
  "evorule-discipline",
  "evorule-export-services",

@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-criticality"
+version.workspace = true
+edition = "2021"
+description = "EvoRule verification criticality pipeline —— 命题验证注入的纯函数管线（量纲对表/定律代入/常量对照/三态聚合）与内嵌 schema 锚"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/evorule/evorule-server"
+publish = false
+homepage = "https://github.com/evorule/evorule-server"
+
+[lints]
+# 继承顶层 [workspace.lints] (forbid unsafe / unwrap·expect·panic = deny)
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 校验器静态缓存（workspace MSRV 1.74，std LazyLock 需 1.80，用 once_cell）
+once_cell = "1"
+# JSON Schema 2020-12 校验器（Draft202012）。schema 源文件: schemas/ 下两件。
+jsonschema = "0.21"
+# 量纲对表复用 law_schema 的七基本量纲代数（parse_unit_expr / DimensionVector）
+evorule-law-schema = { path = "../law_schema" }
+
+[build-dependencies]
+serde_json = "1"
