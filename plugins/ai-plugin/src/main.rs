@@ -645,7 +645,9 @@ async fn ai_plugin_chat(State(st): State<PluginState>, headers: axum::http::Head
         .audit_purpose
         .clone()
         .unwrap_or_else(|| "chat".to_string());
-    match run_audited_chat(&st.cfg, &st.http, &req, &st.allowlist).await {
+    // 合并缝合：AllowlistHot(热更槽) → 调用期快照；热重载只影响后续请求，执法语义 fail-closed 不变
+    let allowlist_snapshot = st.allowlist.get().map(|arc| (*arc).clone());
+    match run_audited_chat(&st.cfg, &st.http, &req, &allowlist_snapshot).await {
         Ok(outcome) => {
             tracing::info!(
                 "ai_plugin_chat 完成: session={} purpose={purpose} reply_chars={}",

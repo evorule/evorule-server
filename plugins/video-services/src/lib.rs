@@ -60,7 +60,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
     sensitive: false,
     description: "字幕时间轴一致性校验(镜头时间轴+字幕cue,整数毫秒判定:出镜/重叠/缝隙/超总时长;overlap_policy显式入参;确定性)",
     parameters: Some(
-        r#"{"type":"object","properties":{"shots":{"type":"array","items":{"type":"object"},"description":"镜头时间轴,每项{id,start,end},整数毫秒"},"cues":{"type":"array","items":{"type":"object"},"description":"字幕cue,每项{id,shot_id,start,end,text}"},"total_duration":{"type":"integer","description":"总时长整数毫秒(可选)"},"overlap_policy":{"type":"string","enum":["allow","forbid"],"description":"同镜头cue重叠判定策略(缺省forbid)"}}}"#,
+        r#"{"type":"object","properties":{"shots":{"type":"array","items":{"type":"object"},"description":"镜头时间轴,每项{id,start,end},整数毫秒"},"cues":{"type":"array","items":{"type":"object"},"description":"字幕cue,每项{id,shot_id,start,end,text}"},"total_duration":{"type":"integer","description":"总时长整数毫秒(可选)"},"overlap_policy":{"type":"string","enum":["allow","forbid"],"description":"同镜头cue重叠判定策略(缺省forbid)"}},"required":["shots","cues"]}"#,
     ),
     make: mk_timeline_consistency_check,
 }];
