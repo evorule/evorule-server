@@ -25,6 +25,7 @@
 //!
 //! # 服务清单（SSOT = official_native_services.json，双侧守卫锁定）
 //! 1. `video_service_skeleton_probe` — 插件组骨架探针（装载/路由链路验证）
+//! 2. `video_timeline_consistency_check` — 字幕时间轴一致性校验（整数毫秒判定）
 
 #![forbid(unsafe_code)]
 
@@ -37,7 +38,7 @@ use evorule_tcb::JsonValue;
 
 pub mod services;
 
-use services::mk_skeleton_probe;
+use services::{mk_skeleton_probe, mk_timeline_consistency_check};
 
 // ============================================================================
 // 声明表（SSOT 配对文件: official_native_services.json; 顺序即声明序,
@@ -54,6 +55,14 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
         r#"{"type":"object","properties":{"echo":{"type":"string","description":"可选回显字符串(缺省空)"}}}"#,
     ),
     make: mk_skeleton_probe,
+}, NativeServiceDef {
+    name: "video_timeline_consistency_check",
+    sensitive: false,
+    description: "字幕时间轴一致性校验(镜头时间轴+字幕cue,整数毫秒判定:出镜/重叠/缝隙/超总时长;overlap_policy显式入参;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"shots":{"type":"array","items":{"type":"object"},"description":"镜头时间轴,每项{id,start,end},整数毫秒"},"cues":{"type":"array","items":{"type":"object"},"description":"字幕cue,每项{id,shot_id,start,end,text}"},"total_duration":{"type":"integer","description":"总时长整数毫秒(可选)"},"overlap_policy":{"type":"string","enum":["allow","forbid"],"description":"同镜头cue重叠判定策略(缺省forbid)"}}}"#,
+    ),
+    make: mk_timeline_consistency_check,
 }];
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
@@ -107,7 +116,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
-        assert_eq!(total, 1, "骨架批声明表应为 1 项(探针)");
+        assert_eq!(total, 2, "声明表应为 2 项(探针+时间轴校验)");
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
         }
