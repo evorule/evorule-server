@@ -8240,10 +8240,10 @@ async fn session_state(
 
     params(
         ("id" = u64, Path, description = "会话 ID"),
-        ("from_fact" = Option<u64>, Query, description = "起始 fact_id（含），缺省从头；仅摘要态生效"),
-        ("to_fact" = Option<u64>, Query, description = "截止 fact_id（含），缺省到尾；仅摘要态生效"),
-        ("limit" = Option<usize>, Query, description = "摘要态返回条数上限，默认 200、上限 10000；仅摘要态生效"),
-        ("full" = Option<bool>, Query, description = "为 true 时回全量报告（不筛不裁，含 fact 全文；向后兼容逃生口）。默认 false=摘要态：条目仅含哈希/因果元数据（不含 fact 全文），按 from_fact/to_fact 过滤后取前 limit 条，并附 total_in_range/returned/truncated 分页元信息"),
+        ("from_fact" = Option<u64>, Query, description = "起始 fact_id（含），缺省从头；摘要态恒生效；全量态显式提供时生效（窗口化全量条目）"),
+        ("to_fact" = Option<u64>, Query, description = "截止 fact_id（含），缺省到尾；摘要态恒生效；全量态显式提供时生效（窗口化全量条目）"),
+        ("limit" = Option<usize>, Query, description = "摘要态返回条数上限，默认 200、上限 10000；全量态显式提供时生效（窗口化全量条目，缺省不裁）"),
+        ("full" = Option<bool>, Query, description = "为 true 时回全量报告（含 fact 全文；三参数全缺省时不筛不裁向后兼容；显式提供 from_fact/to_fact/limit 则窗口化过滤截断并附分页元信息）。默认 false=摘要态：条目仅含哈希/因果元数据（不含 fact 全文），按 from_fact/to_fact 过滤后取前 limit 条，并附 total_in_range/returned/truncated 分页元信息"),
         ("include_content" = Option<bool>, Query, description = "F5: 为 true 时每条审计条目附加 content_json（完整 Fact 内容 JSON，含 IoRequest params / IoResponse result 等）；独立旋钮，摘要态与全量态均生效（摘要态仍受 limit 约束）")
     ),
 
@@ -8342,7 +8342,36 @@ async fn session_audit(
     };
 
     if query.full.unwrap_or(false) {
-        // 全量态（向后兼容逃生口）：不筛不裁，保持既有行为
+        // 全量态（向后兼容逃生口）：不筛不裁——除非调用方显式给出范围/上限。
+        // 大链会话曾实测单次响应达数百 MB（fact 全文逐条灌出），显式窗口化
+        // 是全量态下唯一的瘦身通道：显式参数=调用方自证需要窗口，按摘要态
+        // 同一 in_range/limit 语义过滤截断（保留 fact 全文，不脱内容），并附
+        // 同款分页元信息；三个参数全缺省时保持完整报告（向后兼容不破）。
+        let wants_window =
+            query.from_fact.is_some() || query.to_fact.is_some() || query.limit.is_some();
+        if wants_window {
+            let (from_fact, to_fact) = (query.from_fact, query.to_fact);
+            let in_range = |e: &serde_json::Value| {
+                e.get("fact_id")
+                    .and_then(|v| v.as_u64())
+                    .is_some_and(|fid| {
+                        from_fact.is_none_or(|lo| fid >= lo) && to_fact.is_none_or(|hi| fid <= hi)
+                    })
+            };
+            let limit = query.limit.unwrap_or(200).clamp(1, 10000);
+            if let Some(arr) = entries.as_array_mut() {
+                let total_in_range = arr.iter().filter(|e| in_range(e)).count();
+                arr.retain(|e| in_range(e));
+                arr.truncate(limit);
+                let returned = arr.len();
+                normalized.insert("total_in_range".into(), serde_json::json!(total_in_range));
+                normalized.insert("returned".into(), serde_json::json!(returned));
+                normalized.insert(
+                    "truncated".into(),
+                    serde_json::json!(returned < total_in_range),
+                );
+            }
+        }
         inject_content(&mut entries);
         normalized.insert("entries".into(), entries);
     } else {
@@ -8391,16 +8420,16 @@ pub struct AuditReportQuery {
     /// 独立旋钮：摘要态与全量态均生效（摘要态仍受 limit 约束）。
     #[serde(default)]
     pub include_content: Option<bool>,
-    /// 起始 fact_id（含），缺省从头；仅摘要态生效
+    /// 起始 fact_id（含），缺省从头；摘要态恒生效；全量态显式提供时生效
     #[serde(default)]
     pub from_fact: Option<u64>,
-    /// 截止 fact_id（含），缺省到尾；仅摘要态生效
+    /// 截止 fact_id（含），缺省到尾；摘要态恒生效；全量态显式提供时生效
     #[serde(default)]
     pub to_fact: Option<u64>,
-    /// 摘要态返回条数上限（默认 200，钳制到 [1, 10000]）
+    /// 摘要态返回条数上限（默认 200，钳制到 [1, 10000]）；全量态显式提供时生效
     #[serde(default)]
     pub limit: Option<usize>,
-    /// 为 true 时回全量报告（不筛不裁，向后兼容逃生口）
+    /// 为 true 时回全量报告（三参数全缺省不筛不裁向后兼容；显式范围/上限则窗口化）
     #[serde(default)]
     pub full: Option<bool>,
 }
@@ -19171,6 +19200,85 @@ mod tests {
         assert!(
             serialized.contains("f5-audit-content"),
             "content_json 应包含提交命令的完整内容（LLM 看到什么可从 API 重建）"
+        );
+    }
+
+    /// 全量态窗口化回归：full=true 显式携带 from_fact/to_fact/limit 时按
+    /// 范围过滤并截断（附 total_in_range/returned/truncated；条目保留 fact
+    /// 全文）——大链会话不得一次性灌出整链；三参数全缺省时保持完整报告
+    /// 且无分页元信息（向后兼容形态不破）。
+    #[tokio::test]
+    async fn test_session_audit_full_mode_honors_explicit_window() {
+        let (state, _) = make_test_state();
+
+        // 创建会话
+        let (status, json) =
+            oneshot_json(make_test_router(&state), "POST", "/api/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let session_id = json["session_id"].as_u64().unwrap();
+
+        // 提交两条命令（不同 note），轮询审计条目到 >=2
+        for note in ["w1", "w2"] {
+            let uri = format!("/api/sessions/{session_id}/command");
+            let body = format!(r#"{{"instruction":{{"type":"noop","note":"{note}"}}}}"#);
+            let (status, _) =
+                oneshot_json(make_test_router(&state), "POST", &uri, Some(&body)).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        let base_uri = format!("/api/sessions/{session_id}/audit");
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+        for _ in 0..40 {
+            let (status, json) =
+                oneshot_json(make_test_router(&state), "GET", &base_uri, None).await;
+            assert_eq!(status, StatusCode::OK);
+            entries = json["entries"].as_array().cloned().unwrap_or_default();
+            if entries.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(entries.len() >= 2, "两条命令应产生至少两条审计条目");
+
+        // 全量缺省：完整报告，条目保留 fact 全文，且无分页元信息（向后兼容形态）
+        let uri = format!("{base_uri}?full=true");
+        let (status, json) = oneshot_json(make_test_router(&state), "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let full_entries = json["entries"].as_array().unwrap();
+        assert!(full_entries.len() >= 2);
+        assert!(
+            json.get("total_in_range").is_none(),
+            "缺省全量态不得附加分页元信息（向后兼容形态）"
+        );
+        assert!(
+            full_entries.iter().any(|e| e.get("fact").is_some()),
+            "全量态条目保留 fact 全文"
+        );
+
+        // 全量+limit=1：窗口化截断，附分页元信息，条目仍保留 fact 全文
+        let uri = format!("{base_uri}?full=true&limit=1");
+        let (status, json) = oneshot_json(make_test_router(&state), "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["returned"], 1);
+        assert_eq!(json["truncated"], true);
+        assert!(json["total_in_range"].as_u64().unwrap() >= 2);
+        let win = json["entries"].as_array().unwrap();
+        assert_eq!(win.len(), 1);
+        assert!(
+            win[0].get("fact").is_some(),
+            "窗口化全量条目仍保留 fact 全文"
+        );
+
+        // 全量+from_fact=末条 id：只回该 id 及之后（含端点过滤语义）
+        let last_id = full_entries.last().unwrap()["fact_id"].as_u64().unwrap();
+        let uri = format!("{base_uri}?full=true&from_fact={last_id}");
+        let (status, json) = oneshot_json(make_test_router(&state), "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let win = json["entries"].as_array().unwrap();
+        assert!(!win.is_empty());
+        assert!(
+            win.iter().all(|e| e["fact_id"].as_u64().unwrap() >= last_id),
+            "from_fact 过滤语义与摘要态一致（含端点）"
         );
     }
 
