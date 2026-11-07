@@ -891,18 +891,20 @@ fn parse_qc_rect(v: &JsonValue, what: &str) -> Result<QcRect, String> {
         }
     }
     if r.w < 0.0 || r.h < 0.0 {
-        return Err(format!("{what} w/h 不可为负 — 自诊断指引: 尺寸非负是区间判定前提"));
+        return Err(format!(
+            "{what} w/h 不可为负 — 自诊断指引: 尺寸非负是区间判定前提"
+        ));
     }
     Ok(r)
 }
 
 /// 解析非空字符串字段
 fn parse_id(v: &JsonValue, what: &str) -> Result<String, String> {
-    let s = v
-        .as_str()
-        .ok_or_else(|| format!("{what} 须为字符串"))?;
+    let s = v.as_str().ok_or_else(|| format!("{what} 须为字符串"))?;
     if s.trim().is_empty() {
-        return Err(format!("{what} 不可为空 — 自诊断指引: 非空唯一 id 是违规项可定位的前提"));
+        return Err(format!(
+            "{what} 不可为空 — 自诊断指引: 非空唯一 id 是违规项可定位的前提"
+        ));
     }
     Ok(s.to_string())
 }
@@ -955,17 +957,21 @@ fn parse_zones(args: &JsonValue) -> Result<Vec<QcZone>, String> {
     let mut out = Vec::new();
     for (i, z) in arr.iter().enumerate() {
         let id = parse_id(
-            z.get("id")
-                .ok_or_else(|| format!("zones[{i}] 缺 id"))?,
+            z.get("id").ok_or_else(|| format!("zones[{i}] 缺 id"))?,
             &format!("zones[{i}].id"),
         )?;
         let kind = z
             .get("kind")
             .and_then(JsonValue::as_str)
-            .ok_or_else(|| format!("zones[{i}]({id}) 缺 kind — 自诊断指引: title|subtitle|safe|action|logo"))?
+            .ok_or_else(|| {
+                format!("zones[{i}]({id}) 缺 kind — 自诊断指引: title|subtitle|safe|action|logo")
+            })?
             .to_string();
         let rect = parse_qc_rect(z, &format!("zones[{i}]({id})"))?;
-        let required = z.get("required").and_then(JsonValue::as_bool).unwrap_or(false);
+        let required = z
+            .get("required")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
         out.push(QcZone {
             id,
             kind,
@@ -999,8 +1005,7 @@ fn parse_elements(args: &JsonValue) -> Result<Vec<QcElement>, String> {
     let mut out = Vec::new();
     for (i, e) in arr.iter().enumerate() {
         let id = parse_id(
-            e.get("id")
-                .ok_or_else(|| format!("elements[{i}] 缺 id"))?,
+            e.get("id").ok_or_else(|| format!("elements[{i}] 缺 id"))?,
             &format!("elements[{i}].id"),
         )?;
         let bbox = e
@@ -1043,8 +1048,7 @@ fn safe_zone_check(args: &JsonValue) -> Result<JsonValue, String> {
             }
             // title/subtitle 生存带:按元素 bbox 中心 y 落带归属——
             // 不落带的生存带不判(异带元素不误伤)
-            if (z.kind == "title" || z.kind == "subtitle")
-                && !z.rect.contains_y(el.rect.center_y())
+            if (z.kind == "title" || z.kind == "subtitle") && !z.rect.contains_y(el.rect.center_y())
             {
                 continue;
             }
@@ -1053,8 +1057,14 @@ fn safe_zone_check(args: &JsonValue) -> Result<JsonValue, String> {
                 violations.push(JsonValue::object_from_pairs(&[
                     ("element_id", JsonValue::string(el.id.clone())),
                     ("zone_id", JsonValue::string(z.id.clone())),
-                    ("overflow", crate::figure::fnum(z.rect.max_overflow(&el.rect).max(0.0))),
-                    ("edges", JsonValue::Array(z.rect.overflowing_edges(&el.rect))),
+                    (
+                        "overflow",
+                        crate::figure::fnum(z.rect.max_overflow(&el.rect).max(0.0)),
+                    ),
+                    (
+                        "edges",
+                        JsonValue::Array(z.rect.overflowing_edges(&el.rect)),
+                    ),
                 ]));
             }
         }
@@ -1063,10 +1073,13 @@ fn safe_zone_check(args: &JsonValue) -> Result<JsonValue, String> {
     Ok(JsonValue::object_from_pairs(&[
         ("status", JsonValue::string("determined")),
         ("determinism", JsonValue::string("corpus_locked")),
-        ("canvas", JsonValue::object_from_pairs(&[
-            ("w", crate::figure::fnum(cw)),
-            ("h", crate::figure::fnum(ch)),
-        ])),
+        (
+            "canvas",
+            JsonValue::object_from_pairs(&[
+                ("w", crate::figure::fnum(cw)),
+                ("h", crate::figure::fnum(ch)),
+            ]),
+        ),
         ("checked_pairs", JsonValue::Integer(checked_pairs as i64)),
         ("violations", JsonValue::Array(violations)),
         ("all_clean", JsonValue::Bool(all_clean)),
@@ -1098,16 +1111,12 @@ fn parse_shots(args: &JsonValue) -> Result<Vec<QcShotMs>, String> {
         return Err("shots 不可为空 — 自诊断指引: 至少 1 个镜头才能构成时间轴".to_string());
     }
     if arr.len() > MAX_QC_SHOTS {
-        return Err(format!(
-            "shots 超容量（{} > {MAX_QC_SHOTS}）",
-            arr.len()
-        ));
+        return Err(format!("shots 超容量（{} > {MAX_QC_SHOTS}）", arr.len()));
     }
     let mut out = Vec::new();
     for (i, s) in arr.iter().enumerate() {
         let id = parse_id(
-            s.get("id")
-                .ok_or_else(|| format!("shots[{i}] 缺 id"))?,
+            s.get("id").ok_or_else(|| format!("shots[{i}] 缺 id"))?,
             &format!("shots[{i}].id"),
         )?;
         let start = parse_ms(
@@ -1145,16 +1154,12 @@ fn parse_cues(args: &JsonValue) -> Result<Vec<QcCueMs>, String> {
                 .to_string()
         })?;
     if arr.len() > MAX_QC_CUES {
-        return Err(format!(
-            "cues 超容量（{} > {MAX_QC_CUES}）",
-            arr.len()
-        ));
+        return Err(format!("cues 超容量（{} > {MAX_QC_CUES}）", arr.len()));
     }
     let mut out = Vec::new();
     for (i, c) in arr.iter().enumerate() {
         let id = parse_id(
-            c.get("id")
-                .ok_or_else(|| format!("cues[{i}] 缺 id"))?,
+            c.get("id").ok_or_else(|| format!("cues[{i}] 缺 id"))?,
             &format!("cues[{i}].id"),
         )?;
         let shot_id = parse_id(
@@ -1215,7 +1220,10 @@ fn timeline_consistency_check(args: &JsonValue) -> Result<JsonValue, String> {
                 ("type", JsonValue::string("shot_overlap")),
                 ("a", JsonValue::string(prev.id.clone())),
                 ("b", JsonValue::string(next.id.clone())),
-                ("overlap_ms", JsonValue::Integer((prev.end - next.start) as i64)),
+                (
+                    "overlap_ms",
+                    JsonValue::Integer((prev.end - next.start) as i64),
+                ),
             ]));
         }
     }
@@ -1287,10 +1295,13 @@ fn timeline_consistency_check(args: &JsonValue) -> Result<JsonValue, String> {
         ("status", JsonValue::string("determined")),
         ("determinism", JsonValue::string("corpus_locked")),
         ("overlap_policy", JsonValue::string(policy)),
-        ("counts", JsonValue::object_from_pairs(&[
-            ("shots", JsonValue::Integer(shots.len() as i64)),
-            ("cues", JsonValue::Integer(cues.len() as i64)),
-        ])),
+        (
+            "counts",
+            JsonValue::object_from_pairs(&[
+                ("shots", JsonValue::Integer(shots.len() as i64)),
+                ("cues", JsonValue::Integer(cues.len() as i64)),
+            ]),
+        ),
         ("violations", JsonValue::Array(violations)),
         ("all_clean", JsonValue::Bool(all_clean)),
     ]))
@@ -1787,220 +1798,273 @@ mod tests {
         );
     }
 
-// ---- 视频质检判定核二服务测试（黄金向量：手算可溯） ----
+    // ---- 视频质检判定核二服务测试（黄金向量：手算可溯） ----
 
-/// 构造 safe_zone 判定入参（画布 1280×720；main_band=y[489,720)；frame_safe=x[128,1152]y[72,648)）
-fn safe_zone_arg(elements: Vec<JsonValue>) -> JsonValue {
-    JsonValue::object_from_pairs(&[
-        ("canvas", JsonValue::object_from_pairs(&[
-            ("w", JsonValue::Integer(1280)),
-            ("h", JsonValue::Integer(720)),
-        ])),
-        ("zones", JsonValue::Array(vec![
-            JsonValue::object_from_pairs(&[
-                ("id", JsonValue::string("main_band")),
-                ("kind", JsonValue::string("subtitle")),
-                ("x", JsonValue::Integer(0)),
-                ("y", JsonValue::Integer(489)),
-                ("w", JsonValue::Integer(1280)),
-                ("h", JsonValue::Integer(231)),
-                ("required", JsonValue::Bool(true)),
-            ]),
-            JsonValue::object_from_pairs(&[
-                ("id", JsonValue::string("frame_safe")),
-                ("kind", JsonValue::string("safe")),
-                ("x", JsonValue::Integer(128)),
-                ("y", JsonValue::Integer(72)),
-                ("w", JsonValue::Integer(1024)),
-                ("h", JsonValue::Integer(576)),
-                ("required", JsonValue::Bool(true)),
-            ]),
-        ])),
-        ("elements", JsonValue::Array(elements)),
-    ])
-}
-
-fn cue_el(id: &str, x: i64, y: i64, w: i64, h: i64) -> JsonValue {
-    JsonValue::object_from_pairs(&[
-        ("id", JsonValue::string(id)),
-        ("bbox", JsonValue::object_from_pairs(&[
-            ("x", JsonValue::Integer(x)),
-            ("y", JsonValue::Integer(y)),
-            ("w", JsonValue::Integer(w)),
-            ("h", JsonValue::Integer(h)),
-        ])),
-    ])
-}
-
-#[test]
-fn safe_zone_clean_when_contained() {
-    // 正例:cue 落 main_band∩frame_safe 交集(560..600 ⊂ 489..720 且 ⊂ 72..648)
-    let out = GeometrySafeZoneCheck
-        .execute(&safe_zone_arg(vec![cue_el("cue000", 200, 560, 400, 40)]))
-        .unwrap();
-    assert_eq!(out.get("status").and_then(JsonValue::as_str), Some("determined"));
-    assert_eq!(out.get("all_clean").and_then(JsonValue::as_bool), Some(true));
-    assert_eq!(out.get("checked_pairs").and_then(JsonValue::as_i64), Some(2));
-}
-
-#[test]
-fn safe_zone_flags_overflow_with_edges() {
-    // 负例:cue 底部越 frame_safe 下缘(660..700 ⊄ 72..648,bottom 溢 52px)
-    // 同 cue 中心 y=680 落 main_band → 判 main_band(含) 不判 title_band(落带归属)
-    let out = GeometrySafeZoneCheck
-        .execute(&safe_zone_arg(vec![cue_el("cue001", 200, 660, 400, 40)]))
-        .unwrap();
-    assert_eq!(out.get("all_clean").and_then(JsonValue::as_bool), Some(false));
-    let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
-    assert_eq!(v.len(), 1);
-    assert_eq!(v[0].get("zone_id").and_then(JsonValue::as_str), Some("frame_safe"));
-    assert_eq!(v[0].get("element_id").and_then(JsonValue::as_str), Some("cue001"));
-    let edges = v[0].get("edges").and_then(JsonValue::as_array).unwrap();
-    assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0].as_str(), Some("bottom"));
-}
-
-#[test]
-fn safe_zone_title_band_positional_matching() {
-    // 顶部 cue(中心 y=70 落 title_band 0..201.6)→判 title_band+frame_safe;
-    // y=50 越 frame_safe 上缘(72) → top 溢出;title_band 含 ✓
-    let out = GeometrySafeZoneCheck
-        .execute(&safe_zone_arg(vec![cue_el("topcue", 200, 50, 300, 40)]))
-        .unwrap();
-    let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
-    assert_eq!(v.len(), 1);
-    assert_eq!(v[0].get("zone_id").and_then(JsonValue::as_str), Some("frame_safe"));
-    assert_eq!(v[0].get("edges").and_then(JsonValue::as_array).unwrap()[0].as_str(), Some("top"));
-}
-
-#[test]
-fn safe_zone_double_run_bitwise_stable() {
-    let args = safe_zone_arg(vec![cue_el("cue000", 200, 560, 400, 40), cue_el("cue001", 200, 660, 400, 40)]);
-    let a = GeometrySafeZoneCheck.execute(&args).unwrap();
-    let b = GeometrySafeZoneCheck.execute(&args).unwrap();
-    assert_eq!(format!("{a:?}"), format!("{b:?}"));
-}
-
-/// 构造 timeline 判定入参
-fn timeline_arg(shots: Vec<JsonValue>, cues: Vec<JsonValue>, total: Option<i64>) -> JsonValue {
-    let mut out = vec![
-        ("shots", JsonValue::Array(shots)),
-        ("cues", JsonValue::Array(cues)),
-        ("overlap_policy", JsonValue::string("forbid")),
-    ];
-    if let Some(t) = total {
-        out.push(("total_duration", JsonValue::Integer(t)));
+    /// 构造 safe_zone 判定入参（画布 1280×720；main_band=y[489,720)；frame_safe=x[128,1152]y[72,648)）
+    fn safe_zone_arg(elements: Vec<JsonValue>) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            (
+                "canvas",
+                JsonValue::object_from_pairs(&[
+                    ("w", JsonValue::Integer(1280)),
+                    ("h", JsonValue::Integer(720)),
+                ]),
+            ),
+            (
+                "zones",
+                JsonValue::Array(vec![
+                    JsonValue::object_from_pairs(&[
+                        ("id", JsonValue::string("main_band")),
+                        ("kind", JsonValue::string("subtitle")),
+                        ("x", JsonValue::Integer(0)),
+                        ("y", JsonValue::Integer(489)),
+                        ("w", JsonValue::Integer(1280)),
+                        ("h", JsonValue::Integer(231)),
+                        ("required", JsonValue::Bool(true)),
+                    ]),
+                    JsonValue::object_from_pairs(&[
+                        ("id", JsonValue::string("frame_safe")),
+                        ("kind", JsonValue::string("safe")),
+                        ("x", JsonValue::Integer(128)),
+                        ("y", JsonValue::Integer(72)),
+                        ("w", JsonValue::Integer(1024)),
+                        ("h", JsonValue::Integer(576)),
+                        ("required", JsonValue::Bool(true)),
+                    ]),
+                ]),
+            ),
+            ("elements", JsonValue::Array(elements)),
+        ])
     }
-    JsonValue::object_from_pairs(&out)
-}
 
-fn shot(id: &str, start: i64, end: i64) -> JsonValue {
-    JsonValue::object_from_pairs(&[
-        ("id", JsonValue::string(id)),
-        ("start", JsonValue::Integer(start)),
-        ("end", JsonValue::Integer(end)),
-    ])
-}
+    fn cue_el(id: &str, x: i64, y: i64, w: i64, h: i64) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            ("id", JsonValue::string(id)),
+            (
+                "bbox",
+                JsonValue::object_from_pairs(&[
+                    ("x", JsonValue::Integer(x)),
+                    ("y", JsonValue::Integer(y)),
+                    ("w", JsonValue::Integer(w)),
+                    ("h", JsonValue::Integer(h)),
+                ]),
+            ),
+        ])
+    }
 
-fn cue(id: &str, shot_id: &str, start: i64, end: i64) -> JsonValue {
-    JsonValue::object_from_pairs(&[
-        ("id", JsonValue::string(id)),
-        ("shot_id", JsonValue::string(shot_id)),
-        ("start", JsonValue::Integer(start)),
-        ("end", JsonValue::Integer(end)),
-    ])
-}
+    #[test]
+    fn safe_zone_clean_when_contained() {
+        // 正例:cue 落 main_band∩frame_safe 交集(560..600 ⊂ 489..720 且 ⊂ 72..648)
+        let out = GeometrySafeZoneCheck
+            .execute(&safe_zone_arg(vec![cue_el("cue000", 200, 560, 400, 40)]))
+            .unwrap();
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("checked_pairs").and_then(JsonValue::as_i64),
+            Some(2)
+        );
+    }
 
-#[test]
-fn timeline_clean_when_contained() {
-    // 正例:无交叠镜头+cue 完整落于归属镜头区间
-    let out = VideoTimelineConsistencyCheck
-        .execute(&timeline_arg(
-            vec![shot("s1", 0, 3000), shot("s2", 3000, 6000)],
-            vec![cue("c1", "s1", 500, 2500), cue("c2", "s2", 3500, 5500)],
-            Some(6000),
-        ))
-        .unwrap();
-    assert_eq!(out.get("all_clean").and_then(JsonValue::as_bool), Some(true));
-    assert_eq!(out.get("status").and_then(JsonValue::as_str), Some("determined"));
-    assert_eq!(
-        out.get("counts").and_then(|c| c.get("shots")).and_then(JsonValue::as_i64),
-        Some(2)
-    );
-}
+    #[test]
+    fn safe_zone_flags_overflow_with_edges() {
+        // 负例:cue 底部越 frame_safe 下缘(660..700 ⊄ 72..648,bottom 溢 52px)
+        // 同 cue 中心 y=680 落 main_band → 判 main_band(含) 不判 title_band(落带归属)
+        let out = GeometrySafeZoneCheck
+            .execute(&safe_zone_arg(vec![cue_el("cue001", 200, 660, 400, 40)]))
+            .unwrap();
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(
+            v[0].get("zone_id").and_then(JsonValue::as_str),
+            Some("frame_safe")
+        );
+        assert_eq!(
+            v[0].get("element_id").and_then(JsonValue::as_str),
+            Some("cue001")
+        );
+        let edges = v[0].get("edges").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].as_str(), Some("bottom"));
+    }
 
-#[test]
-fn timeline_flags_overlap_unknown_shot_and_out_of_shot() {
-    // 负例:s2 与 s1 交叠(2800<3000, 200ms)+c3 越镜头尾+c4 归属未知镜头
-    let out = VideoTimelineConsistencyCheck
-        .execute(&timeline_arg(
+    #[test]
+    fn safe_zone_title_band_positional_matching() {
+        // 顶部 cue(中心 y=70 落 title_band 0..201.6)→判 title_band+frame_safe;
+        // y=50 越 frame_safe 上缘(72) → top 溢出;title_band 含 ✓
+        let out = GeometrySafeZoneCheck
+            .execute(&safe_zone_arg(vec![cue_el("topcue", 200, 50, 300, 40)]))
+            .unwrap();
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(
+            v[0].get("zone_id").and_then(JsonValue::as_str),
+            Some("frame_safe")
+        );
+        assert_eq!(
+            v[0].get("edges").and_then(JsonValue::as_array).unwrap()[0].as_str(),
+            Some("top")
+        );
+    }
+
+    #[test]
+    fn safe_zone_double_run_bitwise_stable() {
+        let args = safe_zone_arg(vec![
+            cue_el("cue000", 200, 560, 400, 40),
+            cue_el("cue001", 200, 660, 400, 40),
+        ]);
+        let a = GeometrySafeZoneCheck.execute(&args).unwrap();
+        let b = GeometrySafeZoneCheck.execute(&args).unwrap();
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    }
+
+    /// 构造 timeline 判定入参
+    fn timeline_arg(shots: Vec<JsonValue>, cues: Vec<JsonValue>, total: Option<i64>) -> JsonValue {
+        let mut out = vec![
+            ("shots", JsonValue::Array(shots)),
+            ("cues", JsonValue::Array(cues)),
+            ("overlap_policy", JsonValue::string("forbid")),
+        ];
+        if let Some(t) = total {
+            out.push(("total_duration", JsonValue::Integer(t)));
+        }
+        JsonValue::object_from_pairs(&out)
+    }
+
+    fn shot(id: &str, start: i64, end: i64) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            ("id", JsonValue::string(id)),
+            ("start", JsonValue::Integer(start)),
+            ("end", JsonValue::Integer(end)),
+        ])
+    }
+
+    fn cue(id: &str, shot_id: &str, start: i64, end: i64) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            ("id", JsonValue::string(id)),
+            ("shot_id", JsonValue::string(shot_id)),
+            ("start", JsonValue::Integer(start)),
+            ("end", JsonValue::Integer(end)),
+        ])
+    }
+
+    #[test]
+    fn timeline_clean_when_contained() {
+        // 正例:无交叠镜头+cue 完整落于归属镜头区间
+        let out = VideoTimelineConsistencyCheck
+            .execute(&timeline_arg(
+                vec![shot("s1", 0, 3000), shot("s2", 3000, 6000)],
+                vec![cue("c1", "s1", 500, 2500), cue("c2", "s2", 3500, 5500)],
+                Some(6000),
+            ))
+            .unwrap();
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+        assert_eq!(
+            out.get("counts")
+                .and_then(|c| c.get("shots"))
+                .and_then(JsonValue::as_i64),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn timeline_flags_overlap_unknown_shot_and_out_of_shot() {
+        // 负例:s2 与 s1 交叠(2800<3000, 200ms)+c3 越镜头尾+c4 归属未知镜头
+        let out = VideoTimelineConsistencyCheck
+            .execute(&timeline_arg(
+                vec![shot("s1", 0, 3000), shot("s2", 2800, 6000)],
+                vec![
+                    cue("c1", "s1", 500, 2500),
+                    cue("c3", "s2", 5000, 7000),
+                    cue("c4", "s9", 100, 200),
+                ],
+                Some(6500),
+            ))
+            .unwrap();
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        let types: Vec<&str> = v
+            .iter()
+            .map(|x| x.get("type").and_then(JsonValue::as_str).unwrap())
+            .collect();
+        assert!(types.contains(&"shot_overlap"));
+        assert!(types.contains(&"cue_out_of_shot"));
+        assert!(types.contains(&"cue_unknown_shot"));
+        // 交叠对与重叠时长可定位
+        let ov = v
+            .iter()
+            .find(|x| x.get("type").and_then(JsonValue::as_str) == Some("shot_overlap"))
+            .unwrap();
+        assert_eq!(ov.get("a").and_then(JsonValue::as_str), Some("s1"));
+        assert_eq!(ov.get("b").and_then(JsonValue::as_str), Some("s2"));
+        assert_eq!(ov.get("overlap_ms").and_then(JsonValue::as_i64), Some(200));
+    }
+
+    #[test]
+    fn timeline_flags_beyond_total_for_shot_and_cue() {
+        let out = VideoTimelineConsistencyCheck
+            .execute(&timeline_arg(
+                vec![shot("s1", 0, 3000)],
+                vec![cue("c1", "s1", 500, 3200)],
+                Some(2900),
+            ))
+            .unwrap();
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        let beyond: Vec<&str> = v
+            .iter()
+            .filter(|x| x.get("type").and_then(JsonValue::as_str) == Some("beyond_total"))
+            .map(|x| x.get("kind").and_then(JsonValue::as_str).unwrap())
+            .collect();
+        assert!(beyond.contains(&"shot"));
+        assert!(beyond.contains(&"cue"));
+    }
+
+    #[test]
+    fn timeline_rejects_unsupported_policy_and_bad_ranges() {
+        // overlap_policy 非 forbid → Err 显式拒绝
+        let args = JsonValue::object_from_pairs(&[
+            ("shots", JsonValue::Array(vec![shot("s1", 0, 3000)])),
+            ("cues", JsonValue::Array(vec![])),
+            ("overlap_policy", JsonValue::string("allow")),
+        ]);
+        assert!(VideoTimelineConsistencyCheck.execute(&args).is_err());
+        // 镜头区间退化(start ≥ end)拒绝
+        let args = JsonValue::object_from_pairs(&[
+            ("shots", JsonValue::Array(vec![shot("s1", 3000, 3000)])),
+            ("cues", JsonValue::Array(vec![])),
+        ]);
+        assert!(VideoTimelineConsistencyCheck.execute(&args).is_err());
+    }
+
+    #[test]
+    fn timeline_double_run_bitwise_stable() {
+        let args = timeline_arg(
             vec![shot("s1", 0, 3000), shot("s2", 2800, 6000)],
-            vec![
-                cue("c1", "s1", 500, 2500),
-                cue("c3", "s2", 5000, 7000),
-                cue("c4", "s9", 100, 200),
-            ],
+            vec![cue("c1", "s1", 500, 2500)],
             Some(6500),
-        ))
-        .unwrap();
-    assert_eq!(out.get("all_clean").and_then(JsonValue::as_bool), Some(false));
-    let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
-    let types: Vec<&str> = v.iter().map(|x| x.get("type").and_then(JsonValue::as_str).unwrap()).collect();
-    assert!(types.contains(&"shot_overlap"));
-    assert!(types.contains(&"cue_out_of_shot"));
-    assert!(types.contains(&"cue_unknown_shot"));
-    // 交叠对与重叠时长可定位
-    let ov = v.iter().find(|x| x.get("type").and_then(JsonValue::as_str) == Some("shot_overlap")).unwrap();
-    assert_eq!(ov.get("a").and_then(JsonValue::as_str), Some("s1"));
-    assert_eq!(ov.get("b").and_then(JsonValue::as_str), Some("s2"));
-    assert_eq!(ov.get("overlap_ms").and_then(JsonValue::as_i64), Some(200));
-}
-
-#[test]
-fn timeline_flags_beyond_total_for_shot_and_cue() {
-    let out = VideoTimelineConsistencyCheck
-        .execute(&timeline_arg(
-            vec![shot("s1", 0, 3000)],
-            vec![cue("c1", "s1", 500, 3200)],
-            Some(2900),
-        ))
-        .unwrap();
-    let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
-    let beyond: Vec<&str> = v
-        .iter()
-        .filter(|x| x.get("type").and_then(JsonValue::as_str) == Some("beyond_total"))
-        .map(|x| x.get("kind").and_then(JsonValue::as_str).unwrap())
-        .collect();
-    assert!(beyond.contains(&"shot"));
-    assert!(beyond.contains(&"cue"));
-}
-
-#[test]
-fn timeline_rejects_unsupported_policy_and_bad_ranges() {
-    // overlap_policy 非 forbid → Err 显式拒绝
-    let args = JsonValue::object_from_pairs(&[
-        ("shots", JsonValue::Array(vec![shot("s1", 0, 3000)])),
-        ("cues", JsonValue::Array(vec![])),
-        ("overlap_policy", JsonValue::string("allow")),
-    ]);
-    assert!(VideoTimelineConsistencyCheck.execute(&args).is_err());
-    // 镜头区间退化(start ≥ end)拒绝
-    let args = JsonValue::object_from_pairs(&[
-        ("shots", JsonValue::Array(vec![shot("s1", 3000, 3000)])),
-        ("cues", JsonValue::Array(vec![])),
-    ]);
-    assert!(VideoTimelineConsistencyCheck.execute(&args).is_err());
-}
-
-#[test]
-fn timeline_double_run_bitwise_stable() {
-    let args = timeline_arg(
-        vec![shot("s1", 0, 3000), shot("s2", 2800, 6000)],
-        vec![cue("c1", "s1", 500, 2500)],
-        Some(6500),
-    );
-    let a = VideoTimelineConsistencyCheck.execute(&args).unwrap();
-    let b = VideoTimelineConsistencyCheck.execute(&args).unwrap();
-    assert_eq!(format!("{a:?}"), format!("{b:?}"));
-}
+        );
+        let a = VideoTimelineConsistencyCheck.execute(&args).unwrap();
+        let b = VideoTimelineConsistencyCheck.execute(&args).unwrap();
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    }
 }
