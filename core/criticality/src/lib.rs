@@ -362,7 +362,7 @@ pub struct ConstantRef<'a> {
 // 判定输出（D4 词汇立法：stable / alert / contradiction）
 // ============================================================================
 
-/// 三态判定词汇（criticality 域立法；与 04 号档 §3 一致）
+/// 三态判定词汇（criticality 域立法词汇表）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
@@ -433,7 +433,7 @@ pub struct VerifyReport {
 pub enum VerifyError {
     /// schema/结构层拒收（含逐条报因）
     Schema { errors: Vec<String> },
-    /// 量纲对表不一致——拒判并报两侧量纲向量（10 号稿验收 3）
+    /// 量纲对表不一致——拒判并报两侧量纲向量（验收判据：量纲门）
     DimensionalMismatch {
         symbol: String,
         claim_dims: String,
