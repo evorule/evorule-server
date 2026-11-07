@@ -26,6 +26,8 @@
 //! # 服务清单（SSOT = official_native_services.json，双侧守卫锁定）
 //! 1. `video_service_skeleton_probe` — 插件组骨架探针（装载/路由链路验证）
 //! 2. `video_timeline_consistency_check` — 字幕时间轴一致性校验（整数毫秒判定）
+//! 3. `color_contrast_ratio_eval` — 颜色对比度判定（WCAG 2.x，sRGB 字符串入参）
+//! 4. `video_frame_sequence_eval` — 帧序列异常事件判定（黑帧/闪帧/静止段）
 
 #![forbid(unsafe_code)]
 
@@ -38,7 +40,10 @@ use evorule_tcb::JsonValue;
 
 pub mod services;
 
-use services::{mk_skeleton_probe, mk_timeline_consistency_check};
+use services::{
+    mk_color_contrast_ratio_eval, mk_skeleton_probe, mk_timeline_consistency_check,
+    mk_video_frame_sequence_eval,
+};
 
 // ============================================================================
 // 声明表（SSOT 配对文件: official_native_services.json; 顺序即声明序,
@@ -63,6 +68,22 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
         r#"{"type":"object","properties":{"shots":{"type":"array","items":{"type":"object"},"description":"镜头时间轴,每项{id,start,end},整数毫秒"},"cues":{"type":"array","items":{"type":"object"},"description":"字幕cue,每项{id,shot_id,start,end,text}"},"total_duration":{"type":"integer","description":"总时长整数毫秒(可选)"},"overlap_policy":{"type":"string","enum":["allow","forbid"],"description":"同镜头cue重叠判定策略(缺省forbid)"}},"required":["shots","cues"]}"#,
     ),
     make: mk_timeline_consistency_check,
+}, NativeServiceDef {
+    name: "color_contrast_ratio_eval",
+    sensitive: false,
+    description: "颜色对比度判定核(WCAG 2.x 相对亮度+对比度比值,sRGB 三元组字符串入参,定点整数运算;字幕可读性 QC 判定用;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"fg":{"type":"array","items":{"type":"string"},"description":"前景 sRGB [r,g,b],各通道 0..255 十进制字符串"},"bg":{"type":"array","items":{"type":"string"},"description":"背景 sRGB [r,g,b],各通道 0..255 十进制字符串"},"threshold":{"type":"string","description":"对比度阈值十进制有理数字符串(缺省 4.5)"}},"required":["fg","bg"]}"#,
+    ),
+    make: mk_color_contrast_ratio_eval,
+}, NativeServiceDef {
+    name: "video_frame_sequence_eval",
+    sensitive: false,
+    description: "帧序列异常事件判定核(逐帧亮度摘要序列→黑帧/闪帧/静止段,阈值显式入参缺省16/60/24帧,帧号=数组下标;解码抽帧统计留引擎侧;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"lums":{"type":"array","items":{"type":"string"},"description":"逐帧平均亮度摘要,0..255 十进制字符串,帧号=数组下标"},"black_threshold":{"type":"string","description":"黑帧亮度阈值(缺省 16)"},"flash_delta":{"type":"string","description":"闪帧相邻帧亮度差阈值(缺省 60)"},"still_frames":{"type":"integer","description":"静止段长度阈值,以帧计(缺省 24)"}},"required":["lums"]}"#,
+    ),
+    make: mk_video_frame_sequence_eval,
 }];
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
@@ -116,7 +137,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
-        assert_eq!(total, 2, "声明表应为 2 项(探针+时间轴校验)");
+        assert_eq!(total, 4, "声明表应为 4 项(探针+时间轴校验+对比度+帧序列)");
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
         }
