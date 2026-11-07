@@ -370,11 +370,11 @@ impl NativeService for GeometrySafeZoneCheck {
         let cw = canvas
             .get("w")
             .and_then(num_f64)
-            .ok_or_else(|| "canvas.w 须为合法数值")?;
+            .ok_or("canvas.w 须为合法数值")?;
         let ch = canvas
             .get("h")
             .and_then(num_f64)
-            .ok_or_else(|| "canvas.h 须为合法数值")?;
+            .ok_or("canvas.h 须为合法数值")?;
         if cw <= 0.0 || ch <= 0.0 {
             return Err(format!("canvas w/h 须为正数（w={cw}, h={ch}）"));
         }
