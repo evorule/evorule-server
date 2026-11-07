@@ -136,10 +136,10 @@ impl NativeService for TimelineConsistencyCheck {
         let shots = parse_shots(args)?;
         let cues = parse_cues(args)?;
         let total_duration = args.get("total_duration").and_then(|v| match v {
-        JsonValue::Integer(n) => Some(*n),
-        JsonValue::U64(u) => i64::try_from(*u).ok(),
-        _ => None,
-    });
+            JsonValue::Integer(n) => Some(*n),
+            JsonValue::U64(u) => i64::try_from(*u).ok(),
+            _ => None,
+        });
         let overlap_forbid = match args.get("overlap_policy") {
             None | Some(JsonValue::Null) => true,
             Some(v) => match v.as_str() {

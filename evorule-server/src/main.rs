@@ -3948,7 +3948,10 @@ mod tests {
                 "服务声明自定义头必须合入注册表条目"
             );
             // X-Source 可被声明覆盖（次优先），Authorization 不可（保留给 auth_token）
-            assert_eq!(entry.headers.get("X-Source").map(String::as_str), Some("my-plugin"));
+            assert_eq!(
+                entry.headers.get("X-Source").map(String::as_str),
+                Some("my-plugin")
+            );
             assert!(
                 !entry.headers.contains_key("Authorization"),
                 "声明 headers 不得注入 Authorization（保留给包级 auth_token）"
@@ -3971,8 +3974,9 @@ mod tests {
                     r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
                 );
                 let mut registry = ServiceRegistry::empty();
-                let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
-                    .unwrap_err();
+                let err =
+                    load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                        .unwrap_err();
                 assert!(err.contains("空键/空值"), "got: {err}");
             }
         }
