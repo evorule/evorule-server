@@ -1055,3 +1055,110 @@ async fn test_interference_check_legislation() {
         );
     }
 }
+
+/// 构造 equilibrium_check 指令（Tier 1 立法 v0.10.0：伴跑均衡态四判据与逻辑,调用方直传八参快照）
+#[allow(clippy::too_many_arguments)]
+fn make_equilibrium_check_instruction(
+    in_rate: i64,
+    digest_rate: i64,
+    alert_free_windows: i64,
+    alert_free_windows_required: i64,
+    coverage: i64,
+    coverage_min: i64,
+    certified_streak: i64,
+    certified_streak_min: i64,
+) -> JsonValue {
+    let mut params = BTreeMap::new();
+    params.insert("in_rate".to_string(), JsonValue::Integer(in_rate));
+    params.insert("digest_rate".to_string(), JsonValue::Integer(digest_rate));
+    params.insert(
+        "alert_free_windows".to_string(),
+        JsonValue::Integer(alert_free_windows),
+    );
+    params.insert(
+        "alert_free_windows_required".to_string(),
+        JsonValue::Integer(alert_free_windows_required),
+    );
+    params.insert("coverage".to_string(), JsonValue::Integer(coverage));
+    params.insert("coverage_min".to_string(), JsonValue::Integer(coverage_min));
+    params.insert(
+        "certified_streak".to_string(),
+        JsonValue::Integer(certified_streak),
+    );
+    params.insert(
+        "certified_streak_min".to_string(),
+        JsonValue::Integer(certified_streak_min),
+    );
+    let mut instr = BTreeMap::new();
+    instr.insert("type".to_string(), JsonValue::string("equilibrium_check"));
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+async fn run_equilibrium_verdict(instr: JsonValue) -> (Option<String>, Option<String>) {
+    let core_eval = load_core_eval();
+    let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+    let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+    tx.send(Fact::Command {
+        id: FactId(1),
+        instruction: instr,
+    })
+    .unwrap();
+    let snapshot = wait_for_stable(&mut rx, &facts_log)
+        .await
+        .expect("Timed out waiting for Stable");
+    (
+        snapshot
+            .get("equilibrium")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        snapshot
+            .get("equilibrium_cause")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    )
+}
+
+/// equilibrium_check 立法场景（v0.10.0）：黄金向量（各判据等号边界全过,闭区间含等号）
+/// + 单判据失稳归因 + 缺观测 fail-closed（缺观测不可宣称稳态）
+#[tokio::test]
+async fn test_equilibrium_check_legislation() {
+    // 场景 1：四判据全部恰在等号边界 -> stable
+    let (verdict, cause) = run_equilibrium_verdict(make_equilibrium_check_instruction(
+        100, 100, 5, 5, 90, 90, 3, 3,
+    ))
+    .await;
+    assert_eq!(
+        verdict.as_deref(),
+        Some("stable"),
+        "四判据全等号边界应判 stable; cause={cause:?}"
+    );
+    assert_eq!(cause.as_deref(), Some("none"));
+
+    // 场景 2：in_rate > digest_rate（供过于求）-> unstable + 归因
+    let (verdict, cause) = run_equilibrium_verdict(make_equilibrium_check_instruction(
+        120, 100, 5, 5, 90, 90, 3, 3,
+    ))
+    .await;
+    assert_eq!(verdict.as_deref(), Some("unstable"));
+    assert_eq!(cause.as_deref(), Some("in_rate_exceeds_digest_rate"));
+
+    // 场景 3：alert 零残留窗数不足（windows=4 < required=5）-> unstable + 归因
+    let (verdict, cause) = run_equilibrium_verdict(make_equilibrium_check_instruction(
+        100, 100, 4, 5, 90, 90, 3, 3,
+    ))
+    .await;
+    assert_eq!(verdict.as_deref(), Some("unstable"));
+    assert_eq!(cause.as_deref(), Some("alert_free_windows_below_required"));
+
+    // 场景 4：缺观测（去掉 coverage 参）-> fail-closed unstable + missing_observation
+    let mut instr = make_equilibrium_check_instruction(100, 100, 5, 5, 90, 90, 3, 3);
+    if let JsonValue::Object(ref mut m) = instr {
+        if let Some(JsonValue::Object(ref mut p)) = m.get_mut("params") {
+            p.remove("coverage");
+        }
+    }
+    let (verdict, cause) = run_equilibrium_verdict(instr).await;
+    assert_eq!(verdict.as_deref(), Some("unstable"));
+    assert_eq!(cause.as_deref(), Some("missing_observation"));
+}

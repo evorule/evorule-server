@@ -245,6 +245,67 @@ impl PrometheusMetrics {
             .map_err(|_| {
                 MetricsError::RegistryRegistration("evorule_auto_verify_skips_total".to_string())
             })?;
+        // B-182: equilibrium observation gauges (rule-layer v0.10.0 equilibrium_check intake)
+        let eq_alert_free_windows = IntGauge::new(
+            "evorule_equilibrium_alert_free_windows",
+            "Consecutive alert-free observation windows (equilibrium criterion 2)",
+        )
+        .map_err(|_| {
+            MetricsError::GaugeCreation("evorule_equilibrium_alert_free_windows".to_string())
+        })?;
+        let eq_certified_streak = IntGauge::new(
+            "evorule_equilibrium_certified_streak",
+            "Consecutive stable certificates (equilibrium criterion 4)",
+        )
+        .map_err(|_| {
+            MetricsError::GaugeCreation("evorule_equilibrium_certified_streak".to_string())
+        })?;
+        let eq_proposals_in_total = prometheus::IntCounter::new(
+            "evorule_equilibrium_proposals_in_total",
+            "Total proposals entering the intake side (equilibrium criterion 1 numerator)",
+        )
+        .map_err(|_| {
+            MetricsError::CounterCreation("evorule_equilibrium_proposals_in_total".to_string())
+        })?;
+        let eq_digested_total = prometheus::IntCounter::new(
+            "evorule_equilibrium_digested_total",
+            "Total proposals digested (equilibrium criterion 1 denominator)",
+        )
+        .map_err(|_| {
+            MetricsError::CounterCreation("evorule_equilibrium_digested_total".to_string())
+        })?;
+        registry
+            .register(Box::new(eq_alert_free_windows.clone()))
+            .map_err(|_| {
+                MetricsError::RegistryRegistration(
+                    "evorule_equilibrium_alert_free_windows".to_string(),
+                )
+            })?;
+        registry
+            .register(Box::new(eq_certified_streak.clone()))
+            .map_err(|_| {
+                MetricsError::RegistryRegistration(
+                    "evorule_equilibrium_certified_streak".to_string(),
+                )
+            })?;
+        registry
+            .register(Box::new(eq_proposals_in_total.clone()))
+            .map_err(|_| {
+                MetricsError::RegistryRegistration(
+                    "evorule_equilibrium_proposals_in_total".to_string(),
+                )
+            })?;
+        registry
+            .register(Box::new(eq_digested_total.clone()))
+            .map_err(|_| {
+                MetricsError::RegistryRegistration("evorule_equilibrium_digested_total".to_string())
+            })?;
+        crate::equilibrium_obs::register_shared(
+            eq_alert_free_windows,
+            eq_certified_streak,
+            eq_proposals_in_total,
+            eq_digested_total,
+        );
 
         Ok(Self {
             registry,
