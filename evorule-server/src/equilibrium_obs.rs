@@ -1,4 +1,7 @@
-//! Companion-side equilibrium observation aggregator (B-182 / rule-layer v0.10.0 intake).
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 EvoRule Project
+// This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+//! Companion-side equilibrium observation aggregator (rule-layer v0.10.0 intake).
 //!
 //! Maintains the windowed counters that `equilibrium_check` (server_eval.json v0.10.0)
 //! adjudicates over: proposal intake vs digestion rates, consecutive alert-free windows,
