@@ -118,6 +118,24 @@ async fn verify_handler(State(app): State<AppState>, Json(doc): Json<Value>) -> 
     match evorule_criticality::verify(&request, &laws, &constants) {
         Ok(report) => {
             let mut body = serde_json::to_value(&report).unwrap_or(Value::Null);
+            // 均衡观测记账（纯观测零拦截：只记窗计数，不改判定/响应语义）——
+            // 提案入管按物料包逐件计数（与消化面逐件口径对称）；三态判定
+            // 单源映射认证连计（stable=true 余 false）；alert/contradiction
+            // 另记窗内警情，窗结算时清零。
+            let eq = crate::equilibrium_obs::shared();
+            if let Some(proposals) = body.get("proposals").and_then(|p| p.as_array()) {
+                for _ in proposals {
+                    eq.record_proposal();
+                }
+            }
+            match body.get("verdict").and_then(|v| v.as_str()) {
+                Some("stable") => eq.record_certificate(true),
+                Some("alert") | Some("contradiction") => {
+                    crate::equilibrium_obs::record_alert();
+                    eq.record_certificate(false);
+                }
+                _ => eq.record_certificate(false),
+            }
             // 分级裁决面（缺省关）：显式配置激活后，对 verify 提案物料包
             // 逐笔三闸裁决并在响应附 adjudications[]；低危自动出站由
             // 机器闸受端六检最终执法，降级决策只记录不改写人工路径。

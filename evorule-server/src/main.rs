@@ -3128,6 +3128,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("伴跑状态机 runner 已启动（缺省 A 态待命；POST /api/companion/state 切换 B 态）");
     }
 
+    // 均衡观测评估任务（纯观测零拦截）：每窗结算一次（窗内警情→close_window）
+    // → equilibrium_check 八参发射进单反应器 → 读回 payload.equilibrium 缓存
+    // 视图（伴跑 status 的 equilibrium 块呈现）。缺省开（60s 窗；纯观测不动
+    // 任何既有响应路径）；env 可调窗长与判据阈值，非法值 fail-fast 拒绝启动。
+    let equilibrium_cfg = evorule_server::equilibrium_obs::EquilibriumEvaluatorConfig::from_env()
+        .map_err(|e| -> Box<dyn std::error::Error> {
+        format!("equilibrium observer config: {e}").into()
+    })?;
+    evorule_server::equilibrium_obs::spawn_equilibrium_evaluator(api.clone(), equilibrium_cfg);
+    info!(
+        "均衡观测评估任务已启动（window_secs={}s, alert_free_windows_required={}, coverage_min={}, certified_streak_min={}）",
+        equilibrium_cfg.window_secs,
+        equilibrium_cfg.alert_free_windows_required,
+        equilibrium_cfg.coverage_min,
+        equilibrium_cfg.certified_streak_min,
+    );
+
     // 伴跑分析执行隔离：专用单 worker runtime 承载三件套 CPU 密集段——
     // 主多线程 runtime 的 HTTP handler 零抢占；IO 面（watch/去抖/落链/status）
     // 仍留主 runtime。构建失败降级为内联执行（缺省兜底，不阻断启动）。

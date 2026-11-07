@@ -1147,6 +1147,23 @@ impl CompanionHub {
             .and_then(|r| r.get("rule_count"))
             .and_then(|v| v.as_u64());
         let cap = evorule_rule_schema::MAX_TRANSFORM_RULES;
+        // 均衡态呈现块：五元窗快照+最近窗间差分 rates+均衡布尔（评估任务
+        // 窗结算后经规则层判定缓存；None=反应器不可达/读回超时，fail-visible
+        // 不猜稳态）+最近归因+窗长
+        let eq_windows = crate::equilibrium_obs::shared().snapshot();
+        let eq_view = crate::equilibrium_obs::view();
+        let equilibrium = json!({
+            "proposals_in_total": eq_windows.proposals_in_total,
+            "digested_total": eq_windows.digested_total,
+            "alert_free_windows": eq_windows.alert_free_windows,
+            "certified_streak": eq_windows.certified_streak,
+            "last_coverage": eq_windows.last_coverage,
+            "in_rate": eq_view.in_rate,
+            "digest_rate": eq_view.digest_rate,
+            "stable": eq_view.stable,
+            "last_cause": eq_view.last_cause,
+            "window_secs": eq_view.window_secs,
+        });
         json!({
             "enabled": self.enabled.load(Ordering::Relaxed),
             "state": lock_poem(&self.phase).as_str(),
@@ -1181,6 +1198,7 @@ impl CompanionHub {
             "proposals": proposals,
             "uplinks": uplinks,
             "law_sets": lock_poem(&self.law_sets).clone(),
+            "equilibrium": equilibrium,
         })
     }
 
@@ -1231,6 +1249,8 @@ impl CompanionHub {
             ruleset_version = version,
             "companion proposal created (alert findings)"
         );
+        // 均衡观测记账（纯观测零拦截）：一件提案入管
+        crate::equilibrium_obs::shared().record_proposal();
         Some(id)
     }
 
@@ -1271,6 +1291,9 @@ impl CompanionHub {
             actor,
             "companion proposal adjudicated"
         );
+        // 均衡观测记账（纯观测零拦截）：approved/rejected 均计消化
+        // （消化=处置完成出管道，两态同权防 reject 风暴假性供过于求）
+        crate::equilibrium_obs::shared().record_digested();
         Ok(rec.render())
     }
 
@@ -1447,6 +1470,10 @@ impl CompanionHub {
             if let Some(r) = ratio {
                 m.coverage_ratio_permille.set((r * 1000.0) as i64);
             }
+        }
+        // 均衡观测记账（纯观测零拦截）：最近覆盖率快照入窗（千分比）
+        if let Some(r) = ratio {
+            crate::equilibrium_obs::shared().record_coverage((r * 1000.0) as i64);
         }
         let per_version_json: BTreeMap<String, serde_json::Value> = per_version
             .into_iter()

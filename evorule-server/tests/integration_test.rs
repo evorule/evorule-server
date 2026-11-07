@@ -1162,3 +1162,182 @@ async fn test_equilibrium_check_legislation() {
     assert_eq!(verdict.as_deref(), Some("unstable"));
     assert_eq!(cause.as_deref(), Some("missing_observation"));
 }
+
+// ============================================================================
+// 均衡观测演练（接线 e2e）：窗结算任务发射 + 规则层判定 + 读回视图
+// ============================================================================
+//
+// 四场景一体（共享进程级窗计数即同一连续演练面，断言全部用相对口径）：
+// A 缺观测 fail-closed → B 供给扰动失稳归因→消化补齐弛豫回稳 →
+// C 警情注入→无警连计清零→连续 N 窗弛豫实测 → D 配额风暴反例。
+
+use evorule_server::api::server::GovernanceApi;
+use evorule_server::equilibrium_obs::{self, EquilibriumEvaluatorConfig, EquilibriumView};
+
+/// 装配演练反应器：单反应器 + GovernanceApi（事件流后台排空防广播积压；
+/// spawn 消费 reactor 自持运行任务，无需额外保活）。
+fn spawn_drill_reactor() -> GovernanceApi {
+    let core_eval = load_core_eval();
+    let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+    let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+    tokio::spawn(async move {
+        while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) = rx.recv().await
+        {
+            // drain: 防广播通道积压；Closed 即退出
+        }
+    });
+    let auditor = Auditor::new(facts_log.clone());
+    GovernanceApi::new(tx, facts_log, auditor)
+}
+
+/// 轮询等待视图满足条件（1s 窗 × 20s 上限；超时携带末值 panic 便于归因）。
+async fn wait_for_view(what: &str, cond: impl Fn(&EquilibriumView) -> bool) -> EquilibriumView {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let v = equilibrium_obs::view();
+        if cond(&v) {
+            return v;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("equilibrium drill timeout waiting for {what}; last view = {v:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn test_equilibrium_drill_end_to_end() {
+    // ---- 场景 A：缺观测 fail-closed——零观测窗结算不可宣称稳态 ----
+    let api = spawn_drill_reactor();
+    let evaluator = equilibrium_obs::spawn_equilibrium_evaluator(
+        api.clone(),
+        EquilibriumEvaluatorConfig {
+            window_secs: 1,
+            alert_free_windows_required: 1,
+            coverage_min: 900,
+            certified_streak_min: 3,
+        },
+    );
+    let v = wait_for_view("fail-closed verdict", |v| {
+        v.stable == Some(false) && v.last_cause.as_deref().is_some_and(|c| c != "none")
+    })
+    .await;
+    assert!(
+        matches!(
+            v.last_cause.as_deref(),
+            Some("coverage_below_minimum") | Some("certified_streak_below_minimum")
+        ),
+        "缺观测应落在判据③/④ fail-closed 归因，got {v:?}"
+    );
+    evaluator.abort();
+
+    // ---- 场景 B：供给扰动（供过于求）→ 失稳归因 → 消化补齐 → 弛豫回稳 ----
+    let api = spawn_drill_reactor();
+    let evaluator = equilibrium_obs::spawn_equilibrium_evaluator(
+        api.clone(),
+        EquilibriumEvaluatorConfig {
+            window_secs: 1,
+            alert_free_windows_required: 2,
+            coverage_min: 0,
+            certified_streak_min: 1,
+        },
+    );
+    let eq = equilibrium_obs::shared();
+    eq.record_coverage(1000);
+    eq.record_certificate(true);
+    for _ in 0..5 {
+        eq.record_proposal();
+    }
+    let v = wait_for_view("supply-surge verdict", |v| {
+        v.last_cause.as_deref() == Some("in_rate_exceeds_digest_rate")
+    })
+    .await;
+    assert_eq!(v.stable, Some(false), "供给扰动应失稳，got {v:?}");
+    for _ in 0..5 {
+        eq.record_digested();
+    }
+    let v = wait_for_view("relaxed verdict", |v| v.stable == Some(true)).await;
+    assert_eq!(
+        v.last_cause.as_deref(),
+        Some("none"),
+        "弛豫后应归因 none，got {v:?}"
+    );
+    evaluator.abort();
+
+    // ---- 场景 C：警情注入 → 无警连计清零 → 连续 3 窗弛豫回稳（弛豫窗数实测）----
+    let api = spawn_drill_reactor();
+    let evaluator = equilibrium_obs::spawn_equilibrium_evaluator(
+        api.clone(),
+        EquilibriumEvaluatorConfig {
+            window_secs: 1,
+            alert_free_windows_required: 3,
+            coverage_min: 0,
+            certified_streak_min: 1,
+        },
+    );
+    equilibrium_obs::record_alert();
+    equilibrium_obs::record_alert();
+    let v = wait_for_view("alert verdict", |v| {
+        v.last_cause.as_deref() == Some("alert_free_windows_below_required")
+    })
+    .await;
+    assert_eq!(v.stable, Some(false), "警情窗应失稳清零无警连计，got {v:?}");
+    let relaxed_at = std::time::Instant::now();
+    let v = wait_for_view("alert-relaxed verdict", |v| v.stable == Some(true)).await;
+    assert_eq!(v.last_cause.as_deref(), Some("none"));
+    let relax_secs = relaxed_at.elapsed().as_secs_f64();
+    eprintln!("弛豫实测：警情清零后 {relax_secs:.1}s 回稳（阈值 3 窗 x 1s 窗长）");
+    assert!(
+        (2.0..=4.5).contains(&relax_secs),
+        "弛豫耗时应对齐 3 窗阈值（窗长 1s），实测 {relax_secs:.1}s"
+    );
+    evaluator.abort();
+
+    // ---- 场景 D：配额风暴反例——限流降级生效 + 供给风暴后均衡回归 ----
+    let quota =
+        std::sync::Arc::new(evorule_server::tiered_adjudicator::AutoIntegrationQuota::new(3));
+    let mut granted = 0;
+    for _ in 0..8 {
+        if quota.acquire() {
+            granted += 1;
+        } else {
+            break;
+        }
+    }
+    assert_eq!(granted, 3, "自动集成配额应在前 3 笔放行后降级");
+    assert_eq!(quota.used(), 3);
+
+    let api = spawn_drill_reactor();
+    let evaluator = equilibrium_obs::spawn_equilibrium_evaluator(
+        api.clone(),
+        EquilibriumEvaluatorConfig {
+            window_secs: 1,
+            alert_free_windows_required: 1,
+            coverage_min: 0,
+            certified_streak_min: 1,
+        },
+    );
+    let eq = equilibrium_obs::shared();
+    for _ in 0..50 {
+        eq.record_proposal();
+    }
+    let v = wait_for_view("storm verdict", |v| {
+        v.last_cause.as_deref() == Some("in_rate_exceeds_digest_rate")
+    })
+    .await;
+    assert_eq!(
+        v.stable,
+        Some(false),
+        "供给风暴应呈现失稳（观测不拦截），got {v:?}"
+    );
+    for _ in 0..50 {
+        eq.record_digested();
+    }
+    let v = wait_for_view("storm-relaxed verdict", |v| v.stable == Some(true)).await;
+    assert_eq!(
+        v.last_cause.as_deref(),
+        Some("none"),
+        "风暴消化后均衡应回归，got {v:?}"
+    );
+    evaluator.abort();
+}
