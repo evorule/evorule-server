@@ -28,6 +28,7 @@
 //! 2. `video_timeline_consistency_check` — 字幕时间轴一致性校验（整数毫秒判定）
 //! 3. `color_contrast_ratio_eval` — 颜色对比度判定（WCAG 2.x，sRGB 字符串入参）
 //! 4. `video_frame_sequence_eval` — 帧序列异常事件判定（黑帧/闪帧/静止段）
+//! 5. `video_track_consistency_eval` — 主体轨迹守恒判定（位移/尺度漂移越限）
 
 #![forbid(unsafe_code)]
 
@@ -42,7 +43,7 @@ pub mod services;
 
 use services::{
     mk_color_contrast_ratio_eval, mk_skeleton_probe, mk_timeline_consistency_check,
-    mk_video_frame_sequence_eval,
+    mk_video_frame_sequence_eval, mk_video_track_consistency_eval,
 };
 
 // ============================================================================
@@ -84,6 +85,14 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
         r#"{"type":"object","properties":{"lums":{"type":"array","items":{"type":"string"},"description":"逐帧平均亮度摘要,0..255 十进制字符串,帧号=数组下标"},"black_threshold":{"type":"string","description":"黑帧亮度阈值(缺省 16)"},"flash_delta":{"type":"string","description":"闪帧相邻帧亮度差阈值(缺省 60)"},"still_frames":{"type":"integer","description":"静止段长度阈值,以帧计(缺省 24)"}},"required":["lums"]}"#,
     ),
     make: mk_video_frame_sequence_eval,
+}, NativeServiceDef {
+    name: "video_track_consistency_eval",
+    sensitive: false,
+    description: "主体轨迹守恒判定核(参考 bbox+逐帧 bbox 序列→位移/尺度漂移越限判定,l2/linf 度量缺省 l2,l2 判定面平方整比较零开方,1e6 定点精确;感知检出留引擎侧显式喂入;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"reference":{"type":"object","description":"参考主体框 {x,y,w,h},字符串有理数(引擎侧感知检出显式给出)"},"tracks":{"type":"array","description":"逐帧主体框 [{frame,bbox},...],frame 非负整数必填唯一,bbox 为 {x,y,w,h}"},"max_translation":{"type":"string","description":"位移上限 px,字符串如 \"40\""},"max_scale_delta":{"type":"string","description":"尺度漂移上限(相对面积变化),字符串如 \"0.2\""},"metric":{"type":"string","description":"位移度量 l2(缺省)或 linf"}},"required":["reference","tracks","max_translation","max_scale_delta"]}"#,
+    ),
+    make: mk_video_track_consistency_eval,
 }];
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
@@ -137,7 +146,10 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
-        assert_eq!(total, 4, "声明表应为 4 项(探针+时间轴校验+对比度+帧序列)");
+        assert_eq!(
+            total, 5,
+            "声明表应为 5 项(探针+时间轴校验+对比度+帧序列+轨迹守恒)"
+        );
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
         }
