@@ -245,7 +245,7 @@ impl PrometheusMetrics {
             .map_err(|_| {
                 MetricsError::RegistryRegistration("evorule_auto_verify_skips_total".to_string())
             })?;
-        // B-182: equilibrium observation gauges (rule-layer v0.10.0 equilibrium_check intake)
+        // equilibrium observation gauges (rule-layer v0.10.0 equilibrium_check intake)
         let eq_alert_free_windows = IntGauge::new(
             "evorule_equilibrium_alert_free_windows",
             "Consecutive alert-free observation windows (equilibrium criterion 2)",
