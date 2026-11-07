@@ -4779,6 +4779,11 @@ impl AppState {
         }
     }
 
+    /// law_set/constant_set 装配面只读访问（None=未配置 law_set 装配目录）
+    pub fn law_host(&self) -> Option<Arc<crate::law_host::LawHost>> {
+        self.sessions.law_host()
+    }
+
     /// :设置演示登录入口开关（builder 风格，默认 true）
     pub fn with_demo_auth(mut self, enabled: bool) -> Self {
         self.demo_auth = enabled;
@@ -12868,6 +12873,9 @@ impl GovernanceServer {
             .merge(abort_router)
             // 高危干预双保险：条件挂载（--allow-interventions 关闭时为空 Router）
             .merge(interventions_router)
+            // 验证注入面（判定只读，挂鉴权/限流/体限执法层之内）：
+            // POST /v1/criticality/verify 命题验证端点（criticality_api）
+            .merge(crate::criticality_api::router())
             // 会话级干预端点（可逆/只读，常规认证）：
             // heartbeat 限频注入（监控信号，pause 放行面）、
             // pause/resume 准入闸（拒新 Command，在途队列与 io_response 不受影响）
@@ -17344,15 +17352,18 @@ mod tests {
     /// 缺省 noop 宪法非合法 transform，指令一律落无 cause 的 Error，
     /// StateTransition 永不落链，wait 等待无从谈起）
     fn make_test_state_with_core_eval(core_eval: Vec<JsonValue>) -> (AppState, ReadinessFlag) {
-        let (state, readiness, _ws_db) = make_test_state_full(core_eval, SharedFactsLog::new());
+        let (state, readiness, _ws_db) =
+            make_test_state_full(core_eval, SharedFactsLog::new(), None);
         (state, readiness)
     }
 
     /// 同 [`Self::make_test_state_with_core_eval`]，另带 workspace 元数据库
     /// 句柄（发布域治理端点测试用：直接初始化 production_state 等）。
+    /// `law_host` 注入可选装配面（None=不配置，验证端点 503 路径用）。
     fn make_test_state_full(
         core_eval: Vec<JsonValue>,
         shared_facts: SharedFactsLog,
+        law_host: Option<Arc<crate::law_host::LawHost>>,
     ) -> (AppState, ReadinessFlag, Arc<evorule_workspace::WorkspaceDb>) {
         let reactor = Reactor::builder(core_eval.clone()).max_rounds(100).build();
 
@@ -17368,7 +17379,9 @@ mod tests {
 
         // ①: SessionApi 接线 workspace_db(close_session 生产会话保护 +
         // reaper 保活/自愈依赖);与 main.rs 生产装配时序一致
-        let sessions = SessionApi::new(core_eval, 100).with_workspace_db(ws_db.clone());
+        let sessions = SessionApi::new(core_eval, 100)
+            .with_workspace_db(ws_db.clone())
+            .with_law_host(law_host);
 
         let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
 
@@ -18261,7 +18274,7 @@ mod tests {
             instr.insert("type".to_string(), JsonValue::string("noop"));
             vec![JsonValue::Object(instr)]
         };
-        let (state, _, _) = make_test_state_full(core_eval, shared);
+        let (state, _, _) = make_test_state_full(core_eval, shared, None);
         let router = make_test_router(&state);
 
         // bootstrap 管理员 + 登录（事件经 WAL-backed 共享事实落账，正常写路径）
@@ -18406,7 +18419,8 @@ mod tests {
             instr.insert("type".to_string(), JsonValue::string("noop"));
             vec![JsonValue::Object(instr)]
         };
-        let (state, _flag, ws_db) = make_test_state_full(noop_core_eval, SharedFactsLog::new());
+        let (state, _flag, ws_db) =
+            make_test_state_full(noop_core_eval, SharedFactsLog::new(), None);
         let router = make_test_router(&state);
 
         // bootstrap 管理员 + 登录
@@ -20037,6 +20051,306 @@ mod tests {
         let (status, _) = oneshot_json(router, "GET", "/api/sessions", None).await;
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // --- 验证注入面端点（POST /v1/criticality/verify；负向安全四件 + 铁律 3） ---
+
+    /// noop 宪法测试核（与 make_test_state 同款：单条 noop 指令）
+    fn noop_core_eval() -> Vec<JsonValue> {
+        let mut instr = std::collections::BTreeMap::new();
+        instr.insert("type".to_string(), JsonValue::string("noop"));
+        vec![JsonValue::Object(instr)]
+    }
+
+    /// 构造 law_host 装配面（临时目录写入一 law 集 + 一常量集；golden 牛顿 F=ma + 常量 G）
+    fn make_law_host() -> (tempfile::TempDir, Arc<crate::law_host::LawHost>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let law_set = serde_json::json!({
+            "$schema": "https://evorule.org/schemas/law_set/v1.0.json",
+            "kind": "law_set",
+            "id": "law-mechanics",
+            "version": "1.0.0",
+            "laws": [{
+                "id": "newton_second",
+                "formula": "F = m * a",
+                "symbols": { "F": "合外力", "m": "质量", "a": "加速度" },
+                "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" }
+            }]
+        });
+        let constant_set = serde_json::json!({
+            "$schema": "https://evorule.org/schemas/criticality/constant_set/v1.0.json",
+            "kind": "constant_set",
+            "id": "const-fundamental",
+            "version": "1.0.0",
+            "constants": [{
+                "id": "G",
+                "value": 6.674e-11,
+                "si_unit": "m^3*kg^-1*s^-2",
+                "metadata": { "source": "CODATA 2018", "uncertainty": "0.0003e-11" }
+            }]
+        });
+        std::fs::write(
+            tmp.path().join("mechanics.law_set.json"),
+            serde_json::to_vec_pretty(&law_set).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("fundamental.constant_set.json"),
+            serde_json::to_vec_pretty(&constant_set).unwrap(),
+        )
+        .unwrap();
+        let (host, report) = crate::law_host::LawHost::load_dir(tmp.path());
+        assert_eq!(
+            report.loaded_count(),
+            2,
+            "测试装配面应全绿: {:?}",
+            report.rejected
+        );
+        (tmp, Arc::new(host))
+    }
+
+    fn criticality_request_body() -> String {
+        serde_json::json!({
+            "$schema": "https://evorule.org/schemas/criticality/verify_request/v1.0.json",
+            "subject": "endpoint integration proposition",
+            "claims": [
+                { "symbol": "F", "value": 10.0, "si_unit": "newton", "uncertainty": 0.5 },
+                { "symbol": "m", "value": 2.0, "si_unit": "kilogram" },
+                { "symbol": "a", "value": 5.0, "si_unit": "m*s^-2" }
+            ],
+            "context": { "source": "bench recheck", "measured_at": "2026-11-07T00:00:00Z" }
+        })
+        .to_string()
+    }
+
+    /// 未配置 law_host → 503 明示（不降级为空判定）
+    #[tokio::test]
+    async fn test_criticality_verify_without_law_host_503() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+        let (status, body) = oneshot_json(
+            router,
+            "POST",
+            "/v1/criticality/verify",
+            Some(&criticality_request_body()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "law_host_not_configured");
+    }
+
+    /// golden：F=ma 代入相容 → 200 stable；重复请求结果逐字节一致
+    /// （确定性 + 铁律 3 判定只读：装配面零变更可复现）
+    #[tokio::test]
+    async fn test_criticality_verify_stable_and_readonly_determinism() {
+        let (_tmp, host) = make_law_host();
+        let (state, _, _) =
+            make_test_state_full(noop_core_eval(), SharedFactsLog::new(), Some(host));
+        let router = make_test_router(&state);
+
+        let body = criticality_request_body();
+        let (status1, json1) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/v1/criticality/verify",
+            Some(&body),
+        )
+        .await;
+        let (status2, json2) =
+            oneshot_json(router, "POST", "/v1/criticality/verify", Some(&body)).await;
+        assert_eq!(status1, StatusCode::OK);
+        assert_eq!(status2, StatusCode::OK);
+        assert_eq!(
+            json1, json2,
+            "同命题重复判定必须逐字节一致（铁律 3 只读可回放）"
+        );
+        assert_eq!(json1["verdict"], "stable");
+        assert!(json1["steps"].is_array());
+        assert!(
+            json1["steps"].as_array().unwrap().len() >= 3,
+            "逐步证据应含量纲/代入步"
+        );
+    }
+
+    /// 负向安全①：未带 token → 401（鉴权层执法）
+    #[tokio::test]
+    async fn test_criticality_verify_without_token_401() {
+        let (_tmp, host) = make_law_host();
+        let (state, _, _) =
+            make_test_state_full(noop_core_eval(), SharedFactsLog::new(), Some(host));
+        let auth = AuthConfig::new(vec!["secret_token".to_string()], true);
+        let router = GovernanceServer::new(
+            state,
+            auth,
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            false,
+            None,
+        )
+        .build_router();
+        let (status, _) = oneshot_json(
+            router,
+            "POST",
+            "/v1/criticality/verify",
+            Some(&criticality_request_body()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// 负向安全②：坏 token → 401
+    #[tokio::test]
+    async fn test_criticality_verify_bad_token_401() {
+        let (_tmp, host) = make_law_host();
+        let (state, _, _) =
+            make_test_state_full(noop_core_eval(), SharedFactsLog::new(), Some(host));
+        let auth = AuthConfig::new(vec!["secret_token".to_string()], true);
+        let router = GovernanceServer::new(
+            state,
+            auth,
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            false,
+            None,
+        )
+        .build_router();
+        let (status, _) = oneshot_json_with_token(
+            router,
+            "POST",
+            "/v1/criticality/verify",
+            "forged_token",
+            Some(&criticality_request_body()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// 负向安全③：超限请求体（>1MB）→ 413（体限层执法）
+    #[tokio::test]
+    async fn test_criticality_verify_oversized_body_413() {
+        let (_tmp, host) = make_law_host();
+        let (state, _, _) =
+            make_test_state_full(noop_core_eval(), SharedFactsLog::new(), Some(host));
+        let auth = AuthConfig::new(vec!["secret_token".to_string()], true);
+        let router = GovernanceServer::new(
+            state,
+            auth,
+            "0.0.0.0:0".to_string(),
+            0,
+            0,
+            vec![],
+            false,
+            false,
+            false,
+            false,
+            None,
+        )
+        .build_router();
+        // 合法 token + 超限体（subject 填充至 >1MB）
+        let mut body = criticality_request_body();
+        let pad = "x".repeat(MAX_REQUEST_BODY_BYTES + 1024);
+        // 顶层 subject 注入填充（schema maxLength 256 会在 413 语义之下，
+        // 但体限层先于 handler 执法——413 与体内容合法性无关）
+        body = body.replace("endpoint integration proposition", &pad);
+        let (status, _) = oneshot_json_with_token(
+            router,
+            "POST",
+            "/v1/criticality/verify",
+            "secret_token",
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// 负向安全④：恶意输入 → 422 结构化报因（数值越界/未知键/坏单位）
+    #[tokio::test]
+    async fn test_criticality_verify_malicious_input_422() {
+        let (_tmp, host) = make_law_host();
+        let (state, _, _) =
+            make_test_state_full(noop_core_eval(), SharedFactsLog::new(), Some(host));
+        let router = make_test_router(&state);
+
+        // 数值幅值越界
+        let huge = serde_json::json!({
+            "$schema": "https://evorule.org/schemas/criticality/verify_request/v1.0.json",
+            "subject": "s",
+            "claims": [{ "symbol": "x", "value": 1e200, "si_unit": "m" }],
+            "context": { "source": "s", "measured_at": "t" }
+        })
+        .to_string();
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/v1/criticality/verify",
+            Some(&huge),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["error"]["code"], "verify_rejected");
+        assert!(
+            body["error"]["detail"]["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e.as_str().unwrap().contains("幅值越界")),
+            "{body}"
+        );
+
+        // 顶层未知键（additionalProperties:false 拒收）
+        let unknown = serde_json::json!({
+            "$schema": "https://evorule.org/schemas/criticality/verify_request/v1.0.json",
+            "subject": "s",
+            "claims": [{ "symbol": "x", "value": 1.0, "si_unit": "m" }],
+            "context": { "source": "s", "measured_at": "t" },
+            "injected": "<script>alert(1)</script>"
+        })
+        .to_string();
+        let (status, body) =
+            oneshot_json(router, "POST", "/v1/criticality/verify", Some(&unknown)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body["error"]["detail"]["errors"].is_array(), "{body}");
+    }
+
+    /// golden：常量越界 → 200 alert + 提案物料包（提案面非自动回写）
+    #[tokio::test]
+    async fn test_criticality_verify_alert_with_proposal_package() {
+        let (_tmp, host) = make_law_host();
+        let (state, _, _) =
+            make_test_state_full(noop_core_eval(), SharedFactsLog::new(), Some(host));
+        let router = make_test_router(&state);
+        let body = serde_json::json!({
+            "$schema": "https://evorule.org/schemas/criticality/verify_request/v1.0.json",
+            "subject": "endpoint alert proposition",
+            "claims": [{ "symbol": "G", "value": 6.679e-11, "si_unit": "m^3*kg^-1*s^-2",
+                          "uncertainty": 0.0001e-11 }],
+            "context": { "source": "bench recheck", "measured_at": "2026-11-07T00:00:00Z" }
+        })
+        .to_string();
+        let (status, json) =
+            oneshot_json(router, "POST", "/v1/criticality/verify", Some(&body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["verdict"], "alert");
+        assert_eq!(json["proposals"].as_array().unwrap().len(), 1);
+        assert_eq!(json["proposals"][0]["kind"], "constant_update");
+        assert_eq!(json["proposals"][0]["entry_id"], "G");
+        assert!(
+            json["proposals"][0]["payload"]["measured"]["source"]
+                .as_str()
+                .unwrap()
+                .contains("bench"),
+            "提案实测视图应含溯源"
+        );
     }
 
     #[tokio::test]

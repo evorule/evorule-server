@@ -1,0 +1,85 @@
+{
+  "$id": "https://evorule.org/schemas/criticality/verify_request/v1.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0",
+  "owner": "Mr. Damu Zheng",
+  "reviewed_by": "Mr. Damu Zheng",
+  "consumer": "evorule-server criticality verify endpoint (POST /v1/criticality/verify)",
+  "title": "Evorule criticality verify request (measurement claim proposition)",
+  "description": "Verification claim proposition: a measurement subject plus claimed symbol values with SI units and optional uncertainty, plus measurement context. additionalProperties:false everywhere (fail-fast); numeric magnitude/finite bounds are enforced by the structural validation layer on top of this schema.",
+  "type": "object",
+  "required": ["$schema", "subject", "claims", "context"],
+  "properties": {
+    "$schema": {
+      "const": "https://evorule.org/schemas/criticality/verify_request/v1.0.json"
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "What the proposition is about (e.g. 'earth surface gravity recheck')"
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/claim" }
+    },
+    "context": {
+      "type": "object",
+      "required": ["source", "measured_at"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Provenance of the measurement (required, iron rule 2: no-source claims are rejected)"
+        },
+        "measured_at": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "method": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "k_sigma": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100,
+          "description": "Interval width factor for constant comparison; default 2"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "required": ["symbol", "value", "si_unit"],
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "maxLength": 64
+        },
+        "value": {
+          "type": "number"
+        },
+        "si_unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "SI unit expression (unit-engine parseable), e.g. \"m*s^-1\""
+        },
+        "uncertainty": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

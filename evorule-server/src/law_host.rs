@@ -15,6 +15,11 @@
 //!   （fail-visible，拒绝静默降级）。
 //! - 查询键 = `(dataset_id, law_id)` 双键：跨库同 id 允许（命名空间 =
 //!   dataset_id），仅告警不拦截（判定只提案不改写）。
+//! - 常量臂：部署目录同置 `kind=constant_set` 文档时按常量集装载（载荷
+//!   契约照 rule 仓 law_set-constant-v1.0 镜像，校验消费
+//!   [`evorule_criticality::validate_constant_set`]；无出处/单位或
+//!   不确定度不可解析逐集拒收），查询键扩 `(dataset_id, constant_id)`
+//!   双键。常量臂是纯增量扩展：law 臂既有装载语义零改动。
 
 #![forbid(unsafe_code)]
 // C5 (unwrap/expect/panic = deny) 仅约束生产代码;测试代码保留 unwrap 惯例
@@ -23,6 +28,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use evorule_criticality::{ConstantEntry, ConstantSet};
 use evorule_law_schema::{validate_law_set, Law, LawSet};
 use serde::Serialize;
 
@@ -42,6 +48,8 @@ pub struct LawSetStatus {
     pub valid: bool,
     /// law 条数（valid 集=实装条数；拒收集=可解析条数或 0）
     pub law_count: usize,
+    /// 常量条数（constant_set 集=实装条数；law_set 集恒 0）
+    pub constant_count: usize,
     /// warning 级结果数（量纲跳过等；不构成拒收）
     pub warning_count: usize,
     /// 错误数（>0 即拒收）
@@ -59,6 +67,7 @@ impl LawSetStatus {
             source,
             valid: false,
             law_count: 0,
+            constant_count: 0,
             warning_count: 0,
             error_count: errors.len(),
             errors,
@@ -100,9 +109,11 @@ impl LawHostLoadReport {
 struct LoadedSet {
     status: LawSetStatus,
     laws: BTreeMap<String, Law>,
+    /// 常量臂域内索引（law_set 集恒空；集内 constant id 唯一由 schema 保证）
+    constants: BTreeMap<String, ConstantEntry>,
 }
 
-/// law_set 运行时装配与查询面（启动期构建一次，不可变共享）
+/// law_set/constant_set 运行时装配与查询面（启动期构建一次，不可变共享）
 ///
 /// 仅 valid 集注册入查询面；拒收集只存在于报告与 status 呈现面。
 #[derive(Debug, Default)]
@@ -110,6 +121,8 @@ pub struct LawHost {
     sets: BTreeMap<String, LoadedSet>,
     /// 跨库同 law_id 告警（允许并存不拦截；判定只提案不改写）
     cross_set_id_warnings: Vec<String>,
+    /// 跨库同 constant_id 告警（常量臂；同上语义）
+    cross_set_constant_id_warnings: Vec<String>,
 }
 
 impl LawHost {
@@ -164,6 +177,53 @@ impl LawHost {
                 }
             };
             let digested = evorule_hash::try_json_digest(&doc).ok();
+
+            // 常量臂（kind=constant_set）：载荷契约照 rule 仓 constant 条目镜像，
+            // 逐集校验照 evorule-criticality 契约（无出处/单位或不确定度
+            // 不可解析 = 拒收，fail-fast）；拒收逐集隔离，不牵连他集。
+            let kind = doc.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if kind == "constant_set" {
+                let constants_declared = doc
+                    .get("constants")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let r = evorule_criticality::validate_constant_set(&doc);
+                let status = LawSetStatus {
+                    dataset_id: dataset_id.clone(),
+                    source: source.clone(),
+                    valid: r.valid,
+                    law_count: 0,
+                    constant_count: constants_declared,
+                    // constant_set 校验全 fail-fast（无 warning 级）
+                    warning_count: 0,
+                    error_count: r.errors.len(),
+                    errors: r.errors,
+                    content_digest: digested,
+                };
+                if !status.valid {
+                    report.rejected.push(status);
+                    continue;
+                }
+                let mut constants = BTreeMap::new();
+                if let Ok(set) = serde_json::from_value::<ConstantSet>(doc.clone()) {
+                    for c in set.constants {
+                        constants.insert(c.id.clone(), c);
+                    }
+                }
+                report.loaded.push(status.clone());
+                host.sets.insert(
+                    dataset_id,
+                    LoadedSet {
+                        status,
+                        laws: BTreeMap::new(),
+                        constants,
+                    },
+                );
+                continue;
+            }
+
+            // law 臂（既有路径，kind=law_set；零改动）
             let law_set: Option<LawSet> = serde_json::from_value(doc.clone()).ok();
             let law_count_declared = doc
                 .get("laws")
@@ -176,6 +236,7 @@ impl LawHost {
                 source: source.clone(),
                 valid: r.valid,
                 law_count: law_count_declared,
+                constant_count: 0,
                 warning_count: r.warnings.len(),
                 error_count: r.errors.len(),
                 errors: r.errors,
@@ -193,10 +254,19 @@ impl LawHost {
                 }
             }
             report.loaded.push(status.clone());
-            host.sets.insert(dataset_id, LoadedSet { status, laws });
+            host.sets.insert(
+                dataset_id,
+                LoadedSet {
+                    status,
+                    laws,
+                    constants: BTreeMap::new(),
+                },
+            );
         }
 
         host.cross_set_id_warnings = Self::compute_cross_set_id_warnings(&host.sets);
+        host.cross_set_constant_id_warnings =
+            Self::compute_cross_set_constant_id_warnings(&host.sets);
         (host, report)
     }
 
@@ -222,6 +292,11 @@ impl LawHost {
         self.sets.get(dataset_id)?.laws.get(law_id)
     }
 
+    /// 双键查询·常量臂（dataset_id + constant_id；跨库同 id 各归各库）
+    pub fn lookup_constant(&self, dataset_id: &str, constant_id: &str) -> Option<&ConstantEntry> {
+        self.sets.get(dataset_id)?.constants.get(constant_id)
+    }
+
     /// 逐域查询（dataset_id 域内全部 law，id 序确定性）
     pub fn laws_in(&self, dataset_id: &str) -> Vec<&Law> {
         match self.sets.get(dataset_id) {
@@ -243,6 +318,43 @@ impl LawHost {
     /// 跨库同 id 告警（装配期判定；启动报告列明）
     pub fn cross_set_id_warnings(&self) -> &[String] {
         &self.cross_set_id_warnings
+    }
+
+    /// 跨库同 constant_id 告警（常量臂；语义同 law 臂：命名空间隔离允许并存）
+    pub fn cross_set_constant_id_warnings(&self) -> &[String] {
+        &self.cross_set_constant_id_warnings
+    }
+
+    /// 常量引用全集（dataset 序 + id 序确定性；验证管线注入用）
+    pub fn constant_refs(&self) -> Vec<(&str, &ConstantEntry)> {
+        self.sets
+            .values()
+            .flat_map(|s| {
+                s.constants
+                    .values()
+                    .map(move |c| (s.status.dataset_id.as_str(), c))
+            })
+            .collect()
+    }
+
+    /// 跨库同 constant_id 检测（告警不拦截，与 law 臂同语义）
+    fn compute_cross_set_constant_id_warnings(sets: &BTreeMap<String, LoadedSet>) -> Vec<String> {
+        let mut seen: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (ds, set) in sets {
+            for constant_id in set.constants.keys() {
+                seen.entry(constant_id).or_default().push(ds);
+            }
+        }
+        seen.into_iter()
+            .filter(|(_, owners)| owners.len() > 1)
+            .map(|(constant_id, owners)| {
+                format!(
+                    "constant id `{constant_id}` 跨 {n} 库同 id（命名空间隔离允许并存，仅告警不拦截）：{owners}",
+                    n = owners.len(),
+                    owners = owners.join(", ")
+                )
+            })
+            .collect()
     }
 }
 
@@ -430,6 +542,120 @@ mod tests {
 
         // 他库零牵连：健康集双键可查
         assert!(host.lookup("good-set", "ideal_gas").is_some());
+    }
+
+    // ── 常量臂：constant_set 装载 + 双键查询 + 隔离拒收 + 跨库同 id 告警 ──
+
+    fn constant_set_doc() -> serde_json::Value {
+        json!({
+            "$schema": "https://evorule.org/schemas/criticality/constant_set/v1.0.json",
+            "kind": "constant_set",
+            "id": "fundamental-constants",
+            "version": "1.0.0",
+            "constants": [{
+                "id": "G",
+                "value": 6.674e-11,
+                "si_unit": "m^3*kg^-1*s^-2",
+                "metadata": { "source": "CODATA 2018", "uncertainty": "0.0003e-11" }
+            }]
+        })
+    }
+
+    #[test]
+    fn constant_set_loads_with_dual_key_lookup() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_set(tmp.path(), "law-mechanics", &newton_doc());
+        write_set(tmp.path(), "const-fundamental", &constant_set_doc());
+
+        let (host, report) = LawHost::load_dir(tmp.path());
+        assert_eq!(
+            report.loaded_count(),
+            2,
+            "law 集与常量集应并存装载: {:?}",
+            report.rejected
+        );
+        assert_eq!(report.rejected_count(), 0);
+
+        // 双键查询·常量臂
+        let g = host.lookup_constant("const-fundamental", "G").unwrap();
+        assert!((g.value - 6.674e-11).abs() < 1e-30);
+        assert_eq!(g.metadata.source, "CODATA 2018");
+        assert!(host.lookup_constant("const-fundamental", "c").is_none());
+        assert!(
+            host.lookup_constant("law-mechanics", "G").is_none(),
+            "law 集无常量臂索引"
+        );
+
+        // law 臂既有语义零改动（缺省不变式）
+        assert!(host.lookup("law-mechanics", "newton_second").is_some());
+        assert!(host.laws_in("const-fundamental").is_empty());
+
+        // 呈现结论：常量条数列明
+        let statuses = host.statuses();
+        let cs = statuses
+            .iter()
+            .find(|s| s.dataset_id == "const-fundamental")
+            .unwrap();
+        assert!(cs.valid && cs.law_count == 0 && cs.constant_count == 1);
+    }
+
+    #[test]
+    fn bad_constant_set_isolated_good_set_unaffected() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 无出处常量 → 拒收（铁律 2）
+        let mut no_source = constant_set_doc();
+        no_source["constants"][0]["metadata"] = json!({ "verified": "x" });
+        // 不确定度非数字 → 拒收
+        let mut bad_sigma = constant_set_doc();
+        bad_sigma["constants"][0]["metadata"]["uncertainty"] = json!("tiny");
+        write_set(tmp.path(), "bad-no-source", &no_source);
+        write_set(tmp.path(), "bad-sigma", &bad_sigma);
+        write_set(tmp.path(), "good-set", &ideal_gas_doc());
+        write_set(tmp.path(), "good-const", &constant_set_doc());
+
+        let (host, report) = LawHost::load_dir(tmp.path());
+        assert_eq!(report.loaded_count(), 2, "两健康集应装载");
+        assert_eq!(report.rejected_count(), 2, "两坏常量集逐集隔离拒收");
+        for st in &report.rejected {
+            assert!(!st.valid && st.error_count > 0, "{:?}", st.errors);
+        }
+        assert!(
+            report
+                .rejected
+                .iter()
+                .any(|s| s.errors.iter().any(|e| e.contains("source"))),
+            "无出处报因应列明: {:?}",
+            report.rejected
+        );
+        // 健康集零牵连
+        assert!(host.lookup("good-set", "ideal_gas").is_some());
+        assert!(host.lookup_constant("good-const", "G").is_some());
+    }
+
+    #[test]
+    fn cross_set_same_constant_id_warns_not_blocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut dup = constant_set_doc();
+        dup["constants"][0]["value"] = json!(6.68e-11);
+        write_set(tmp.path(), "set-a", &constant_set_doc());
+        write_set(tmp.path(), "set-b", &dup);
+
+        let (host, report) = LawHost::load_dir(tmp.path());
+        assert_eq!(report.loaded_count(), 2, "跨库同 constant id 不拦截");
+        let warnings = host.cross_set_constant_id_warnings();
+        assert_eq!(warnings.len(), 1, "应恰一条常量告警: {warnings:?}");
+        assert!(warnings[0].contains("G"));
+
+        // 双键各归各库
+        let a = host.lookup_constant("set-a", "G").unwrap();
+        let b = host.lookup_constant("set-b", "G").unwrap();
+        assert!((a.value - 6.674e-11).abs() < 1e-30);
+        assert!((b.value - 6.68e-11).abs() < 1e-30);
+
+        // 验证管线注入面：constant_refs 全集可取（dataset 序确定性）
+        let refs = host.constant_refs();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].0, "set-a");
     }
 
     // ── 目录级 fail-visible ──

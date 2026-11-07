@@ -52,6 +52,9 @@ evorule-workspace = { path = "../core/workspace" }
 evorule-rule-schema = { path = "../core/rule_schema" }
 # law_set Schema 门禁：law_set 独立部署件的运行时装配校验（law_host 消费）
 evorule-law-schema = { path = "../core/law_schema" }
+# 验证注入面纯函数管线：命题验证四步判定 + 常量集部署件校验
+# （law_host 常量臂与 criticality_api 消费；与 law_schema 同构先例）
+evorule-criticality = { path = "../core/criticality" }
 # L2 规则集形态纪律门禁判定引擎，与 evorule-cli 共享判定 SSOT（机制自 cli 抽出，
 # 2026-09-24 接线）。纯 version 依赖（0.10.0 与核心层同步升版，tcb req 对齐
 # vendored 换基线，避免 registry 0.8 旧实例分裂 JsonValue 类型）。
