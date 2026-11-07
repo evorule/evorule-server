@@ -1215,6 +1215,12 @@ struct ExternalServiceDecl {
     /// 被病态声明长期占用）。非正整数 = 装载拒绝（fail-fast，不静默纠正）。
     #[serde(default)]
     timeout_ms: Option<i64>,
+    /// 每服务自定义请求头（契约 v1.4 MINOR 增补；缺省空表=零迁移）。
+    /// 合并优先级：系统 X-Source < 服务声明 headers < 包级 auth_token
+    /// （鉴权头最终一致——声明不得覆盖 Authorization，防误配掉鉴权）。
+    /// 空键/空值声明 = 装载拒绝（fail-fast，不静默纠正）。
+    #[serde(default)]
+    headers: std::collections::BTreeMap<String, String>,
 }
 
 /// 服务声明 timeout_ms 的合法上界（契约 v1.2 §6）
@@ -1499,6 +1505,22 @@ fn load_external_plugins(
             let url = format!("{}/services/{}", m.base_url.trim_end_matches('/'), s.name);
             let mut headers = std::collections::BTreeMap::new();
             headers.insert("X-Source".to_string(), "evorule-server".to_string());
+            // 契约 v1.4：服务声明 headers 次优先合入（chat 门/调用方门等自定义
+            // 头由此贯通——外部包可自带令牌头；声明不得覆盖 auth_token 的
+            // Authorization，鉴权一致性优先）
+            for (k, v) in &s.headers {
+                if k.trim().is_empty() || v.trim().is_empty() {
+                    return Err(format!(
+                        "外部插件包 {id} 服务 '{}' headers 含空键/空值: '{k}' — \
+                         fail-fast 拒载（防静默无效头）",
+                        s.name
+                    ));
+                }
+                if k.eq_ignore_ascii_case("Authorization") {
+                    continue; // 鉴权头保留给包级 auth_token（最终一致）
+                }
+                headers.insert(k.clone(), v.clone());
+            }
             // 契约 v1.3：auth_token 声明后全部服务调用携带 Bearer（sidecar 逐请求校验）
             if let Some(t) = &auth_header {
                 headers.insert("Authorization".to_string(), format!("Bearer {t}"));
@@ -3886,6 +3908,67 @@ mod tests {
                     .unwrap_err();
             assert!(err.contains("auth_token"), "got: {err}");
             assert!(err.contains("未设置"), "got: {err}");
+        }
+
+        // 契约 v1.4：服务声明 headers 合入注册表（自定义门头贯通；
+        // Authorization 保留给 auth_token；空键/空值 fail-fast）
+        #[test]
+        fn service_decl_headers_merged_with_priority() {
+            let dir = TempDir::new().unwrap();
+            let json = r#"{
+                "id": "finance-config", "version": "0.1.0", "contract_version": "1.4",
+                "base_url": "http://127.0.0.1:9110",
+                "services": [
+                    {"name": "finance_config_get", "sensitive": false, "description": "读",
+                     "headers": {"X-Caller-Token": "svc-secret", "Authorization": "SHOULD-NOT-WIN",
+                                 "X-Source": "my-plugin"}}
+                ]
+            }"#;
+            write_file(dir.path(), "plugin.json", json);
+            let manifest = write_file(
+                dir.path(),
+                "plugin_manifest.json",
+                r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+            );
+            let mut registry = ServiceRegistry::empty();
+            load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false).unwrap();
+            let entry = registry
+                .get("finance_config_get")
+                .expect("服务条目应已注册");
+            // 声明头合入
+            assert_eq!(
+                entry.headers.get("X-Caller-Token").map(String::as_str),
+                Some("svc-secret"),
+                "服务声明自定义头必须合入注册表条目"
+            );
+            // X-Source 可被声明覆盖（次优先），Authorization 不可（保留给 auth_token）
+            assert_eq!(entry.headers.get("X-Source").map(String::as_str), Some("my-plugin"));
+            assert!(
+                !entry.headers.contains_key("Authorization"),
+                "声明 headers 不得注入 Authorization（保留给包级 auth_token）"
+            );
+        }
+
+        #[test]
+        fn service_decl_headers_blank_rejected_fail_fast() {
+            for bad in [r#""headers": {"": "v"}"#, r#""headers": {"X-K": "  "}"#] {
+                let dir = TempDir::new().unwrap();
+                let json = format!(
+                    r#"{{"id": "finance-config", "version": "0.1.0",
+                        "base_url": "http://127.0.0.1:9110",
+                        "services": [{{"name": "finance_config_get", {bad}}}]}}"#
+                );
+                write_file(dir.path(), "plugin.json", &json);
+                let manifest = write_file(
+                    dir.path(),
+                    "plugin_manifest.json",
+                    r#"{"plugins":{"finance-config":{"enabled":true,"manifest":"plugin.json"}}}"#,
+                );
+                let mut registry = ServiceRegistry::empty();
+                let err = load_external_plugins(Some(&manifest), &mut registry, &builtin_names(), false)
+                    .unwrap_err();
+                assert!(err.contains("空键/空值"), "got: {err}");
+            }
         }
 
         // 契约 v1.3：缺省不声明 = 无 Authorization 头（存量零迁移,现行为不变）
