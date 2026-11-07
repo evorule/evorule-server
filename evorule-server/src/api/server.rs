@@ -19277,7 +19277,8 @@ mod tests {
         let win = json["entries"].as_array().unwrap();
         assert!(!win.is_empty());
         assert!(
-            win.iter().all(|e| e["fact_id"].as_u64().unwrap() >= last_id),
+            win.iter()
+                .all(|e| e["fact_id"].as_u64().unwrap() >= last_id),
             "from_fact 过滤语义与摘要态一致（含端点）"
         );
     }
