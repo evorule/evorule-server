@@ -20371,7 +20371,7 @@ mod tests {
     }
 
     /// 裁决面 env 互斥锁（from_env 每请求现读，防并行测试互相污染）
-    static TIERED_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static TIERED_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn set_adjudicator_env(url: &str, key: &str) {
         std::env::set_var("EVORULE_TIERED_ADJUDICATOR_URL", url);
@@ -20387,9 +20387,7 @@ mod tests {
     /// （与裁决器上线前逐字节一致）
     #[tokio::test]
     async fn test_criticality_verify_adjudicator_off_by_default() {
-        let _env_guard = TIERED_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env_guard = TIERED_ENV_LOCK.lock().await;
         clear_adjudicator_env();
         let (_tmp, host) = make_law_host();
         let (state, _, _) =
@@ -20418,9 +20416,7 @@ mod tests {
     #[tokio::test]
     async fn test_criticality_verify_adjudicator_low_risk_auto_fires() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let _env_guard = TIERED_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env_guard = TIERED_ENV_LOCK.lock().await;
         // 环回 stub：单请求收 POST 体、回 200；请求头+体经 channel 交断言
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
