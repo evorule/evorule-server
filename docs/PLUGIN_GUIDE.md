@@ -1,6 +1,6 @@
 # 插件开发指南
 
-> 适用版本：evorule-server 0.5.0+（声明式 pack 自 0.6.0 起）
+> 适用版本：evorule-server 0.5.0+（声明式 pack 自 0.6.0 起；外部插件包契约 v1.3 auth_token / v1.4 服务级 headers 见 §三、§五）
 > 两类范本：
 > - **外部插件包**（进程型）：[`plugins/finance-config/`](../plugins/finance-config/)（财务配置键读写，独立服务进程 + 自持存储 + 审批管理面，§一～§十一）
 > - **声明式资产包**（契约 v1）：[`plugins/finance-pack/`](../plugins/finance-pack/)（1 场景 + 2 规则模板，零代码零进程，§十二）
@@ -58,6 +58,7 @@ my-plugin/                    ← 插件包根目录（目录名建议 = 插件 
 | `id` | ✅ | string | 插件包 id，**须与 plugin_manifest.json 条目键一致**（不一致启动期拒绝，防漂移） |
 | `version` | ✅ | string | 插件包版本，**独立演进**（与 server 版本无关），透传至对账清单。**定位澄清（契约 v1.2）**：version 是展示位，**不参与兼容判定** |
 | `contract_version` |  | string | **契约版本（v1.2 可选增补）**：缺省 = 兼容（存量零迁移）；声明时 MAJOR 须为 `1`（如 `"1.2"`），否则启动期拒绝装载（与 pack.json 同纪律） |
+| `auth_token` |  | string | **包级 Bearer 令牌（契约 v1.3 可选增补）**：声明后该包全部服务的调用请求自动携带 `Authorization: Bearer <token>`（sidecar 逐请求校验）。支持 `${ENV_NAME}` 形式引用环境变量——env 未设置即 **fail-fast 拒载**（防静默空 token 使鉴权形同虚设）；空串一律拒绝（空 Bearer 与不携带语义混浊，声明了就该给真值）。缺省不声明 = 无 Authorization 头（存量零迁移，现行为不变） |
 | `description` |  | string | 插件包描述，透传至对账清单与启动日志 |
 | `base_url` | ✅ | string | 服务进程根地址（`http://` 或 `https://` 前缀必检）；路由 = `base_url + /services/{name}`；**本地插件用 `127.0.0.1` 需 server 以 `--allow-loopback` 启动** |
 | `auto_discover` |  | bool | **自动发现开关（缺省 false = 静态声明制，存量零迁移）**。`true` 时 `services[]` 降级为**策略表**（可选）：server 装载期拉取 `GET {base_url}/services` 实载清单，把策略表未覆盖的服务按默认策略合入（`sensitive:false` + 缺省超时，启动日志逐条明示）。失败语义：host 未起 / 拉取失败 → 显式告警，增量不注册、不崩 server；loopback 地址未开 `--allow-loopback` 时拒绝拉取（与调用链 SSRF 语义对齐）。见 §3.3 |
@@ -71,6 +72,7 @@ my-plugin/                    ← 插件包根目录（目录名建议 = 插件 
 | `sensitive` |  | bool | 敏感标记（缺省 false）。`true` 时 REST 直调 `POST /api/services/{name}/invoke` 返回 403——敏感服务**必须经会话 call_service 走审计与审批链** |
 | `description` |  | string | 服务描述，透传至对账清单（LLM 消费方据此理解工具用途） |
 | `parameters` |  | object | **参数契约**（OpenAI function parameters 简化子集：type/properties/required）。对账清单透传，LLM 消费方据此生成动态工具 schema，可带参真实调用 |
+| `headers` |  | object | **每服务自定义请求头（契约 v1.4 可选增补）**：键值对随该服务的每次调用合入请求头（chat 门/调用方门等自定义头由此贯通——外部包可自带令牌头）。合入优先级：server 基础头（含 `X-Source: evorule-server`）< 服务声明 `headers` < 包级 `auth_token` 的 Authorization；**服务声明不得覆盖 Authorization**（鉴权一致性优先，该键静默跳过）；空键/空值 **fail-fast 拒载**（防静默无效头）。缺省空表 = 零迁移 |
 
 ### 3.2 完整示例（范本 plugins/finance-config）
 
@@ -80,11 +82,13 @@ my-plugin/                    ← 插件包根目录（目录名建议 = 插件 
   "version": "0.1.0",
   "description": "财务域配置键读写（外部插件包范本）",
   "base_url": "http://127.0.0.1:9110",
+  "auth_token": "${FINANCE_PLUGIN_TOKEN}",
   "services": [
     {
       "name": "finance_config_get",
       "sensitive": false,
       "description": "财务配置键读取",
+      "headers": { "X-Caller-Token": "svc-secret" },
       "parameters": {
         "type": "object",
         "properties": {
@@ -113,6 +117,8 @@ my-plugin/                    ← 插件包根目录（目录名建议 = 插件 
 ```
 
 > **参数契约归属原则**：参数 schema 由**服务提供方**（插件包）声明为 SSOT——server 只透传不解释，消费方只消费不定义。native/registry 来源无此声明时消费方降级空 schema。
+
+> **鉴权与自定义头（契约 v1.3/v1.4）**：范本中 `auth_token` 引用环境变量 `FINANCE_PLUGIN_TOKEN`（未设置即拒载），声明后该包全部服务调用携带 `Authorization: Bearer` 头；`headers.X-Caller-Token` 为服务级自定义头随调用合入。三者优先级：server 基础头 < 服务 `headers` < 包级 `auth_token` 的 Authorization（服务声明不可覆盖鉴权头）。
 
 ### 3.3 auto_discover：自动发现（策略表模式）
 
@@ -174,6 +180,8 @@ plugin.json 降级为**策略表**——职责分离后新增服务 = 放文件 
 ```
 POST {base_url}/services/{name}
 Header:  X-Source: evorule-server        （server 侧自动附加）
+         + 包级 auth_token Bearer 头      （契约 v1.3：声明后逐请求携带）
+         + 服务级 headers 自定义头        （契约 v1.4：逐服务合入；优先级见 §3.2 注）
 Body:    args 原样 JSON（调用方参数对象）
 响应:    结果 JSON（HTTP 响应体即服务结果）
 超时:    server 侧 5000ms（派生路由条目固定值）
@@ -259,7 +267,7 @@ POST /api/plugins/{id}/admin/proposals/{pid}/reject      拒绝（reason 保留�
 
 | # | 校验 | 错误信息要点 |
 |---|------|-------------|
-| 1 | plugin.json 不可读 / JSON 非法 / id 漂移（条目键 ≠ 声明 id）/ 空服务集 / base_url 非 http(s) / `contract_version` MAJOR 不符（声明时须 `1.x`，契约 v1.2） | 附自诊断指引，不静默装载 |
+| 1 | plugin.json 不可读 / JSON 非法 / id 漂移（条目键 ≠ 声明 id）/ 空服务集 / base_url 非 http(s) / `contract_version` MAJOR 不符（声明时须 `1.x`，契约 v1.2）/ `auth_token` 空串或 `${ENV}` 引用的环境变量未设置（契约 v1.3）/ 服务 `headers` 含空键/空值（契约 v1.4） | 附自诊断指引，不静默装载 |
 | 2 | 服务名冲突（与宿主内置声明表全集、注册表、已装载外部包任一冲突） | 服务名全局唯一，含**停用**插件名亦占用（防回落路径被静默劫持） |
 | 3 | 挂载清单本身不可读 / JSON 非法 | 启动报错退出 |
 

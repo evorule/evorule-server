@@ -1,3 +1,7 @@
+# 发射形态契约（exit-code 穿透铁律）：
+#   必须 `pwsh -NoProfile -File scripts/sync-native-services.ps1`。
+#   禁用 `-Command "& { & script }"` 包装——调用操作符会吞掉脚本内 exit N，
+#   pwsh 进程恒 rc=0，治理侧守卫失败被静默放行（2026-11-06 实证）。
 # 原生服务声明同步脚本
 #
 # SSOT : evorule-server/plugins/<插件 id>/official_native_services.json（每插件一份）
@@ -65,6 +69,7 @@ $plugins = @(
     @{ Id = "legal-services"; Crate = "evorule-legal-services" }
     @{ Id = "export-services"; Crate = "evorule-export-services" }
     @{ Id = "verification-services"; Crate = "evorule-verification-services" }
+    @{ Id = "video-services"; Crate = "evorule-video-services" }
 )
 
 if (-not (Test-Path (Join-Path $RepoRule "Cargo.toml"))) { Write-Host "[FAIL] 治理仓不存在: $RepoRule" -ForegroundColor Red; exit 1 }
@@ -112,6 +117,9 @@ foreach ($p in $plugins) {
     $embedded = Join-Path $RepoRule "src\model\official_native_services.$($p.Id).embedded.json"
     if (-not (Test-Path $ssot)) { Write-Host "[FAIL] SSOT 不存在: $ssot" -ForegroundColor Red; $syncFailures++; continue }
     Copy-Item $ssot $embedded -Force
+    # 破 cargo 陈旧 fingerprint：Copy-Item 会连 LastWriteTime 一起复制，嵌入副本 mtime 回退到
+    # server SSOT 的旧时间戳 → include_str! 依赖不重编 → 快照守卫假绿（2026-11-06 实证）。显式戳新时间。
+    (Get-Item $embedded).LastWriteTime = Get-Date
     $lenA = (Get-Item $ssot).Length
     $lenB = (Get-Item $embedded).Length
     if ($lenA -ne $lenB) { Write-Host "[FAIL] 复制核验失败: $($p.Id) SSOT=$lenA 副本=$lenB 字节不一致" -ForegroundColor Red; $syncFailures++ }
@@ -140,8 +148,10 @@ foreach ($p in $plugins) {
 Write-Host "=== [2/2] 治理侧守卫（嵌入副本聚合 schema/唯一性/顺序）===" -ForegroundColor Cyan
 Push-Location $RepoRule
 try {
+    # 立即快照退出码：$LASTEXITCODE 会被任何后续原生命令覆盖，判定必须贴脸读取
     cargo test service_catalog
-    if ($LASTEXITCODE -ne 0) { $failures++; Write-Host "[FAIL] 治理侧守卫未通过" -ForegroundColor Red }
+    $rc = $LASTEXITCODE
+    if ($rc -ne 0) { $failures++; Write-Host "[FAIL] 治理侧守卫未通过 (exit=$rc)" -ForegroundColor Red }
     else { Write-Host "[OK] 治理侧守卫通过" -ForegroundColor Green }
 } finally { Pop-Location }
 

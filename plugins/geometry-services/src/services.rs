@@ -251,6 +251,237 @@ pub fn mk_occlusion_check() -> Arc<dyn NativeService> {
 }
 
 // ============================================================================
+// 安全区版式合规检查（safe_zone_check）
+// ============================================================================
+
+/// 安全区判定：给定画布 + 命名安全区 + 待检元素，
+/// 判定元素 bbox 是否完全落在每个必选（required=true）区内；
+/// 越界产出逐边越界量（元素边到区边的外扩距离），容差显式入参。
+struct Zone {
+    id: String,
+    kind: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    required: bool,
+}
+
+struct Element {
+    id: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+fn parse_zone(i: usize, v: &JsonValue) -> Result<Zone, String> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| format!("zones[{i}] 须为对象 — 自诊断指引: {{\"id\",\"kind\",\"x\",\"y\",\"w\",\"h\",\"required\"}}"))?;
+    let id = obj
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("zones[{i}] 缺非空 id"))?;
+    let kind = obj.get("kind").and_then(JsonValue::as_str).ok_or_else(|| {
+        format!(
+            "zones[{i}]({id}) 缺 kind — 自诊断指引: kind ∈ title | subtitle | logo | action | safe"
+        )
+    })?;
+    if !matches!(kind, "title" | "subtitle" | "logo" | "action" | "safe") {
+        return Err(format!(
+            "zones[{i}]({id}) kind={kind} 越界 — 自诊断指引: kind ∈ title | subtitle | logo | action | safe"
+        ));
+    }
+    let num = |key: &str| -> Result<f64, String> {
+        obj.get(key)
+            .and_then(num_f64)
+            .ok_or_else(|| format!("zones[{i}]({id}) 缺合法数值 {key}"))
+    };
+    let x = num("x")?;
+    let y = num("y")?;
+    let w = num("w")?;
+    let h = num("h")?;
+    if w <= 0.0 || h <= 0.0 {
+        return Err(format!("zones[{i}]({id}) w/h 须为正数（w={w}, h={h}）"));
+    }
+    let required = obj
+        .get("required")
+        .and_then(JsonValue::as_bool)
+        .ok_or_else(|| format!("zones[{i}]({id}) 缺布尔 required"))?;
+    Ok(Zone {
+        id: id.to_string(),
+        kind: kind.to_string(),
+        x,
+        y,
+        w,
+        h,
+        required,
+    })
+}
+
+fn parse_element(i: usize, v: &JsonValue) -> Result<Element, String> {
+    let obj = v.as_object().ok_or_else(|| {
+        format!(
+            "elements[{i}] 须为对象 — 自诊断指引: {{\"id\",\"bbox\":{{\"x\",\"y\",\"w\",\"h\"}}}}"
+        )
+    })?;
+    let id = obj
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("elements[{i}] 缺非空 id"))?;
+    let bbox = obj
+        .get("bbox")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| format!("elements[{i}]({id}) 缺 bbox 对象"))?;
+    let num = |key: &str| -> Result<f64, String> {
+        bbox.get(key)
+            .and_then(num_f64)
+            .ok_or_else(|| format!("elements[{i}]({id}) bbox 缺合法数值 {key}"))
+    };
+    let x = num("x")?;
+    let y = num("y")?;
+    let w = num("w")?;
+    let h = num("h")?;
+    if w <= 0.0 || h <= 0.0 {
+        return Err(format!(
+            "elements[{i}]({id}) bbox w/h 须为正数（w={w}, h={h}）"
+        ));
+    }
+    Ok(Element {
+        id: id.to_string(),
+        x,
+        y,
+        w,
+        h,
+    })
+}
+
+pub struct GeometrySafeZoneCheck;
+
+impl NativeService for GeometrySafeZoneCheck {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let canvas = args
+            .get("canvas")
+            .and_then(JsonValue::as_object)
+            .ok_or_else(|| "缺少必填参数 canvas — 自诊断指引: {\"w\",\"h\"}".to_string())?;
+        let cw = canvas
+            .get("w")
+            .and_then(num_f64)
+            .ok_or("canvas.w 须为合法数值")?;
+        let ch = canvas
+            .get("h")
+            .and_then(num_f64)
+            .ok_or("canvas.h 须为合法数值")?;
+        if cw <= 0.0 || ch <= 0.0 {
+            return Err(format!("canvas w/h 须为正数（w={cw}, h={ch}）"));
+        }
+        let tolerance = match args.get("tolerance") {
+            None | Some(JsonValue::Null) => 0.0,
+            Some(v) => {
+                let t = num_f64(v).ok_or_else(|| {
+                    "tolerance 须为合法数值 — 自诊断指引: ≥0（显式入参,无默认魔法数）".to_string()
+                })?;
+                if t < 0.0 {
+                    return Err(format!("tolerance={t} 须非负"));
+                }
+                t
+            }
+        };
+        let zones_v = args
+            .get("zones")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                "缺少必填参数 zones — 自诊断指引: 数组,每项 {id,kind,x,y,w,h,required}".to_string()
+            })?;
+        if zones_v.len() > MAX_PARTS {
+            return Err(format!(
+                "zones 数量 {}/{} 越界 — 自诊断指引: ≤{}",
+                zones_v.len(),
+                MAX_PARTS,
+                MAX_PARTS
+            ));
+        }
+        let mut zones = Vec::with_capacity(zones_v.len());
+        for (i, z) in zones_v.iter().enumerate() {
+            zones.push(parse_zone(i, z)?);
+        }
+        let elements_v = args
+            .get("elements")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                "缺少必填参数 elements — 自诊断指引: 数组,每项 {id,bbox:{x,y,w,h}}".to_string()
+            })?;
+        if elements_v.len() > MAX_PARTS {
+            return Err(format!(
+                "elements 数量 {}/{} 越界 — 自诊断指引: ≤{}",
+                elements_v.len(),
+                MAX_PARTS,
+                MAX_PARTS
+            ));
+        }
+        let mut elements = Vec::with_capacity(elements_v.len());
+        for (i, e) in elements_v.iter().enumerate() {
+            elements.push(parse_element(i, e)?);
+        }
+
+        // 判定：元素须完全落在每个必选区内（容差方向宽容：出界量 ≤ tolerance 视为达标）
+        let mut violations: Vec<JsonValue> = Vec::new();
+        let mut checked_pairs = 0usize;
+        for e in &elements {
+            for z in zones.iter().filter(|z| z.required) {
+                checked_pairs += 1;
+                // 逐边越界量 = 元素边超出区边的距离（区内为 0）
+                let left = z.x - e.x; // >0 = 元素左边出区左界
+                let right = (e.x + e.w) - (z.x + z.w); // >0 = 元素右边出区右界
+                let top = z.y - e.y; // >0 = 元素上边出区上界
+                let bottom = (e.y + e.h) - (z.y + z.h); // >0 = 元素下边出区下界
+                let overs = [
+                    ("left", left),
+                    ("right", right),
+                    ("top", top),
+                    ("bottom", bottom),
+                ];
+                let mut edge_names: Vec<JsonValue> = Vec::new();
+                let mut max_over = 0.0f64;
+                for (name, over) in overs {
+                    if over > tolerance {
+                        edge_names.push(JsonValue::string(name));
+                        if over > max_over {
+                            max_over = over;
+                        }
+                    }
+                }
+                if !edge_names.is_empty() {
+                    violations.push(JsonValue::object_from_pairs(&[
+                        ("element_id", JsonValue::string(&e.id)),
+                        ("zone_id", JsonValue::string(&z.id)),
+                        ("kind", JsonValue::string(&z.kind)),
+                        ("edges", JsonValue::Array(edge_names)),
+                        ("overflow", float_str(max_over)),
+                    ]));
+                }
+            }
+        }
+
+        let mut out = envelope();
+        out.push(("service", JsonValue::string("geometry_safe_zone_check")));
+        let all_clean = violations.is_empty();
+        out.push(("violations", JsonValue::Array(violations)));
+        out.push(("all_clean", JsonValue::Bool(all_clean)));
+        out.push(("checked_pairs", JsonValue::Integer(checked_pairs as i64)));
+        Ok(JsonValue::object_from_pairs(&out))
+    }
+}
+
+/// 声明表构造子：安全区版式合规检查
+pub fn mk_safe_zone_check() -> Arc<dyn NativeService> {
+    Arc::new(GeometrySafeZoneCheck)
+}
+
+// ============================================================================
 // 等距图样三服务（iso_project / tube_route / figure_audit）
 // ============================================================================
 
@@ -790,6 +1021,209 @@ impl NativeService for GeometryFigureAudit {
 
 pub fn mk_figure_audit() -> Arc<dyn NativeService> {
     Arc::new(GeometryFigureAudit)
+}
+
+// ============================================================================
+// 安全区版式合规检查测试（golden：正例 + 负例 + 双跑逐位一致）
+// ============================================================================
+
+#[cfg(test)]
+mod safezone_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn zone(id: &str, kind: &str, x: i64, y: i64, w: i64, h: i64, required: bool) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            ("id", JsonValue::string(id)),
+            ("kind", JsonValue::string(kind)),
+            ("x", JsonValue::Integer(x)),
+            ("y", JsonValue::Integer(y)),
+            ("w", JsonValue::Integer(w)),
+            ("h", JsonValue::Integer(h)),
+            ("required", JsonValue::Bool(required)),
+        ])
+    }
+
+    fn element(id: &str, x: i64, y: i64, w: i64, h: i64) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            ("id", JsonValue::string(id)),
+            (
+                "bbox",
+                JsonValue::object_from_pairs(&[
+                    ("x", JsonValue::Integer(x)),
+                    ("y", JsonValue::Integer(y)),
+                    ("w", JsonValue::Integer(w)),
+                    ("h", JsonValue::Integer(h)),
+                ]),
+            ),
+        ])
+    }
+
+    fn args(zones: Vec<JsonValue>, elements: Vec<JsonValue>) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            (
+                "canvas",
+                JsonValue::object_from_pairs(&[
+                    ("w", JsonValue::Integer(1920)),
+                    ("h", JsonValue::Integer(1080)),
+                ]),
+            ),
+            ("zones", JsonValue::Array(zones)),
+            ("elements", JsonValue::Array(elements)),
+        ])
+    }
+
+    fn run(a: &JsonValue) -> JsonValue {
+        GeometrySafeZoneCheck.execute(a).unwrap()
+    }
+
+    #[test]
+    fn safezone_golden_positive_and_negatives() {
+        let safe_zone = || zone("safe_main", "safe", 100, 100, 1720, 880, true);
+        let logo_zone = || zone("logo_corner", "logo", 1700, 950, 200, 110, false);
+
+        // 正例：元素完全落在必选区内 → all_clean
+        let a = args(
+            vec![safe_zone(), logo_zone()],
+            vec![element("title", 200, 150, 800, 120)],
+        );
+        let out = run(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("violations")
+                .and_then(JsonValue::as_array)
+                .map(|a| a.len()),
+            Some(0)
+        );
+        // checked_pairs = 元素×必选区 = 1×1
+        assert_eq!(
+            out.get("checked_pairs").and_then(JsonValue::as_i64),
+            Some(1)
+        );
+
+        // 负例1：出上边（元素 y < 区 y）
+        let a = args(vec![safe_zone()], vec![element("t1", 200, 80, 800, 120)]);
+        let out = run(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(
+            v[0].get("element_id").and_then(JsonValue::as_str),
+            Some("t1")
+        );
+        assert_eq!(
+            v[0].get("zone_id").and_then(JsonValue::as_str),
+            Some("safe_main")
+        );
+        // 越界量 = 100 - 80 = 20（字符串编码）
+        assert_eq!(
+            v[0].get("overflow").and_then(JsonValue::as_str),
+            Some("20.0")
+        );
+
+        // 负例2：出右边（元素右缘 > 区右缘）
+        let a = args(vec![safe_zone()], vec![element("t2", 1800, 150, 100, 100)]);
+        let out = run(&a);
+        let v = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(v.len(), 1);
+        // 越界量 = 1900 - 1820 = 80
+        assert_eq!(
+            v[0].get("overflow").and_then(JsonValue::as_str),
+            Some("80.0")
+        );
+
+        // 负例3：非必需区无关元素不误报（required=false 区外元素零违规）
+        let a = args(
+            vec![zone("logo_corner", "logo", 1700, 950, 200, 110, false)],
+            vec![element("t3", 100, 100, 50, 50)],
+        );
+        let out = run(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("checked_pairs").and_then(JsonValue::as_i64),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn safezone_double_run_bit_identical() {
+        let a = args(
+            vec![
+                zone("safe_main", "safe", 100, 100, 1720, 880, true),
+                zone("title_area", "title", 100, 100, 900, 200, true),
+            ],
+            vec![
+                element("t1", 150, 120, 800, 150),
+                element("t2", 1800, 150, 100, 100),
+            ],
+        );
+        let r1 = run(&a);
+        let r2 = run(&a);
+        assert_eq!(r1, r2, "同参双跑须位元一致");
+    }
+
+    #[test]
+    fn safezone_tolerance_explicit_boundary() {
+        // 容差显式入参：出界 5 ≤ tolerance 8 → 达标；tolerance 3 → 违规
+        let mk = |tol: i64| {
+            let mut fields = vec![
+                (
+                    "canvas",
+                    JsonValue::object_from_pairs(&[
+                        ("w", JsonValue::Integer(1920)),
+                        ("h", JsonValue::Integer(1080)),
+                    ]),
+                ),
+                (
+                    "zones",
+                    JsonValue::Array(vec![zone("safe_main", "safe", 100, 100, 1720, 880, true)]),
+                ),
+                (
+                    "elements",
+                    JsonValue::Array(vec![element("t1", 95, 150, 800, 100)]),
+                ),
+            ];
+            if tol > 0 {
+                fields.push(("tolerance", JsonValue::Integer(tol)));
+            }
+            JsonValue::object_from_pairs(&fields)
+        };
+        let out = run(&mk(8));
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        let out = run(&mk(3));
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn safezone_rejects_bad_kind_and_shapes() {
+        // kind 越界拒绝
+        let a = args(
+            vec![zone("z", "weird", 0, 0, 10, 10, true)],
+            vec![element("t", 1, 1, 2, 2)],
+        );
+        assert!(GeometrySafeZoneCheck.execute(&a).is_err());
+        // 非正 w/h 拒绝
+        let a = args(
+            vec![zone("z", "safe", 0, 0, 0, 10, true)],
+            vec![element("t", 1, 1, 2, 2)],
+        );
+        assert!(GeometrySafeZoneCheck.execute(&a).is_err());
+    }
 }
 
 // ============================================================================
