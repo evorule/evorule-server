@@ -13,7 +13,7 @@
 //! - **内嵌 schema 锚**（D2）：verify_request / constant_set 两件 schema
 //!   内嵌并经 build.rs 构建期门禁；$id 归 criticality 命名空间。
 //!
-//! # 四步管线（10 号设计稿 §2）
+//! # 四步管线（设计稿 §2）
 //! 1. **量纲对表**：命题主张的 `(value, si_unit)` 与涉及定律符号/常量的
 //!    si_units 跑同一量纲代数（复用 law_schema dimensional）——不一致即
 //!    拒判（报两侧量纲向量，fail-fast，不猜语义）。
