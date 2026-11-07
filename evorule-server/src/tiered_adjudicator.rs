@@ -26,7 +26,7 @@
 //! - 受端拒（422 tier 报告/429 配额/5xx/传输失败）：如实记录裁决决策，
 //!   降级人工提案路径——不重试、不吞错、不回滚裁决呈现。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
