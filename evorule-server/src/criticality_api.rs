@@ -116,9 +116,118 @@ async fn verify_handler(State(app): State<AppState>, Json(doc): Json<Value>) -> 
 
     // 纯函数管线（判定只读：装配面零写路径；铁律 3 由 LawHost 不可变性保证）
     match evorule_criticality::verify(&request, &laws, &constants) {
-        Ok(report) => (StatusCode::OK, Json(report)).into_response(),
+        Ok(report) => {
+            let mut body = serde_json::to_value(&report).unwrap_or(Value::Null);
+            // 分级裁决面（缺省关）：显式配置激活后，对 verify 提案物料包
+            // 逐笔三闸裁决并在响应附 adjudications[]；低危自动出站由
+            // 机器闸受端六检最终执法，降级决策只记录不改写人工路径。
+            if crate::tiered_adjudicator::AdjudicatorConfig::from_env().is_some() {
+                body["adjudications"] = run_tiered_adjudication(&app, &body).await;
+            }
+            (StatusCode::OK, Json(body)).into_response()
+        }
         Err(err) => rejection(&err),
     }
+}
+
+// ============================================================================
+// 分级裁决面（消费 verify 提案物料包；缺省关，显式配置激活）
+// ============================================================================
+
+/// 对 verify 报告内提案逐笔三闸裁决（类别层一票否决/出处闸/水位预检/
+/// 配额检查），响应附 adjudications[] 可回放；`auto_integrate` 决策
+/// fire-and-forget 出站（机器闸受端六检最终执法），非 2xx/传输失败
+/// 仅记录不重试不吞错——人工提案路径现状零改动。
+async fn run_tiered_adjudication(app: &AppState, report: &Value) -> Value {
+    use crate::tiered_adjudicator::{self, AdjudicatorConfig};
+    let Some(cfg) = AdjudicatorConfig::from_env() else {
+        return Value::Null;
+    };
+    let proposals = report
+        .get("proposals")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    // 水位预检输入：companion 伴跑容量实测（None=尚无报告→从严拒自动）；
+    // 上限与治理常数同源（TCB MAX_TRANSFORM_RULES，见 rule_schema）
+    let cap_default = evorule_rule_schema::MAX_TRANSFORM_RULES as u64;
+    let (rule_count, cap) = match app.companion() {
+        Some(hub) => {
+            let s = hub.status_json();
+            (
+                s["ruleset_capacity"]["rule_count"].as_u64(),
+                s["ruleset_capacity"]["cap"].as_u64().unwrap_or(cap_default),
+            )
+        }
+        None => (None, cap_default),
+    };
+    let quota = app.tiered_quota();
+    let mut out: Vec<Value> = Vec::new();
+    for p in &proposals {
+        // 先做纯三闸裁决（配额前置放行），auto 决策再原子占位：
+        // 占位与自动出站一一对应，human 决策不占配额
+        let Some(mut d) = tiered_adjudicator::decide(p, rule_count, cap, true) else {
+            continue;
+        };
+        if d.decision == "auto_integrate" && !quota.acquire() {
+            d = crate::tiered_adjudicator::AdjudicationDecision {
+                entry_id: d.entry_id,
+                proposal_class: d.proposal_class,
+                decision: "human_path",
+                reason: "配额检查：本窗自动集成频次超限（降级人工提案入闸，fail-visible 不丢弃）"
+                    .to_string(),
+            };
+        }
+        if d.decision == "auto_integrate" {
+            let dataset = p
+                .get("dataset_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let entry = d.entry_id.clone();
+            let class = d.proposal_class.to_string();
+            let subject = p
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let cause = format!("tiered adjudication auto-integration | subject={subject}");
+            let cfg2 = cfg.clone();
+            tokio::spawn(async move {
+                match tiered_adjudicator::post_transition_entry(
+                    &cfg2, &dataset, &entry, &class, &cause,
+                )
+                .await
+                {
+                    Ok(code) if (200..300).contains(&code) => {
+                        tracing::info!(
+                            target: "evorule::adjudicator",
+                            "tiered adjudication: auto integration accepted \
+                             (entry={entry} class={class} http={code})"
+                        );
+                    }
+                    Ok(code) => {
+                        // 受端拒（422 tier 报告/429 配额等）：如实记录，
+                        // 人工提案路径保持原状（不重试不吞错）
+                        tracing::warn!(
+                            target: "evorule::adjudicator",
+                            "tiered adjudication: intake rejected, human path \
+                             stands (entry={entry} class={class} http={code})"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "evorule::adjudicator",
+                            "tiered adjudication: transport failed, human path \
+                             stands (entry={entry}): {e}"
+                        );
+                    }
+                }
+            });
+        }
+        out.push(d.render());
+    }
+    Value::Array(out)
 }
 
 // ============================================================================
