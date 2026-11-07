@@ -4733,6 +4733,10 @@ pub struct AppState {
     /// 应用级配额限流管理器(per-app 速率+日配额;
     /// 创建时从最近快照恢复日计数,快照后台任务由 main 装配后 spawn)
     app_quota: std::sync::Arc<crate::api::app_quota::AppQuotaManager>,
+
+    /// 分级裁决器自动集成频次配额(per-window 滑窗;
+    /// 裁决器缺省关,配额仅在显式配置激活后被消费)
+    tiered_quota: std::sync::Arc<crate::tiered_adjudicator::AutoIntegrationQuota>,
 }
 
 impl AppState {
@@ -4776,12 +4780,25 @@ impl AppState {
             demo_auth: true,
             marketplace_dir,
             app_quota,
+            tiered_quota: std::sync::Arc::new(
+                crate::tiered_adjudicator::AutoIntegrationQuota::with_defaults(),
+            ),
         }
     }
 
     /// law_set/constant_set 装配面只读访问（None=未配置 law_set 装配目录）
     pub fn law_host(&self) -> Option<Arc<crate::law_host::LawHost>> {
         self.sessions.law_host()
+    }
+
+    /// 分级裁决器自动集成频次配额（进程级单例）
+    pub fn tiered_quota(&self) -> std::sync::Arc<crate::tiered_adjudicator::AutoIntegrationQuota> {
+        self.tiered_quota.clone()
+    }
+
+    /// companion 伴跑状态只读访问（水位预检用；None=未装配伴跑面）
+    pub fn companion(&self) -> Option<Arc<crate::api::companion::CompanionHub>> {
+        self.sessions.companion.clone()
     }
 
     /// :设置演示登录入口开关（builder 风格，默认 true）
@@ -20351,6 +20368,145 @@ mod tests {
                 .contains("bench"),
             "提案实测视图应含溯源"
         );
+    }
+
+    /// 裁决面 env 互斥锁（from_env 每请求现读，防并行测试互相污染）
+    static TIERED_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn set_adjudicator_env(url: &str, key: &str) {
+        std::env::set_var("EVORULE_TIERED_ADJUDICATOR_URL", url);
+        std::env::set_var("EVORULE_TIERED_ADJUDICATOR_KEY", key);
+    }
+
+    fn clear_adjudicator_env() {
+        std::env::remove_var("EVORULE_TIERED_ADJUDICATOR_URL");
+        std::env::remove_var("EVORULE_TIERED_ADJUDICATOR_KEY");
+    }
+
+    /// 裁决面缺省关：env 未配置时 verify 响应不含 adjudications 键
+    /// （与裁决器上线前逐字节一致）
+    #[tokio::test]
+    async fn test_criticality_verify_adjudicator_off_by_default() {
+        let _env_guard = TIERED_ENV_LOCK.lock().await;
+        clear_adjudicator_env();
+        let (_tmp, host) = make_law_host();
+        let (state, _, _) =
+            make_test_state_full(noop_core_eval(), SharedFactsLog::new(), Some(host));
+        let router = make_test_router(&state);
+        let body = serde_json::json!({
+            "$schema": "https://evorule.org/schemas/criticality/verify_request/v1.0.json",
+            "subject": "adjudicator off",
+            "claims": [{ "symbol": "G", "value": 6.679e-11, "si_unit": "m^3*kg^-1*s^-2" }],
+            "context": { "source": "bench recheck", "measured_at": "2026-11-07T00:00:00Z" }
+        })
+        .to_string();
+        let (status, json) =
+            oneshot_json(router, "POST", "/v1/criticality/verify", Some(&body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            json.get("adjudications").is_none(),
+            "缺省关=响应与现状一致，不得出现 adjudications"
+        );
+        clear_adjudicator_env();
+    }
+
+    /// 裁决面低危自动出站：env 显式配置后，常量修正提案（低危+带出处）
+    /// 裁决 auto_integrate，出站 POST 打到受端 /v1/invoke/transition_entry
+    /// （凭据头 X-Api-Key + 提案类别/目标态齐备）
+    #[tokio::test]
+    async fn test_criticality_verify_adjudicator_low_risk_auto_fires() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _env_guard = TIERED_ENV_LOCK.lock().await;
+        // 环回 stub：单请求收 POST 体、回 200；请求头+体经 channel 交断言
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf: Vec<u8> = Vec::new();
+            let mut tmp = [0u8; 4096];
+            let header_end = loop {
+                let n = sock.read(&mut tmp).await.unwrap_or(0);
+                if n == 0 {
+                    break buf.len();
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+            let len: usize = headers
+                .lines()
+                .find(|l| l.starts_with("content-length:"))
+                .and_then(|l| l.split(':').nth(1))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            while buf.len() < header_end + len {
+                let n = sock.read(&mut tmp).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
+            let _ = tx.send((headers, body));
+            let resp = "HTTP/1.1 200 X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}";
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.flush().await;
+        });
+
+        set_adjudicator_env(&format!("http://{addr}"), "test-adjudicator-key");
+        let (_tmp, host) = make_law_host();
+        let (state, _, _) =
+            make_test_state_full(noop_core_eval(), SharedFactsLog::new(), Some(host));
+        let router = make_test_router(&state);
+        let body = serde_json::json!({
+            "$schema": "https://evorule.org/schemas/criticality/verify_request/v1.0.json",
+            "subject": "adjudicator auto drill",
+            "claims": [{ "symbol": "G", "value": 6.679e-11, "si_unit": "m^3*kg^-1*s^-2",
+                          "uncertainty": 0.0001e-11 }],
+            "context": { "source": "bench recheck", "measured_at": "2026-11-07T00:00:00Z" }
+        })
+        .to_string();
+        let (status, json) =
+            oneshot_json(router, "POST", "/v1/criticality/verify", Some(&body)).await;
+        assert_eq!(status, StatusCode::OK);
+        let adjudications = json["adjudications"].as_array().expect("adjudications[]");
+        assert_eq!(adjudications.len(), 1, "{json}");
+        assert_eq!(adjudications[0]["decision"], "auto_integrate", "{json}");
+        assert_eq!(adjudications[0]["proposal_class"], "constant_update");
+        assert_eq!(adjudications[0]["entry_id"], "G");
+
+        // 出站到达 stub：路径/凭据头/载荷断言（上限 3s 兜底）
+        let mut fired = None;
+        for _ in 0..300 {
+            if let Ok(pair) = rx.try_recv() {
+                fired = Some(pair);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let (headers, sent) = fired.expect("auto integration POST must reach the stub");
+        assert!(
+            headers.contains("post /v1/invoke/transition_entry"),
+            "{headers}"
+        );
+        assert!(
+            headers.contains("x-api-key: test-adjudicator-key"),
+            "{headers}"
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert!(
+            sent["dataset_id"].as_str().is_some_and(|s| !s.is_empty()),
+            "{sent}"
+        );
+        assert_eq!(sent["entry_id"], "G");
+        assert_eq!(sent["to"], "active");
+        assert_eq!(sent["proposal_class"], "constant_update");
+        clear_adjudicator_env();
     }
 
     #[tokio::test]
