@@ -1805,3 +1805,832 @@ mod track_tests {
         assert!(VideoTrackConsistencyEval.execute(&bigc).is_err());
     }
 }
+
+// ============================================================================
+// QC 守恒谓词引擎三原语（qc_count_check / qc_domain_check / qc_temporal_check）
+// — B7a 批次（统一守恒谓词引擎：结构计数+比例域校验+帧间守恒，规则表参数化）
+// ============================================================================
+
+/// QC 守恒核定点标度（复用 1e6 轨迹核标度；比值/域界/差值全量精确）
+const QC_SCALE: i128 = 1_000_000;
+
+/// qc 域数值解析（允许负值，域校验需要）：整数段 <=max_i 位、小数段 <=max_f 位
+/// 纯数字（可选前导 -）。返回 QC_SCALE 精确定点值（scale 整除 1e6，零舍入）。
+fn parse_qc_rational(raw: &str, ctx: &str, max_i: usize, max_f: usize) -> Result<i128, String> {
+    let s = raw.trim();
+    let (neg, body) = match s.strip_prefix('-') {
+        Some(b) => (true, b),
+        None => (false, s),
+    };
+    let (ip, fp) = match body.split_once('.') {
+        None => (body, ""),
+        Some((a, b)) => (a, b),
+    };
+    if body.is_empty()
+        || (ip.is_empty() && fp.is_empty())
+        || ip.len() > max_i
+        || fp.len() > max_f
+        || !ip.bytes().all(|b| b.is_ascii_digit())
+        || !fp.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(format!(
+            "{ctx} 非法数值 {raw:?} — 自诊断指引: 十进制形如 \"100.5\" 或 \"-0.25\"（整数 <={max_i} 位 + 小数 <={max_f} 位纯数字）"
+        ));
+    }
+    let mut v: i128 = 0;
+    for b in ip.bytes() {
+        v = v * 10 + (b - b'0') as i128;
+    }
+    let mut scale: i128 = 1;
+    for b in fp.bytes() {
+        v = v * 10 + (b - b'0') as i128;
+        scale *= 10;
+    }
+    let scaled = v * (QC_SCALE / scale);
+    Ok(if neg { -scaled } else { scaled })
+}
+
+/// 1e6 标度值 → 6 位小数字符串
+fn fmt_qc(v: i128) -> String {
+    format!("{}.{:06}", v / QC_SCALE, v % QC_SCALE)
+}
+
+/// 守恒违规条目（规则 ID+有理数证据直喂台账）
+fn qc_violation(rule_id: &str, kind: &str, detail: String) -> JsonValue {
+    JsonValue::object_from_pairs(&[
+        ("rule_id", JsonValue::string(rule_id)),
+        ("kind", JsonValue::string(kind)),
+        ("detail", JsonValue::string(detail)),
+    ])
+}
+
+/// 从规则对象取字符串参数（可选，缺省回落引擎缺省值）
+fn qc_rule_str<'a>(rule: &'a evorule_tcb::ObjectMap, key: &str) -> Option<&'a str> {
+    rule.get(key).and_then(JsonValue::as_str)
+}
+
+// ----------------------------------------------------------------------------
+// 原语一：qc_count_check — 结构计数判定
+// ----------------------------------------------------------------------------
+
+/// 结构计数判定核：对象计数与规则表期望计数比对。
+///
+/// 判定语义（01-启发录 §七 三件套之「结构计数」）：
+/// - 输入 `counts`: {部件名: 计数} 映射（提取侧结构化喂入，整数）；
+/// - 规则表逐条：`part`（部件名）+ `expect`（期望计数，必填整数）
+///   + 可选 `min`/`max`（期望为区间时以区间为准，单值忽略）；
+/// - 计数落在 [min,max]（闭区间，缺省 min=max=expect）即合规；
+///   否则违例 `count_mismatch`（规则 ID+期望+实际证据）。
+///
+/// 确定性实现：计数=整数直读；区间端点整数；零浮点零近似。
+struct QcCountCheck;
+
+impl NativeService for QcCountCheck {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let counts = args.get("counts").and_then(JsonValue::as_object).ok_or(
+            "缺少必填参数 counts — 自诊断指引: {{部件名: 计数}} 对象,如 {{\"fingers\": 5}}",
+        )?;
+        let rules = args
+            .get("rules")
+            .and_then(JsonValue::as_array)
+            .ok_or("缺少必填参数 rules — 自诊断指引: 规则表数组,每项 {{rule_id, part, expect}} 或 {{rule_id, part, min, max}}")?;
+        if rules.is_empty() {
+            return Err("rules 须为非空数组 — 自诊断指引: 至少 1 条计数规则".to_string());
+        }
+        let mut violations: Vec<JsonValue> = Vec::new();
+        for (i, r) in rules.iter().enumerate() {
+            let obj = r.as_object().ok_or(format!(
+                "rules[{i}] 须为规则对象 — 自诊断指引: {{rule_id, part, expect}}"
+            ))?;
+            let rule_id = req_str(obj, "rule_id", &format!("rules[{i}].rule_id"))?;
+            let part = req_str(obj, "part", &format!("rules[{i}].part"))?;
+            let actual = counts
+                .get(part)
+                .and_then(|v| match v {
+                    JsonValue::Integer(n) => Some(*n),
+                    JsonValue::U64(u) => i64::try_from(*u).ok(),
+                    _ => None,
+                })
+                .ok_or(format!(
+                    "rules[{i}] 部件 {part:?} 在 counts 中缺失或非整数 — 自诊断指引: counts 键须覆盖规则表全部 part"
+                ))?;
+            let get_i64 = |key: &str| -> Result<Option<i64>, String> {
+                match obj.get(key) {
+                    None | Some(JsonValue::Null) => Ok(None),
+                    Some(JsonValue::Integer(n)) => Ok(Some(*n)),
+                    Some(JsonValue::U64(u)) => i64::try_from(*u).map(Some).map_err(|_| {
+                        format!("rules[{i}].{key}={u} 超出整数域 — 自诊断指引: 计数域为 i64 整数")
+                    }),
+                    Some(_) => Err(format!(
+                        "rules[{i}].{key} 须为整数 — 自诊断指引: 计数域为整数,如 {{expect: 5}}"
+                    )),
+                }
+            };
+            let (lo, hi) = match (get_i64("min")?, get_i64("max")?, get_i64("expect")?) {
+                (Some(lo), Some(hi), _) => {
+                    if lo > hi {
+                        return Err(format!(
+                            "rules[{i}] min={lo} > max={hi} — 自诊断指引: 区间须 lo<=hi"
+                        ));
+                    }
+                    (lo, hi)
+                }
+                (Some(_), None, _) | (None, Some(_), _) => {
+                    return Err(format!(
+                        "rules[{i}] min/max 须成对给出 — 自诊断指引: 区间规则同时给 min 与 max,单值规则用 expect"
+                    ));
+                }
+                (None, None, Some(expect)) => (expect, expect),
+                (None, None, None) => {
+                    return Err(format!(
+                        "rules[{i}] 缺 expect（或 min/max 区间）— 自诊断指引: 单值 {{expect}} 或区间 {{min,max}}"
+                    ));
+                }
+            };
+            if actual < lo || actual > hi {
+                violations.push(qc_violation(
+                    rule_id,
+                    "count_mismatch",
+                    format!("part={part:?} 期望 [{lo},{hi}] 实际 {actual}"),
+                ));
+            }
+        }
+        let all_clean = violations.is_empty();
+        Ok(envelope(&[
+            ("service", JsonValue::string("qc_count_check")),
+            ("all_clean", JsonValue::Bool(all_clean)),
+            ("violations", JsonValue::Array(violations)),
+        ]))
+    }
+}
+
+/// 声明表构造子：结构计数判定
+pub fn mk_qc_count_check() -> Arc<dyn NativeService> {
+    Arc::new(QcCountCheck)
+}
+
+// ----------------------------------------------------------------------------
+// 原语二：qc_domain_check — 比例/数值域校验
+// ----------------------------------------------------------------------------
+
+/// 比例/数值域校验核：测量值落入规则域区间判定（骨比域/角度域/结构比域同构）。
+///
+/// 判定语义（01-启发录 §七 三件套之「比例/角度域校验」）：
+/// - 输入 `measurements`: {测量名: 字符串有理数} 映射（提取侧喂入）；
+/// - 规则表逐条：`name`（测量名）+ `min`/`max`（域界，字符串有理数，
+///   闭区间，两者至少给一）+ 可选 `unit`（仅入证据，不参与判定）；
+///   域界带解剖学文献锚的由规则 ID 承载溯源；
+/// - 测量值出域即违例 `domain_violation`（规则 ID+域界+实际证据）；
+/// - 判定面=1e6 定点整比较（零浮点；界整除 1e6 精确）。
+struct QcDomainCheck;
+
+impl NativeService for QcDomainCheck {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let measurements = args
+            .get("measurements")
+            .and_then(JsonValue::as_object)
+            .ok_or("缺少必填参数 measurements — 自诊断指引: {{测量名: 字符串有理数}},如 {{\"bone_ratio\": \"0.65\"}}")?;
+        let rules = args.get("rules").and_then(JsonValue::as_array).ok_or(
+            "缺少必填参数 rules — 自诊断指引: 规则表数组,每项 {{rule_id, name, min, max}}",
+        )?;
+        if rules.is_empty() {
+            return Err("rules 须为非空数组 — 自诊断指引: 至少 1 条域规则".to_string());
+        }
+        let mut violations: Vec<JsonValue> = Vec::new();
+        for (i, r) in rules.iter().enumerate() {
+            let obj = r.as_object().ok_or(format!(
+                "rules[{i}] 须为规则对象 — 自诊断指引: {{rule_id, name, min, max}}"
+            ))?;
+            let rule_id = req_str(obj, "rule_id", &format!("rules[{i}].rule_id"))?;
+            let name = req_str(obj, "name", &format!("rules[{i}].name"))?;
+            let raw_min = qc_rule_str(obj, "min");
+            let raw_max = qc_rule_str(obj, "max");
+            if raw_min.is_none() && raw_max.is_none() {
+                return Err(format!(
+                    "rules[{i}] min/max 至少给一 — 自诊断指引: 域规则 {rule_id:?} 须给 min 或 max（可开区间）"
+                ));
+            }
+            let min = raw_min
+                .map(|s| parse_qc_rational(s, &format!("rules[{i}].min"), 7, 6))
+                .transpose()?;
+            let max = raw_max
+                .map(|s| parse_qc_rational(s, &format!("rules[{i}].max"), 7, 6))
+                .transpose()?;
+            if let (Some(lo), Some(hi)) = (min, max) {
+                if lo > hi {
+                    return Err(format!(
+                        "rules[{i}] min={lo} > max={hi} — 自诊断指引: 域须 lo<=hi"
+                    ));
+                }
+            }
+            let raw = measurements
+                .get(name)
+                .and_then(JsonValue::as_str)
+                .ok_or(format!(
+                    "rules[{i}] 测量 {name:?} 在 measurements 中缺失或非字符串 — 自诊断指引: measurements 键须覆盖规则表全部 name"
+                ))?;
+            let actual = parse_qc_rational(raw, &format!("measurements.{name}"), 7, 6)?;
+            let below = matches!(min, Some(lo) if actual < lo);
+            let above = matches!(max, Some(hi) if actual > hi);
+            if below || above {
+                let bound = if below {
+                    format!("下界 {}", fmt_qc(min.unwrap_or(0)))
+                } else {
+                    format!("上界 {}", fmt_qc(max.unwrap_or(0)))
+                };
+                violations.push(qc_violation(
+                    rule_id,
+                    "domain_violation",
+                    format!("measure={name:?} 出{bound},实际 {}", fmt_qc(actual)),
+                ));
+            }
+        }
+        let all_clean = violations.is_empty();
+        Ok(envelope(&[
+            ("service", JsonValue::string("qc_domain_check")),
+            ("all_clean", JsonValue::Bool(all_clean)),
+            ("violations", JsonValue::Array(violations)),
+        ]))
+    }
+}
+
+/// 声明表构造子：比例/数值域校验
+pub fn mk_qc_domain_check() -> Arc<dyn NativeService> {
+    Arc::new(QcDomainCheck)
+}
+
+// ----------------------------------------------------------------------------
+// 原语三：qc_temporal_check — 帧间守恒判定
+// ----------------------------------------------------------------------------
+
+/// 帧间守恒判定核：逐帧观测序列的帧间差值越限判定（位移连续/面积连续/
+/// 计数守恒同构——差值泛化到任意数值观测）。
+///
+/// 判定语义（01-启发录 §七 三件套之「帧间守恒」）：
+/// - 输入 `frames`: [{frame: 非负整数唯一, values: {观测名: 字符串有理数}}]
+///   （按帧号升序判定,输入序不敏感）；
+/// - 规则表逐条：`name`（观测名）+ `max_delta`（相邻帧差值上限，字符串
+///   有理数非负）——相邻帧 |Δ| 超限即违例 `delta_exceeded`
+///   （规则 ID+帧号+观测名+实际差值证据）；
+/// - 首帧无前帧不判定（无基线）；复用轨迹核纪律：帧号重复拒绝；
+/// - 判定面=1e6 定点整比较零浮点；差值有向绝对值。
+struct QcTemporalCheck;
+
+impl NativeService for QcTemporalCheck {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let frames_in = args
+            .get("frames")
+            .and_then(JsonValue::as_array)
+            .ok_or("缺少必填参数 frames — 自诊断指引: [{frame, values},...],frame 非负整数唯一")?;
+        if frames_in.is_empty() {
+            return Err(
+                "frames 须为非空数组 — 自诊断指引: 至少 1 帧（首帧无前帧不判定）".to_string(),
+            );
+        }
+        let rules = args.get("rules").and_then(JsonValue::as_array).ok_or(
+            "缺少必填参数 rules — 自诊断指引: 规则表数组,每项 {{rule_id, name, max_delta}}",
+        )?;
+        if rules.is_empty() {
+            return Err("rules 须为非空数组 — 自诊断指引: 至少 1 条守恒规则".to_string());
+        }
+        // 解析规则表（观测名+上限定点）
+        let mut limits: Vec<(&str, &str, i128)> = Vec::with_capacity(rules.len());
+        for (i, r) in rules.iter().enumerate() {
+            let obj = r.as_object().ok_or(format!(
+                "rules[{i}] 须为规则对象 — 自诊断指引: {{rule_id, name, max_delta}}"
+            ))?;
+            let rule_id = req_str(obj, "rule_id", &format!("rules[{i}].rule_id"))?;
+            let name = req_str(obj, "name", &format!("rules[{i}].name"))?;
+            let md = qc_rule_str(obj, "max_delta").ok_or(format!(
+                "rules[{i}] 缺 max_delta — 自诊断指引: 相邻帧差值上限,字符串如 \"40\""
+            ))?;
+            let lim = parse_qc_rational(md, &format!("rules[{i}].max_delta"), 7, 6)?;
+            if lim < 0 {
+                return Err(format!(
+                    "rules[{i}].max_delta={md:?} 须非负 — 自诊断指引: 差值上限为幅度非有向量"
+                ));
+            }
+            limits.push((rule_id, name, lim));
+        }
+        // 解析全部帧（帧号唯一性守卫+按帧号升序判定）
+        let mut frames: Vec<(i64, &evorule_tcb::ObjectMap)> = Vec::with_capacity(frames_in.len());
+        for (i, f) in frames_in.iter().enumerate() {
+            let obj = f
+                .as_object()
+                .ok_or(format!("frames[{i}] 须为对象 {{frame, values}}"))?;
+            let frame = parse_trk_frame(
+                obj.get("frame")
+                    .ok_or_else(|| format!("frames[{i}] 缺 frame — 自诊断指引: 帧号必填"))?,
+            )
+            .map_err(|e| format!("frames[{i}] {e}"))?;
+            frames.push((frame, obj));
+        }
+        frames.sort_by_key(|(f, _)| *f);
+        for w in frames.windows(2) {
+            if w[0].0 == w[1].0 {
+                return Err(format!(
+                    "frames 帧号重复: {} — 自诊断指引: 每帧恰一条,重复条目判据歧义故拒绝",
+                    w[0].0
+                ));
+            }
+        }
+        // 逐规则逐相邻帧判定
+        let mut violations: Vec<JsonValue> = Vec::new();
+        for (rule_id, name, lim) in &limits {
+            for w in frames.windows(2) {
+                let (fa, va) = &w[0];
+                let (fb, vb) = &w[1];
+                let get_val = |o: &evorule_tcb::ObjectMap, tag: String| -> Result<i128, String> {
+                    let raw = o
+                        .get("values")
+                        .and_then(JsonValue::as_object)
+                        .and_then(|m| m.get(*name))
+                        .and_then(JsonValue::as_str)
+                        .ok_or(format!(
+                            "帧 {tag} 缺观测 {name:?} — 自诊断指引: values 键须覆盖规则表全部观测名"
+                        ))?;
+                    parse_qc_rational(raw, &format!("frames[{tag}].values.{name}"), 7, 6)
+                };
+                let a = get_val(va, fa.to_string())?;
+                let b = get_val(vb, fb.to_string())?;
+                let delta = (b - a).abs();
+                if delta > *lim {
+                    violations.push(qc_violation(
+                        rule_id,
+                        "delta_exceeded",
+                        format!(
+                            "obs={name:?} 帧 {fa}->{fb} 差值 {} 超限 {}",
+                            fmt_qc(delta),
+                            fmt_qc(*lim)
+                        ),
+                    ));
+                }
+            }
+        }
+        let all_clean = violations.is_empty();
+        Ok(envelope(&[
+            ("service", JsonValue::string("qc_temporal_check")),
+            ("all_clean", JsonValue::Bool(all_clean)),
+            ("violations", JsonValue::Array(violations)),
+        ]))
+    }
+}
+
+/// 声明表构造子：帧间守恒判定
+pub fn mk_qc_temporal_check() -> Arc<dyn NativeService> {
+    Arc::new(QcTemporalCheck)
+}
+
+// ============================================================================
+// QC 守恒三原语测试（golden：计数单值/区间/域出界/帧间跳变/边界恰等/双跑一致/拒收面）
+// ============================================================================
+
+#[cfg(test)]
+mod qc_conservation_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn obj(pairs: &[(&str, JsonValue)]) -> JsonValue {
+        JsonValue::object_from_pairs(pairs)
+    }
+
+    fn run_count(a: &JsonValue) -> JsonValue {
+        QcCountCheck.execute(a).unwrap()
+    }
+
+    fn run_domain(a: &JsonValue) -> JsonValue {
+        QcDomainCheck.execute(a).unwrap()
+    }
+
+    fn run_temporal(a: &JsonValue) -> JsonValue {
+        QcTemporalCheck.execute(a).unwrap()
+    }
+
+    // ---- qc_count_check ----
+
+    #[test]
+    fn count_single_expect_clean_golden() {
+        // 手部五指单值期望：实际 5 == expect 5 → 全清洁
+        let a = obj(&[
+            ("counts", obj(&[("fingers", JsonValue::Integer(5))])),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("hand.finger_count")),
+                    ("part", JsonValue::string("fingers")),
+                    ("expect", JsonValue::Integer(5)),
+                ])]),
+            ),
+        ]);
+        let out = run_count(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("violations")
+                .and_then(JsonValue::as_array)
+                .map(|v| v.len()),
+            Some(0)
+        );
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+    }
+
+    #[test]
+    fn count_interval_and_violation_golden() {
+        // 螺丝数区间 [3,5]：实际 4 合规；实际 8 违例且证据逐字
+        let rule = obj(&[
+            ("rule_id", JsonValue::string("device.screw_count")),
+            ("part", JsonValue::string("screws")),
+            ("min", JsonValue::Integer(3)),
+            ("max", JsonValue::Integer(5)),
+        ]);
+        let mk = |n: i64| {
+            obj(&[
+                ("counts", obj(&[("screws", JsonValue::Integer(n))])),
+                ("rules", JsonValue::Array(vec![rule.clone()])),
+            ])
+        };
+        let ok = run_count(&mk(4));
+        assert_eq!(ok.get("all_clean").and_then(JsonValue::as_bool), Some(true));
+        let bad = run_count(&mk(8));
+        assert_eq!(
+            bad.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let vs = bad.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(vs.len(), 1);
+        assert_eq!(
+            vs[0].get("rule_id").and_then(JsonValue::as_str),
+            Some("device.screw_count")
+        );
+        assert_eq!(
+            vs[0].get("kind").and_then(JsonValue::as_str),
+            Some("count_mismatch")
+        );
+        assert_eq!(
+            vs[0].get("detail").and_then(JsonValue::as_str),
+            Some("part=\"screws\" 期望 [3,5] 实际 8")
+        );
+    }
+
+    #[test]
+    fn count_rejects_min_without_max_and_missing_part() {
+        // min 单独给 → 拒；part 不在 counts → 拒
+        let a = obj(&[
+            ("counts", obj(&[("fingers", JsonValue::Integer(5))])),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("x")),
+                    ("part", JsonValue::string("fingers")),
+                    ("min", JsonValue::Integer(1)),
+                ])]),
+            ),
+        ]);
+        assert!(QcCountCheck.execute(&a).is_err());
+        let b = obj(&[
+            ("counts", obj(&[("fingers", JsonValue::Integer(5))])),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("x")),
+                    ("part", JsonValue::string("thumbs")),
+                    ("expect", JsonValue::Integer(1)),
+                ])]),
+            ),
+        ]);
+        assert!(QcCountCheck.execute(&b).is_err());
+    }
+
+    // ---- qc_domain_check ----
+
+    #[test]
+    fn domain_bone_ratio_clean_golden() {
+        // 示指近:中骨比域 [0.55,0.75]：实际 0.65 → 合规（文献锚经规则 ID 溯源）
+        let a = obj(&[
+            (
+                "measurements",
+                obj(&[("index_proximal_ratio", JsonValue::string("0.65"))]),
+            ),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    (
+                        "rule_id",
+                        JsonValue::string("hand.bone_ratio.index_prox_mid"),
+                    ),
+                    ("name", JsonValue::string("index_proximal_ratio")),
+                    ("min", JsonValue::string("0.55")),
+                    ("max", JsonValue::string("0.75")),
+                ])]),
+            ),
+        ]);
+        let out = run_domain(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+    }
+
+    #[test]
+    fn domain_open_interval_violation_golden() {
+        // 角度域仅给上界（开下界）：实际 45.0 > 上界 10.0 → 违例证据逐字
+        let a = obj(&[
+            (
+                "measurements",
+                obj(&[("dip_hyperextension_deg", JsonValue::string("45.0"))]),
+            ),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("hand.angle.dip_overextension")),
+                    ("name", JsonValue::string("dip_hyperextension_deg")),
+                    ("max", JsonValue::string("10")),
+                ])]),
+            ),
+        ]);
+        let out = run_domain(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let vs = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(vs.len(), 1);
+        assert_eq!(
+            vs[0].get("kind").and_then(JsonValue::as_str),
+            Some("domain_violation")
+        );
+        assert_eq!(
+            vs[0].get("detail").and_then(JsonValue::as_str),
+            Some("measure=\"dip_hyperextension_deg\" 出上界 10.000000,实际 45.000000")
+        );
+    }
+
+    #[test]
+    fn domain_boundary_exact_and_negative_measurement() {
+        // 边界恰等=合规（闭区间语义）；负值测量合法（温度类观测）
+        let a = obj(&[
+            ("measurements", obj(&[("v", JsonValue::string("0.75"))])),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("x")),
+                    ("name", JsonValue::string("v")),
+                    ("max", JsonValue::string("0.75")),
+                ])]),
+            ),
+        ]);
+        assert_eq!(
+            run_domain(&a).get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        let b = obj(&[
+            ("measurements", obj(&[("t", JsonValue::string("-12.5"))])),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("y")),
+                    ("name", JsonValue::string("t")),
+                    ("min", JsonValue::string("-100")),
+                    ("max", JsonValue::string("100")),
+                ])]),
+            ),
+        ]);
+        assert_eq!(
+            run_domain(&b).get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn domain_rejects_no_bounds_and_bad_scale() {
+        // min/max 全缺 → 拒；7 位小数超限形 → 拒
+        let a = obj(&[
+            ("measurements", obj(&[("v", JsonValue::string("1"))])),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("x")),
+                    ("name", JsonValue::string("v")),
+                ])]),
+            ),
+        ]);
+        assert!(QcDomainCheck.execute(&a).is_err());
+        let b = obj(&[
+            (
+                "measurements",
+                obj(&[("v", JsonValue::string("0.1234567"))]),
+            ),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("x")),
+                    ("name", JsonValue::string("v")),
+                    ("max", JsonValue::string("1")),
+                ])]),
+            ),
+        ]);
+        assert!(QcDomainCheck.execute(&b).is_err());
+    }
+
+    // ---- qc_temporal_check ----
+
+    #[test]
+    fn temporal_uniform_clean_golden() {
+        // 位移守恒：x 帧间匀速步进 10px <= 上限 40 → 全清洁
+        let f = |n: i64, x: i128| {
+            obj(&[
+                ("frame", JsonValue::Integer(n)),
+                (
+                    "values",
+                    obj(&[("center_x", JsonValue::string(format!("{x}.0")))]),
+                ),
+            ])
+        };
+        let a = obj(&[
+            (
+                "frames",
+                JsonValue::Array(vec![f(0, 100), f(1, 110), f(2, 120)]),
+            ),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("track.displacement")),
+                    ("name", JsonValue::string("center_x")),
+                    ("max_delta", JsonValue::string("40")),
+                ])]),
+            ),
+        ]);
+        let out = run_temporal(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            out.get("status").and_then(JsonValue::as_str),
+            Some("determined")
+        );
+    }
+
+    #[test]
+    fn temporal_jump_violation_and_frame_order_golden() {
+        // 单帧跳变 80 > 40 → 违例；乱序入参按帧号升序判定（输入序不敏感）
+        let f = |n: i64, x: &str| {
+            obj(&[
+                ("frame", JsonValue::Integer(n)),
+                ("values", obj(&[("center_x", JsonValue::string(x))])),
+            ])
+        };
+        let a = obj(&[
+            (
+                "frames",
+                JsonValue::Array(vec![f(5, "180.0"), f(0, "100.0")]),
+            ),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("track.displacement")),
+                    ("name", JsonValue::string("center_x")),
+                    ("max_delta", JsonValue::string("40")),
+                ])]),
+            ),
+        ]);
+        let out = run_temporal(&a);
+        assert_eq!(
+            out.get("all_clean").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let vs = out.get("violations").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(vs.len(), 1);
+        assert_eq!(
+            vs[0].get("kind").and_then(JsonValue::as_str),
+            Some("delta_exceeded")
+        );
+        assert_eq!(
+            vs[0].get("detail").and_then(JsonValue::as_str),
+            Some("obs=\"center_x\" 帧 0->5 差值 80.000000 超限 40.000000")
+        );
+    }
+
+    #[test]
+    fn temporal_negative_delta_uses_abs_and_boundary_exact() {
+        // 负向跳变取绝对值判定（100->50 差值 50 越限）；差值恰等上限=合规（严格大于语义）
+        let f = |n: i64, x: &str| {
+            obj(&[
+                ("frame", JsonValue::Integer(n)),
+                ("values", obj(&[("v", JsonValue::string(x))])),
+            ])
+        };
+        let rule = obj(&[
+            ("rule_id", JsonValue::string("r")),
+            ("name", JsonValue::string("v")),
+            ("max_delta", JsonValue::string("40")),
+        ]);
+        let neg = obj(&[
+            (
+                "frames",
+                JsonValue::Array(vec![f(0, "100.0"), f(1, "50.0")]),
+            ),
+            ("rules", JsonValue::Array(vec![rule.clone()])),
+        ]);
+        assert_eq!(
+            run_temporal(&neg)
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let exact = obj(&[
+            (
+                "frames",
+                JsonValue::Array(vec![f(0, "100.0"), f(1, "140.0")]),
+            ),
+            ("rules", JsonValue::Array(vec![rule])),
+        ]);
+        assert_eq!(
+            run_temporal(&exact)
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn temporal_double_run_identical_and_rejections() {
+        // 双跑位元一致 + 拒收面：重复帧号/缺观测/负 max_delta/空 frames
+        let f = |n: i64, x: &str| {
+            obj(&[
+                ("frame", JsonValue::Integer(n)),
+                ("values", obj(&[("v", JsonValue::string(x))])),
+            ])
+        };
+        let a = obj(&[
+            ("frames", JsonValue::Array(vec![f(0, "1.0"), f(1, "2.0")])),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("r")),
+                    ("name", JsonValue::string("v")),
+                    ("max_delta", JsonValue::string("5")),
+                ])]),
+            ),
+        ]);
+        let x = run_temporal(&a);
+        let y = run_temporal(&a);
+        assert_eq!(x, y, "同参双跑位元一致");
+
+        let dup = obj(&[
+            ("frames", JsonValue::Array(vec![f(1, "1.0"), f(1, "2.0")])),
+            ("rules", JsonValue::Array(vec![])),
+        ]);
+        assert!(QcTemporalCheck.execute(&dup).is_err());
+
+        let empty = obj(&[
+            ("frames", JsonValue::Array(vec![])),
+            ("rules", JsonValue::Array(vec![])),
+        ]);
+        assert!(QcTemporalCheck.execute(&empty).is_err());
+
+        let neglim = obj(&[
+            ("frames", JsonValue::Array(vec![f(0, "1.0"), f(1, "2.0")])),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("r")),
+                    ("name", JsonValue::string("v")),
+                    ("max_delta", JsonValue::string("-1")),
+                ])]),
+            ),
+        ]);
+        assert!(QcTemporalCheck.execute(&neglim).is_err());
+
+        let missing = obj(&[
+            (
+                "frames",
+                JsonValue::Array(vec![
+                    obj(&[
+                        ("frame", JsonValue::Integer(0)),
+                        ("values", obj(&[("w", JsonValue::string("1.0"))])),
+                    ]),
+                    f(1, "2.0"),
+                ]),
+            ),
+            (
+                "rules",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("r")),
+                    ("name", JsonValue::string("v")),
+                    ("max_delta", JsonValue::string("5")),
+                ])]),
+            ),
+        ]);
+        assert!(QcTemporalCheck.execute(&missing).is_err());
+    }
+}
