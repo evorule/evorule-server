@@ -18,7 +18,7 @@
 //!   - 未命中 → 回落 `ServiceRegistryHandler`（HTTP，兼容其他外部服务）
 //!
 //! # 统一信封 v1
-//! - 全部 4 服务成功出参含保留键 `status`（恒 `determined`）+
+//! - 全部 5 服务成功出参含保留键 `status`（恒 `determined`）+
 //!   `determinism`（恒 `bitwise_replayable`）；无 scale/rounding 入参——
 //!   舍入语义内建固定（4 位小数、与判据正本 round(x,4) 语义一致），
 //!   契约按适用条件诚实省略 scale 入参；error 走框架 `Err(String)`
@@ -41,6 +41,7 @@
 //! 2. `trace_approval_density` — 审批密度/结论分布/流级错误/帧对账清单
 //! 3. `trace_era_split` — 分代切分索引（J1∨J2 边界，J3 旁证）
 //! 4. `trace_era_mixing_sentinel` — 时代混杂哨兵（ts 跨代 + 模型混桶）
+//! 5. `trace_out_of_scope_writes` — 写类工具路径集合 + 范围外写入检出（M4 面）
 
 #![forbid(unsafe_code)]
 
@@ -53,9 +54,13 @@ use evorule_tcb::JsonValue;
 
 pub mod criteria;
 pub mod era;
+pub mod scope;
 pub mod services;
 
-use services::{mk_approval_density, mk_behavior_entropy, mk_era_mixing_sentinel, mk_era_split};
+use services::{
+    mk_approval_density, mk_behavior_entropy, mk_era_mixing_sentinel, mk_era_split,
+    mk_out_of_scope_writes,
+};
 
 // ============================================================================
 // 声明表（SSOT 配对文件: official_native_services.json; 顺序即声明序,
@@ -100,6 +105,15 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
             r#"{"type":"object","properties":{"events":{"type":"array","items":{"type":"object"},"maxItems":200000,"description":"NDJSON 事件对象数组"}},"required":["events"]}"#,
         ),
         make: mk_era_mixing_sentinel,
+    },
+    NativeServiceDef {
+        name: "trace_out_of_scope_writes",
+        sensitive: false,
+        description: "写类工具路径集合与范围外写入检出(ToolCall 写类工具的 path/file/target 三键按序取首个非空字符串;scope 根区间判定=词典法零 FS 零 CWD,相对路径经 base_dir 入参解析,缺省=scope 根;写型工具值域可经 write_tools 扩展;归一失败判范围外,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"events":{"type":"array","items":{"type":"object"},"maxItems":200000,"description":"NDJSON 事件对象数组(CLI run --json / WS 帧同构面/journal 行皆可)"},"scope":{"type":"string","description":"可选任务范围根目录(绝对路径);缺省不检出只收集写路径"},"base_dir":{"type":"string","description":"可选相对写路径解析基准(绝对路径);缺省=scope 根"},"write_tools":{"type":"array","items":{"type":"string"},"description":"可选写型工具名值域扩展;缺省五件(写型工具名值域可按 agent 定义扩展)"}},"required":["events"]}"#,
+        ),
+        make: mk_out_of_scope_writes,
     },
 ];
 
@@ -154,7 +168,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
-        assert_eq!(total, 4, "本插件声明表应为 4 项");
+        assert_eq!(total, 5, "本插件声明表应为 5 项");
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
         }

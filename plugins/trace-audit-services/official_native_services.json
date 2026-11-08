@@ -21,6 +21,11 @@
             "name": "trace_era_mixing_sentinel",
             "sensitive": false,
             "description": "时代混杂哨兵(检测单账面内多时代事件拼接:相邻 ts 间隔超 24h 与 react 主循环模型混桶两条证据面;混档判读无效化门前置,确定性)"
+        },
+        {
+            "name": "trace_out_of_scope_writes",
+            "sensitive": false,
+            "description": "写类工具路径集合与范围外写入检出(ToolCall 写类工具的 path/file/target 三键按序取首个非空字符串;scope 根区间判定=词典法零 FS 零 CWD,相对路径经 base_dir 入参解析,缺省=scope 根;写型工具值域可经 write_tools 扩展;归一失败判范围外,确定性)"
         }
     ]
 }
