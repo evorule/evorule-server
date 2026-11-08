@@ -4,6 +4,9 @@
     {"name": "video_timeline_consistency_check", "sensitive": false, "description": "字幕时间轴一致性校验(镜头时间轴+字幕cue,整数毫秒判定:出镜/重叠/缝隙/超总时长;overlap_policy显式入参;确定性)"},
     {"name": "color_contrast_ratio_eval", "sensitive": false, "description": "颜色对比度判定核(WCAG 2.x 相对亮度+对比度比值,sRGB 三元组字符串入参,定点整数运算;字幕可读性 QC 判定用;确定性)"},
     {"name": "video_frame_sequence_eval", "sensitive": false, "description": "帧序列异常事件判定核(逐帧亮度摘要序列→黑帧/闪帧/静止段,阈值显式入参缺省16/60/24帧,帧号=数组下标;解码抽帧统计留引擎侧;确定性)"},
-    {"name": "video_track_consistency_eval", "sensitive": false, "description": "主体轨迹守恒判定核(参考 bbox+逐帧 bbox 序列→位移/尺度漂移越限判定,l2/linf 度量缺省 l2,l2 判定面平方整比较零开方,1e6 定点精确;感知检出留引擎侧显式喂入;确定性)"}
+    {"name": "video_track_consistency_eval", "sensitive": false, "description": "主体轨迹守恒判定核(参考 bbox+逐帧 bbox 序列→位移/尺度漂移越限判定,l2/linf 度量缺省 l2,l2 判定面平方整比较零开方,1e6 定点精确;感知检出留引擎侧显式喂入;确定性)"},
+    {"name": "qc_count_check", "sensitive": false, "description": "结构计数判定核(对象部件计数 vs 规则表期望计数/区间,闭区间判定,违例出规则ID+期望+实际证据;规则表参数化,新增检查项=加规则表不加代码;守恒谓词引擎原语一;确定性)"},
+    {"name": "qc_domain_check", "sensitive": false, "description": "比例/数值域校验核(测量值落规则域区间判定,骨比域/角度域/结构比域同构,域界字符串有理数闭区间可开单侧,1e6 定点整比较,违例出规则ID+域界+实际证据;规则表参数化;守恒谓词引擎原语二;确定性)"},
+    {"name": "qc_temporal_check", "sensitive": false, "description": "帧间守恒判定核(逐帧观测序列相邻帧差值越限判定,位移/面积/计数守恒同构泛化,帧号非负整数唯一必填升序判定,首帧无前帧不判定,1e6 定点整比较,违例出规则ID+帧号+观测名+差值证据;规则表参数化;守恒谓词引擎原语三;确定性)"}
   ]
 }

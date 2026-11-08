@@ -29,6 +29,9 @@
 //! 3. `color_contrast_ratio_eval` — 颜色对比度判定（WCAG 2.x，sRGB 字符串入参）
 //! 4. `video_frame_sequence_eval` — 帧序列异常事件判定（黑帧/闪帧/静止段）
 //! 5. `video_track_consistency_eval` — 主体轨迹守恒判定（位移/尺度漂移越限）
+//! 6. `qc_count_check` — 结构计数判定（守恒谓词引擎原语一，规则表参数化）
+//! 7. `qc_domain_check` — 比例/数值域校验（守恒谓词引擎原语二，规则表参数化）
+//! 8. `qc_temporal_check` — 帧间守恒判定（守恒谓词引擎原语三，规则表参数化）
 
 #![forbid(unsafe_code)]
 
@@ -42,8 +45,9 @@ use evorule_tcb::JsonValue;
 pub mod services;
 
 use services::{
-    mk_color_contrast_ratio_eval, mk_skeleton_probe, mk_timeline_consistency_check,
-    mk_video_frame_sequence_eval, mk_video_track_consistency_eval,
+    mk_color_contrast_ratio_eval, mk_qc_count_check, mk_qc_domain_check, mk_qc_temporal_check,
+    mk_skeleton_probe, mk_timeline_consistency_check, mk_video_frame_sequence_eval,
+    mk_video_track_consistency_eval,
 };
 
 // ============================================================================
@@ -93,6 +97,30 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
         r#"{"type":"object","properties":{"reference":{"type":"object","description":"参考主体框 {x,y,w,h},字符串有理数(引擎侧感知检出显式给出)"},"tracks":{"type":"array","description":"逐帧主体框 [{frame,bbox},...],frame 非负整数必填唯一,bbox 为 {x,y,w,h}"},"max_translation":{"type":"string","description":"位移上限 px,字符串如 \"40\""},"max_scale_delta":{"type":"string","description":"尺度漂移上限(相对面积变化),字符串如 \"0.2\""},"metric":{"type":"string","description":"位移度量 l2(缺省)或 linf"}},"required":["reference","tracks","max_translation","max_scale_delta"]}"#,
     ),
     make: mk_video_track_consistency_eval,
+}, NativeServiceDef {
+    name: "qc_count_check",
+    sensitive: false,
+    description: "结构计数判定核(对象部件计数 vs 规则表期望计数/区间,闭区间判定,违例出规则ID+期望+实际证据;规则表参数化,新增检查项=加规则表不加代码;守恒谓词引擎原语一;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"counts":{"type":"object","description":"{部件名: 计数} 映射,整数值,如 {\"fingers\": 5}"},"rules":{"type":"array","items":{"type":"object"},"description":"计数规则表,每项 {rule_id, part, expect} 单值或 {rule_id, part, min, max} 区间(min/max 须成对)"}},"required":["counts","rules"]}"#,
+    ),
+    make: mk_qc_count_check,
+}, NativeServiceDef {
+    name: "qc_domain_check",
+    sensitive: false,
+    description: "比例/数值域校验核(测量值落规则域区间判定,骨比域/角度域/结构比域同构,域界字符串有理数闭区间可开单侧,1e6 定点整比较,违例出规则ID+域界+实际证据;规则表参数化;守恒谓词引擎原语二;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"measurements":{"type":"object","description":"{测量名: 字符串有理数} 映射,如 {\"bone_ratio\": \"0.65\"}"},"rules":{"type":"array","items":{"type":"object"},"description":"域规则表,每项 {rule_id, name, min, max},min/max 至少给一,域界字符串有理数"}},"required":["measurements","rules"]}"#,
+    ),
+    make: mk_qc_domain_check,
+}, NativeServiceDef {
+    name: "qc_temporal_check",
+    sensitive: false,
+    description: "帧间守恒判定核(逐帧观测序列相邻帧差值越限判定,位移/面积/计数守恒同构泛化,帧号非负整数唯一必填升序判定,首帧无前帧不判定,1e6 定点整比较,违例出规则ID+帧号+观测名+差值证据;规则表参数化;守恒谓词引擎原语三;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"frames":{"type":"array","items":{"type":"object"},"description":"逐帧观测 [{frame, values},...],frame 非负整数唯一,values 为 {观测名: 字符串有理数}"},"rules":{"type":"array","items":{"type":"object"},"description":"守恒规则表,每项 {rule_id, name, max_delta},max_delta 相邻帧差值上限字符串有理数非负"}},"required":["frames","rules"]}"#,
+    ),
+    make: mk_qc_temporal_check,
 }];
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
@@ -147,8 +175,8 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
         assert_eq!(
-            total, 5,
-            "声明表应为 5 项(探针+时间轴校验+对比度+帧序列+轨迹守恒)"
+            total, 8,
+            "声明表应为 8 项(探针+时间轴校验+对比度+帧序列+轨迹守恒+守恒三原语)"
         );
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
