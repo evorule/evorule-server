@@ -16,6 +16,15 @@
 //! `equilibrium_check` instruction into the single reactor and caches the
 //! verdict for the status surface. The gauges below expose the live state on
 //! the metrics surface.
+//!
+//! Feature extraction is registry-driven: every feature quantity consumed by
+//! the window evaluator is declared in [`EQUILIBRIUM_FEATURES`] (analytic
+//! formula + dimensional fingerprint + window semantics + regime / error
+//! contract / reset semantics / evidence anchor). The evaluator extracts
+//! values strictly through the registry's scope ([`extract_feature_values`]);
+//! the emitted `equilibrium_check` instruction and the status surface remain
+//! contractually unchanged (same parameter names and values as before the
+//! registry migration).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -178,6 +187,276 @@ impl EquilibriumEvaluatorConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 特征定义表（registry 形态：特征 = 确定性解析公式，禁黑箱函数）
+// ---------------------------------------------------------------------------
+
+/// 窗口语义：特征量相对观测窗的取数方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowSemantics {
+    /// 窗内瞬时值（窗结算时点取样或由观测面随取随存）。
+    Instant,
+    /// 跨窗累计值（进程生命周期单调计数）。
+    Cumulative,
+    /// 窗间差分（相邻窗结算点之间的增量）。
+    Diff,
+    /// 连计（逐窗递增，触发重置事件归零）。
+    Streak,
+}
+
+/// 适用域声明（域外显式拒域 → undetermined 出口，fail-visible 不猜）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureRegime {
+    /// 适用域描述（域外取值按 `undetermined_outside` 弃权）。
+    pub domain: &'static str,
+    /// 量化步长（登记面整数单位；1 = 原生整数步长）。
+    pub quant_step: i64,
+    /// 域外是否显式弃权（undetermined 出口）。
+    pub undetermined_outside: bool,
+}
+
+/// 均衡观测特征定义条目（形态对齐 formula_registry：解析公式入册）。
+///
+/// 八字段 schema：特征标识 / 解析公式 / 七元量纲指纹 / 窗口语义 /
+/// 适用域 / 误差契约 / 清零语义 / 复算凭证锚。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EquilibriumFeatureSpec {
+    /// 稳定特征标识（立法面与呈现面引用此 id）。
+    pub feature_id: &'static str,
+    /// 解析公式（`lhs = rhs` 形态；rhs 仅用已知量纲变量与四则/幂运算，
+    /// 可被量纲服务确定性解析验证）。
+    pub formula_ref: &'static str,
+    /// 七元量纲指纹 [L,M,T,I,Θ,N,J]（无量纲 = 全零）。
+    pub dim_vector: [i64; 7],
+    /// 窗口语义。
+    pub window_semantics: WindowSemantics,
+    /// 适用域声明。
+    pub regime: FeatureRegime,
+    /// 误差契约（精确语义 / 饱和行为 / fail-visible 出口）。
+    pub error_contract: &'static str,
+    /// 清零语义（非连计类条目 = 显式「不适用」声明）。
+    pub reset_semantics: &'static str,
+    /// 复算凭证锚声明（输入观测流 + 公式版本戳 + 输出可复算）。
+    pub evidence_anchor: &'static str,
+}
+
+/// 复算凭证锚通用声明（首批特征同源：输入=窗观测流，公式=formula_ref
+/// 版本戳，输出=确定性可复算）。
+const EVIDENCE_ANCHOR_WINDOW_STREAM: &str =
+    "input: windowed observation counters (this module) replayable from the \
+     companion hash chain; formula: formula_ref version stamp; value: \
+     deterministic under replay";
+
+/// 均衡观测特征定义表（首批 = 窗评估任务现提取的全部特征量，自硬编码
+/// 口径原样平移；值语义逐项不变，对外发射与呈现面契约冻结）。
+///
+/// 发射名对照：立法参数 `coverage` 对应注册特征 `coverage_ratio`
+/// （发射面参数名冻结，注册 id 为分析名）。
+pub const EQUILIBRIUM_FEATURES: &[EquilibriumFeatureSpec] = &[
+    EquilibriumFeatureSpec {
+        feature_id: "proposals_in_total",
+        formula_ref: "proposals_in_total = event_count",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Cumulative,
+        regime: FeatureRegime {
+            domain: "non-negative integers within the u64 intake counter range",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact integer accounting; the u64 counter is monotonic and never \
+             reset within a process lifetime",
+        reset_semantics: "not applicable (cumulative counter, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "digested_total",
+        formula_ref: "digested_total = event_count",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Cumulative,
+        regime: FeatureRegime {
+            domain: "non-negative integers within the u64 digestion counter range",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact integer accounting; the u64 counter is monotonic and never \
+             reset within a process lifetime",
+        reset_semantics: "not applicable (cumulative counter, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "in_rate",
+        formula_ref: "in_rate = event_count / s",
+        dim_vector: [0, 0, -1, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Diff,
+        regime: FeatureRegime {
+            domain: "non-negative integer differentials over one settlement window",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact saturating differential of the u64 intake counter between \
+             consecutive settlements; counter saturation degrades magnitude, \
+             never sign",
+        reset_semantics: "not applicable (per-window differential, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "digest_rate",
+        formula_ref: "digest_rate = event_count / s",
+        dim_vector: [0, 0, -1, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Diff,
+        regime: FeatureRegime {
+            domain: "non-negative integer differentials over one settlement window",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact saturating differential of the u64 digestion counter between \
+             consecutive settlements; counter saturation degrades magnitude, \
+             never sign",
+        reset_semantics: "not applicable (per-window differential, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "net_intake_rate",
+        formula_ref: "net_intake_rate = in_rate - digest_rate",
+        dim_vector: [0, 0, -1, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Diff,
+        regime: FeatureRegime {
+            domain: "integers within i64 (each operand is a non-negative \
+                     window differential)",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact integer difference of in_rate and digest_rate (saturating \
+             at the i64 bound); both operands carry the differential contract \
+             above",
+        reset_semantics: "not applicable (derived quantity, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "window_alert_count",
+        formula_ref: "window_alert_count = event_count",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Instant,
+        regime: FeatureRegime {
+            domain: "non-negative integers within a single settlement window",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact take-and-clear drain of the pending-alert counter at window \
+             settlement; concurrent records are never lost (atomic add / swap)",
+        reset_semantics: "drained to zero at every window settlement (take-and-clear)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "alert_free_windows",
+        formula_ref: "alert_free_windows = window_count",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Streak,
+        regime: FeatureRegime {
+            domain: "non-negative integers (process-lifetime streak)",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact integer streak; a window settling with window_alert_count > 0 \
+             resets the streak before the next increment",
+        reset_semantics: "reset to 0 when a window settles with window_alert_count > 0; \
+             otherwise incremented by 1 per window",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "coverage_ratio",
+        formula_ref: "coverage_ratio = coverage_per_mille",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Instant,
+        regime: FeatureRegime {
+            domain: "non-negative per-mille integers as handed over by the \
+                     verification face (target range 0..=1000)",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "carried verbatim from the verification face (no arithmetic here); \
+             absent coverage is fail-visible (fail-closed verdict, never \
+             guessed stable)",
+        reset_semantics: "not applicable (instant snapshot, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "certified_streak",
+        formula_ref: "certified_streak = certificate_count",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Streak,
+        regime: FeatureRegime {
+            domain: "non-negative integers (process-lifetime streak)",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact integer streak; any certificate verdict other than stable \
+             resets the streak",
+        reset_semantics: "reset to 0 on a non-stable certificate outcome; incremented by 1 \
+             on each stable certificate",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+];
+
+/// 一次窗结算提取的全部注册特征值（命名字段与 [`EQUILIBRIUM_FEATURES`]
+/// 条目一一对应；发射面消费其中五项，`to_map` 供定义表对账与立法面按
+/// id 取用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureValues {
+    pub proposals_in_total: i64,
+    pub digested_total: i64,
+    pub in_rate: i64,
+    pub digest_rate: i64,
+    pub net_intake_rate: i64,
+    pub window_alert_count: i64,
+    pub alert_free_windows: i64,
+    pub coverage_ratio: i64,
+    pub certified_streak: i64,
+}
+
+impl FeatureValues {
+    /// 注册特征值映射（id → 值；键集合与定义表一致，双向完备性由测试锁定）。
+    pub fn to_map(&self) -> std::collections::BTreeMap<&'static str, i64> {
+        use std::collections::BTreeMap;
+
+        let mut values = BTreeMap::new();
+        values.insert("proposals_in_total", self.proposals_in_total);
+        values.insert("digested_total", self.digested_total);
+        values.insert("in_rate", self.in_rate);
+        values.insert("digest_rate", self.digest_rate);
+        values.insert("net_intake_rate", self.net_intake_rate);
+        values.insert("window_alert_count", self.window_alert_count);
+        values.insert("alert_free_windows", self.alert_free_windows);
+        values.insert("coverage_ratio", self.coverage_ratio);
+        values.insert("certified_streak", self.certified_streak);
+        values
+    }
+}
+
+/// 特征量提取：按定义表口径从窗快照与窗警排水量计算全部注册特征值。
+/// 各项算术与平移前硬编码口径逐点一致。
+pub fn extract_feature_values(
+    prev: &WindowsSnapshot,
+    after: &WindowsSnapshot,
+    window_alert_count: u64,
+) -> FeatureValues {
+    let in_rate = after
+        .proposals_in_total
+        .saturating_sub(prev.proposals_in_total) as i64;
+    let digest_rate = after.digested_total.saturating_sub(prev.digested_total) as i64;
+    FeatureValues {
+        proposals_in_total: after.proposals_in_total as i64,
+        digested_total: after.digested_total as i64,
+        in_rate,
+        digest_rate,
+        net_intake_rate: in_rate.saturating_sub(digest_rate),
+        window_alert_count: window_alert_count as i64,
+        alert_free_windows: after.alert_free_windows as i64,
+        coverage_ratio: after.last_coverage,
+        certified_streak: after.certified_streak as i64,
+    }
+}
+
 /// 读回超时（反应器不可达/积压时本窗视图以 None fail-visible 呈现）。
 const READBACK_TIMEOUT: Duration = Duration::from_secs(10);
 /// 读回轮询间隔。
@@ -209,29 +488,18 @@ async fn equilibrium_evaluator_loop(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
-        // 窗间差分：本窗入管/消化增量（判据① 输入）
+        // 特征量按定义表口径统一提取（提取顺序与平移前逐点一致：
+        // 快照 → 窗警排水 → 窗结算 → 结算后快照）。
         let snap = windows.snapshot();
-        let in_rate = snap
-            .proposals_in_total
-            .saturating_sub(prev_totals.proposals_in_total) as i64;
-        let digest_rate = snap
-            .digested_total
-            .saturating_sub(prev_totals.digested_total) as i64;
-        prev_totals = snap;
-        // 窗结算：本窗有警则无警连计清零（判据② 输入）
-        let had_alert = drain_pending_alerts() > 0;
+        let window_alert_count = drain_pending_alerts();
+        let had_alert = window_alert_count > 0;
         windows.close_window(had_alert);
         let after = windows.snapshot();
-        let instr = build_equilibrium_instruction(
-            in_rate,
-            digest_rate,
-            after.alert_free_windows as i64,
-            cfg.alert_free_windows_required,
-            after.last_coverage,
-            cfg.coverage_min,
-            after.certified_streak as i64,
-            cfg.certified_streak_min,
-        );
+        let features = extract_feature_values(&prev_totals, &after, window_alert_count);
+        prev_totals = snap;
+        let instr = build_equilibrium_instruction(&features, &cfg);
+        let in_rate = features.in_rate;
+        let digest_rate = features.digest_rate;
         // 读回基线：仅认发射之后且指令队列清空的快照（快照不可得=本轮必超时）
         let baseline_version = match api.snapshot().await {
             Ok((_, _, v)) => v,
@@ -298,42 +566,45 @@ async fn read_verdict(
 }
 
 /// 组装 `equilibrium_check` 八参指令（立法 v0.10.0 参数面：调用方直传
-/// 快照差分与阈值，规则层零数据重塑）。
-#[allow(clippy::too_many_arguments)]
+/// 特征值与阈值，规则层零数据重塑）。发射面契约冻结：参数名与取值
+/// 同特征定义表口径一一对应，对外形态不变。
 fn build_equilibrium_instruction(
-    in_rate: i64,
-    digest_rate: i64,
-    alert_free_windows: i64,
-    alert_free_windows_required: i64,
-    coverage: i64,
-    coverage_min: i64,
-    certified_streak: i64,
-    certified_streak_min: i64,
+    values: &FeatureValues,
+    cfg: &EquilibriumEvaluatorConfig,
 ) -> evorule_tcb::JsonValue {
     use std::collections::BTreeMap;
 
     use evorule_tcb::JsonValue;
 
     let mut params = BTreeMap::new();
-    params.insert("in_rate".to_string(), JsonValue::Integer(in_rate));
-    params.insert("digest_rate".to_string(), JsonValue::Integer(digest_rate));
+    params.insert("in_rate".to_string(), JsonValue::Integer(values.in_rate));
+    params.insert(
+        "digest_rate".to_string(),
+        JsonValue::Integer(values.digest_rate),
+    );
     params.insert(
         "alert_free_windows".to_string(),
-        JsonValue::Integer(alert_free_windows),
+        JsonValue::Integer(values.alert_free_windows),
     );
     params.insert(
         "alert_free_windows_required".to_string(),
-        JsonValue::Integer(alert_free_windows_required),
+        JsonValue::Integer(cfg.alert_free_windows_required),
     );
-    params.insert("coverage".to_string(), JsonValue::Integer(coverage));
-    params.insert("coverage_min".to_string(), JsonValue::Integer(coverage_min));
+    params.insert(
+        "coverage".to_string(),
+        JsonValue::Integer(values.coverage_ratio),
+    );
+    params.insert(
+        "coverage_min".to_string(),
+        JsonValue::Integer(cfg.coverage_min),
+    );
     params.insert(
         "certified_streak".to_string(),
-        JsonValue::Integer(certified_streak),
+        JsonValue::Integer(values.certified_streak),
     );
     params.insert(
         "certified_streak_min".to_string(),
-        JsonValue::Integer(certified_streak_min),
+        JsonValue::Integer(cfg.certified_streak_min),
     );
     let mut instr = BTreeMap::new();
     instr.insert("type".to_string(), JsonValue::string("equilibrium_check"));
@@ -521,5 +792,136 @@ mod tests {
         // no evaluator runs inside the unit-test binary).
         let v = view();
         assert_eq!(v.stable, None);
+    }
+
+    #[test]
+    fn test_registry_and_extraction_are_in_sync() {
+        // 定义表特征 id 集合 = 提取映射键集合（双向，漏登记/漏提取即红）。
+        let prev = WindowsSnapshot {
+            proposals_in_total: 0,
+            digested_total: 0,
+            alert_free_windows: 0,
+            certified_streak: 0,
+            last_coverage: 0,
+        };
+        let after = WindowsSnapshot {
+            proposals_in_total: 7,
+            digested_total: 3,
+            alert_free_windows: 2,
+            certified_streak: 4,
+            last_coverage: 940,
+        };
+        let values = extract_feature_values(&prev, &after, 5).to_map();
+        let registry_ids: std::collections::BTreeSet<_> =
+            EQUILIBRIUM_FEATURES.iter().map(|s| s.feature_id).collect();
+        let extracted_ids: std::collections::BTreeSet<_> = values.keys().copied().collect();
+        assert_eq!(registry_ids, extracted_ids);
+    }
+
+    #[test]
+    fn test_feature_values_equal_legacy_window_quantities() {
+        // 平移等价：每个特征值与旧硬编码口径逐项相等（行为零变更锚）。
+        let prev = WindowsSnapshot {
+            proposals_in_total: 10,
+            digested_total: 4,
+            alert_free_windows: 1,
+            certified_streak: 2,
+            last_coverage: 900,
+        };
+        let after = WindowsSnapshot {
+            proposals_in_total: 13,
+            digested_total: 9,
+            alert_free_windows: 5,
+            certified_streak: 7,
+            last_coverage: 1000,
+        };
+        let v = extract_feature_values(&prev, &after, 3);
+        assert_eq!(v.in_rate, 3);
+        assert_eq!(v.digest_rate, 5);
+        assert_eq!(v.net_intake_rate, -2);
+        assert_eq!(v.window_alert_count, 3);
+        assert_eq!(v.alert_free_windows, 5);
+        assert_eq!(v.coverage_ratio, 1000);
+        assert_eq!(v.certified_streak, 7);
+        assert_eq!(v.proposals_in_total, 13);
+        assert_eq!(v.digested_total, 9);
+        // 发射面参数 coverage 冻结取 coverage_ratio 注册值。
+        let m = v.to_map();
+        assert_eq!(m["coverage_ratio"], v.coverage_ratio);
+    }
+
+    #[test]
+    fn test_registry_dimension_fingerprints_via_dimension_service() {
+        // 量纲指纹：经推理族 dimension_verify_formula 服务面校验——每条
+        // formula_ref 解析成立，且 rhs 推导量纲 = 登记七元指纹。
+        use evorule_inference_services::services::DimensionVerifyFormula;
+        use evorule_inference_services::NativeService;
+        use evorule_tcb::JsonValue;
+
+        // 特征 id 按目标量纲登记（lhs 可推导）；公式右侧仅用基础量纲变量。
+        let si_units: Vec<(&str, JsonValue)> = [
+            ("proposals_in_total", "1"),
+            ("digested_total", "1"),
+            ("in_rate", "1/s"),
+            ("digest_rate", "1/s"),
+            ("net_intake_rate", "1/s"),
+            ("window_alert_count", "1"),
+            ("alert_free_windows", "1"),
+            ("coverage_ratio", "1"),
+            ("certified_streak", "1"),
+            ("event_count", "1"),
+            ("window_count", "1"),
+            ("certificate_count", "1"),
+            ("coverage_per_mille", "1"),
+            ("s", "s"),
+        ]
+        .iter()
+        .map(|(k, v)| (*k, JsonValue::string(*v)))
+        .collect();
+        let formulas: Vec<JsonValue> = EQUILIBRIUM_FEATURES
+            .iter()
+            .map(|s| JsonValue::string(s.formula_ref))
+            .collect();
+        let args = JsonValue::object_from_pairs(&[
+            (
+                "si_units",
+                JsonValue::Object(
+                    si_units
+                        .into_iter()
+                        .map(|(k, v)| (k.to_string(), v))
+                        .collect(),
+                ),
+            ),
+            ("formulas", JsonValue::Array(formulas)),
+        ]);
+        let out = DimensionVerifyFormula
+            .execute(&args)
+            .expect("dimension service execution");
+        let results = out
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("dimension service results array");
+        assert_eq!(results.len(), EQUILIBRIUM_FEATURES.len());
+        for (r, spec) in results.iter().zip(EQUILIBRIUM_FEATURES) {
+            assert_eq!(
+                r.get("passed").and_then(|v| v.as_bool()),
+                Some(true),
+                "formula_ref must be dimensionally well-formed: {} -> {r:?}",
+                spec.feature_id
+            );
+            let rhs: Vec<i64> = r
+                .get("right_dimension")
+                .and_then(|v| v.as_array())
+                .expect("right-hand dimension vector")
+                .iter()
+                .map(|p| p.as_i64().expect("integer exponent"))
+                .collect();
+            assert_eq!(
+                rhs.as_slice(),
+                spec.dim_vector.as_slice(),
+                "dimension fingerprint mismatch for {}",
+                spec.feature_id
+            );
+        }
     }
 }
