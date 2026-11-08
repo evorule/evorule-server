@@ -120,14 +120,39 @@ fn main() {
                 Err(e) => println!("{{\"error\":\"{e}\"}}"),
             }
             ran = true;
+        } else if let Some(spec) = mode.strip_prefix("oos:") {
+            // M4 面：oos:SCOPE 或 oos:SCOPE|BASE（对账口径=分析器在 BASE=CWD
+            // 下以 --scope SCOPE 运行的形态；单值时 SCOPE=BASE）
+            let (scope_s, base_s) = match spec.split_once('|') {
+                Some((sc, b)) => (sc, b),
+                None => (spec, spec),
+            };
+            let svc = evorule_trace_audit_services::services::mk_out_of_scope_writes();
+            let input = JsonValue::object_from_pairs(&[
+                ("events", events_arg.clone()),
+                ("scope", JsonValue::string(scope_s)),
+                ("base_dir", JsonValue::string(base_s)),
+            ]);
+            match svc.execute(&input) {
+                Ok(out) => println!("{}", envelope("trace_out_of_scope_writes", out)),
+                Err(e) => println!("{{\"error\":\"{e}\"}}"),
+            }
+            ran = true;
         }
     }
     if !ran {
         for (name, svc) in [
-            ("trace_era_split", evorule_trace_audit_services::services::mk_era_split()),
+            (
+                "trace_era_split",
+                evorule_trace_audit_services::services::mk_era_split(),
+            ),
             (
                 "trace_era_mixing_sentinel",
                 evorule_trace_audit_services::services::mk_era_mixing_sentinel(),
+            ),
+            (
+                "trace_out_of_scope_writes",
+                evorule_trace_audit_services::services::mk_out_of_scope_writes(),
             ),
         ] {
             let input = JsonValue::object_from_pairs(&[("events", events_arg.clone())]);

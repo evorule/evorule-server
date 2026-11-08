@@ -11,6 +11,7 @@ use evorule_tcb::JsonValue;
 
 use crate::criteria::{approval_density_json, behavior_entropy_json, era_mixing_sentinel_json};
 use crate::era::split_era_json;
+use crate::scope::out_of_scope_writes_json;
 
 /// 事件数组入参资源守卫上限（超限 fail-visible 拒解，不静默降级）。
 pub const MAX_EVENTS: usize = 200_000;
@@ -147,6 +148,14 @@ pub fn mk_era_mixing_sentinel() -> Arc<dyn NativeService> {
     Arc::new(CriteriaService {
         name: "trace_era_mixing_sentinel",
         compute: |events, _args| Ok(era_mixing_sentinel_json(events)),
+    })
+}
+
+/// M4 面:写类工具路径集合 + scope 区间判定(范围外写入检出)。
+pub fn mk_out_of_scope_writes() -> Arc<dyn NativeService> {
+    Arc::new(CriteriaService {
+        name: "trace_out_of_scope_writes",
+        compute: |events, args| out_of_scope_writes_json(events, args),
     })
 }
 
