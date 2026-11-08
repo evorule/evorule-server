@@ -257,9 +257,15 @@ mod tests {
             body.get("js_divergence_halves").and_then(JsonValue::as_str),
             Some("0.1038")
         );
+        // 正本形态锚:键集与 m2_behavior_entropy 输出逐键一致(多键/缺键即偏)
+        let mut keys = body
+            .as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        keys.sort();
         assert_eq!(
-            body.get("tool_call_count").and_then(JsonValue::as_i64),
-            Some(12)
+            keys,
+            vec!["entropy_series", "js_divergence_halves", "window"]
         );
     }
 
@@ -384,27 +390,32 @@ mod tests {
         assert_eq!(msgs[0].as_str(), Some("provider timeout"));
     }
 
-    /// 黄金向量:帧对账——12 call vs 1 孤儿 result,未闭合清单 11 项
+    /// 正本形态锚:M3 键集与 m3_constraint_adherence 输出逐键一致(六键,
+    /// 不掺帧对账面——frame_pairing 属正本独立函数,候后批范畴)
     #[test]
-    fn test_frame_pairing_golden() {
+    fn test_m3_key_set_matches_reference() {
         let events = fixture_a();
         let svc = mk_approval_density();
         let out = svc
             .execute(&ev(&[("events", JsonValue::array(events))]))
             .unwrap();
         let body = out.get("result").unwrap();
-        let unclosed = body
-            .get("unclosed_tool_calls")
-            .and_then(JsonValue::as_array)
-            .unwrap();
-        assert_eq!(unclosed.len(), 11, "首个 call 被孤儿 result 弹出");
-        assert_eq!(unclosed[0].as_str(), Some("read"));
-        assert_eq!(unclosed[10].as_str(), Some("read"));
-        assert!(body
-            .get("unclosed_tool_results")
-            .and_then(JsonValue::as_array)
-            .unwrap()
-            .is_empty());
+        let mut keys = body
+            .as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "approval_requests",
+                "approval_results",
+                "auto_rejected",
+                "error_messages",
+                "stream_errors",
+                "verdicts"
+            ]
+        );
     }
 
     // ---- 哨兵 ----

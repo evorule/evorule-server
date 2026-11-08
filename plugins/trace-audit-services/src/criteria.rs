@@ -6,8 +6,6 @@
 //! 判据公式与离线分析器工具同源（同输入同输出对账口径）；求和序与键序
 //! 全部确定性（首现序），小数出参走 4 位定点字符串。
 
-use std::collections::VecDeque;
-
 use evorule_tcb::JsonValue;
 
 use crate::era::ERA_GAP_MS;
@@ -192,16 +190,16 @@ pub fn behavior_entropy_json(events: &[JsonValue], window: usize) -> JsonValue {
         ("window", JsonValue::Integer(window as i64)),
         ("entropy_series", JsonValue::array(series)),
         ("js_divergence_halves", JsonValue::string(fmt4(js))),
-        ("tool_call_count", JsonValue::Integer(names.len() as i64)),
     ])
 }
 
 // ============================================================================
-// M3 面：审批密度 + 结论分布 + 流级错误 + 帧对账未闭合清单
+// M3 面：审批密度 + 结论分布 + 流级错误（键集与判据正本 m3 输出逐键一致）
 // ============================================================================
 
-/// M3 输出：审批密度/结论分布/auto_rejected/流级 Error/错误消息样本
-/// + 帧对账未闭合清单（对账面也是 M3 观测面的一部分）。
+/// M3 输出：审批密度/结论分布/auto_rejected/流级 Error/错误消息样本。
+/// 键集 = 正本 m3_constraint_adherence 六键，不掺帧对账面（frame_pairing
+/// 是正本独立函数，属候后批范畴，避免输出掺键破坏同输入同输出对账）。
 pub fn approval_density_json(events: &[JsonValue]) -> JsonValue {
     let mut approvals = 0usize;
     let mut results = 0usize;
@@ -209,40 +207,14 @@ pub fn approval_density_json(events: &[JsonValue]) -> JsonValue {
     let mut verdicts = Counter::default();
     let mut auto_rejected = 0usize;
     let mut error_messages: Vec<JsonValue> = Vec::new();
-    let mut call_ids: VecDeque<&str> = VecDeque::new();
-    let mut approval_ids: VecDeque<String> = VecDeque::new();
-    let mut unclosed_tools: Vec<JsonValue> = Vec::new();
-    let mut unclosed_approval_results: Vec<JsonValue> = Vec::new();
     for ev in events {
         let t = ev.get("type").and_then(JsonValue::as_str);
         match t {
-            Some("ToolCall") => {
-                let name = ev.get("name").and_then(JsonValue::as_str).unwrap_or("?");
-                call_ids.push_back(name);
-            }
-            Some("ToolResult") => {
-                if call_ids.pop_front().is_none() {
-                    unclosed_tools.push(JsonValue::string("result_without_call"));
-                }
-            }
             Some("ApprovalRequired") => {
                 approvals += 1;
-                // 与正本一致:proposal_id falsy(缺省/空串/null)时回落
-                // tool_name,再缺省计 "?"
-                let id = match ev.get("proposal_id") {
-                    Some(JsonValue::String(s)) if !s.is_empty() => s.to_string(),
-                    _ => match ev.get("tool_name") {
-                        Some(JsonValue::String(s)) if !s.is_empty() => s.to_string(),
-                        _ => "?".to_string(),
-                    },
-                };
-                approval_ids.push_back(id);
             }
             Some("ApprovalResult") => {
                 results += 1;
-                if approval_ids.pop_front().is_none() {
-                    unclosed_approval_results.push(JsonValue::string("result_without_request"));
-                }
                 match ev.get("approved") {
                     Some(v) => {
                         verdicts.add(if truthy(v) { "approved" } else { "rejected" });
@@ -275,12 +247,6 @@ pub fn approval_density_json(events: &[JsonValue]) -> JsonValue {
             .map(|k| (k, JsonValue::Integer(verdicts.get(k) as i64)))
             .collect::<Vec<_>>(),
     );
-    let str_list = |items: VecDeque<&str>| {
-        JsonValue::array(items.into_iter().map(JsonValue::string).collect())
-    };
-    let str_list_owned = |items: VecDeque<String>| {
-        JsonValue::array(items.into_iter().map(JsonValue::string).collect())
-    };
     JsonValue::object_from_pairs(&[
         ("approval_requests", JsonValue::Integer(approvals as i64)),
         ("approval_results", JsonValue::Integer(results as i64)),
@@ -288,13 +254,6 @@ pub fn approval_density_json(events: &[JsonValue]) -> JsonValue {
         ("auto_rejected", JsonValue::Integer(auto_rejected as i64)),
         ("stream_errors", JsonValue::Integer(errors as i64)),
         ("error_messages", JsonValue::array(error_messages)),
-        ("unclosed_tool_calls", str_list(call_ids)),
-        ("unclosed_tool_results", JsonValue::array(unclosed_tools)),
-        ("unclosed_approvals", str_list_owned(approval_ids)),
-        (
-            "unclosed_approval_results",
-            JsonValue::array(unclosed_approval_results),
-        ),
     ])
 }
 
