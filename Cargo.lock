@@ -1476,6 +1476,7 @@ dependencies = [
  "evorule-rule-schema",
  "evorule-tcb",
  "evorule-template-services",
+ "evorule-trace-audit-services",
  "evorule-verification-services",
  "evorule-video-services",
  "evorule-workspace",
@@ -1518,6 +1519,18 @@ checksum = "403ff7662c37a0e49471fc83caa9176ba67a5756ddc08186960712503ade30da"
 
 [[package]]
 name = "evorule-template-services"
+version = "0.11.0"
+dependencies = [
+ "async-trait",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "evorule-trace-audit-services"
 version = "0.11.0"
 dependencies = [
  "async-trait",
