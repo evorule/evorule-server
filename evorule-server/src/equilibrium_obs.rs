@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! Companion-side equilibrium observation aggregator (rule-layer v0.10.0 intake).
+//! Companion-side equilibrium observation aggregator (rule-layer v0.12.0 intake).
 //!
-//! Maintains the windowed counters that `equilibrium_check` (server_eval.json v0.10.0)
-//! adjudicates over: proposal intake vs digestion rates, consecutive alert-free windows,
-//! latest verification coverage and the certified-streak. The rule layer only ever sees
-//! a caller-supplied snapshot — window aggregation and streak accounting stay here
-//! (zero data reshaping inside the rule layer).
+//! Maintains the windowed counters that `equilibrium_gate` (server_eval.json
+//! v0.12.0, having taken over the primary contract from the retired
+//! `equilibrium_check`) adjudicates over: proposal intake vs digestion rates,
+//! consecutive alert-free windows, latest verification coverage and the
+//! certified-streak. The rule layer only ever sees a caller-supplied snapshot
+//! — window aggregation and streak accounting stay here (zero data reshaping
+//! inside the rule layer).
 //!
 //! Event sources are wired as pure observation (zero interception): the verify
 //! face records proposals / certificates / alerts, the companion face records
 //! proposal digestion and coverage, and a dedicated window-settlement task
 //! ([`spawn_equilibrium_evaluator`]) closes windows, emits the legislated
-//! `equilibrium_check` instruction into the single reactor and caches the
+//! `equilibrium_gate` instruction into the single reactor and caches the
 //! verdict for the status surface. The gauges below expose the live state on
 //! the metrics surface.
 //!
@@ -22,7 +24,7 @@
 //! formula + dimensional fingerprint + window semantics + regime / error
 //! contract / reset semantics / evidence anchor). The evaluator extracts
 //! values strictly through the registry's scope ([`extract_feature_values`]);
-//! the emitted `equilibrium_check` instruction and the status surface remain
+//! the emitted `equilibrium_gate` instruction and the status surface remain
 //! contractually unchanged (same parameter names and values as before the
 //! registry migration).
 
@@ -97,13 +99,6 @@ pub struct EquilibriumView {
     pub window_secs: u64,
     pub in_rate: i64,
     pub digest_rate: i64,
-    /// 影子双跑（立法 v0.11.0 `equilibrium_gate`）：影子判定原词
-    /// stable|unstable|undetermined；None=影子未判定（停发/读回超时）。
-    pub gate_verdict: Option<String>,
-    pub gate_cause: Option<String>,
-    /// 影子与 primary 判定一致（按 stable 布尔比对）；None=任一侧未判定
-    /// 或影子为 undetermined（三态不可比布尔，不计入一致率分母外样本）。
-    pub gate_matches: Option<bool>,
 }
 
 static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
@@ -112,9 +107,6 @@ static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
     window_secs: 0,
     in_rate: 0,
     digest_rate: 0,
-    gate_verdict: None,
-    gate_cause: None,
-    gate_matches: None,
 });
 
 /// 发布最近窗结算视图（评估任务内部调用）。
@@ -473,10 +465,9 @@ const READBACK_TIMEOUT: Duration = Duration::from_secs(10);
 const READBACK_POLL: Duration = Duration::from_millis(100);
 
 /// 装配均衡评估任务：每窗结算一次（取走窗内 alert 计数 → `close_window`）
-/// → 组装八参发射 `equilibrium_check` 进单反应器 → 读回
-/// `payload.equilibrium` 缓存视图供 status 呈现。primary 判定成立时同窗
-/// 影子双发 `equilibrium_gate`（立法 v0.11.0）读回比对（影子双跑一致率
-/// 为切换生死判据；primary 未判定则影子停发，不制造伪一致样本）。
+/// → 组装九参发射 `equilibrium_gate` 进单反应器 → 读回
+/// `payload.equilibrium`（立法 v0.12.0 起 gate 接管主契约，
+/// `equilibrium_check` 规则与影子双跑机制已退役）缓存视图供 status 呈现。
 ///
 /// 纯观测零拦截：任何失败路径只影响本任务的视图发布（stable=None），
 /// 不改写任何既有响应路径。
@@ -509,7 +500,7 @@ async fn equilibrium_evaluator_loop(
         let after = windows.snapshot();
         let features = extract_feature_values(&prev_totals, &after, window_alert_count);
         prev_totals = snap;
-        let instr = build_equilibrium_instruction(&features, &cfg);
+        let instr = build_equilibrium_gate_instruction(&features, &cfg);
         let in_rate = features.in_rate;
         let digest_rate = features.digest_rate;
         // 读回基线：仅认发射之后且指令队列清空的快照（快照不可得=本轮必超时）
@@ -517,7 +508,10 @@ async fn equilibrium_evaluator_loop(
             Ok((_, _, v)) => v,
             Err(_) => u64::MAX,
         };
-        let mut view = match api.send_command(instr) {
+        // 切换批后单发 gate（立法 v0.12.0）：gate 已接管主契约
+        // payload.equilibrium/_cause，影子双跑与比对机制随 equilibrium_check
+        // 规则退役同批退场；undetermined 经 cause=missing_observation 可辨。
+        let view = match api.send_command(instr) {
             Ok(_) => match read_verdict(&api, baseline_version, "equilibrium", "equilibrium_cause")
                 .await
             {
@@ -527,7 +521,6 @@ async fn equilibrium_evaluator_loop(
                     window_secs: cfg.window_secs,
                     in_rate,
                     digest_rate,
-                    ..EquilibriumView::default()
                 },
                 None => EquilibriumView {
                     stable: None,
@@ -535,7 +528,6 @@ async fn equilibrium_evaluator_loop(
                     window_secs: cfg.window_secs,
                     in_rate,
                     digest_rate,
-                    ..EquilibriumView::default()
                 },
             },
             Err(e) => EquilibriumView {
@@ -544,57 +536,17 @@ async fn equilibrium_evaluator_loop(
                 window_secs: cfg.window_secs,
                 in_rate,
                 digest_rate,
-                ..EquilibriumView::default()
             },
         };
-        // 影子双跑（立法 v0.11.0）：primary 未判定（超时/不可达）则影子停发
-        // ——不制造伪一致样本；primary 已判定才同窗双发 gate 读回比对。
-        if view.stable.is_some() {
-            let gate_instr = build_equilibrium_gate_instruction(&features, &cfg);
-            let gate_baseline = match api.snapshot().await {
-                Ok((_, _, v)) => v,
-                Err(_) => u64::MAX,
-            };
-            match api.send_command(gate_instr) {
-                Ok(_) => match read_verdict(
-                    &api,
-                    gate_baseline,
-                    "equilibrium_gate",
-                    "equilibrium_gate_cause",
-                )
-                .await
-                {
-                    Some((verdict, cause)) => {
-                        view.gate_verdict = verdict.clone();
-                        view.gate_cause = cause;
-                        view.gate_matches = verdict
-                            .as_deref()
-                            .and_then(|s| match s {
-                                "stable" => Some(true),
-                                "unstable" => Some(false),
-                                _ => None,
-                            })
-                            .zip(view.stable)
-                            .map(|(gate, primary)| gate == primary);
-                    }
-                    None => {
-                        view.gate_cause = Some("readback_timeout".to_string());
-                    }
-                },
-                Err(e) => {
-                    view.gate_cause = Some(format!("reactor_unavailable: {e}"));
-                }
-            }
-        }
         publish_view(view);
     }
 }
 
 /// 读回本窗判定：轮询直至快照版本越过发射基线且指令队列清空，取
-/// 指定判定/归因属性（primary=equilibrium[_cause]，影子=equilibrium_gate[_cause]）。
-/// 超时 = None（fail-visible 不猜）。注释性竞态余量：基线捕获与指令处理之间
-/// 若有无关 fact 抬版本，读回可能取到上一窗判定——均衡判定本身幂等收敛，
-/// 演练面流量受控；影子读回经专用属性隔离，永不误取 primary 判定词。
+/// `payload.equilibrium / equilibrium_cause`（立法 v0.12.0 起 gate 接管
+/// 主契约，单读回面）。超时 = None（fail-visible 不猜）。注释性竞态余量：
+/// 基线捕获与指令处理之间若有无关 fact 抬版本，读回可能取到上一窗判定
+/// ——均衡判定本身幂等收敛，演练面流量受控。
 async fn read_verdict(
     api: &crate::api::server::GovernanceApi,
     baseline_version: u64,
@@ -621,54 +573,7 @@ async fn read_verdict(
     }
 }
 
-/// 组装 `equilibrium_check` 八参指令（立法 v0.10.0 参数面：调用方直传
-/// 特征值与阈值，规则层零数据重塑）。发射面契约冻结：参数名与取值
-/// 同特征定义表口径一一对应，对外形态不变。
-fn build_equilibrium_instruction(
-    values: &FeatureValues,
-    cfg: &EquilibriumEvaluatorConfig,
-) -> evorule_tcb::JsonValue {
-    use std::collections::BTreeMap;
-
-    use evorule_tcb::JsonValue;
-
-    let mut params = BTreeMap::new();
-    params.insert("in_rate".to_string(), JsonValue::Integer(values.in_rate));
-    params.insert(
-        "digest_rate".to_string(),
-        JsonValue::Integer(values.digest_rate),
-    );
-    params.insert(
-        "alert_free_windows".to_string(),
-        JsonValue::Integer(values.alert_free_windows),
-    );
-    params.insert(
-        "alert_free_windows_required".to_string(),
-        JsonValue::Integer(cfg.alert_free_windows_required),
-    );
-    params.insert(
-        "coverage".to_string(),
-        JsonValue::Integer(values.coverage_ratio),
-    );
-    params.insert(
-        "coverage_min".to_string(),
-        JsonValue::Integer(cfg.coverage_min),
-    );
-    params.insert(
-        "certified_streak".to_string(),
-        JsonValue::Integer(values.certified_streak),
-    );
-    params.insert(
-        "certified_streak_min".to_string(),
-        JsonValue::Integer(cfg.certified_streak_min),
-    );
-    let mut instr = BTreeMap::new();
-    instr.insert("type".to_string(), JsonValue::string("equilibrium_check"));
-    instr.insert("params".to_string(), JsonValue::Object(params));
-    JsonValue::Object(instr)
-}
-
-/// 组装 `equilibrium_gate` 影子指令（立法 v0.11.0 参数面：立法面引用
+/// 组装 `equilibrium_gate` 指令（立法 v0.12.0 参数面：立法面引用
 /// 特征 id——coverage_ratio/net_intake_rate 用注册名而非发射旧名
 /// coverage；net_intake_rate 为判据①证据参数随行不参与比较）。
 fn build_equilibrium_gate_instruction(
@@ -719,7 +624,7 @@ fn build_equilibrium_gate_instruction(
     JsonValue::Object(instr)
 }
 
-/// Windowed observation state behind the eight `equilibrium_check` parameters.
+/// Windowed observation state behind the `equilibrium_gate` parameters.
 #[derive(Debug, Default)]
 pub struct EquilibriumWindows {
     inner: Mutex<WindowsState>,
@@ -805,7 +710,7 @@ impl EquilibriumWindows {
         s.last_coverage = coverage;
     }
 
-    /// Snapshot handed to the rule layer as the eight `equilibrium_check` params
+    /// Snapshot handed to the rule layer as the `equilibrium_gate` params
     /// (rates are caller-side differentials over these totals).
     pub fn snapshot(&self) -> WindowsSnapshot {
         let s = self
