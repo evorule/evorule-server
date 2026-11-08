@@ -1163,6 +1163,138 @@ async fn test_equilibrium_check_legislation() {
     assert_eq!(cause.as_deref(), Some("missing_observation"));
 }
 
+/// 构造 equilibrium_gate 影子指令（Tier 1 立法 v0.11.0：立法面引用特征 id，
+/// coverage_ratio/net_intake_rate 用注册名，net_intake_rate 为判据①证据参数）
+#[allow(clippy::too_many_arguments)]
+fn make_equilibrium_gate_instruction(
+    in_rate: i64,
+    digest_rate: i64,
+    net_intake_rate: i64,
+    alert_free_windows: i64,
+    coverage_ratio: i64,
+    certified_streak: i64,
+    alert_free_windows_required: i64,
+    coverage_min: i64,
+    certified_streak_min: i64,
+) -> JsonValue {
+    let mut params = BTreeMap::new();
+    params.insert("in_rate".to_string(), JsonValue::Integer(in_rate));
+    params.insert("digest_rate".to_string(), JsonValue::Integer(digest_rate));
+    params.insert(
+        "net_intake_rate".to_string(),
+        JsonValue::Integer(net_intake_rate),
+    );
+    params.insert(
+        "alert_free_windows".to_string(),
+        JsonValue::Integer(alert_free_windows),
+    );
+    params.insert(
+        "coverage_ratio".to_string(),
+        JsonValue::Integer(coverage_ratio),
+    );
+    params.insert(
+        "certified_streak".to_string(),
+        JsonValue::Integer(certified_streak),
+    );
+    params.insert(
+        "alert_free_windows_required".to_string(),
+        JsonValue::Integer(alert_free_windows_required),
+    );
+    params.insert("coverage_min".to_string(), JsonValue::Integer(coverage_min));
+    params.insert(
+        "certified_streak_min".to_string(),
+        JsonValue::Integer(certified_streak_min),
+    );
+    let mut instr = BTreeMap::new();
+    instr.insert("type".to_string(), JsonValue::string("equilibrium_gate"));
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+/// gate 影子裁决读回：返回（判定原词, 归因, 契约 schema_version）。
+async fn run_equilibrium_gate_verdict(
+    instr: JsonValue,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let core_eval = load_core_eval();
+    let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+    let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+    tx.send(Fact::Command {
+        id: FactId(1),
+        instruction: instr,
+    })
+    .unwrap();
+    let snapshot = wait_for_stable(&mut rx, &facts_log)
+        .await
+        .expect("Timed out waiting for Stable");
+    (
+        snapshot
+            .get("equilibrium_gate")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        snapshot
+            .get("equilibrium_gate_cause")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        snapshot
+            .get("equilibrium_schema_version")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    )
+}
+
+/// equilibrium_gate 立法场景（v0.11.0）：与 v0.10.0 判定逐点同构的双跑一致
+/// 黄金向量（等号边界/单判据失稳归因）+ 三态 undetermined（缺参弃权留痕，
+/// 不再伪装失稳）+ schema_version 契约字段逐臂在写
+#[tokio::test]
+async fn test_equilibrium_gate_legislation() {
+    // 场景 1：四判据全部恰在等号边界 -> stable（与 check 黄金向量同参同判）
+    let (verdict, cause, schema) = run_equilibrium_gate_verdict(make_equilibrium_gate_instruction(
+        100, 100, 0, 5, 90, 3, 5, 90, 3,
+    ))
+    .await;
+    assert_eq!(
+        verdict.as_deref(),
+        Some("stable"),
+        "四判据全等号边界应判 stable; cause={cause:?}"
+    );
+    assert_eq!(cause.as_deref(), Some("none"));
+    assert_eq!(schema.as_deref(), Some("1"), "stable 臂应写 schema_version");
+
+    // 场景 2：in_rate > digest_rate -> unstable + 同款归因（双跑一致）
+    let (verdict, cause, schema) = run_equilibrium_gate_verdict(make_equilibrium_gate_instruction(
+        120, 100, 20, 5, 90, 3, 5, 90, 3,
+    ))
+    .await;
+    assert_eq!(verdict.as_deref(), Some("unstable"));
+    assert_eq!(cause.as_deref(), Some("in_rate_exceeds_digest_rate"));
+    assert_eq!(schema.as_deref(), Some("1"));
+
+    // 场景 3：coverage_ratio 低于下限（特征 id 参数面）-> unstable + 归因
+    let (verdict, cause, _) = run_equilibrium_gate_verdict(make_equilibrium_gate_instruction(
+        100, 100, 0, 5, 800, 3, 5, 900, 3,
+    ))
+    .await;
+    assert_eq!(verdict.as_deref(), Some("unstable"));
+    assert_eq!(cause.as_deref(), Some("coverage_below_minimum"));
+
+    // 场景 4：缺观测（去掉 coverage_ratio 参）-> undetermined 弃权留痕
+    //（v0.11.0 语义改进：与 check 的 fail-closed unstable 差异面，勿混同）
+    let mut instr = make_equilibrium_gate_instruction(100, 100, 0, 5, 90, 3, 5, 90, 3);
+    if let JsonValue::Object(ref mut m) = instr {
+        if let Some(JsonValue::Object(ref mut p)) = m.get_mut("params") {
+            p.remove("coverage_ratio");
+        }
+    }
+    let (verdict, cause, schema) = run_equilibrium_gate_verdict(instr).await;
+    assert_eq!(verdict.as_deref(), Some("undetermined"));
+    assert_eq!(cause.as_deref(), Some("missing_observation"));
+    assert_eq!(
+        schema.as_deref(),
+        Some("1"),
+        "undetermined 臂也应写 schema_version（fail-visible 留痕）"
+    );
+}
+
 // ============================================================================
 // 均衡观测演练（接线 e2e）：窗结算任务发射 + 规则层判定 + 读回视图
 // ============================================================================
@@ -1219,7 +1351,12 @@ async fn test_equilibrium_drill_end_to_end() {
         },
     );
     let v = wait_for_view("fail-closed verdict", |v| {
-        v.stable == Some(false) && v.last_cause.as_deref().is_some_and(|c| c != "none")
+        v.stable == Some(false)
+            && v.last_cause.as_deref().is_some_and(|c| c != "none")
+            // 影子双跑：gate 判定应与 primary 同判同归因（一致率生死判据）
+            && v.gate_matches == Some(true)
+            && v.gate_verdict.as_deref() == Some("unstable")
+            && v.gate_cause == v.last_cause
     })
     .await;
     assert!(
@@ -1250,13 +1387,22 @@ async fn test_equilibrium_drill_end_to_end() {
     }
     let v = wait_for_view("supply-surge verdict", |v| {
         v.last_cause.as_deref() == Some("in_rate_exceeds_digest_rate")
+            && v.gate_matches == Some(true)
     })
     .await;
     assert_eq!(v.stable, Some(false), "供给扰动应失稳，got {v:?}");
     for _ in 0..5 {
         eq.record_digested();
     }
-    let v = wait_for_view("relaxed verdict", |v| v.stable == Some(true)).await;
+    let v = wait_for_view("relaxed verdict", |v| {
+        v.stable == Some(true) && v.gate_matches == Some(true)
+    })
+    .await;
+    assert_eq!(
+        v.gate_verdict.as_deref(),
+        Some("stable"),
+        "影子应同判 stable，got {v:?}"
+    );
     assert_eq!(
         v.last_cause.as_deref(),
         Some("none"),
@@ -1279,11 +1425,15 @@ async fn test_equilibrium_drill_end_to_end() {
     equilibrium_obs::record_alert();
     let v = wait_for_view("alert verdict", |v| {
         v.last_cause.as_deref() == Some("alert_free_windows_below_required")
+            && v.gate_matches == Some(true)
     })
     .await;
     assert_eq!(v.stable, Some(false), "警情窗应失稳清零无警连计，got {v:?}");
     let relaxed_at = std::time::Instant::now();
-    let v = wait_for_view("alert-relaxed verdict", |v| v.stable == Some(true)).await;
+    let v = wait_for_view("alert-relaxed verdict", |v| {
+        v.stable == Some(true) && v.gate_matches == Some(true)
+    })
+    .await;
     assert_eq!(v.last_cause.as_deref(), Some("none"));
     let relax_secs = relaxed_at.elapsed().as_secs_f64();
     eprintln!("弛豫实测：警情清零后 {relax_secs:.1}s 回稳（阈值 3 窗 x 1s 窗长）");
@@ -1323,6 +1473,7 @@ async fn test_equilibrium_drill_end_to_end() {
     }
     let v = wait_for_view("storm verdict", |v| {
         v.last_cause.as_deref() == Some("in_rate_exceeds_digest_rate")
+            && v.gate_matches == Some(true)
     })
     .await;
     assert_eq!(
@@ -1333,7 +1484,10 @@ async fn test_equilibrium_drill_end_to_end() {
     for _ in 0..50 {
         eq.record_digested();
     }
-    let v = wait_for_view("storm-relaxed verdict", |v| v.stable == Some(true)).await;
+    let v = wait_for_view("storm-relaxed verdict", |v| {
+        v.stable == Some(true) && v.gate_matches == Some(true)
+    })
+    .await;
     assert_eq!(
         v.last_cause.as_deref(),
         Some("none"),
