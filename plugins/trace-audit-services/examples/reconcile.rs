@@ -56,7 +56,7 @@ fn envelope(service: &str, body: JsonValue) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("用法: reconcile <events.ndjson> [era|sentinel|entropy:N]");
+        eprintln!("用法: reconcile <events.ndjson> [era|density|sentinel|entropy:N|oos:SCOPE|BASE]");
         std::process::exit(2);
     }
     let path = &args[1];
@@ -109,6 +109,14 @@ fn main() {
             let input = JsonValue::object_from_pairs(&[("events", events_arg.clone())]);
             match svc.execute(&input) {
                 Ok(out) => println!("{}", envelope("trace_era_split", out)),
+                Err(e) => println!("{{\"error\":\"{e}\"}}"),
+            }
+            ran = true;
+        } else if mode == "density" {
+            let svc = evorule_trace_audit_services::services::mk_approval_density();
+            let input = JsonValue::object_from_pairs(&[("events", events_arg.clone())]);
+            match svc.execute(&input) {
+                Ok(out) => println!("{}", envelope("trace_approval_density", out)),
                 Err(e) => println!("{{\"error\":\"{e}\"}}"),
             }
             ran = true;
