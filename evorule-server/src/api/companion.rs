@@ -1149,7 +1149,8 @@ impl CompanionHub {
         let cap = evorule_rule_schema::MAX_TRANSFORM_RULES;
         // 均衡态呈现块：五元窗快照+最近窗间差分 rates+均衡布尔（评估任务
         // 窗结算后经规则层判定缓存；None=反应器不可达/读回超时，fail-visible
-        // 不猜稳态）+最近归因+窗长
+        // 不猜稳态）+最近归因+窗长；gate=影子双跑块（立法 v0.11.0，向后兼容
+        // 加字段：verdict 原词/归因/与 primary 一致布尔，None=未判定或不可比）
         let eq_windows = crate::equilibrium_obs::shared().snapshot();
         let eq_view = crate::equilibrium_obs::view();
         let equilibrium = json!({
@@ -1163,6 +1164,11 @@ impl CompanionHub {
             "stable": eq_view.stable,
             "last_cause": eq_view.last_cause,
             "window_secs": eq_view.window_secs,
+            "gate": {
+                "verdict": eq_view.gate_verdict,
+                "cause": eq_view.gate_cause,
+                "matches_primary": eq_view.gate_matches,
+            },
         });
         json!({
             "enabled": self.enabled.load(Ordering::Relaxed),

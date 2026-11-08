@@ -97,6 +97,13 @@ pub struct EquilibriumView {
     pub window_secs: u64,
     pub in_rate: i64,
     pub digest_rate: i64,
+    /// 影子双跑（立法 v0.11.0 `equilibrium_gate`）：影子判定原词
+    /// stable|unstable|undetermined；None=影子未判定（停发/读回超时）。
+    pub gate_verdict: Option<String>,
+    pub gate_cause: Option<String>,
+    /// 影子与 primary 判定一致（按 stable 布尔比对）；None=任一侧未判定
+    /// 或影子为 undetermined（三态不可比布尔，不计入一致率分母外样本）。
+    pub gate_matches: Option<bool>,
 }
 
 static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
@@ -105,6 +112,9 @@ static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
     window_secs: 0,
     in_rate: 0,
     digest_rate: 0,
+    gate_verdict: None,
+    gate_cause: None,
+    gate_matches: None,
 });
 
 /// 发布最近窗结算视图（评估任务内部调用）。
@@ -464,7 +474,9 @@ const READBACK_POLL: Duration = Duration::from_millis(100);
 
 /// 装配均衡评估任务：每窗结算一次（取走窗内 alert 计数 → `close_window`）
 /// → 组装八参发射 `equilibrium_check` 进单反应器 → 读回
-/// `payload.equilibrium` 缓存视图供 status 呈现。
+/// `payload.equilibrium` 缓存视图供 status 呈现。primary 判定成立时同窗
+/// 影子双发 `equilibrium_gate`（立法 v0.11.0）读回比对（影子双跑一致率
+/// 为切换生死判据；primary 未判定则影子停发，不制造伪一致样本）。
 ///
 /// 纯观测零拦截：任何失败路径只影响本任务的视图发布（stable=None），
 /// 不改写任何既有响应路径。
@@ -505,14 +517,17 @@ async fn equilibrium_evaluator_loop(
             Ok((_, _, v)) => v,
             Err(_) => u64::MAX,
         };
-        let view = match api.send_command(instr) {
-            Ok(_) => match read_verdict(&api, baseline_version).await {
-                Some((stable, cause)) => EquilibriumView {
-                    stable,
+        let mut view = match api.send_command(instr) {
+            Ok(_) => match read_verdict(&api, baseline_version, "equilibrium", "equilibrium_cause")
+                .await
+            {
+                Some((verdict, cause)) => EquilibriumView {
+                    stable: verdict.as_deref().map(|s| s == "stable"),
                     last_cause: cause,
                     window_secs: cfg.window_secs,
                     in_rate,
                     digest_rate,
+                    ..EquilibriumView::default()
                 },
                 None => EquilibriumView {
                     stable: None,
@@ -520,6 +535,7 @@ async fn equilibrium_evaluator_loop(
                     window_secs: cfg.window_secs,
                     in_rate,
                     digest_rate,
+                    ..EquilibriumView::default()
                 },
             },
             Err(e) => EquilibriumView {
@@ -528,20 +544,63 @@ async fn equilibrium_evaluator_loop(
                 window_secs: cfg.window_secs,
                 in_rate,
                 digest_rate,
+                ..EquilibriumView::default()
             },
         };
+        // 影子双跑（立法 v0.11.0）：primary 未判定（超时/不可达）则影子停发
+        // ——不制造伪一致样本；primary 已判定才同窗双发 gate 读回比对。
+        if view.stable.is_some() {
+            let gate_instr = build_equilibrium_gate_instruction(&features, &cfg);
+            let gate_baseline = match api.snapshot().await {
+                Ok((_, _, v)) => v,
+                Err(_) => u64::MAX,
+            };
+            match api.send_command(gate_instr) {
+                Ok(_) => match read_verdict(
+                    &api,
+                    gate_baseline,
+                    "equilibrium_gate",
+                    "equilibrium_gate_cause",
+                )
+                .await
+                {
+                    Some((verdict, cause)) => {
+                        view.gate_verdict = verdict.clone();
+                        view.gate_cause = cause;
+                        view.gate_matches = verdict
+                            .as_deref()
+                            .and_then(|s| match s {
+                                "stable" => Some(true),
+                                "unstable" => Some(false),
+                                _ => None,
+                            })
+                            .zip(view.stable)
+                            .map(|(gate, primary)| gate == primary);
+                    }
+                    None => {
+                        view.gate_cause = Some("readback_timeout".to_string());
+                    }
+                },
+                Err(e) => {
+                    view.gate_cause = Some(format!("reactor_unavailable: {e}"));
+                }
+            }
+        }
         publish_view(view);
     }
 }
 
 /// 读回本窗判定：轮询直至快照版本越过发射基线且指令队列清空，取
-/// `payload.equilibrium / equilibrium_cause`。超时 = None（fail-visible
-/// 不猜）。注释性竞态余量：基线捕获与指令处理之间若有无关 fact 抬版本，
-/// 读回可能取到上一窗判定——均衡判定本身幂等收敛，演练面流量受控。
+/// 指定判定/归因属性（primary=equilibrium[_cause]，影子=equilibrium_gate[_cause]）。
+/// 超时 = None（fail-visible 不猜）。注释性竞态余量：基线捕获与指令处理之间
+/// 若有无关 fact 抬版本，读回可能取到上一窗判定——均衡判定本身幂等收敛，
+/// 演练面流量受控；影子读回经专用属性隔离，永不误取 primary 判定词。
 async fn read_verdict(
     api: &crate::api::server::GovernanceApi,
     baseline_version: u64,
-) -> Option<(Option<bool>, Option<String>)> {
+    verdict_attr: &str,
+    cause_attr: &str,
+) -> Option<(Option<String>, Option<String>)> {
     let deadline = tokio::time::Instant::now() + READBACK_TIMEOUT;
     loop {
         tokio::time::sleep(READBACK_POLL).await;
@@ -556,12 +615,9 @@ async fn read_verdict(
             .get("__exec__")
             .and_then(|e| e.get("payload"))
             .unwrap_or(&payload);
-        let verdict = business.get("equilibrium").and_then(|v| v.as_str());
-        let cause = business
-            .get("equilibrium_cause")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        return Some((verdict.map(|s| s == "stable"), cause));
+        let verdict = business.get(verdict_attr).and_then(|v| v.as_str());
+        let cause = business.get(cause_attr).and_then(|v| v.as_str());
+        return Some((verdict.map(|s| s.to_string()), cause.map(|s| s.to_string())));
     }
 }
 
@@ -608,6 +664,57 @@ fn build_equilibrium_instruction(
     );
     let mut instr = BTreeMap::new();
     instr.insert("type".to_string(), JsonValue::string("equilibrium_check"));
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+/// 组装 `equilibrium_gate` 影子指令（立法 v0.11.0 参数面：立法面引用
+/// 特征 id——coverage_ratio/net_intake_rate 用注册名而非发射旧名
+/// coverage；net_intake_rate 为判据①证据参数随行不参与比较）。
+fn build_equilibrium_gate_instruction(
+    values: &FeatureValues,
+    cfg: &EquilibriumEvaluatorConfig,
+) -> evorule_tcb::JsonValue {
+    use std::collections::BTreeMap;
+
+    use evorule_tcb::JsonValue;
+
+    let mut params = BTreeMap::new();
+    params.insert("in_rate".to_string(), JsonValue::Integer(values.in_rate));
+    params.insert(
+        "digest_rate".to_string(),
+        JsonValue::Integer(values.digest_rate),
+    );
+    params.insert(
+        "net_intake_rate".to_string(),
+        JsonValue::Integer(values.net_intake_rate),
+    );
+    params.insert(
+        "alert_free_windows".to_string(),
+        JsonValue::Integer(values.alert_free_windows),
+    );
+    params.insert(
+        "coverage_ratio".to_string(),
+        JsonValue::Integer(values.coverage_ratio),
+    );
+    params.insert(
+        "certified_streak".to_string(),
+        JsonValue::Integer(values.certified_streak),
+    );
+    params.insert(
+        "alert_free_windows_required".to_string(),
+        JsonValue::Integer(cfg.alert_free_windows_required),
+    );
+    params.insert(
+        "coverage_min".to_string(),
+        JsonValue::Integer(cfg.coverage_min),
+    );
+    params.insert(
+        "certified_streak_min".to_string(),
+        JsonValue::Integer(cfg.certified_streak_min),
+    );
+    let mut instr = BTreeMap::new();
+    instr.insert("type".to_string(), JsonValue::string("equilibrium_gate"));
     instr.insert("params".to_string(), JsonValue::Object(params));
     JsonValue::Object(instr)
 }
@@ -848,6 +955,59 @@ mod tests {
         // 发射面参数 coverage 冻结取 coverage_ratio 注册值。
         let m = v.to_map();
         assert_eq!(m["coverage_ratio"], v.coverage_ratio);
+    }
+
+    #[test]
+    fn test_gate_instruction_params_use_feature_ids() {
+        use evorule_tcb::JsonValue;
+        // 影子指令（立法 v0.11.0）：参数面引用特征 id——coverage_ratio 替代
+        // 发射旧名 coverage，net_intake_rate 作判据①证据参数随行；九参齐全。
+        let cfg = EquilibriumEvaluatorConfig {
+            window_secs: 1,
+            alert_free_windows_required: 2,
+            coverage_min: 900,
+            certified_streak_min: 3,
+        };
+        let values = FeatureValues {
+            proposals_in_total: 10,
+            digested_total: 9,
+            in_rate: 3,
+            digest_rate: 5,
+            net_intake_rate: -2,
+            window_alert_count: 0,
+            alert_free_windows: 5,
+            coverage_ratio: 1000,
+            certified_streak: 7,
+        };
+        let instr = build_equilibrium_gate_instruction(&values, &cfg);
+        let JsonValue::Object(m) = &instr else {
+            panic!("instruction must be object");
+        };
+        assert_eq!(m["type"], JsonValue::string("equilibrium_gate"));
+        let JsonValue::Object(p) = &m["params"] else {
+            panic!("params must be object");
+        };
+        let expected: std::collections::BTreeMap<&str, i64> = [
+            ("in_rate", 3),
+            ("digest_rate", 5),
+            ("net_intake_rate", -2),
+            ("alert_free_windows", 5),
+            ("coverage_ratio", 1000),
+            ("certified_streak", 7),
+            ("alert_free_windows_required", 2),
+            ("coverage_min", 900),
+            ("certified_streak_min", 3),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(p.len(), expected.len(), "九参齐全");
+        for (k, v) in &expected {
+            assert_eq!(
+                p.get(*k),
+                Some(&JsonValue::Integer(*v)),
+                "参数 {k} 应按特征 id 直传 {v}"
+            );
+        }
     }
 
     #[test]
