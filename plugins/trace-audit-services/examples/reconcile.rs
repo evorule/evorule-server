@@ -56,7 +56,9 @@ fn envelope(service: &str, body: JsonValue) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("用法: reconcile <events.ndjson> [era|density|sentinel|entropy:N|oos:SCOPE|BASE]");
+        eprintln!(
+            "用法: reconcile <events.ndjson> [era|density|sentinel|entropy:N|oos:SCOPE|BASE]"
+        );
         std::process::exit(2);
     }
     let path = &args[1];
