@@ -1,0 +1,26 @@
+{
+    "$comment": "原生服务声明 SSOT:本插件执行侧 NATIVE_SERVICES(plugins/trace-audit-services/src/lib.rs,含 make 构造子)与治理侧目录种子(evorule-rule 嵌入副本)的共同事实源。新增服务 = ① 本文件追加一项 ② 执行侧 NATIVE_SERVICES 追加 make 项 ③ 运行 scripts/sync-native-services.ps1 同步治理侧嵌入副本。顺序即路由查找序;name/sensitive/description 三字段与顺序均被双侧守卫锁定。注意:本文件为 trace-audit-services 插件本地声明,与其他插件声明文件分仓分文件、由治理侧聚合。",
+    "version": 1,
+    "services": [
+        {
+            "name": "trace_behavior_entropy",
+            "sensitive": false,
+            "description": "run 事件流行为熵判据(ToolCall 到达序滑动窗口工具名香农熵 H=-Σp·log₂p,缺省窗宽10步长窗半;前后半程工具分布 JS 散度;熵与散度按 4 位小数定点字符串输出,确定性)"
+        },
+        {
+            "name": "trace_approval_density",
+            "sensitive": false,
+            "description": "run 事件流审批密度判据(ApprovalRequired/Result 密度与结论分布、auto_rejected 计数、流级 Error 计数与消息样本、帧对账未闭合清单,确定性)"
+        },
+        {
+            "name": "trace_era_split",
+            "sensitive": false,
+            "description": "事件流分代切分索引(三重正交判据:J1 链哈希字段组形态翻转/J2 相邻行 ts 间隔超 24h/J3 react 主循环模型翻转旁证;边界取 J1∨J2 命中点,逐代行号/seq 区间/判据命中快照/摘要,只读零改写输入,确定性)"
+        },
+        {
+            "name": "trace_era_mixing_sentinel",
+            "sensitive": false,
+            "description": "时代混杂哨兵(检测单账面内多时代事件拼接:相邻 ts 间隔超 24h 与 react 主循环模型混桶两条证据面;混档判读无效化门前置,确定性)"
+        }
+    ]
+}
