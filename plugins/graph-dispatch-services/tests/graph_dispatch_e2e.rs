@@ -328,12 +328,15 @@ async fn fractional_domain_bounds_accepted_via_tcb_decimal_string() {
         ("adjudications", golden_adjudications()),
     ]);
     let out_in = router.execute(&svc_params(args_in)).await.unwrap();
-    assert!(out_in
-        .get("regime_invalidated")
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .is_empty(), "域内小数修订零失效: {out_in:?}");
+    assert!(
+        out_in
+            .get("regime_invalidated")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "域内小数修订零失效: {out_in:?}"
+    );
     let affected_in = out_in
         .get("affected_instructions")
         .unwrap()
@@ -360,7 +363,11 @@ async fn fractional_domain_bounds_accepted_via_tcb_decimal_string() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    assert_eq!(invalidated, vec!["clearance", "thermal"], "域外失效含耦合波及");
+    assert_eq!(
+        invalidated,
+        vec!["clearance", "thermal"],
+        "域外失效含耦合波及"
+    );
     assert_eq!(
         out_out.get("propagation_depth").unwrap().as_i64(),
         Some(2),
