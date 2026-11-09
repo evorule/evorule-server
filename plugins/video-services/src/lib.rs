@@ -34,6 +34,8 @@
 //! 8. `qc_temporal_check` — 帧间守恒判定（守恒谓词引擎原语三，规则表参数化）
 //! 9. `anatomy_joint_angle_eval` — 三点关节角判定（域扩展：手部 QC 静态面）
 //! 10. `anatomy_hand_orientation_eval` — 手部朝向判定（手性/共线退化，域扩展）
+//! 11. `anatomy_ik_reachability_eval` — IK 可达性预检（链长环形域闭式，机械域扩展）
+//! 12. `anatomy_fk_replay_eval` — FK 正解复算（有理角合成+残差闭区间，机械域扩展）
 
 #![forbid(unsafe_code)]
 
@@ -47,9 +49,10 @@ use evorule_tcb::JsonValue;
 pub mod services;
 
 use services::{
-    mk_anatomy_hand_orientation_eval, mk_anatomy_joint_angle_eval, mk_color_contrast_ratio_eval,
-    mk_qc_count_check, mk_qc_domain_check, mk_qc_temporal_check, mk_skeleton_probe,
-    mk_timeline_consistency_check, mk_video_frame_sequence_eval, mk_video_track_consistency_eval,
+    mk_anatomy_fk_replay_eval, mk_anatomy_hand_orientation_eval, mk_anatomy_ik_reachability_eval,
+    mk_anatomy_joint_angle_eval, mk_color_contrast_ratio_eval, mk_qc_count_check,
+    mk_qc_domain_check, mk_qc_temporal_check, mk_skeleton_probe, mk_timeline_consistency_check,
+    mk_video_frame_sequence_eval, mk_video_track_consistency_eval,
 };
 
 // ============================================================================
@@ -139,6 +142,22 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
         r#"{"type":"object","properties":{"points":{"type":"object","description":"{点名: [x_str, y_str]} 坐标映射,同 anatomy_joint_angle_eval"},"rules":{"type":"array","items":{"type":"object","description":"{rule_id, kind, points, sign, epsilon},kind ∈ chirality|collinearity|noncollinearity,chirality 须给 sign ∈ ccw|cw,epsilon 为叉积容差(单位²,缺省 0)"}}},"required":["points","rules"]}"#,
     ),
     make: mk_anatomy_hand_orientation_eval,
+}, NativeServiceDef {
+    name: "anatomy_ik_reachability_eval",
+    sensitive: false,
+    description: "IK 可达性预检核(链段点列总长 L 与目标距 d 环形域闭式判定,内界分段闭式=单段 0/二段 L−2·Lmin/三段以上折叠定理 L−2·Lmax,平方整数比较零开方零浮点零超越函数,链外与内洞出 unreachable 规则ID+L/d 定点证据;只证不可达不证可达,数值 IK 收敛性与关节限位留引擎侧;机械域 IK 预检面;规则表参数化;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"points":{"type":"object","description":"{点名: [x_str, y_str]} 坐标映射,同 anatomy_joint_angle_eval"},"rules":{"type":"array","items":{"type":"object","description":"{rule_id, points, target},points 为链段点名数组按序 ≥2 点,相邻两点成一段,target 为目标点名"}}},"required":["points","rules"]}"#,
+    ),
+    make: mk_anatomy_ik_reachability_eval,
+}, NativeServiceDef {
+    name: "anatomy_fk_replay_eval",
+    sensitive: false,
+    description: "FK 正解复算核(链段角以 (cos,sin) 十进制有理数对入参 1e6 定点判定面,tip 整数乘加递推零超越函数,检出 b 点不污染正解链=残差二次判别面,锚帧角核对 expect 成对校验,违例出残差/角不符逐轴定点证据;角度→三角换算留引擎提取侧;机械域 FK 复算面;规则表参数化;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"points":{"type":"object","description":"{点名: [x_str, y_str]} 坐标映射,同 anatomy_joint_angle_eval"},"chain":{"type":"array","items":{"type":"object","description":"{rule_id, a, b, cos, sin, expected?, tol?, expect_cos?, expect_sin?, angle_tol?},a/b=段两端点名(b 仅定段长),cos/sin=段绝对方向角余弦正弦十进制串 |·|≤1 须成对,expected=检出点名,tol 逐轴残差容差缺省 0"}}},"required":["points","chain"]}"#,
+    ),
+    make: mk_anatomy_fk_replay_eval,
 }];
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
@@ -193,8 +212,8 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
         assert_eq!(
-            total, 10,
-            "声明表应为 10 项(探针+时间轴校验+对比度+帧序列+轨迹守恒+守恒三原语+anatomy 两核)"
+            total, 12,
+            "声明表应为 12 项(探针+时间轴校验+对比度+帧序列+轨迹守恒+守恒三原语+anatomy 两核+机械域两核)"
         );
         for d in NATIVE_SERVICES {
             let _ = (d.make)();

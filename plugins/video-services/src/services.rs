@@ -2946,6 +2946,294 @@ pub fn mk_anatomy_hand_orientation_eval() -> Arc<dyn NativeService> {
     Arc::new(AnatomyHandOrientationEval)
 }
 
+// ----------------------------------------------------------------------------
+// anatomy_ik_reachability_eval — IK 可达性预检核（链长环形域闭式判定）
+// ----------------------------------------------------------------------------
+
+/// IK 可达性预检核：链段点列总长 L 与目标距 d 的环形域闭式判定。
+///
+/// 判定语义（annulus 环形域定理，零浮点零超越函数）：
+/// - 规则表逐条：{rule_id, points, target}——`points` 为链段点列
+///   （点名按序 ≥2 点成链，相邻两点成一段），L=Σ段长（isqrt 整数）；
+///   d=|target−链首|（平方整数比较，无开方截断入判定）；
+/// - 可达域内界分段闭式：单段=[0,L]；二段=|L1−L2|=L−2·Lmin；
+///   三段以上（折叠定理）=L−2·Lmax；均为整数运算；
+/// - d>L 出 `unreachable`（数学证明不可达，硬判）；d<内界出
+///   `unreachable`（内洞，同硬判）；d 恰在域内=未见数学不可达
+///   （数值 IK 收敛性与关节限位属引擎侧浮点面，不在本核判定域
+///   ——诚实两面：本核只证「不可达」，不证「可达」）；
+/// - 溢出预算：段平方和 ≤ 64 段×4e20=2.56e22 ≪ i128 上限；
+/// - 违例出 `unreachable`（规则 ID+L/d 定点证据）；点名缺失/链点
+///   <2/零长段/目标缺失拒收。
+struct AnatomyIkReachabilityEval;
+
+impl NativeService for AnatomyIkReachabilityEval {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let points = args
+            .get("points")
+            .and_then(JsonValue::as_object)
+            .ok_or("缺少必填参数 points — 自诊断指引: {点名: [x_str, y_str]}")?;
+        let rules = args
+            .get("rules")
+            .and_then(JsonValue::as_array)
+            .ok_or("缺少必填参数 rules — 自诊断指引: 规则表数组,每项 {rule_id, points, target}")?;
+        if rules.is_empty() {
+            return Err("rules 须为非空数组 — 自诊断指引: 至少 1 条可达性规则".to_string());
+        }
+        let mut violations: Vec<JsonValue> = Vec::new();
+        for (i, r) in rules.iter().enumerate() {
+            let obj = r.as_object().ok_or(format!(
+                "rules[{i}] 须为规则对象 — 自诊断指引: {{rule_id, points, target}}"
+            ))?;
+            let rule_id = req_str(obj, "rule_id", &format!("rules[{i}].rule_id"))?;
+            let names: Vec<&str> = obj
+                .get("points")
+                .and_then(JsonValue::as_array)
+                .ok_or(format!(
+                    "rules[{i}] 缺 points — 自诊断指引: 链段点名数组按序 ≥2 点"
+                ))?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .ok_or(format!("rules[{i}].points 须为字符串点名数组"))
+                })
+                .collect::<Result<Vec<&str>, String>>()?;
+            if names.len() < 2 {
+                return Err(format!(
+                    "rules[{i}] 链段须 ≥2 点 — 自诊断指引: 相邻两点成一段"
+                ));
+            }
+            let mut big_l: i128 = 0;
+            let mut max_seg: i128 = 0;
+            let mut min_seg: i128 = i128::MAX;
+            let mut prev = anatomy_pt(points, names[0], &format!("rules[{i}]"))?;
+            for name_cur in names.iter().skip(1) {
+                let cur = anatomy_pt(points, name_cur, &format!("rules[{i}]"))?;
+                let dx = cur.0 - prev.0;
+                let dy = cur.1 - prev.1;
+                let seg2 = dx * dx + dy * dy;
+                if seg2 == 0 {
+                    return Err(format!(
+                        "rules[{i}] 链段 {name_cur:?} 零长（重合点） — 自诊断指引: 链点须互异"
+                    ));
+                }
+                let seg = isqrt(seg2);
+                big_l += seg;
+                if seg > max_seg {
+                    max_seg = seg;
+                }
+                if seg < min_seg {
+                    min_seg = seg;
+                }
+                prev = cur;
+            }
+            let target_name = req_str(obj, "target", &format!("rules[{i}].target"))?;
+            let t = anatomy_pt(points, target_name, &format!("rules[{i}]"))?;
+            let p0 = anatomy_pt(points, names[0], &format!("rules[{i}]"))?;
+            let ddx = t.0 - p0.0;
+            let ddy = t.1 - p0.1;
+            let d2 = ddx * ddx + ddy * ddy;
+            let d = isqrt(d2);
+            let n_seg = names.len() - 1;
+            let inner_len: i128 = match n_seg {
+                1 => 0,
+                2 => (big_l - 2 * min_seg).max(0),
+                _ => (big_l - 2 * max_seg).max(0),
+            };
+            let outside = d2 > big_l * big_l;
+            let in_hole = n_seg >= 2 && d2 < inner_len * inner_len;
+            if outside || in_hole {
+                let why = if outside {
+                    format!("目标距 d={d} 超链总长 L={big_l}（链外）")
+                } else {
+                    format!("目标距 d={d} 低于环形内界 {inner_len}（内洞）")
+                };
+                violations.push(qc_violation(
+                    rule_id,
+                    "unreachable",
+                    format!("链 {names:?} IK 可达性预检不可达:{why}（定点整数判定）"),
+                ));
+            }
+        }
+        let all_clean = violations.is_empty();
+        Ok(envelope(&[
+            ("service", JsonValue::string("anatomy_ik_reachability_eval")),
+            ("all_clean", JsonValue::Bool(all_clean)),
+            ("violations", JsonValue::Array(violations)),
+        ]))
+    }
+}
+
+/// 声明表构造子：IK 可达性预检
+pub fn mk_anatomy_ik_reachability_eval() -> Arc<dyn NativeService> {
+    Arc::new(AnatomyIkReachabilityEval)
+}
+
+// ----------------------------------------------------------------------------
+// anatomy_fk_replay_eval — FK 正解复算核（有理角合成+残差闭区间）
+// ----------------------------------------------------------------------------
+
+/// FK 正解复算核：链段角 (cos,sin) 有理数对合成正解点位 vs 检出点位残差判定。
+///
+/// 判定语义（零超越函数——角以 1e6 定点 (cos,sin) 直接入参，
+/// 角度→三角函数换算留引擎提取侧；整数乘加+1e6 整除合成）：
+/// - 入参 `chain`: 链段数组（顺序=关节序列），每项 {rule_id, a, b,
+///   cos, sin, expected?, tol?, expect_cos?, expect_sin?, angle_tol?}——
+///   a/b=该段两端点名（a 为前端，b 仅定段长），cos/sin=该段绝对方向角
+///   余弦正弦（1e6 定点字符串有理数，须成对且 |·|≤1e6）；首段 a 点=
+///   链基点（tip 起点）；
+/// - 合成：tipᵢ = tipᵢ₋₁ + lenᵢ×(cosᵢ, sinᵢ)/1e6（len=isqrt 段长平方，
+///   乘除全整数）；`expected` 给出时（检出点位名）残差 |tip−expected|
+///   逐轴 ≤ tol×1e6（tol 坐标单位字符串，缺省 0=严格）超阈出
+///   `fk_residual_violation`（逐轴定点残差证据）——检出 b 点不参与
+///   正解链，tip 与检出点位之差即提取噪声/真畸变的二次判别面；
+/// - `expect_cos`/`expect_sin` 给出时（锚帧角核对）入参角与期望角
+///   逐分量 |差| ≤ angle_tol×1e6（缺省 0）超阈出 `fk_angle_mismatch`；
+/// - 溢出预算：len×cos ≤ 1e10×1e6=1e16，累计 64 段 ≤ 6.4e17 ≪ i128；
+///   递推中 |tip 轴值| 超 4e12（=4e6 单位）拒收（链总长超工作空间契约）；
+/// - 整除截断每段 ≤1e-6 单位方向偏移，链级漂移在 1e6 定点契约内；
+///   同输入恒同输出（位元可重放）。
+struct AnatomyFkReplayEval;
+
+impl NativeService for AnatomyFkReplayEval {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let points = args
+            .get("points")
+            .and_then(JsonValue::as_object)
+            .ok_or("缺少必填参数 points — 自诊断指引: {点名: [x_str, y_str]}")?;
+        let chain = args.get("chain").and_then(JsonValue::as_array).ok_or(
+            "缺少必填参数 chain — 自诊断指引: 链段数组,每项 {rule_id, a, b, cos, sin, expected, tol}",
+        )?;
+        if chain.is_empty() {
+            return Err("chain 须为非空数组 — 自诊断指引: 至少 1 段".to_string());
+        }
+        let mut violations: Vec<JsonValue> = Vec::new();
+        let mut cx: i128 = 0;
+        let mut cy: i128 = 0;
+        let mut first = true;
+        for (i, r) in chain.iter().enumerate() {
+            let obj = r.as_object().ok_or(format!(
+                "chain[{i}] 须为链段对象 — 自诊断指引: {{rule_id, a, b, cos, sin, expected, tol}}"
+            ))?;
+            let rule_id = req_str(obj, "rule_id", &format!("chain[{i}].rule_id"))?;
+            let a = req_str(obj, "a", &format!("chain[{i}].a"))?;
+            let b = req_str(obj, "b", &format!("chain[{i}].b"))?;
+            let pa = anatomy_pt(points, a, &format!("chain[{i}]"))?;
+            let pb = anatomy_pt(points, b, &format!("chain[{i}]"))?;
+            let dx = pb.0 - pa.0;
+            let dy = pb.1 - pa.1;
+            let seg2 = dx * dx + dy * dy;
+            if seg2 == 0 {
+                return Err(format!(
+                    "chain[{i}] 段 {a}->{b} 零长 — 自诊断指引: 链点须互异"
+                ));
+            }
+            let len = isqrt(seg2);
+            let raw_c = req_str(obj, "cos", &format!("chain[{i}].cos"))?;
+            let raw_s = req_str(obj, "sin", &format!("chain[{i}].sin"))?;
+            let ci = parse_qc_rational(raw_c, &format!("chain[{i}].cos"), 7, 6)?;
+            let si = parse_qc_rational(raw_s, &format!("chain[{i}].sin"), 7, 6)?;
+            if ci.abs() > 1_000_000 || si.abs() > 1_000_000 {
+                return Err(format!(
+                    "chain[{i}] cos/sin 超单位域 |·|≤1 — 自诊断指引: 1e6 定点契约"
+                ));
+            }
+            let raw_ec = qc_rule_str(obj, "expect_cos");
+            let raw_es = qc_rule_str(obj, "expect_sin");
+            if raw_ec.is_some() || raw_es.is_some() {
+                let (Some(ec), Some(es)) = (raw_ec, raw_es) else {
+                    return Err(format!(
+                        "chain[{i}] expect_cos/expect_sin 须成对给出 — 自诊断指引: 锚帧角双分量"
+                    ));
+                };
+                let ecv = parse_qc_rational(ec, &format!("chain[{i}].expect_cos"), 7, 6)?;
+                let esv = parse_qc_rational(es, &format!("chain[{i}].expect_sin"), 7, 6)?;
+                let angle_tol: i128 = match qc_rule_str(obj, "angle_tol") {
+                    Some(s) => {
+                        let t = parse_qc_rational(s, &format!("chain[{i}].angle_tol"), 7, 6)?;
+                        if t < 0 {
+                            return Err(format!(
+                                "chain[{i}] angle_tol 须非负 — 自诊断指引: 容差为幅度"
+                            ));
+                        }
+                        t
+                    }
+                    None => 0,
+                };
+                if (ci - ecv).abs() > angle_tol || (si - esv).abs() > angle_tol {
+                    violations.push(qc_violation(
+                        rule_id,
+                        "fk_angle_mismatch",
+                        format!(
+                            "段 {a}->{b} 锚帧角不符:(cos,sin)入=({},{}),期望=({},{}),tol={}",
+                            fmt_cos(ci),
+                            fmt_cos(si),
+                            fmt_cos(ecv),
+                            fmt_cos(esv),
+                            fmt_qc(angle_tol)
+                        ),
+                    ));
+                }
+            }
+            if first {
+                cx = pa.0;
+                cy = pa.1;
+                first = false;
+            }
+            cx += (len * ci) / 1_000_000;
+            cy += (len * si) / 1_000_000;
+            const FK_TIP_BOUND: i128 = 4_000_000_000_000;
+            if cx.abs() > FK_TIP_BOUND || cy.abs() > FK_TIP_BOUND {
+                return Err(format!(
+                    "chain[{i}] 合成 tip 超工作空间契约（|轴值|≤4e6 单位） — 自诊断指引: 链总长或角序异常"
+                ));
+            }
+            if let Some(exp_name) = qc_rule_str(obj, "expected") {
+                let ex = anatomy_pt(points, exp_name, &format!("chain[{i}]"))?;
+                let tol: i128 = match qc_rule_str(obj, "tol") {
+                    Some(s) => {
+                        let t = parse_qc_rational(s, &format!("chain[{i}].tol"), 7, 6)?;
+                        if t < 0 {
+                            return Err(format!("chain[{i}] tol 须非负 — 自诊断指引: 容差为幅度"));
+                        }
+                        t
+                    }
+                    None => 0,
+                };
+                let rx = (cx - ex.0).abs();
+                let ry = (cy - ex.1).abs();
+                if rx > tol || ry > tol {
+                    violations.push(qc_violation(
+                        rule_id,
+                        "fk_residual_violation",
+                        format!(
+                            "段 {a}->{b} 正解 tip=({},{}) vs 检出 {exp_name:?}=({},{}),残差=({}),({}) 超 tol={}",
+                            fmt_qc(cx.abs()),
+                            fmt_qc(cy.abs()),
+                            fmt_qc(ex.0.abs()),
+                            fmt_qc(ex.1.abs()),
+                            fmt_cos(cx - ex.0),
+                            fmt_cos(cy - ex.1),
+                            fmt_qc(tol)
+                        ),
+                    ));
+                }
+            }
+        }
+        let all_clean = violations.is_empty();
+        Ok(envelope(&[
+            ("service", JsonValue::string("anatomy_fk_replay_eval")),
+            ("all_clean", JsonValue::Bool(all_clean)),
+            ("violations", JsonValue::Array(violations)),
+        ]))
+    }
+}
+
+/// 声明表构造子：FK 正解复算
+pub fn mk_anatomy_fk_replay_eval() -> Arc<dyn NativeService> {
+    Arc::new(AnatomyFkReplayEval)
+}
+
 #[cfg(test)]
 mod anatomy_angle_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -3446,5 +3734,326 @@ mod anatomy_orientation_tests {
             ]))
         };
         assert_eq!(mk().expect("A"), mk().expect("B"), "同参双跑须位元一致");
+    }
+}
+
+#[cfg(test)]
+mod anatomy_reach_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn obj(pairs: &[(&str, JsonValue)]) -> JsonValue {
+        JsonValue::object_from_pairs(pairs)
+    }
+    fn pt(x: &str, y: &str) -> JsonValue {
+        JsonValue::Array(vec![JsonValue::string(x), JsonValue::string(y)])
+    }
+    fn s(v: &str) -> JsonValue {
+        JsonValue::string(v)
+    }
+    fn names(ns: &[&str]) -> JsonValue {
+        JsonValue::Array(ns.iter().map(|n| s(n)).collect())
+    }
+    fn rule(id: &str, ns: &[&str], target: &str) -> JsonValue {
+        obj(&[
+            ("rule_id", s(id)),
+            ("points", names(ns)),
+            ("target", s(target)),
+        ])
+    }
+    fn run(pts: &[(&str, JsonValue)], rules: Vec<JsonValue>) -> Result<JsonValue, String> {
+        let p: Vec<(&str, JsonValue)> = pts.to_vec();
+        AnatomyIkReachabilityEval.execute(&obj(&[
+            ("points", obj(&p)),
+            ("rules", JsonValue::Array(rules)),
+        ]))
+    }
+    fn clean(v: &JsonValue) -> bool {
+        v.get("all_clean")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn straight_chain_boundary_reach_pass() {
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("30", "0")),
+            ("p2", pt("50", "0")),
+            ("t", pt("50", "0")),
+        ];
+        let out = run(&pts, vec![rule("r1", &["p0", "p1", "p2"], "t")]).unwrap();
+        assert!(clean(&out));
+    }
+
+    #[test]
+    fn beyond_total_length_unreachable_golden() {
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("30", "0")),
+            ("p2", pt("50", "0")),
+            ("t", pt("80", "0")),
+        ];
+        let out = run(&pts, vec![rule("r1", &["p0", "p1", "p2"], "t")]).unwrap();
+        assert!(!clean(&out));
+        let msg = out.to_string();
+        assert!(
+            msg.contains("unreachable") && msg.contains("L=50000000"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn two_link_inner_hole_unreachable() {
+        // 二段链可达域 [|L1-L2|, L1+L2]=[10,50]: d=10 恰过, d=5 内洞
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("30", "0")),
+            ("p2", pt("50", "0")),
+            ("t1", pt("10", "0")),
+            ("t2", pt("5", "0")),
+        ];
+        let ok = run(&pts, vec![rule("r1", &["p0", "p1", "p2"], "t1")]).unwrap();
+        assert!(clean(&ok));
+        let bad = run(&pts, vec![rule("r2", &["p0", "p1", "p2"], "t2")]).unwrap();
+        assert!(bad.to_string().contains("内洞"), "{}", bad);
+    }
+
+    #[test]
+    fn three_link_fold_inner_boundary_and_hole() {
+        // 三段链 L=60, 内界=L-2·Lmax=20: d=20 恰过, d=10 内洞
+        let pts = [
+            ("a", pt("0", "0")),
+            ("b", pt("20", "0")),
+            ("c", pt("20", "20")),
+            ("d", pt("0", "20")),
+            ("t1", pt("0", "20")),
+            ("t2", pt("0", "10")),
+        ];
+        let ok = run(&pts, vec![rule("r1", &["a", "b", "c", "d"], "t1")]).unwrap();
+        assert!(clean(&ok));
+        let bad = run(&pts, vec![rule("r2", &["a", "b", "c", "d"], "t2")]).unwrap();
+        assert!(bad.to_string().contains("内洞"), "{}", bad);
+    }
+
+    #[test]
+    fn double_run_bitwise_identical() {
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("30", "0")),
+            ("t", pt("80", "0")),
+        ];
+        let a = run(&pts, vec![rule("r1", &["p0", "p1"], "t")])
+            .unwrap()
+            .to_string();
+        let b2 = run(&pts, vec![rule("r1", &["p0", "p1"], "t")])
+            .unwrap()
+            .to_string();
+        assert_eq!(a, b2);
+    }
+
+    #[test]
+    fn guards_short_chain_zero_seg_missing_target() {
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("0", "0")),
+            ("p2", pt("5", "0")),
+            ("t", pt("9", "9")),
+        ];
+        assert!(run(&pts, vec![rule("r", &["p0"], "t")]).is_err());
+        assert!(run(&pts, vec![rule("r", &["p0", "p1"], "t")]).is_err());
+        assert!(run(&pts, vec![rule("r", &["p0", "p2"], "missing")]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod anatomy_fk_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn obj(pairs: &[(&str, JsonValue)]) -> JsonValue {
+        JsonValue::object_from_pairs(pairs)
+    }
+    fn pt(x: &str, y: &str) -> JsonValue {
+        JsonValue::Array(vec![JsonValue::string(x), JsonValue::string(y)])
+    }
+    fn s(v: &str) -> JsonValue {
+        JsonValue::string(v)
+    }
+    fn seg(base: &[(&str, JsonValue)]) -> JsonValue {
+        obj(base)
+    }
+    fn run(pts: &[(&str, JsonValue)], chain: Vec<JsonValue>) -> Result<JsonValue, String> {
+        let p: Vec<(&str, JsonValue)> = pts.to_vec();
+        AnatomyFkReplayEval.execute(&obj(&[
+            ("points", obj(&p)),
+            ("chain", JsonValue::Array(chain)),
+        ]))
+    }
+    fn clean(v: &JsonValue) -> bool {
+        v.get("all_clean")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn axis_aligned_exact_clean() {
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("30", "0")),
+            ("e", pt("30", "0")),
+        ];
+        let c = vec![seg(&[
+            ("rule_id", s("r1")),
+            ("a", s("p0")),
+            ("b", s("p1")),
+            ("cos", s("1")),
+            ("sin", s("0")),
+            ("expected", s("e")),
+        ])];
+        let out = run(&pts, c).unwrap();
+        assert!(clean(&out));
+    }
+
+    #[test]
+    fn residual_violation_and_tol_boundary_pass() {
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("30", "0")),
+            ("bad", pt("31", "0")),
+            ("near", pt("30.000002", "0")),
+        ];
+        let base = [
+            ("rule_id", s("r1")),
+            ("a", s("p0")),
+            ("b", s("p1")),
+            ("cos", s("1")),
+            ("sin", s("0")),
+        ];
+        let mut bad_pairs: Vec<(&str, JsonValue)> = base.to_vec();
+        bad_pairs.push(("expected", s("bad")));
+        let bad = run(&pts, vec![seg(&bad_pairs)]).unwrap();
+        assert!(bad.to_string().contains("fk_residual_violation"), "{}", bad);
+        let mut ok_pairs: Vec<(&str, JsonValue)> = base.to_vec();
+        ok_pairs.push(("expected", s("near")));
+        ok_pairs.push(("tol", s("0.000002")));
+        let ok = run(&pts, vec![seg(&ok_pairs)]).unwrap();
+        assert!(clean(&ok));
+    }
+
+    #[test]
+    fn diagonal_345_exact_and_angle_anchor() {
+        // 3-4-5 精确: cos=3/5, sin=4/5 → tip=(3,4) 精确复原
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("3", "4")),
+            ("e", pt("3", "4")),
+        ];
+        let c = vec![seg(&[
+            ("rule_id", s("r1")),
+            ("a", s("p0")),
+            ("b", s("p1")),
+            ("cos", s("0.6")),
+            ("sin", s("0.8")),
+            ("expected", s("e")),
+            ("expect_cos", s("0.6")),
+            ("expect_sin", s("0.8")),
+        ])];
+        let ok = run(&pts, c).unwrap();
+        assert!(clean(&ok));
+        let bad = run(
+            &pts,
+            vec![seg(&[
+                ("rule_id", s("r1")),
+                ("a", s("p0")),
+                ("b", s("p1")),
+                ("cos", s("0.6")),
+                ("sin", s("0.8")),
+                ("expect_cos", s("0.7")),
+                ("expect_sin", s("0.8")),
+            ])],
+        )
+        .unwrap();
+        assert!(bad.to_string().contains("fk_angle_mismatch"), "{}", bad);
+    }
+
+    #[test]
+    fn two_segment_composition_exact() {
+        // 两段合成: (0,0)→东 30→北 30: tip=(30,30) 精确复原
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("30", "0")),
+            ("p2", pt("30", "30")),
+            ("e", pt("30", "30")),
+        ];
+        let c = vec![
+            seg(&[
+                ("rule_id", s("r1")),
+                ("a", s("p0")),
+                ("b", s("p1")),
+                ("cos", s("1")),
+                ("sin", s("0")),
+            ]),
+            seg(&[
+                ("rule_id", s("r2")),
+                ("a", s("p1")),
+                ("b", s("p2")),
+                ("cos", s("0")),
+                ("sin", s("1")),
+                ("expected", s("e")),
+            ]),
+        ];
+        let out = run(&pts, c).unwrap();
+        assert!(clean(&out));
+    }
+
+    #[test]
+    fn double_run_bitwise_identical() {
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("3", "4")),
+            ("e", pt("9", "9")),
+        ];
+        let c = || {
+            vec![seg(&[
+                ("rule_id", s("r1")),
+                ("a", s("p0")),
+                ("b", s("p1")),
+                ("cos", s("0.6")),
+                ("sin", s("0.8")),
+                ("expected", s("e")),
+            ])]
+        };
+        let a = run(&pts, c()).unwrap().to_string();
+        let b2 = run(&pts, c()).unwrap().to_string();
+        assert_eq!(a, b2);
+    }
+
+    #[test]
+    fn guards_zero_len_unit_domain_pairing() {
+        let pts = [
+            ("p0", pt("0", "0")),
+            ("p1", pt("0", "0")),
+            ("p2", pt("5", "0")),
+        ];
+        let base = [
+            ("rule_id", s("r")),
+            ("a", s("p0")),
+            ("b", s("p2")),
+            ("cos", s("0.6")),
+            ("sin", s("0.8")),
+        ];
+        // 零长段
+        let mut z: Vec<(&str, JsonValue)> = base.to_vec();
+        z[2] = ("b", s("p1"));
+        assert!(run(&pts, vec![seg(&z)]).is_err());
+        // cos 超单位域
+        let mut u: Vec<(&str, JsonValue)> = base.to_vec();
+        u[3] = ("cos", s("1500000"));
+        assert!(run(&pts, vec![seg(&u)]).is_err());
+        // expect 不成对
+        let mut p2: Vec<(&str, JsonValue)> = base.to_vec();
+        p2.push(("expect_cos", s("0.6")));
+        assert!(run(&pts, vec![seg(&p2)]).is_err());
     }
 }
