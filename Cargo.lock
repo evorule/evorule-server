@@ -1043,6 +1043,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "evorule-dimensional-check"
+version = "0.11.0"
+dependencies = [
+ "async-trait",
+ "evorule-law-schema",
+ "evorule-plugin-kit",
+ "evorule-reactor",
+ "evorule-tcb",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "evorule-discipline"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1463,6 +1476,7 @@ dependencies = [
  "evorule-cny-services",
  "evorule-criticality",
  "evorule-demo-services",
+ "evorule-dimensional-check",
  "evorule-discipline",
  "evorule-export-services",
  "evorule-fluid-services",

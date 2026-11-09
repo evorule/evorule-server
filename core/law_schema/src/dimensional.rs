@@ -12,21 +12,27 @@
 //!   不硬拒（兼容 G 类纯数学定律与自定义单位）。
 //!
 //! # 量纲模型（自制轻量代数，零外部依赖）
-//! SI 七基本量纲的 i8 幂次向量 [M, L, T, I, Θ, N, J]
-//! （质量/长度/时间/电流/热力学温度/物质的量/发光强度）。
+//! SI 七基本量纲 + 货币维的 i8 幂次向量 [M, L, T, I, Θ, N, J, C]
+//! （质量/长度/时间/电流/热力学温度/物质的量/发光强度/货币——货币维为
+//! SI 七量纲外的扩展基本量纲，异币种（CNY/USD/…）同归一维；币种间量值
+//! 换算不归本层，本表只容量纲不容量值）。
 //! - 乘除 = 分量加减；整数幂 = 分量倍乘（checked，越界按不可解析处理）；
 //! - 数值常量因子量纲中性（量纲一）；
 //! - 平面角/立体角按 SI 口径量纲一（rad/sr/deg 不引入辅助量纲）。
 //!
 //! # 表达式文法（formula 侧与 si_units 侧共用）
 //! ```text
-//! expr   := factor (('*' | '/') factor)*
+//! expr   := term (('+' | '-') term)*      ← 加减要求两侧操作分量纲一致
+//! term   := factor (('*' | '/') factor)*
 //! factor := base ('^' ['-'] digits)?
 //! base   := identifier | number | '(' expr ')'
 //! ```
 //! 括号子表达式按同一文法递归求值（可嵌套，深度上限 [`MAX_PAREN_DEPTH`]）；
+//! 加减为量纲敏感运算：两侧操作分量纲一致方可加减（一致时结果量纲不变），
+//! 不一致即量纲违例硬拒收（报因含两侧子表达式与其量纲向量渲染）——混加
+//! （如米/元）不再落入「文法外记号跳过」的盲区。乘除照旧量纲代数；
 //! 结构层已保证 formula 无判定形态运算符且引用符号已声明；本模块对文法外
-//! 记号（如 `+`）不猜测语义——按不可解析跳过，保持确定性。
+//! 记号不猜测语义——按不可解析跳过，保持确定性。
 //!
 //! # 选型注记
 //! 单位解析未引入 crates.io 单位库（`uom`/`pint` 系均为编译期类型层单位系统，
@@ -38,22 +44,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::Law;
 
 // ============================================================================
-// 七基本量纲向量
+// 基本量纲向量（SI 七量纲 + 货币维）
 // ============================================================================
 
-/// 七基本量纲幂次向量 [M, L, T, I, Θ, N, J]
+/// 基本量纲幂次向量 [M, L, T, I, Θ, N, J, C]（SI 七量纲 + 货币维 Currency）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DimensionVector(pub [i8; 7]);
+pub struct DimensionVector(pub [i8; 8]);
 
-/// 基本量纲的规范单位记号（渲染用，位序与向量分量一致）
-const BASE_UNIT_SYMBOLS: [&str; 7] = ["kg", "m", "s", "A", "K", "mol", "cd"];
+/// 基本量纲的规范单位记号（渲染用，位序与向量分量一致；货币维渲染为
+/// ASCII 记号 `currency`，与表达式文法的 ASCII 标识符口径一致）
+const BASE_UNIT_SYMBOLS: [&str; 8] = ["kg", "m", "s", "A", "K", "mol", "cd", "currency"];
 
 impl DimensionVector {
     /// 量纲一（全零向量）
-    pub const DIMENSIONLESS: Self = Self([0; 7]);
+    pub const DIMENSIONLESS: Self = Self([0; 8]);
 
     fn checked_add(self, other: Self) -> Option<Self> {
-        let mut out = [0i8; 7];
+        let mut out = [0i8; 8];
         for (i, slot) in out.iter_mut().enumerate() {
             *slot = self.0[i].checked_add(other.0[i])?;
         }
@@ -61,7 +68,7 @@ impl DimensionVector {
     }
 
     fn checked_sub(self, other: Self) -> Option<Self> {
-        let mut out = [0i8; 7];
+        let mut out = [0i8; 8];
         for (i, slot) in out.iter_mut().enumerate() {
             *slot = self.0[i].checked_sub(other.0[i])?;
         }
@@ -70,7 +77,7 @@ impl DimensionVector {
 
     fn checked_pow(self, exp: i16) -> Option<Self> {
         let exp = i8::try_from(exp).ok()?;
-        let mut out = [0i8; 7];
+        let mut out = [0i8; 8];
         for (i, slot) in out.iter_mut().enumerate() {
             *slot = self.0[i].checked_mul(exp)?;
         }
@@ -100,47 +107,55 @@ impl DimensionVector {
 // SI 单位表（记号 → 量纲向量；相干单位制口径，只容量纲不容量值换算）
 // ============================================================================
 
-/// SI 单位记号 → 七基本量纲幂次。未知记号返回 `None`（调用方按「不可解析」
+/// SI 单位记号（含货币记号）→ 八基本量纲幂次。未知记号返回 `None`（调用方按「不可解析」
 /// 跳过处理，warning 级不拒收）。记号区分大小写（SI 符号口径）。
 fn unit_dimensions(name: &str) -> Option<DimensionVector> {
-    let dims: [i8; 7] = match name {
+    let dims: [i8; 8] = match name {
         // 基本单位（m/kg/s/A/K/mol/cd）+ 常用全名别名
-        "m" | "meter" | "metre" => [0, 1, 0, 0, 0, 0, 0],
-        "kg" | "kilogram" => [1, 0, 0, 0, 0, 0, 0],
-        "g" | "gram" | "gramme" => [1, 0, 0, 0, 0, 0, 0],
-        "s" | "second" | "sec" => [0, 0, 1, 0, 0, 0, 0],
-        "A" | "ampere" | "amp" => [0, 0, 0, 1, 0, 0, 0],
-        "K" | "kelvin" => [0, 0, 0, 0, 1, 0, 0],
-        "mol" | "mole" => [0, 0, 0, 0, 0, 1, 0],
-        "cd" | "candela" => [0, 0, 0, 0, 0, 0, 1],
+        "m" | "meter" | "metre" => [0, 1, 0, 0, 0, 0, 0, 0],
+        "kg" | "kilogram" => [1, 0, 0, 0, 0, 0, 0, 0],
+        "g" | "gram" | "gramme" => [1, 0, 0, 0, 0, 0, 0, 0],
+        "s" | "second" | "sec" => [0, 0, 1, 0, 0, 0, 0, 0],
+        "A" | "ampere" | "amp" => [0, 0, 0, 1, 0, 0, 0, 0],
+        "K" | "kelvin" => [0, 0, 0, 0, 1, 0, 0, 0],
+        "mol" | "mole" => [0, 0, 0, 0, 0, 1, 0, 0],
+        "cd" | "candela" => [0, 0, 0, 0, 0, 0, 1, 0],
         // 相干导出单位
-        "N" | "newton" => [1, 1, -2, 0, 0, 0, 0],
-        "Pa" | "pascal" => [1, -1, -2, 0, 0, 0, 0],
-        "J" | "joule" => [1, 2, -2, 0, 0, 0, 0],
-        "W" | "watt" => [1, 2, -3, 0, 0, 0, 0],
-        "Hz" | "hertz" => [0, 0, -1, 0, 0, 0, 0],
-        "C" | "coulomb" => [0, 0, 1, 1, 0, 0, 0],
-        "V" | "volt" => [1, 2, -3, -1, 0, 0, 0],
-        "F" | "farad" => [-1, -2, 4, 2, 0, 0, 0],
-        "ohm" => [1, 2, -3, -2, 0, 0, 0],
-        "S" | "siemens" => [-1, -2, 3, 2, 0, 0, 0],
-        "Wb" | "weber" => [1, 2, -2, -1, 0, 0, 0],
-        "T" | "tesla" => [1, 0, -2, -1, 0, 0, 0],
-        "H" | "henry" => [1, 2, -2, -2, 0, 0, 0],
-        "lm" | "lumen" => [0, 0, 0, 0, 0, 0, 1],
-        "lx" | "lux" => [0, -2, 0, 0, 0, 0, 1],
-        "Bq" | "becquerel" => [0, 0, -1, 0, 0, 0, 0],
-        "Gy" | "gray" => [0, 2, -2, 0, 0, 0, 0],
-        "Sv" | "sievert" => [0, 2, -2, 0, 0, 0, 0],
-        "kat" | "katal" => [0, 0, -1, 0, 0, 1, 0],
+        "N" | "newton" => [1, 1, -2, 0, 0, 0, 0, 0],
+        "Pa" | "pascal" => [1, -1, -2, 0, 0, 0, 0, 0],
+        "J" | "joule" => [1, 2, -2, 0, 0, 0, 0, 0],
+        "W" | "watt" => [1, 2, -3, 0, 0, 0, 0, 0],
+        "Hz" | "hertz" => [0, 0, -1, 0, 0, 0, 0, 0],
+        "C" | "coulomb" => [0, 0, 1, 1, 0, 0, 0, 0],
+        "V" | "volt" => [1, 2, -3, -1, 0, 0, 0, 0],
+        "F" | "farad" => [-1, -2, 4, 2, 0, 0, 0, 0],
+        "ohm" => [1, 2, -3, -2, 0, 0, 0, 0],
+        "S" | "siemens" => [-1, -2, 3, 2, 0, 0, 0, 0],
+        "Wb" | "weber" => [1, 2, -2, -1, 0, 0, 0, 0],
+        "T" | "tesla" => [1, 0, -2, -1, 0, 0, 0, 0],
+        "H" | "henry" => [1, 2, -2, -2, 0, 0, 0, 0],
+        "lm" | "lumen" => [0, 0, 0, 0, 0, 0, 1, 0],
+        "lx" | "lux" => [0, -2, 0, 0, 0, 0, 1, 0],
+        "Bq" | "becquerel" => [0, 0, -1, 0, 0, 0, 0, 0],
+        "Gy" | "gray" => [0, 2, -2, 0, 0, 0, 0, 0],
+        "Sv" | "sievert" => [0, 2, -2, 0, 0, 0, 0, 0],
+        "kat" | "katal" => [0, 0, -1, 0, 0, 1, 0, 0],
         // 量纲一（SI 平面角/立体角口径）
-        "rad" | "radian" | "sr" | "steradian" | "deg" | "degree" => [0; 7],
+        "rad" | "radian" | "sr" | "steradian" | "deg" | "degree" => [0; 8],
         // 常用接受单位（量纲与相干单位一致，不换算量值）
-        "l" | "L" | "liter" | "litre" => [0, 3, 0, 0, 0, 0, 0],
-        "min" | "minute" | "h" | "hour" | "day" | "d" => [0, 0, 1, 0, 0, 0, 0],
-        "t" | "tonne" => [1, 0, 0, 0, 0, 0, 0],
-        "bar" | "atm" => [1, -1, -2, 0, 0, 0, 0],
-        "eV" | "electronvolt" => [1, 2, -2, 0, 0, 0, 0],
+        "l" | "L" | "liter" | "litre" => [0, 3, 0, 0, 0, 0, 0, 0],
+        "min" | "minute" | "h" | "hour" | "day" | "d" => [0, 0, 1, 0, 0, 0, 0, 0],
+        "t" | "tonne" => [1, 0, 0, 0, 0, 0, 0, 0],
+        "bar" | "atm" => [1, -1, -2, 0, 0, 0, 0, 0],
+        "eV" | "electronvolt" => [1, 2, -2, 0, 0, 0, 0, 0],
+        // 货币维（异币种同归一维；记号取常用 ISO 货币代码与英文/拼音别名，
+        // 币种间量值换算不归本层——本表只容量纲不容量值，换算律管量值）
+        "CNY" | "cny" | "yuan" | "RMB" | "rmb" => [0, 0, 0, 0, 0, 0, 0, 1],
+        "USD" | "usd" | "dollar" | "dollars" => [0, 0, 0, 0, 0, 0, 0, 1],
+        "EUR" | "eur" | "euro" => [0, 0, 0, 0, 0, 0, 0, 1],
+        "GBP" | "gbp" | "pound" => [0, 0, 0, 0, 0, 0, 0, 1],
+        "JPY" | "jpy" | "yen" => [0, 0, 0, 0, 0, 0, 0, 1],
+        "HKD" | "hkd" | "CHF" | "chf" | "franc" | "money" | "currency" => [0, 0, 0, 0, 0, 0, 0, 1],
         _ => return None,
     };
     Some(DimensionVector(dims))
@@ -156,6 +171,11 @@ type LeafResolver<'a> = &'a mut dyn FnMut(&str) -> Result<DimensionVector, Strin
 /// 括号嵌套深度上限（formula 为治理侧提交字符串：超出即显式报错，
 /// 不放任失控递归打爆栈，保持 fail-fast 确定性口径）
 const MAX_PAREN_DEPTH: usize = 64;
+
+/// 加减量纲违例报因前缀（parse_expr Err 分派标记：check_law 据此前缀把
+/// 该类失败归入 [`DimensionalVerdict::AdditiveMismatch`] 硬拒收，
+/// 与「不可解析跳过」分野）
+const ADDITIVE_MISMATCH_PREFIX: &str = "加减两侧操作分量纲不一致";
 
 struct ExprParser<'a> {
     src: &'a str,
@@ -183,8 +203,39 @@ impl<'a> ExprParser<'a> {
         }
     }
 
-    /// `expr := factor (('*' | '/') factor)*`
+    /// `expr := term (('+' | '-') term)*`——加减为量纲敏感运算：两侧操作分
+    /// 量纲一致方可加减（一致时结果量纲不变），不一致即量纲违例（报因以
+    /// [`ADDITIVE_MISMATCH_PREFIX`] 起头，check_law 分派为硬拒收）。
     fn parse_expr(&mut self, leaf: LeafResolver<'_>) -> Result<DimensionVector, String> {
+        let start = self.pos;
+        let acc = self.parse_term(leaf)?;
+        loop {
+            self.skip_ws();
+            let op_pos = self.pos;
+            match self.peek() {
+                Some(b'+') | Some(b'-') => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    let rhs_start = self.pos;
+                    let rhs = self.parse_term(leaf)?;
+                    if rhs != acc {
+                        let lhs_text = self.src[start..op_pos].trim().to_string();
+                        let rhs_text = self.src[rhs_start..self.pos].trim().to_string();
+                        return Err(format!(
+                            "{ADDITIVE_MISMATCH_PREFIX}: `{lhs_text}` 展开为 {} 与 \
+                             `{rhs_text}` 展开为 {}",
+                            acc.render(),
+                            rhs.render()
+                        ));
+                    }
+                }
+                _ => return Ok(acc),
+            }
+        }
+    }
+
+    /// `term := factor (('*' | '/') factor)*`
+    fn parse_term(&mut self, leaf: LeafResolver<'_>) -> Result<DimensionVector, String> {
         let mut acc = self.parse_factor(leaf)?;
         loop {
             self.skip_ws();
@@ -312,8 +363,9 @@ impl<'a> ExprParser<'a> {
     }
 }
 
-/// 解析 si_units 单位表达式 → 七基本量纲向量（如 `kg*m*s^-2`、`m*s^-1`、
-/// `joule*mol^-1*K^-1`）。未知单位名/文法外记号/分量溢出均报错。
+/// 解析 si_units 单位表达式 → 基本量纲向量（SI 七量纲 + 货币维；如
+/// `kg*m*s^-2`、`m*s^-1`、`joule*mol^-1*K^-1`、`CNY*s^-1`）。
+/// 未知单位名/文法外记号/分量溢出均报错。
 pub fn parse_unit_expr(expr: &str) -> Result<DimensionVector, String> {
     let mut parser = ExprParser::new(expr);
     let dims = parser.parse_expr(&mut |name| {
@@ -357,13 +409,16 @@ fn eval_side(
 // law 级量纲一致性校验（三态结论）
 // ============================================================================
 
-/// 量纲校验结论（能力层三态）
+/// 量纲校验结论（能力层三态 + 加减违例四态）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DimensionalVerdict {
     /// 两侧量纲一致（含两侧均为量纲一）
     Consistent,
     /// 两侧量纲不一致——硬拒收（字段 = 两侧表达式与其规范量纲向量渲染）
     Mismatch { lhs: String, rhs: String },
+    /// 加减两侧操作分量纲不一致（等式内部混加，如米/元）——硬拒收
+    /// （字段 = 报因串，含两侧子表达式与其规范量纲向量渲染）
+    AdditiveMismatch { report: String },
     /// 跳过：缺 si_units / 单位表达式不可解析 / 文法外记号（warning 级，不拒收）
     Skipped(String),
 }
@@ -397,10 +452,16 @@ pub fn check_law(law: &Law) -> DimensionalVerdict {
     let mut cache = BTreeMap::new();
     let lhs = match eval_side(lhs_raw, &law.si_units, &mut cache) {
         Ok(dims) => dims,
+        Err(reason) if reason.starts_with(ADDITIVE_MISMATCH_PREFIX) => {
+            return DimensionalVerdict::AdditiveMismatch { report: reason };
+        }
         Err(reason) => return DimensionalVerdict::Skipped(reason),
     };
     let rhs = match eval_side(rhs_raw, &law.si_units, &mut cache) {
         Ok(dims) => dims,
+        Err(reason) if reason.starts_with(ADDITIVE_MISMATCH_PREFIX) => {
+            return DimensionalVerdict::AdditiveMismatch { report: reason };
+        }
         Err(reason) => return DimensionalVerdict::Skipped(reason),
     };
 
@@ -423,7 +484,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn dims(v: [i8; 7]) -> DimensionVector {
+    fn dims(v: [i8; 8]) -> DimensionVector {
         DimensionVector(v)
     }
 
@@ -433,37 +494,43 @@ mod tests {
     fn unit_expr_parses_to_base_vectors() {
         assert_eq!(
             parse_unit_expr("kg*m*s^-2").unwrap(),
-            dims([1, 1, -2, 0, 0, 0, 0])
+            dims([1, 1, -2, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             parse_unit_expr("m*s^-1").unwrap(),
-            dims([0, 1, -1, 0, 0, 0, 0])
+            dims([0, 1, -1, 0, 0, 0, 0, 0])
         );
-        assert_eq!(parse_unit_expr("m^3").unwrap(), dims([0, 3, 0, 0, 0, 0, 0]));
+        assert_eq!(
+            parse_unit_expr("m^3").unwrap(),
+            dims([0, 3, 0, 0, 0, 0, 0, 0])
+        );
         assert_eq!(
             parse_unit_expr("joule*mol^-1*K^-1").unwrap(),
-            dims([1, 2, -2, 0, -1, -1, 0])
+            dims([1, 2, -2, 0, -1, -1, 0, 0])
         );
         assert_eq!(
             parse_unit_expr("newton").unwrap(),
-            dims([1, 1, -2, 0, 0, 0, 0])
+            dims([1, 1, -2, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             parse_unit_expr("kilogram").unwrap(),
-            dims([1, 0, 0, 0, 0, 0, 0])
+            dims([1, 0, 0, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             parse_unit_expr("kelvin").unwrap(),
-            dims([0, 0, 0, 0, 1, 0, 0])
+            dims([0, 0, 0, 0, 1, 0, 0, 0])
         );
         assert_eq!(
             parse_unit_expr("pascal").unwrap(),
-            dims([1, -1, -2, 0, 0, 0, 0])
+            dims([1, -1, -2, 0, 0, 0, 0, 0])
         );
-        assert_eq!(parse_unit_expr("mol").unwrap(), dims([0, 0, 0, 0, 0, 1, 0]));
+        assert_eq!(
+            parse_unit_expr("mol").unwrap(),
+            dims([0, 0, 0, 0, 0, 1, 0, 0])
+        );
         assert_eq!(
             parse_unit_expr("m/s").unwrap(),
-            dims([0, 1, -1, 0, 0, 0, 0])
+            dims([0, 1, -1, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             parse_unit_expr("1").unwrap(),
@@ -480,19 +547,41 @@ mod tests {
     }
 
     #[test]
+    fn unit_expr_parses_currency_dimension() {
+        // 货币维：异币种同归一维（第 8 分量 = 货币幂次）
+        let cny = parse_unit_expr("CNY").unwrap();
+        let usd = parse_unit_expr("USD").unwrap();
+        let yuan = parse_unit_expr("yuan").unwrap();
+        assert_eq!(cny, usd);
+        assert_eq!(usd, yuan);
+        assert_eq!(cny, dims([0, 0, 0, 0, 0, 0, 0, 1]));
+        // 组合表达式：货币流率（元/秒）
+        assert_eq!(
+            parse_unit_expr("CNY*s^-1").unwrap(),
+            dims([0, 0, -1, 0, 0, 0, 0, 1])
+        );
+        // 乘积：单价 × 数量因子（量纲中性）仍为货币维
+        assert_eq!(
+            parse_unit_expr("2*yuan").unwrap(),
+            dims([0, 0, 0, 0, 0, 0, 0, 1])
+        );
+    }
+
+    #[test]
     fn unit_expr_whitespace_tolerant() {
         assert_eq!(
             parse_unit_expr(" kg * m * s^-2 ").unwrap(),
-            dims([1, 1, -2, 0, 0, 0, 0])
+            dims([1, 1, -2, 0, 0, 0, 0, 0])
         );
     }
 
     #[test]
     fn unit_expr_rejects_unknown_names_and_bad_syntax() {
         assert!(parse_unit_expr("newtn").unwrap_err().contains("未知单位"));
+        // 加减入文法：操作分量纲不等即量纲违例（m 长度 vs s 时间）
         assert!(parse_unit_expr("m + s")
             .unwrap_err()
-            .contains("尾随未解析内容"));
+            .contains("加减两侧操作分量纲不一致"));
         assert!(parse_unit_expr("+ m").unwrap_err().contains("非法记号"));
         assert!(parse_unit_expr("m^").unwrap_err().contains("缺整数幂次"));
         assert!(parse_unit_expr("m^200").unwrap_err().contains("越界"));
@@ -516,17 +605,17 @@ mod tests {
         // 括号整体作因子：可再接幂次
         assert_eq!(
             parse_unit_expr("(kg*m)^2").unwrap(),
-            dims([2, 2, 0, 0, 0, 0, 0])
+            dims([2, 2, 0, 0, 0, 0, 0, 0])
         );
         // 括号内乘除混合
         assert_eq!(
             parse_unit_expr("kg*(m/s)").unwrap(),
-            dims([1, 1, -1, 0, 0, 0, 0])
+            dims([1, 1, -1, 0, 0, 0, 0, 0])
         );
         // 括号内数值除法（量纲中性）
         assert_eq!(
             parse_unit_expr("(1/2)*kg").unwrap(),
-            dims([1, 0, 0, 0, 0, 0, 0])
+            dims([1, 0, 0, 0, 0, 0, 0, 0])
         );
     }
 
@@ -534,11 +623,11 @@ mod tests {
     fn unit_expr_nested_parens() {
         assert_eq!(
             parse_unit_expr("(kg*(m/s))^2").unwrap(),
-            dims([2, 2, -2, 0, 0, 0, 0])
+            dims([2, 2, -2, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             parse_unit_expr("((kg))").unwrap(),
-            dims([1, 0, 0, 0, 0, 0, 0])
+            dims([1, 0, 0, 0, 0, 0, 0, 0])
         );
     }
 
@@ -583,22 +672,24 @@ mod tests {
 
     #[test]
     fn render_matches_base_symbol_order() {
-        assert_eq!(dims([1, 1, -2, 0, 0, 0, 0]).render(), "kg*m*s^-2");
-        assert_eq!(dims([0, 3, 0, 0, 0, 0, 0]).render(), "m^3");
+        assert_eq!(dims([1, 1, -2, 0, 0, 0, 0, 0]).render(), "kg*m*s^-2");
+        assert_eq!(dims([0, 3, 0, 0, 0, 0, 0, 0]).render(), "m^3");
         assert_eq!(DimensionVector::DIMENSIONLESS.render(), "1");
-        assert_eq!(dims([0, 0, 0, 2, -1, 0, 0]).render(), "A^2*K^-1");
-        assert_eq!(dims([1, 0, -1, 0, 0, -1, 0]).render(), "kg*s^-1*mol^-1");
+        assert_eq!(dims([0, 0, 0, 2, -1, 0, 0, 0]).render(), "A^2*K^-1");
+        assert_eq!(dims([1, 0, -1, 0, 0, -1, 0, 0]).render(), "kg*s^-1*mol^-1");
+        assert_eq!(dims([0, 0, 0, 0, 0, 0, 0, 1]).render(), "currency");
+        assert_eq!(dims([0, 0, -1, 0, 0, 0, 0, 1]).render(), "s^-1*currency");
     }
 
     // ── checked 代数（溢出 → None → 按不可解析跳过）──
 
     #[test]
     fn checked_ops_overflow_to_none() {
-        let big = dims([127, 0, 0, 0, 0, 0, 0]);
+        let big = dims([127, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(big.checked_add(big), None);
         assert_eq!(big.checked_pow(2), None);
         assert_eq!(
-            dims([-128, 0, 0, 0, 0, 0, 0]).checked_sub(dims([1, 0, 0, 0, 0, 0, 0])),
+            dims([-128, 0, 0, 0, 0, 0, 0, 0]).checked_sub(dims([1, 0, 0, 0, 0, 0, 0, 0])),
             None
         );
     }
@@ -672,8 +763,8 @@ mod tests {
         }
 
         let trailing = law_from_json(json!({
-            "id": "plus", "formula": "y = a + x",
-            "symbols": { "y": "和", "a": "项一", "x": "项二" },
+            "id": "adjacent", "formula": "y = a x",
+            "symbols": { "y": "积", "a": "项一", "x": "项二" },
             "si_units": { "y": "m", "a": "m", "x": "m" }
         }));
         match check_law(&trailing) {
@@ -681,6 +772,44 @@ mod tests {
                 assert!(reason.contains("尾随未解析内容"), "reason = {reason}");
             }
             other => panic!("应为 Skipped: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_law_additive_dimension_sensitivity() {
+        // 加减一致：同维操作分量纲一致 → Consistent（加减不改变量纲）
+        let ok = law_from_json(json!({
+            "id": "sum", "formula": "y = a + x",
+            "symbols": { "y": "和", "a": "项一", "x": "项二" },
+            "si_units": { "y": "m", "a": "m", "x": "m" }
+        }));
+        assert_eq!(check_law(&ok), DimensionalVerdict::Consistent);
+
+        // 乘除与加减优先级：a + b*c 与 a 同维才通过（b*c 量纲代数先于加减比较）
+        let prec = law_from_json(json!({
+            "id": "energy", "formula": "E = m0 * c^2 + KE",
+            "symbols": { "E": "总能量", "m0": "静质量", "c": "光速", "KE": "动能" },
+            "si_units": { "E": "joule", "m0": "kilogram", "c": "m*s^-1", "KE": "joule" }
+        }));
+        assert_eq!(check_law(&prec), DimensionalVerdict::Consistent);
+
+        // 米/元混加：等式内部操作分量纲不等 → AdditiveMismatch 硬拒收
+        // （报因含两侧子表达式与量纲向量渲染——混加盲区修复的直证）
+        let mixed = law_from_json(json!({
+            "id": "mix", "formula": "total = length + price",
+            "symbols": { "total": "总额", "length": "长度", "price": "单价" },
+            "si_units": { "total": "CNY", "length": "m", "price": "CNY*m^-1" }
+        }));
+        match check_law(&mixed) {
+            DimensionalVerdict::AdditiveMismatch { report } => {
+                assert!(
+                    report.contains("加减两侧操作分量纲不一致"),
+                    "report = {report}"
+                );
+                assert!(report.contains("currency"), "report = {report}");
+                assert!(report.contains("length"), "report = {report}");
+            }
+            other => panic!("应为 AdditiveMismatch: {other:?}"),
         }
     }
 }

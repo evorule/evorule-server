@@ -284,6 +284,9 @@ fn apply_dimensional_verdict(
         dimensional::DimensionalVerdict::Mismatch { lhs, rhs } => errors.push(format!(
             "{at}等式两侧量纲不一致（按 SI 七基本量纲展开）：{lhs}；{rhs}"
         )),
+        dimensional::DimensionalVerdict::AdditiveMismatch { report } => errors.push(format!(
+            "{at}等式内加减两侧操作分量纲不一致（量纲违例，硬拒收）：{report}"
+        )),
         dimensional::DimensionalVerdict::Skipped(reason) => {
             warnings.push(format!("{at}量纲校验跳过（warning 级，不拒收）：{reason}"));
         }
@@ -472,6 +475,49 @@ mod tests {
         assert!(
             msg.contains("kg*m*s^-2") && msg.contains("m*s^-1"),
             "报因须含两侧量纲向量: {msg}"
+        );
+    }
+
+    #[test]
+    fn golden_dim_g10_currency_length_mix_rejected_reporting_both_vectors() {
+        // G10（货币维反例）：米/元混加律式硬拒收——货币维使「元」类记号可解析，
+        // 混加不再落入「未知单位跳过」的盲区，报因含两侧量纲向量（m vs currency）。
+        let mut doc = golden_newton();
+        doc["laws"][0]["formula"] = json!("total = length + price");
+        doc["laws"][0]["symbols"] = json!({ "total": "总额", "length": "长度", "price": "单价" });
+        doc["laws"][0]["si_units"] = json!({
+            "total": "CNY", "length": "m", "price": "CNY*m^-1"
+        });
+        let report = validate_law_set(&doc);
+        assert!(!report.valid, "米/元混加应硬拒收");
+        let msg = report
+            .errors
+            .iter()
+            .find(|e| e.contains("量纲不一致"))
+            .unwrap_or_else(|| panic!("报因须指明量纲不一致: {:?}", report.errors));
+        assert!(
+            msg.contains("currency") && msg.contains("m"),
+            "报因须含两侧量纲向量（m vs currency）: {msg}"
+        );
+    }
+
+    #[test]
+    fn golden_dim_g11_currency_same_dim_consistent_across_currencies() {
+        // G11（货币维正例）：USD 与 CNY 记号异币种同归货币维——量纲层一致通过
+        // （币种间量值换算不归量纲层，由换算律管量值）。
+        let mut doc = golden_newton();
+        doc["laws"][0]["formula"] = json!("total_usd = amount_cny * rate");
+        doc["laws"][0]["symbols"] = json!({
+            "total_usd": "美元总额", "amount_cny": "人民币金额", "rate": "汇率"
+        });
+        doc["laws"][0]["si_units"] = json!({
+            "total_usd": "USD", "amount_cny": "CNY", "rate": "USD*CNY^-1"
+        });
+        let report = validate_law_set(&doc);
+        assert!(
+            report.valid,
+            "异币种同货币维应判一致通过: {:?}",
+            report.errors
         );
     }
 

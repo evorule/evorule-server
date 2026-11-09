@@ -57,6 +57,7 @@ use evorule_browser_services::NATIVE_SERVICES as BROWSER_NATIVE_SERVICES;
 use evorule_checksum_services::NATIVE_SERVICES as CHECKSUM_NATIVE_SERVICES;
 use evorule_cny_services::NATIVE_SERVICES as CNY_NATIVE_SERVICES;
 use evorule_demo_services::NATIVE_SERVICES as DEMO_NATIVE_SERVICES;
+use evorule_dimensional_check::NATIVE_SERVICES as DIMENSIONAL_CHECK_NATIVE_SERVICES;
 use evorule_export_services::NATIVE_SERVICES as EXPORT_NATIVE_SERVICES;
 use evorule_fluid_services::NATIVE_SERVICES as FLUID_NATIVE_SERVICES;
 use evorule_geometry_services::NATIVE_SERVICES as GEOMETRY_NATIVE_SERVICES;
@@ -1072,6 +1073,10 @@ const PLUGIN_DEFS: &[PluginDef] = &[
     PluginDef {
         id: "trace-audit-services",
         defs: TRACE_AUDIT_NATIVE_SERVICES,
+    },
+    PluginDef {
+        id: "dimensional-check",
+        defs: DIMENSIONAL_CHECK_NATIVE_SERVICES,
     },
 ];
 

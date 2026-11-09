@@ -103,6 +103,8 @@ evorule-export-services = { path = "../plugins/export-services" }
 evorule-verification-services = { path = "../plugins/verification-services" }
 evorule-video-services = { path = "../plugins/video-services" }
 evorule-trace-audit-services = { path = "../plugins/trace-audit-services" }
+# 量纲一致性原生插件（外判纪律测量面：单位表达式对比,复用 law_schema 量纲代数单源）
+evorule-dimensional-check = { path = "../plugins/dimensional-check" }
 
 # finance-config 已拔出——重建为外部插件包
 # （plugins/finance-config/plugin.json；plugin_manifest.json 以 external 条目登记，
