@@ -43,13 +43,10 @@ fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--port" => {
-                port = args
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(|| {
-                        eprintln!("[flow-studio] --port 需要一个端口号");
-                        std::process::exit(2);
-                    });
+                port = args.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                    eprintln!("[flow-studio] --port 需要一个端口号");
+                    std::process::exit(2);
+                });
             }
             "--help" | "-h" => {
                 println!("flow-studio plugin --port <9120>");
@@ -110,7 +107,9 @@ async fn compile_handler(State(_s): State<PluginState>, Json(body): Json<Value>)
     let Some(flow) = body.get("flow") else {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "请求体缺 'flow' 字段（契约 v1.1 §6 信封: { \"flow\": ... }）" })),
+            Json(
+                json!({ "error": "请求体缺 'flow' 字段（契约 v1.1 §6 信封: { \"flow\": ... }）" }),
+            ),
         )
             .into_response();
     };
@@ -123,11 +122,7 @@ async fn compile_handler(State(_s): State<PluginState>, Json(body): Json<Value>)
             })),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e })),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
 }
 
@@ -212,7 +207,9 @@ mod tests {
                     .method("POST")
                     .uri("/v1/compile")
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "flow": { "flow_id": "f" } }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "flow": { "flow_id": "f" } }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await

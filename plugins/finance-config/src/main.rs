@@ -54,13 +54,10 @@ fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--port" => {
-                port = args
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(|| {
-                        eprintln!("[finance-config] --port 需要一个端口号");
-                        std::process::exit(2);
-                    });
+                port = args.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                    eprintln!("[finance-config] --port 需要一个端口号");
+                    std::process::exit(2);
+                });
             }
             "--data" => {
                 data_dir = PathBuf::from(args.next().unwrap_or_else(|| {
@@ -70,7 +67,9 @@ fn main() {
             }
             "--help" | "-h" => {
                 println!("finance-config plugin --port <9110> --data <./data>");
-                println!("管理面 token: 环境变量 FINANCE_PLUGIN_ADMIN_TOKEN（未配置则管理面不可用）");
+                println!(
+                    "管理面 token: 环境变量 FINANCE_PLUGIN_ADMIN_TOKEN（未配置则管理面不可用）"
+                );
                 return;
             }
             other => {
@@ -84,9 +83,11 @@ fn main() {
     let store = match ConfigStore::open(&store_path) {
         Ok(s) => Arc::new(s),
         Err(e) => {
-            eprintln!("[finance-config] ❌ Store 初始化失败: {e}。自诊断指引: \
+            eprintln!(
+                "[finance-config] ❌ Store 初始化失败: {e}。自诊断指引: \
                 ① 确认 --data 目录可写; \
-                ② 检查 config_store.json 格式（JSON 损坏时删除后由系统重建）");
+                ② 检查 config_store.json 格式（JSON 损坏时删除后由系统重建）"
+            );
             std::process::exit(1);
         }
     };
@@ -102,14 +103,8 @@ fn main() {
     let state = PluginState { store, admin_token };
     let app = axum::Router::new()
         .route("/health", get(health_handler))
-        .route(
-            "/services/finance_config_get",
-            post(get_service_handler),
-        )
-        .route(
-            "/services/finance_config_set",
-            post(set_service_handler),
-        )
+        .route("/services/finance_config_get", post(get_service_handler))
+        .route("/services/finance_config_set", post(set_service_handler))
         .route("/admin/proposals", get(list_proposals_handler))
         .route("/admin/audit", get(audit_handler))
         .route(
@@ -125,7 +120,10 @@ fn main() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("tokio runtime 构建失败");
+        .unwrap_or_else(|e| {
+            eprintln!("[finance-config] tokio runtime 构建失败: {e}");
+            std::process::exit(1);
+        });
     runtime.block_on(async move {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let listener = tokio::net::TcpListener::bind(addr)
@@ -143,7 +141,10 @@ fn main() {
             "[finance-config] 插件服务已启动: {addr}（数据: {}）",
             store_path.display()
         );
-        axum::serve(listener, app).await.expect("服务运行失败");
+        if let Err(e) = axum::serve(listener, app).await {
+            eprintln!("[finance-config] 服务运行失败: {e}");
+            std::process::exit(1);
+        }
     });
 }
 
@@ -204,7 +205,9 @@ async fn list_proposals_handler(
 ) -> Result<Json<Value>, Response> {
     check_admin(&state, &headers)?;
     let proposals = state.store.pending_proposals();
-    Ok(Json(json!({ "pending": proposals, "count": proposals.len() })))
+    Ok(Json(
+        json!({ "pending": proposals, "count": proposals.len() }),
+    ))
 }
 
 async fn approve_proposal_handler(
@@ -232,11 +235,7 @@ async fn approve_proposal_handler(
             "approved_by": approver,
             "message": "提案已批准，配置值落库"
         }))),
-        Err(e) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e })),
-        )
-            .into_response()),
+        Err(e) => Err((StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response()),
     }
 }
 
@@ -269,11 +268,7 @@ async fn reject_proposal_handler(
             "approved_by": approver,
             "message": "提案已拒绝，配置值保持不变"
         }))),
-        Err(e) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e })),
-        )
-            .into_response()),
+        Err(e) => Err((StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response()),
     }
 }
 
@@ -337,8 +332,14 @@ mod tests {
             .route("/services/finance_config_set", post(set_service_handler))
             .route("/admin/proposals", get(list_proposals_handler))
             .route("/admin/audit", get(audit_handler))
-            .route("/admin/proposals/{id}/approve", post(approve_proposal_handler))
-            .route("/admin/proposals/{id}/reject", post(reject_proposal_handler))
+            .route(
+                "/admin/proposals/{id}/approve",
+                post(approve_proposal_handler),
+            )
+            .route(
+                "/admin/proposals/{id}/reject",
+                post(reject_proposal_handler),
+            )
             .with_state(state)
     }
 

@@ -117,7 +117,11 @@ fn suggest_keys(key: &str, all_keys: &[String]) -> Vec<String> {
             } else {
                 2
             };
-            if score <= 2 { Some((score, k)) } else { None }
+            if score <= 2 {
+                Some((score, k))
+            } else {
+                None
+            }
         })
         .collect();
     scored.sort_by_key(|(s, _)| *s);
@@ -204,7 +208,11 @@ mod tests {
         let pid = r["proposal_id"].as_str().unwrap().to_string();
 
         let r2 = config_get(&store, &json!({"key": "config:limits.travel.max_amount"}));
-        assert_eq!(r2["exists"], json!(false), "提案创建后值不落库（审批门成立）");
+        assert_eq!(
+            r2["exists"],
+            json!(false),
+            "提案创建后值不落库（审批门成立）"
+        );
 
         store.approve_proposal(&pid, "finance_dir").unwrap();
         let r3 = config_get(&store, &json!({"key": "config:limits.travel.max_amount"}));

@@ -122,7 +122,9 @@ pub fn compile_flow(flow: &Value) -> Result<Value, String> {
             .and_then(Value::as_str)
             .ok_or_else(|| format!("flow {flow_id} 边缺 to"))?;
         if out.insert(from, to).is_some() {
-            return Err(format!("flow {flow_id} 节点 {from} 有多条出边（v0 线性链）"));
+            return Err(format!(
+                "flow {flow_id} 节点 {from} 有多条出边（v0 线性链）"
+            ));
         }
     }
     let start = start_id.ok_or_else(|| format!("flow {flow_id} 缺 start 节点"))?;
@@ -169,10 +171,7 @@ pub fn compile_flow(flow: &Value) -> Result<Value, String> {
 
 /// 编译单个审批节点（纯函数）。
 fn compile_approval(flow_id: &str, node: &Value) -> Result<Value, String> {
-    let node_id = node
-        .get("node_id")
-        .and_then(Value::as_str)
-        .unwrap_or("?");
+    let node_id = node.get("node_id").and_then(Value::as_str).unwrap_or("?");
     let fail = |msg: &str| -> String { format!("flow {flow_id} 审批节点 {node_id}: {msg}") };
     let params = node
         .get("params")
@@ -193,8 +192,10 @@ fn compile_approval(flow_id: &str, node: &Value) -> Result<Value, String> {
         .get("form_ref_resolved")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            fail("缺 form_ref_resolved — form_ref 必须经 server 场景索引解析 \
-                  （R2 取值域锁定;直连编译器不接受未解析引用）")
+            fail(
+                "缺 form_ref_resolved — form_ref 必须经 server 场景索引解析 \
+                  （R2 取值域锁定;直连编译器不接受未解析引用）",
+            )
         })?;
     let path = resolved
         .get("path")
@@ -211,9 +212,9 @@ fn compile_approval(flow_id: &str, node: &Value) -> Result<Value, String> {
     });
     match node.get("threshold") {
         Some(t) => {
-            let threshold = t.as_i64().ok_or_else(|| {
-                fail("threshold 必须是整数（domain lt 仅 i64,确定性）")
-            })?;
+            let threshold = t
+                .as_i64()
+                .ok_or_else(|| fail("threshold 必须是整数（domain lt 仅 i64,确定性）"))?;
             Ok(json!({
                 "type": "branch",
                 "params": {
@@ -340,7 +341,10 @@ mod tests {
             .unwrap()
             .remove("form_ref_resolved");
         let err = compile_flow(&f).unwrap_err();
-        assert!(err.contains("form_ref_resolved") && err.contains("R2"), "got: {err}");
+        assert!(
+            err.contains("form_ref_resolved") && err.contains("R2"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -351,10 +355,7 @@ mod tests {
         assert!(compile_flow(&f).is_err());
         // 缺 params
         let mut f2 = resolved_flow();
-        f2["nodes"][1]
-            .as_object_mut()
-            .unwrap()
-            .remove("params");
+        f2["nodes"][1].as_object_mut().unwrap().remove("params");
         let err = compile_flow(&f2).unwrap_err();
         assert!(err.contains("params"), "got: {err}");
         // threshold 浮点拒绝

@@ -614,7 +614,11 @@ async fn web_search(
     }
 }
 
-async fn ai_plugin_chat(State(st): State<PluginState>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Response {
+async fn ai_plugin_chat(
+    State(st): State<PluginState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
     // 调用方令牌校验（A2-④ 修复：原端点裸奔——本机任意进程可触发审计链 LLM
     // 消耗。opt-in 语义与 /llm/execute 四端点一致：未配置 caller_token 时放行，
     // 零配置部署不断；配置后无令牌/mismatch 401）
@@ -1335,7 +1339,8 @@ mod tests {
         // 配置令牌后：无令牌 → 401；错令牌 → 401（门先于请求体校验语义？否——
         // 实现序为门先执行，故无效体+无令牌也是 401，见末段）
         let st = chat_state(Some("secret-token".into()));
-        let resp = ai_plugin_chat(State(st), axum::http::HeaderMap::new(), Json(body.clone())).await;
+        let resp =
+            ai_plugin_chat(State(st), axum::http::HeaderMap::new(), Json(body.clone())).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let st = chat_state(Some("secret-token".into()));
         let mut headers = axum::http::HeaderMap::new();
@@ -1363,10 +1368,6 @@ mod tests {
             axum::http::HeaderValue::from_static("Bearer secret-token"),
         );
         let resp = ai_plugin_chat(State(st), headers, Json(json!({"messages": []}))).await;
-        assert_ne!(
-            resp.status(),
-            StatusCode::UNAUTHORIZED,
-            "正确令牌不得 401"
-        );
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "正确令牌不得 401");
     }
 }
