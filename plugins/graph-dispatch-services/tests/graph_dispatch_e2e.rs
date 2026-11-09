@@ -291,6 +291,108 @@ async fn golden_vector_domain_inside_revision_no_propagation() {
         .is_empty());
 }
 
+// ── ②b 小数域界（TCB 域小数字符串惯例 = 真机 REST 通道形态）──
+//
+// 真机实验（B-211/D5 首轮 18180 实例）抓得的集成缺口：serde_to_tcb 将小数
+// 转为字符串承载（引擎惯例），旧 optional_domain 仅认 serde Number——整数域界
+// （黄金向量 0/1）可过、小数域界真机必炸。修复后本节锁死真机形态回归。
+
+#[tokio::test]
+async fn fractional_domain_bounds_accepted_via_tcb_decimal_string() {
+    let router = GraphDispatchServiceRouter::new(noop_fallback());
+    // alpha 域 [2e-5, 2.6e-5]（serde 小数 → TCB 字符串）；thermal 引用 alpha，
+    // clearance 同 dims 无引用（耦合波及对象）
+    let doc = serde_json::json!({
+        "metadata": {
+            "constants": [
+                { "constant_id": "alpha", "version": "design-baseline", "value_hash": "h1", "domain_lo": 0.00002, "domain_hi": 0.000026 }
+            ],
+            "formula_registry": [
+                { "instruction_type": "thermal", "formula": "f_t", "dimensions": [1, 0, 0, 0, 0, 0, 0], "constants": ["alpha"] },
+                { "instruction_type": "clearance", "formula": "f_c", "dimensions": [1, 0, 0, 0, 0, 0, 0] }
+            ]
+        }
+    });
+    let rule_set = evorule_rule_loader::serde_to_tcb(doc);
+    let revision = |value: serde_json::Value| {
+        evorule_rule_loader::serde_to_tcb(serde_json::json!({
+            "constant_id": "alpha", "new_value": value,
+            "source": "recalibration", "verified": true
+        }))
+    };
+
+    // 域内小数修订：引用闭包命中、零失效零传播
+    let args_in = JsonValue::object_from_pairs(&[
+        ("rule_set", rule_set.clone()),
+        ("revision", revision(serde_json::json!(0.0000242))),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let out_in = router.execute(&svc_params(args_in)).await.unwrap();
+    assert!(out_in
+        .get("regime_invalidated")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty(), "域内小数修订零失效: {out_in:?}");
+    let affected_in = out_in
+        .get("affected_instructions")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert_eq!(affected_in.len(), 1, "域内仅引用闭包 thermal");
+    assert_eq!(
+        affected_in[0].get("instruction_type").unwrap().as_str(),
+        Some("thermal")
+    );
+
+    // 域外小数修订：regime 失效 + 耦合 BFS depth2（迷你风暴）
+    let args_out = JsonValue::object_from_pairs(&[
+        ("rule_set", rule_set),
+        ("revision", revision(serde_json::json!(0.0000285))),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let out_out = router.execute(&svc_params(args_out)).await.unwrap();
+    let invalidated: Vec<String> = out_out
+        .get("regime_invalidated")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(invalidated, vec!["clearance", "thermal"], "域外失效含耦合波及");
+    assert_eq!(
+        out_out.get("propagation_depth").unwrap().as_i64(),
+        Some(2),
+        "耦合层传播 depth2"
+    );
+}
+
+#[tokio::test]
+async fn non_numeric_domain_string_fails_visible() {
+    let router = GraphDispatchServiceRouter::new(noop_fallback());
+    let doc = serde_json::json!({
+        "metadata": {
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": "abc" }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0], "constants": ["c1"] }
+            ]
+        }
+    });
+    let args = JsonValue::object_from_pairs(&[
+        ("rule_set", evorule_rule_loader::serde_to_tcb(doc)),
+        ("revision", golden_revision(serde_json::json!(5))),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let err = router.execute(&svc_params(args)).await.unwrap_err();
+    assert!(
+        err.contains("domain_lo"),
+        "不可解析域界字符串应点名 domain_lo: {err}"
+    );
+}
+
 // ── ③ 篡改即红 ──
 
 #[tokio::test]
