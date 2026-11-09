@@ -19,6 +19,7 @@ members = [
     "plugins/template-services",
     "plugins/browser-services",
     "plugins/inference-services",
+    "plugins/graph-dispatch-services",
     "plugins/geometry-services",
     "plugins/numeric-services",
     "plugins/mechanics-services",

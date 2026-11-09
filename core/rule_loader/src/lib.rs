@@ -40,6 +40,12 @@ use evorule_tcb::JsonValue;
 use serde::Serialize;
 use serde_json::Value;
 
+pub mod dep_graph;
+pub use dep_graph::{
+    build_dependency_graph, ConstantNode, CouplingEdge, DependencyGraph, DependencyGraphError,
+    InstructionNode, ReferenceEdge,
+};
+
 /// 宪法 schema 版本（与本 crate 依赖的 rule_schema 副本一致，provenance 用）
 pub const CONSTITUTION_SCHEMA_VERSION: &str = "rule_set/v1.0";
 
@@ -226,6 +232,10 @@ pub struct LoadedRuleset {
     pub engine_rules: Vec<JsonValue>,
     /// 溯源指纹
     pub provenance: Provenance,
+    /// 常数依赖图（装载产物）：指令-常数引用闭包 + 量纲耦合边，随集发布
+    /// （附 blake3 内容哈希，digest 锚定图内容），供常数修订冲击传播等
+    /// 下游确定性分析消费；零登记规则集 = 空图（非强制全员登记）。
+    pub dependency_graph: DependencyGraph,
 }
 
 /// 溯源指纹（[CON-S-003]）
@@ -317,11 +327,7 @@ impl std::error::Error for ConstitutionError {}
 /// 存量核查收口后沙盒裁决铸 `sandbox:` 背书=治理行为；铸造信任者必须自守治理纪律，
 /// 沙盒草稿与生产规则同守三门。
 pub fn load_rule_set(doc: &Value, ctx: &LoadContext) -> Result<LoadedRuleset, ConstitutionError> {
-    let (engine_rules, provenance) = load_one(doc, ctx, ctx.composition)?;
-    Ok(LoadedRuleset {
-        engine_rules,
-        provenance,
-    })
+    load_one(doc, ctx, ctx.composition)
 }
 
 /// 合并装载部件（[CON-S-005] 装载门合并：部件文档+部件装载上下文成对提交）
@@ -377,13 +383,16 @@ pub fn load_rule_set_merged(parts: &[MergedPart]) -> Result<MergedLoaded, Consti
     for (i, part) in parts.iter().enumerate() {
         // 部件以自身 ctx 重过四步门（与单件装载同 ctx 同判=确定性等判），
         // composition 强制 Merged（合并语义由入口统一，部件 ctx 声明不生效）
-        let (rules, provenance) =
+        let loaded =
             load_one(&part.doc, &part.ctx, Composition::Merged).map_err(|e| annotate_part(e, i))?;
         outcomes.push(PartOutcome {
-            provenance,
-            rule_count: rules.len(),
+            provenance: loaded.provenance,
+            rule_count: loaded.engine_rules.len(),
         });
-        engine_rules.extend(rules);
+        engine_rules.extend(loaded.engine_rules);
+        // 注：常数依赖图随**单件**装载产物（LoadedRuleset）发布；合并结果结构
+        // （MergedLoaded = 拼合规则 + 逐部件 provenance）不携带整图——部件级
+        // 依赖图在此仅保留门禁校验效果（构建失败=整体拒载），不随合并结果下发。
     }
     Ok(MergedLoaded {
         engine_rules,
@@ -430,7 +439,7 @@ fn load_one(
     doc: &Value,
     ctx: &LoadContext,
     composition: Composition,
-) -> Result<(Vec<JsonValue>, Provenance), ConstitutionError> {
+) -> Result<LoadedRuleset, ConstitutionError> {
     // ── 步骤 0：$schema 版本协商（[CON-S-004]）──
     // 带壳文档声明 $schema 时，必须命中本 crate 内嵌校验器认识的版本。
     // _meta pattern 只查 URL 形态（任意 v主.次 均过）——若无此门，v2.0 文档会
@@ -517,6 +526,18 @@ fn load_one(
     domain_on_missing_gate(&transform_arr, ctx.l2_class)?;
     dimension_registry_gate(&transform_arr, doc)?;
 
+    // ── 步骤 3.5：常数依赖图物化（装载产物，随集发布；构建失败=整体拒载）──
+    // 独立校验自身输入面（登记了引用则常数必须已声明），与量纲登记门分工不耦合：
+    // 门管「被引用立法指令必须有登记」，图管「登记了引用则常数必须已声明」。
+    let dependency_graph = build_dependency_graph(doc).map_err(|e| {
+        ConstitutionError::SchemaViolation(four_part(
+            &e.violation,
+            &e.location,
+            GUIDE_URL,
+            MINIMAL_DEPENDENCY_GRAPH_INPUT,
+        ))
+    })?;
+
     // ── 步骤 4：provenance ──
     // 内容指纹（R4/[CON-S-003]）：对输入文档字节算 blake3（evorule-hash SSOT）。
     // serde_json::Value 键序=BTreeMap（无 preserve_order），紧凑序列化确定性。
@@ -539,7 +560,11 @@ fn load_one(
         constitution_version: CONSTITUTION_SCHEMA_VERSION,
         loaded_at_unix: now_unix(),
     };
-    Ok((engine_rules, provenance))
+    Ok(LoadedRuleset {
+        engine_rules,
+        provenance,
+        dependency_graph,
+    })
 }
 
 /// 来源类别标签（provenance 留痕；完整 LoadSource 详情由调用方入审计日志）
@@ -866,6 +891,8 @@ const DIMENSION_VECTOR_LEN: usize = 7;
 
 /// 量纲登记最小正确样例（四段式第④段）
 const MINIMAL_DIMENSION_REGISTRY_ENTRY: &str = r#"{"metadata":{"formula_registry":[{"instruction_type":"conservation_check","formula":"|E_final − E_initial| / E_initial","dimensions":[0,0,0,0,0,0,0]}]}}"#;
+/// 常数依赖图输入最小正确样例（引用的常数必须先声明——谁用谁登记同律）
+const MINIMAL_DEPENDENCY_GRAPH_INPUT: &str = r#"{"metadata":{"constants":[{"constant_id":"c","version":"2018","value_hash":"blake3:…","domain_lo":0,"domain_hi":1}],"formula_registry":[{"instruction_type":"t","formula":"…","dimensions":[1,0,0,0,0,0,0],"constants":["c"]}]}}"#;
 
 /// 递归 walk 整棵规则树，收集立法计算裁决指令的 instruction 域引用
 /// （`{"type":"instruction","instruction_type":…}` 节点），命中清单者入集
@@ -1747,5 +1774,184 @@ mod tests {
         ]);
         let loaded = load_rule_set(&doc, &ctx).expect("CAD 判据全登记应过门");
         assert!(loaded.provenance.gates.dimension_registry_gate);
+    }
+
+    // ── 常数依赖图（装载产物：引用闭包 + 量纲耦合边，随集发布）──
+
+    /// 双常数 + 双登记（其一引用常数）的最小依赖图规则集
+    fn graph_doc() -> Value {
+        json!({
+            "metadata": {
+                "constants": [
+                    { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 },
+                    { "constant_id": "c2", "version": "2024", "value_hash": "h2" }
+                ],
+                "formula_registry": [
+                    { "instruction_type": "beta_rule", "formula": "f2", "dimensions": [1, 0, 0, 0, 0, 0, 0] },
+                    { "instruction_type": "alpha_rule", "formula": "f1", "dimensions": [1, 0, 0, 0, 0, 0, 0], "constants": ["c1", "c2"] }
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn dependency_graph_double_run_deterministic() {
+        // 双跑确定性：同 doc 两次 build → 序列化字节与 digest 全等
+        let doc = graph_doc();
+        let a = build_dependency_graph(&doc).expect("合法登记应过");
+        let b = build_dependency_graph(&doc).expect("合法登记应过");
+        assert_eq!(
+            serde_json::to_vec(&a).expect("序列化应成功"),
+            serde_json::to_vec(&b).expect("序列化应成功"),
+            "两次构建的序列化字节必须全等"
+        );
+        assert_eq!(a.digest, b.digest, "两次构建的 digest 必须全等");
+        // 排序纪律：instructions 按 instruction_type 字典序
+        let types: Vec<&str> = a
+            .instructions
+            .iter()
+            .map(|n| n.instruction_type.as_str())
+            .collect();
+        assert_eq!(types, vec!["alpha_rule", "beta_rule"]);
+    }
+
+    #[test]
+    fn dependency_graph_coupling_edges_axis_rule() {
+        // 耦合边判定：同轴同非零幂次才耦合——前两指令共享 L 轴幂次 1 互连；
+        // 第三指令 [0,1,0,…] 与任一指令无非零同轴 → 零耦合边（M 轴幂次 1 独有）
+        let doc = json!({
+            "metadata": {
+                "formula_registry": [
+                    { "instruction_type": "alpha", "formula": "f1", "dimensions": [1, 0, 0, 0, 0, 0, 0] },
+                    { "instruction_type": "beta", "formula": "f2", "dimensions": [1, 0, 0, 0, 0, 0, 0] },
+                    { "instruction_type": "gamma", "formula": "f3", "dimensions": [0, 1, 0, 0, 0, 0, 0] }
+                ]
+            }
+        });
+        let g = build_dependency_graph(&doc).expect("合法登记应过");
+        assert_eq!(g.coupling_edges.len(), 1, "仅 alpha-beta 一条耦合边");
+        let edge = &g.coupling_edges[0];
+        assert_eq!(edge.a, "alpha");
+        assert_eq!(edge.b, "beta");
+        assert_eq!(edge.shared_axes, vec![0], "共享轴 = L 轴（位 0）");
+    }
+
+    #[test]
+    fn dependency_graph_reference_edges_and_undeclared_constant_rejected() {
+        // 正向：登记引用 c1/c2，均已在 metadata.constants 声明 → 引用边成边
+        let g = build_dependency_graph(&graph_doc()).expect("合法登记应过");
+        let pairs: Vec<(&str, &str)> = g
+            .reference_edges
+            .iter()
+            .map(|e| (e.instruction.as_str(), e.constant.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("alpha_rule", "c1"), ("alpha_rule", "c2")],
+            "引用边按 (instruction, constant) 字典序"
+        );
+
+        // 反向：引用未声明常数 c1（metadata.constants 缺失）→ Err 且诊断含路径
+        let doc = json!({
+            "metadata": {
+                "formula_registry": [
+                    { "instruction_type": "t", "formula": "f", "dimensions": [1, 0, 0, 0, 0, 0, 0], "constants": ["c1"] }
+                ]
+            }
+        });
+        let err = build_dependency_graph(&doc).expect_err("引用未声明常数应拒");
+        assert!(
+            format!("{err}").contains("$.metadata.formula_registry[0].constants[0]"),
+            "诊断应含 JSON 路径: {err}"
+        );
+        assert!(
+            format!("{err}").contains("c1"),
+            "诊断应点名未声明常数: {err}"
+        );
+    }
+
+    #[test]
+    fn dependency_graph_constants_manifest_malformed_rejected() {
+        // 畸形一：缺 version
+        let doc = json!({
+            "metadata": { "constants": [
+                { "constant_id": "c1", "value_hash": "h1" }
+            ]}
+        });
+        let err = build_dependency_graph(&doc).expect_err("缺 version 应拒");
+        assert!(
+            format!("{err}").contains("version"),
+            "诊断应点名 version: {err}"
+        );
+
+        // 畸形二：value_hash 空串
+        let doc = json!({
+            "metadata": { "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "" }
+            ]}
+        });
+        let err = build_dependency_graph(&doc).expect_err("value_hash 空串应拒");
+        assert!(
+            format!("{err}").contains("value_hash"),
+            "诊断应点名 value_hash: {err}"
+        );
+
+        // 畸形三：constant_id 重复声明
+        let doc = json!({
+            "metadata": { "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1" },
+                { "constant_id": "c1", "version": "2024", "value_hash": "h2" }
+            ]}
+        });
+        let err = build_dependency_graph(&doc).expect_err("重复 id 应拒");
+        assert!(
+            format!("{err}").contains("重复声明"),
+            "诊断应点明重复声明: {err}"
+        );
+    }
+
+    #[test]
+    fn dependency_graph_empty_registry_is_empty_graph() {
+        // 无登记规则集 → 空图 Ok（instructions/constants/edges 全空、digest 稳定）
+        let doc = json!({ "metadata": { "title": "零登记" } });
+        let g = build_dependency_graph(&doc).expect("零登记应得空图");
+        assert!(g.instructions.is_empty());
+        assert!(g.constants.is_empty());
+        assert!(g.reference_edges.is_empty());
+        assert!(g.coupling_edges.is_empty());
+        assert!(g.digest.starts_with("blake3:"), "digest 须为前缀形态");
+        // digest 稳定：空图 digest 与再次构建全等
+        let g2 = build_dependency_graph(&doc).expect("零登记应得空图");
+        assert_eq!(g.digest, g2.digest);
+    }
+
+    #[test]
+    fn loaded_ruleset_carries_dependency_graph() {
+        // 装载产物携带图：单件装载结果含依赖图，digest 以 "blake3:" 前缀开头；
+        // 仅声明常数（登记缺失）→ 常数节点照常入图
+        let mut doc = valid_rule_set();
+        doc["metadata"]["constants"] = json!([
+            { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+        ]);
+        let ctx = LoadContext::constitution("core_eval.json");
+        let loaded = load_rule_set(&doc, &ctx).expect("装载应通过");
+        assert_eq!(loaded.dependency_graph.constants.len(), 1);
+        assert_eq!(loaded.dependency_graph.constants[0].constant_id, "c1");
+        assert!(loaded.dependency_graph.instructions.is_empty());
+        assert!(
+            loaded.dependency_graph.digest.starts_with("blake3:"),
+            "digest 须为 blake3 前缀形态: {}",
+            loaded.dependency_graph.digest
+        );
+
+        // 引用未声明常数 → 装载整体拒载（SchemaViolation 四段式）
+        doc["metadata"]["formula_registry"] = json!([
+            { "instruction_type": "t", "formula": "f", "dimensions": [1, 0, 0, 0, 0, 0, 0], "constants": ["ghost"] }
+        ]);
+        let err = load_rule_set(&doc, &ctx).expect_err("引用未声明常数应整体拒载");
+        assert!(matches!(err, ConstitutionError::SchemaViolation(_)));
+        let msg = format!("{err}");
+        assert!(msg.contains("ghost"), "报错应点名未声明常数: {msg}");
+        assert!(msg.contains("正本"), "四段式报错应含正本段: {msg}");
     }
 }
