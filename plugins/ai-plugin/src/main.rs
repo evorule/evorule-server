@@ -41,7 +41,7 @@
 
 #![forbid(unsafe_code)]
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -56,6 +56,12 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// LLM 出站路由请求体上限：axum 0.8 路由缺省 2MB 体限会把长会话大上下文的
+/// 合法请求挡成 413（真机定性：74 回合 ReAct 会话 3MB body 撞缺省限即死）。
+/// 抬到 32MB 给大上下文留余量；调用方（evo-agent）侧另有 413 紧急裁剪面兜底，
+/// 两侧不成对方的正确性前提。
+const LLM_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 struct PluginState {
@@ -301,8 +307,14 @@ fn main() {
     runtime.block_on(async move {
         let app = Router::new()
             .route("/services/ai_plugin_chat", post(ai_plugin_chat))
-            .route("/llm/execute", post(llm_execute))
-            .route("/llm/execute-stream", post(llm_execute_stream))
+            .route(
+                "/llm/execute",
+                post(llm_execute).layer(DefaultBodyLimit::max(LLM_BODY_LIMIT_BYTES)),
+            )
+            .route(
+                "/llm/execute-stream",
+                post(llm_execute_stream).layer(DefaultBodyLimit::max(LLM_BODY_LIMIT_BYTES)),
+            )
             .route("/llm/models", get(llm_models))
             .route("/tools/web_search", post(web_search))
             .route("/health", get(health))
