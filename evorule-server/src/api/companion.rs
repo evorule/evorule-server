@@ -1206,7 +1206,16 @@ impl CompanionHub {
     /// C 态提案产出（幂等去重：`version + findings digest` 幂等键，同一
     /// 规则集版本的同族 findings 合并一条提案——重复 alert 不重复产提案，
     /// 同键已处置亦不重复产）。确定性 proposal_id 由幂等键派生；链落
-    /// `CompanionProposal` 记录性事实。返回提案 ID（None=幂等跳过）。
+    /// `CompanionProposal` 记录性事实。返回提案 ID（None=幂等跳过或元定律
+    /// 拒收）。
+    ///
+    /// 元定律登记门（幂等去重之后、建提案之前）：findings 全表面命中
+    /// `tiered_adjudicator::is_meta_rule_proposal`（均衡判据定律面）即拒收
+    /// 出可提案集——不建提案、不推 proposals、不记均衡观测账，仅落链
+    /// `CompanionProposalRejected` 留痕（cause=`meta_rule_denied`）后返回
+    /// None。登记门有意**不去重**：同 findings 重复注入每次都落一条拒绝
+    /// 记录（幂等键只约束正常提案产出，不约束拒绝留痕——恶意重放审计
+    /// 可见）。
     pub(crate) fn maybe_propose(
         &self,
         version: &str,
@@ -1216,6 +1225,25 @@ impl CompanionHub {
         let proposal_id = format!("prop-{version}-{}", &findings_digest[..12]);
         let mut proposals = lock_poem(&self.proposals);
         if proposals.iter().any(|p| p.proposal_id == proposal_id) {
+            return None;
+        }
+        // 元定律登记门：命中均衡判据定律面即拒收（只加不改：未命中路径
+        // 与既有产出流程零差）
+        if crate::tiered_adjudicator::is_meta_rule_proposal(findings) {
+            self.append_chain(
+                "CompanionProposalRejected",
+                json!({
+                    "proposal_id": &proposal_id,
+                    "findings_digest": &findings_digest,
+                    "cause": crate::tiered_adjudicator::REJECT_CAUSE_META_RULE,
+                    "rejected_at": now_secs(),
+                }),
+            );
+            tracing::info!(
+                proposal_id = %proposal_id,
+                cause = crate::tiered_adjudicator::REJECT_CAUSE_META_RULE,
+                "companion proposal rejected at registry (meta-rule)"
+            );
             return None;
         }
         let record = ProposalRecord {
@@ -2475,6 +2503,102 @@ mod tests {
             2,
             "同版本不同族 findings 产新提案"
         );
+    }
+
+    /// 元定律登记门：findings 携带均衡判据阈值放宽物料 → 拒收返回 None，
+    /// 不建提案（proposals 呈现窗长度不变）+ 链落 CompanionProposalRejected
+    /// 留痕（cause=meta_rule_denied）；同 findings 重复注入不去重——每次
+    /// 注入都落一条拒绝记录（恶意重放审计可见）
+    #[test]
+    fn meta_rule_findings_rejected_at_registry() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        let rejected_entries = |hub: &CompanionHub| -> Vec<serde_json::Value> {
+            lock_poem(&hub.chain)
+                .mem
+                .iter()
+                .filter(|e| e["kind"] == "CompanionProposalRejected")
+                .cloned()
+                .collect()
+        };
+        let meta_findings = serde_json::json!({
+            "conflicts": 2,
+            "cycles": 0,
+            "rw_excluded": 0,
+            "target_param": "alert_free_windows_required",
+            "new_value": 1,
+        });
+        assert_eq!(
+            hub.status_json()["proposals"].as_array().unwrap().len(),
+            0,
+            "测试前置：呈现窗为空"
+        );
+        assert!(
+            hub.maybe_propose("vMeta", &meta_findings).is_none(),
+            "元定律面 findings 拒收返回 None"
+        );
+        let entries = rejected_entries(&hub);
+        assert_eq!(entries.len(), 1, "拒收落链留痕恰一条");
+        let payload = &entries[0]["payload"];
+        assert!(
+            payload["proposal_id"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("prop-vMeta-"),
+            "确定性 ID 由幂等键派生（与正常提案同形态）"
+        );
+        assert!(
+            !payload["findings_digest"].as_str().unwrap_or("").is_empty(),
+            "findings digest 在场"
+        );
+        assert_eq!(
+            payload["cause"],
+            serde_json::json!(crate::tiered_adjudicator::REJECT_CAUSE_META_RULE)
+        );
+        assert!(payload["rejected_at"].as_u64().unwrap_or(0) > 0);
+        // 不建提案：呈现窗长度不变（无 CompanionProposal 记录）
+        assert_eq!(
+            hub.status_json()["proposals"].as_array().unwrap().len(),
+            0,
+            "拒收提案不进呈现窗"
+        );
+        assert!(hub.verify_chain().is_ok(), "拒收落链后链完整可验");
+        // 重复注入不去重：每次注入都落一条拒绝记录（幂等键只约束正常
+        // 提案产出，不约束拒绝留痕）
+        assert!(hub.maybe_propose("vMeta", &meta_findings).is_none());
+        assert_eq!(
+            rejected_entries(&hub).len(),
+            2,
+            "同 findings 重复注入每次留痕（恶意重放审计可见）"
+        );
+    }
+
+    /// 防误伤回归：普通 findings 走正常提案路径（Some(id) + 链落
+    /// CompanionProposal）——登记门未命中即零差
+    #[test]
+    fn normal_findings_still_propose() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        let normal = serde_json::json!({"conflicts": 3, "cycles": 0, "rw_excluded": 0});
+        let id = hub
+            .maybe_propose("vNorm", &normal)
+            .expect("普通 findings 正常产提案");
+        assert!(id.starts_with("prop-vNorm-"));
+        let proposals: Vec<_> = lock_poem(&hub.chain)
+            .mem
+            .iter()
+            .filter(|e| e["kind"] == "CompanionProposal")
+            .cloned()
+            .collect();
+        assert_eq!(proposals.len(), 1, "正常提案事实落链");
+        assert_eq!(
+            proposals[0]["payload"]["proposal_id"],
+            serde_json::json!(id)
+        );
+        let rejected = lock_poem(&hub.chain)
+            .mem
+            .iter()
+            .filter(|e| e["kind"] == "CompanionProposalRejected")
+            .count();
+        assert_eq!(rejected, 0, "普通 findings 不误命中元定律登记门");
     }
 
     /// 口径钉死：warn/clean 级不产提案；clean 认证路径零变化
