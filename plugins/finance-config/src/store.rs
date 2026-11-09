@@ -190,11 +190,7 @@ impl ConfigStore {
         proposed_by: &str,
     ) -> Result<String, String> {
         let mut guard = self.inner.write().map_err(|e| e.to_string())?;
-        let proposal_id = format!(
-            "PROP-{}-{:03}",
-            StoreFile::now(),
-            guard.proposals.len() + 1
-        );
+        let proposal_id = format!("PROP-{}-{:03}", StoreFile::now(), guard.proposals.len() + 1);
         guard.proposals.push(Proposal {
             proposal_id: proposal_id.clone(),
             key: key.to_string(),
@@ -209,11 +205,7 @@ impl ConfigStore {
         Ok(proposal_id)
     }
 
-    pub fn approve_proposal(
-        &self,
-        proposal_id: &str,
-        approver: &str,
-    ) -> Result<(), String> {
+    pub fn approve_proposal(&self, proposal_id: &str, approver: &str) -> Result<(), String> {
         let mut guard = self.inner.write().map_err(|e| e.to_string())?;
         let idx = guard
             .proposals
@@ -278,8 +270,8 @@ impl ConfigStore {
     }
 
     fn persist(&self, guard: &StoreFile) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(guard)
-            .map_err(|e| format!("序列化配置失败: {e}"))?;
+        let json =
+            serde_json::to_string_pretty(guard).map_err(|e| format!("序列化配置失败: {e}"))?;
         let tmp = self.path.with_extension("json.tmp");
         fs::write(&tmp, json).map_err(|e| {
             format!(
@@ -297,10 +289,6 @@ impl ConfigStore {
             )
         })?;
         Ok(())
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 }
 
@@ -413,7 +401,10 @@ mod tests {
 
         store.approve_proposal(&pid, "finance_dir").unwrap();
 
-        assert_eq!(store.get("limits.travel.max_amount"), Some(Value::from(5000)));
+        assert_eq!(
+            store.get("limits.travel.max_amount"),
+            Some(Value::from(5000))
+        );
     }
 
     #[test]
@@ -459,8 +450,13 @@ mod tests {
         assert_eq!(pending[0].proposed_by, "user_002");
         assert_eq!(pending[0].status, "pending");
 
-        store.approve_proposal(&pending[0].proposal_id, "finance_dir").unwrap();
-        assert!(store.pending_proposals().is_empty(), "批准后不再出现在待批列表");
+        store
+            .approve_proposal(&pending[0].proposal_id, "finance_dir")
+            .unwrap();
+        assert!(
+            store.pending_proposals().is_empty(),
+            "批准后不再出现在待批列表"
+        );
     }
 
     #[test]

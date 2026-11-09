@@ -43,8 +43,8 @@
 use futures_util::StreamExt;
 use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
 use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
@@ -731,7 +731,7 @@ pub fn next_sse_event(buffer: &mut String) -> Result<Option<SseEvent>, PluginErr
         if !overflow.is_empty() {
             // 溢出块插回 buffer 头部（先于未读数据，保证事件序）
             let mut b = overflow;
-            b.push_str(&buffer);
+            b.push_str(buffer);
             *buffer = b;
         }
         if let Some(ev) = first_event {
@@ -1546,13 +1546,10 @@ pub async fn call_llm(
             )));
         }
     }
-    let choice = v
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .ok_or_else(|| {
-            let snippet: String = v.to_string().chars().take(300).collect();
-            PluginError::Llm(format!("LLM API response missing choices: {snippet}"))
-        })?;
+    let choice = v.get("choices").and_then(|c| c.get(0)).ok_or_else(|| {
+        let snippet: String = v.to_string().chars().take(300).collect();
+        PluginError::Llm(format!("LLM API response missing choices: {snippet}"))
+    })?;
     let content = choice
         .get("message")
         .and_then(|m| m.get("content"))
@@ -2890,8 +2887,7 @@ async fn run_loop(
                                         "工具 {name} 结果剥离 {findings} 处疑似注入片段[session {sid}]"
                                     );
                                 }
-                                let mut chain_result = match serde_json::from_str::<Value>(&clean)
-                                {
+                                let mut chain_result = match serde_json::from_str::<Value>(&clean) {
                                     Ok(parsed) => parsed,
                                     Err(_) => json!({ "text": clean }),
                                 };
@@ -4656,7 +4652,9 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
         let v: Value = serde_json::from_str(&frame_payload(last)).unwrap();
         assert_eq!(v["type"], "error", "截断流终帧必须是 error 不是 done: {v}");
         assert!(
-            v["error"].as_str().is_some_and(|s| s.contains("finish_reason")),
+            v["error"]
+                .as_str()
+                .is_some_and(|s| s.contains("finish_reason")),
             "{v}"
         );
         assert!(
@@ -4710,23 +4708,20 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
             &|_| None::<String>,
         )
         .unwrap();
-        let err = call_llm(
-            &cfg,
-            &build_http_client().unwrap(),
-            &[],
-            "m",
-            0.7,
-        )
-        .await
-        .unwrap_err();
+        let err = call_llm(&cfg, &build_http_client().unwrap(), &[], "m", 0.7)
+            .await
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("business error") && msg.contains("1004") && msg.contains("invalid api key"),
+            msg.contains("business error")
+                && msg.contains("1004")
+                && msg.contains("invalid api key"),
             "业务错误体必须带 status_code/status_msg 显式上抛: {msg}"
         );
-        let (content, reasoning, usage) = call_llm(&cfg, &build_http_client().unwrap(), &[], "m", 0.7)
-            .await
-            .unwrap();
+        let (content, reasoning, usage) =
+            call_llm(&cfg, &build_http_client().unwrap(), &[], "m", 0.7)
+                .await
+                .unwrap();
         assert_eq!(content, "答");
         assert_eq!(reasoning, "思考过程", "reasoning_content 必须透传");
         assert_eq!(usage, Some(json!({"total_tokens": 5})));
@@ -5327,12 +5322,12 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
         let err = run_audited_chat(&cfg, &http, &test_request(), &None)
             .await
             .unwrap_err();
+        assert!(err.to_string().contains("白名单"), "None 必须拒执行: {err}");
         assert!(
-            err.to_string().contains("白名单"),
-            "None 必须拒执行: {err}"
-        );
-        assert!(
-            st.llm_calls.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            st.llm_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
             "拒执行时不得有任何 LLM 出站流量"
         );
         // 名单存在但模型不在册 → 显式拒
@@ -5349,7 +5344,10 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
             "名单外模型必须点名拒绝: {err}"
         );
         assert!(
-            st.llm_calls.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            st.llm_calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
             "名单外拒绝时不得有任何 LLM 出站流量"
         );
     }
@@ -5669,7 +5667,9 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
         assert!(tool_io["result"]["sanitized_findings"].as_u64().unwrap() >= 1);
         let chain_text = tool_io["result"].to_string();
         assert!(
-            !chain_text.to_uppercase().contains("IGNORE PREVIOUS INSTRUCTIONS"),
+            !chain_text
+                .to_uppercase()
+                .contains("IGNORE PREVIOUS INSTRUCTIONS"),
             "链上不得残留注入原文: {chain_text}"
         );
         assert!(chain_text.contains(INJECTION_STRIP_MARKER));
@@ -5694,10 +5694,7 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
             tool_call_reply("rules_list", json!({"q": "第一"})),
             tool_call_reply("services_list", json!({}))
         );
-        let st = MockState::new(
-            true,
-            vec![reply_a, "两个工具都跑完了".to_string()],
-        );
+        let st = MockState::new(true, vec![reply_a, "两个工具都跑完了".to_string()]);
         let base = spawn_mock(st.clone()).await;
         let cfg = cfg_with_tools(&base, &["rules_list", "services_list"]);
         let http = build_http_client().unwrap();
@@ -5712,7 +5709,10 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
         assert_eq!(cmds[1]["instruction"]["type"], "call_service");
         assert_eq!(cmds[1]["instruction"]["params"]["tool_name"], "rules_list");
         assert_eq!(cmds[2]["instruction"]["type"], "call_service");
-        assert_eq!(cmds[2]["instruction"]["params"]["tool_name"], "services_list");
+        assert_eq!(
+            cmds[2]["instruction"]["params"]["tool_name"],
+            "services_list"
+        );
         assert_eq!(cmds[3]["instruction"]["type"], "call_external");
 
         // 同轮 assistant 回复只回喂一次：第 2 轮 LLM messages 中 assistant
@@ -5724,10 +5724,7 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
             .filter(|m| m["role"] == "assistant")
             .collect();
         assert_eq!(assistants.len(), 1, "同轮回复只回喂一次");
-        let users: Vec<&Value> = second_msgs
-            .iter()
-            .filter(|m| m["role"] == "user")
-            .collect();
+        let users: Vec<&Value> = second_msgs.iter().filter(|m| m["role"] == "user").collect();
         assert_eq!(users.len(), 3, "原始输入 + 两个工具结果各一条");
     }
 

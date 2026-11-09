@@ -168,6 +168,43 @@ jobs:
       - name: cargo test
         run: cargo test
 
+  # 独立插件 crate 门：非 workspace 成员（自持 [workspace] 段），workspace 面
+  # lint/test job 覆盖不到——历史教训：ai-plugin 测试面带编译红两周无人知。
+  # 形制镜像 wasm-host job：各 crate 自身目录自持 lock，fmt + clippy(-D) + test。
+  # 纳管名单=自助 [workspace] 的插件 crate；新独立插件入列须同步扩本矩阵。
+  plugin-gate:
+    name: Plugin crates (fmt + clippy + test)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [plugins/ai-plugin, plugins/finance-config, plugins/flow-studio]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+          key: plugingate-${{ matrix.crate }}
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+        working-directory: ${{ matrix.crate }}
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: ${{ matrix.crate }}
+
+      - name: cargo test
+        run: cargo test
+        working-directory: ${{ matrix.crate }}
+
   # ===== vendored 副本自测（历史段，已全退役）=====
   # 本段曾跑 patches/ 下两份 vendored 补丁的黄金向量自证闸门（reactor Fact
   # 契约闸 + governance 审计导出闸）。两副本均已按各自 README-PATCH 删除

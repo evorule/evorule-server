@@ -32,3 +32,6 @@ unexpected_cfgs = { level = "warn", check-cfg = [] }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+# axum handler 惯用 Result<_, Response> 直通错误响应；Response 为 wire
+# 形态体积，装箱重构不入本 crate 职责面
+result_large_err = "allow"
