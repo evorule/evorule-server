@@ -1506,4 +1506,45 @@ async fn test_equilibrium_drill_end_to_end() {
          三段警情 episode 各经 2 无警窗闭合 τ 回合，相标签 crisis→absorbing 翻转"
     );
     evaluator.abort();
+
+    // ---- 场景 F：弛豫中间相全链——crisis→relaxing→absorbing 三相严格经过 ----
+    // 弛豫中间态真机观测增强：相位由评估任务在窗结算原子点计算入视图
+    // （尾窗警量/判据门槛/认证连击三输入同源快照），认证连击达标前的
+    // 静默观察窗如实呈现弛豫中间相——既有演练的端点直翻形态（危机相
+    // 结算后直接补证至吸收相、中间相无窗可辨）在弛豫段足长序列下不再发生。
+    let api = spawn_drill_reactor();
+    let evaluator = equilibrium_obs::spawn_equilibrium_evaluator(
+        api.clone(),
+        EquilibriumEvaluatorConfig {
+            window_secs: 1,
+            alert_free_windows_required: 3,
+            coverage_min: 0,
+            certified_streak_min: 3,
+        },
+    );
+    let eq = equilibrium_obs::shared();
+    eq.record_coverage(1000);
+    // ① 危机相：警情注入 → 结算点尾窗警量非零可辨
+    equilibrium_obs::record_alert();
+    let v = wait_for_view("crisis phase", |v| v.phase == "crisis").await;
+    assert_eq!(v.phase, "crisis", "警窗结算后视图应呈现危机相，got {v:?}");
+    // ② 弛豫中间相：contradiction 映射重置认证连击（判定读回后按同律记证）
+    //    → 静默观察窗（无警+连击未达标）→ 相位如实呈现 relaxing
+    eq.record_certificate(false);
+    let v = wait_for_view("relaxing phase", |v| v.phase == "relaxing").await;
+    assert_eq!(
+        v.phase, "relaxing",
+        "无警窗+认证连击未达标应呈现弛豫中间相，got {v:?}"
+    );
+    // ③ 吸收相：认证连击补证达标 → 下一结算点相位翻转
+    for _ in 0..3 {
+        eq.record_certificate(true);
+    }
+    let v = wait_for_view("absorbing phase", |v| v.phase == "absorbing").await;
+    assert_eq!(
+        v.phase, "absorbing",
+        "认证连击达标后应翻转吸收期，got {v:?}"
+    );
+    eprintln!("弛豫中间相演练实测：crisis→relaxing→absorbing 三相严格经过");
+    evaluator.abort();
 }

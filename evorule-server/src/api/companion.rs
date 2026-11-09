@@ -1151,6 +1151,9 @@ impl CompanionHub {
         // 窗结算后经规则层判定缓存；None=反应器不可达/读回超时，fail-visible
         // 不猜稳态）+最近归因+窗长。切换批（立法 v0.12.0）后 gate 接管主
         // 契约，影子双跑块随 equilibrium_check 规则退役同批退场。
+        // 相位标签（crisis/relaxing/absorbing）由评估任务在窗结算原子点
+        // 计算入视图（结算记录同源可回放，呈现层零二次派生）；窗警量与
+        // 窗认证尾部环形缓存全量透出（旧→新序，τ 序列真机拉取源）。
         let eq_windows = crate::equilibrium_obs::shared().snapshot();
         let eq_view = crate::equilibrium_obs::view();
         let equilibrium = json!({
@@ -1164,6 +1167,11 @@ impl CompanionHub {
             "stable": eq_view.stable,
             "last_cause": eq_view.last_cause,
             "window_secs": eq_view.window_secs,
+            "phase": eq_view.phase,
+            "window_alert_tail": crate::equilibrium_obs::shared()
+                .window_alert_tail(crate::equilibrium_obs::WINDOW_ALERT_TAIL_CAP),
+            "window_cert_tail": crate::equilibrium_obs::shared()
+                .window_cert_tail(crate::equilibrium_obs::WINDOW_ALERT_TAIL_CAP),
         });
         json!({
             "enabled": self.enabled.load(Ordering::Relaxed),
@@ -1974,6 +1982,48 @@ fn pid_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_equilibrium_block_phase_and_window_tails() {
+        let hub = CompanionHub::new(CompanionConfig::for_tests(), None, None);
+        let eq = hub.status_json()["equilibrium"].clone();
+        // 相位标签在词表内（进程级共享视图的当前值随演练面记账演进，不预设）
+        let phase = eq["phase"].as_str().expect("phase 应为字符串");
+        assert!(
+            matches!(phase, "crisis" | "relaxing" | "absorbing"),
+            "phase 应在词表内，got {phase}"
+        );
+        // 窗警量/窗认证尾部：环形容量上限内、元素全为非负整数
+        for key in ["window_alert_tail", "window_cert_tail"] {
+            let arr = eq[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("{key} 应为数组"));
+            assert!(
+                arr.len() <= crate::equilibrium_obs::WINDOW_ALERT_TAIL_CAP,
+                "{key} 不超环形容量，got {}",
+                arr.len()
+            );
+            assert!(
+                arr.iter().all(serde_json::Value::is_u64),
+                "{key} 元素全为非负整数"
+            );
+        }
+        // 既有十字段仍在（契约回归：只加不改）
+        for key in [
+            "proposals_in_total",
+            "digested_total",
+            "alert_free_windows",
+            "certified_streak",
+            "last_coverage",
+            "in_rate",
+            "digest_rate",
+            "stable",
+            "last_cause",
+            "window_secs",
+        ] {
+            assert!(eq.get(key).is_some(), "既有字段 {key} 仍在");
+        }
+    }
 
     #[test]
     fn certified_set_bounded_anchor_never_evicted() {
