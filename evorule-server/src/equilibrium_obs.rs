@@ -412,6 +412,70 @@ pub const EQUILIBRIUM_FEATURES: &[EquilibriumFeatureSpec] = &[
              on each stable certificate",
         evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
     },
+    // ── 相变刻画语言（弛豫时间 τ 序列统计：临界慢化度量族）──────────
+    // 三条统一声明：均为描述性度量，判定阈值不预设（诚实边界：只做
+    // 度量与描述性标签，不做判定立法——危机/临界判定阈值候选实验数据
+    // 定标）。计算入口 = 实验/分析面对 τ 序列拉取
+    // （[`extract_relaxation_series`]），非窗结算内联发射——发射面契约
+    // 冻结不动，故不在 [`FeatureValues`] / [`extract_feature_values`]
+    // 提取映射内（登记面 = 窗结算提取面 ∪ 本族分析面派生量，双向守卫
+    // 见 tests）。τ 为回合窗计数：全部无量纲，regime 同型（整数步长 +
+    // 域外显式弃权）。窗口语义按最贴切既有变体登记：一阶差分 = Diff
+    // （相邻回合差分，与「窗间差分」同构）；滑窗方差 / lag-1 自相关 =
+    // Instant（分析时点对末 k=3 滑窗的瞬时快照统计）。
+    EquilibriumFeatureSpec {
+        feature_id: "tau_first_difference",
+        formula_ref: "tau_first_difference = tau_i - tau_i_prev",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Diff,
+        regime: FeatureRegime {
+            domain: "integers within i64 (each tau is a non-negative episode window count)",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact i64 difference of the last two relaxation times (positive \
+             trend = critical slowing down signal); a series shorter than two \
+             episodes is undetermined (fail-visible exit)",
+        reset_semantics: "not applicable (per-episode derived quantity, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "tau_sliding_variance",
+        formula_ref: "tau_sliding_variance = (tau_i - tau_j)**2 + (tau_i - tau_k)**2 + (tau_j - tau_k)**2",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Instant,
+        regime: FeatureRegime {
+            domain: "non-negative integers within i128 product range then saturating to i64",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact integer sum of pairwise squared differences over the fixed \
+             k=3 sliding window (equals k^2 * variance, integer-exact and \
+             monotonically equivalent to variance at fixed k); a series shorter \
+             than the window is undetermined; saturation degrades magnitude, \
+             never sign",
+        reset_semantics: "not applicable (per-analysis derived quantity, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "tau_autocorrelation",
+        formula_ref: "tau_autocorrelation = (tau_1 - mean_prev) * (tau_2 - mean_next) + (tau_2 - mean_prev) * (tau_3 - mean_next)",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Instant,
+        regime: FeatureRegime {
+            domain: "non-negative integers within i128 product range then saturating to i64",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "registered value = lag-1 autocorrelation numerator over the fixed \
+             k=3 window (exact integer); the ratio is recovered via the paired \
+             denominator exposed by the same accessor returning (numerator, \
+             denominator); the ratio is undetermined when the denominator is \
+             zero (constant series) and the exact integer form is undetermined \
+             when the exact rational numerator/denominator is half-integer",
+        reset_semantics: "not applicable (per-analysis derived quantity, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
 ];
 
 /// 一次窗结算提取的全部注册特征值（命名字段与 [`EQUILIBRIUM_FEATURES`]
@@ -471,6 +535,155 @@ pub fn extract_feature_values(
         coverage_ratio: after.last_coverage,
         certified_streak: after.certified_streak as i64,
     }
+}
+
+// ---------------------------------------------------------------------------
+// 相变刻画语言（τ 序列分析面：弛豫时间统计特征与相标签）
+// ---------------------------------------------------------------------------
+
+/// 滑动方差 / lag-1 自相关共用的固定滑窗长度（k = 3；k 固定保证整数
+/// 等价形与重放确定性）。
+const TAU_SLIDING_WINDOW: usize = 3;
+
+/// 弛豫回合序列提取：从逐窗告警计数流提取每回合弛豫时间 τ——
+/// 一段连续零告警窗在 streak 达到 required（认证事件）时闭合一个回合，
+/// τ = 该回合 streak 达标所需窗数（闭合时点 c == required，故 τ 恒等于
+/// required）；回合以非零告警窗（或流首）开启，回合闭合后 streak 立即
+/// 归零重新起算（同段持续零告警可连续闭合多个回合），窗告警 > 0 将
+/// streak 清零。
+///
+/// 确定性：纯函数（无时钟、无随机源、无外部状态），同一观测流重放必得
+/// 同序列——与证据锚的观测流重放口径同源。
+///
+/// 诚实边界：流结束时 streak 未达 required 的尾段回合不产出 τ（未认证
+/// 回合不进序列）；required = 0 = 无判据，弛豫不定义 → 空序列。
+pub fn extract_relaxation_series(alert_counts: &[u64], required: u64) -> Vec<u64> {
+    let mut series = Vec::new();
+    if required == 0 {
+        return series;
+    }
+    let mut streak: u64 = 0;
+    for &count in alert_counts {
+        if count == 0 {
+            streak += 1;
+            if streak == required {
+                series.push(streak);
+                streak = 0;
+            }
+        } else {
+            streak = 0;
+        }
+    }
+    series
+}
+
+/// 相变刻画语言 τ 一阶差分（相邻回合差分）：弛豫时间序列趋势为正 =
+/// 临界慢化的初级信号（回归均衡越来越慢）。
+///
+/// 返回末两元素差 `τ_n − τ_{n−1}`（精确 i64 差分；两元素均在声明的
+/// i64 域内时差分必不溢出）。诚实边界：描述性度量，判定阈值不预设；
+/// 取值入口 = 实验/分析面对 τ 序列拉取（[`extract_relaxation_series`]），
+/// 非窗结算内联发射（发射面契约冻结不动）。
+///
+/// undetermined 出口（fail-visible 不猜）：序列不足两回合；τ 值超出
+/// 声明的 i64 域（域外弃权，见登记面 regime）。
+pub fn tau_first_difference(series: &[u64]) -> Option<i64> {
+    let n = series.len();
+    if n < 2 {
+        return None;
+    }
+    let prev = i64::try_from(series[n - 2]).ok()?;
+    let last = i64::try_from(series[n - 1]).ok()?;
+    Some(last - prev)
+}
+
+/// 相变刻画语言 τ 滑动方差（末 k=3 窗）：临界慢化核心度量——弛豫时间
+/// 波动随相变临近而放大。
+///
+/// 登记值取整数恒等形：`Σ_{i<j}(τ_i − τ_j)²`（k 点恒等式
+/// `Σ_{i<j}(x_i − x_j)² = k²·variance`；k 固定 = [`TAU_SLIDING_WINDOW`]
+/// 时与方差单调等价）——避免均值非整时平方偏差和出现有理数、破坏注册
+/// 表整数量化契约（quant_step = 1）。中间量走 i128 乘积域，饱和退化
+/// 幅值不改号（平方和恒非负），最终饱和到 i64。
+///
+/// 诚实边界：描述性度量，判定阈值不预设；取值入口 = 分析面 τ 序列
+/// 拉取，非窗结算内联发射。序列不足 k=3 → None（fail-visible）。
+pub fn tau_sliding_variance(series: &[u64]) -> Option<i64> {
+    let n = series.len();
+    if n < TAU_SLIDING_WINDOW {
+        return None;
+    }
+    let window = &series[n - TAU_SLIDING_WINDOW..];
+    let mut acc: i128 = 0;
+    for i in 0..TAU_SLIDING_WINDOW {
+        for j in (i + 1)..TAU_SLIDING_WINDOW {
+            let d = i128::from(window[i]) - i128::from(window[j]);
+            acc = acc.saturating_add(d.saturating_mul(d));
+        }
+    }
+    Some(acc.clamp(i64::MIN as i128, i64::MAX as i128) as i64)
+}
+
+/// 相变刻画语言 τ lag-1 自相关（末 k=3 窗）：相邻回合弛豫时间相关性
+/// 随相变临近增强的信号。
+///
+/// 返回 `(分子, 分母)` 整数对：分子 = `Σ(τ_i − μ_prev)(τ_{i+1} − μ_next)`
+/// （μ_prev = 前两点精确均值、μ_next = 后两点精确均值），分母 =
+/// `Σ(τ_i − μ_prev)²`；比值 = 分子/分母即 lag-1 自相关的有理估计——
+/// 登记面只登记分子，分母经本访问器成对暴露。k=3 小窗下比值范围可能
+/// 超出 [−1, 1]（诚实边界：小窗估计不做钳制，仅描述性）。
+///
+/// 整数形（exact 口径）：精确均值下分子 = `(τ_1−τ_2)(τ_2−τ_3)/2`、
+/// 分母 = `(τ_1−τ_2)²/2`——两者同为整数时按精确值返回；奇偶性使精确形
+/// 为半整数时超出整数量化格点（quant_step = 1）→ None（域外弃权）。
+/// undetermined 出口（fail-visible 不猜）：序列不足 k=3；前两点相等
+/// 使分母为零（含常数序列，比值未定义）；乘积超出 i128 域。
+pub fn tau_autocorrelation(series: &[u64]) -> Option<(i64, i64)> {
+    let n = series.len();
+    if n < TAU_SLIDING_WINDOW {
+        return None;
+    }
+    let a = i128::from(series[n - 3]);
+    let b = i128::from(series[n - 2]);
+    let c = i128::from(series[n - 1]);
+    let d_ab = a - b;
+    let d_bc = b - c;
+    let num2 = d_ab.checked_mul(d_bc)?;
+    let den2 = d_ab.checked_mul(d_ab)?;
+    if den2 == 0 {
+        return None;
+    }
+    if num2 % 2 != 0 || den2 % 2 != 0 {
+        return None;
+    }
+    let num = num2 / 2;
+    let den = den2 / 2;
+    Some((
+        num.clamp(i64::MIN as i128, i64::MAX as i128) as i64,
+        den.clamp(i64::MIN as i128, i64::MAX as i128) as i64,
+    ))
+}
+
+/// 相标签（描述性）：按观察窗尾直接观测量给出三态定义性标签——
+/// 尾窗有非零告警 → `"crisis"`（危机期）；certified_streak 达标
+/// （≥ required）→ `"absorbing"`（吸收期/深稳态）；否则 → `"relaxing"`
+/// （弛豫中：告警已清但判据 streak 未满）。
+///
+/// 标签次序即判定次序：危机优先（有警即危机，压倒 streak 达标）。
+/// 诚实边界：三标签为直接观测量的定义性描述，非判定立法；危机/临界
+/// 判定阈值候选实验数据定标，不预设。
+pub fn phase_label(
+    alert_counts_tail: &[u64],
+    required: u64,
+    certified_streak: u64,
+) -> &'static str {
+    if alert_counts_tail.iter().any(|&count| count > 0) {
+        return "crisis";
+    }
+    if certified_streak >= required {
+        return "absorbing";
+    }
+    "relaxing"
 }
 
 /// 读回超时（反应器不可达/积压时本窗视图以 None fail-visible 呈现）。
@@ -914,6 +1127,10 @@ mod tests {
     #[test]
     fn test_registry_and_extraction_are_in_sync() {
         // 定义表特征 id 集合 = 提取映射键集合（双向，漏登记/漏提取即红）。
+        // 相变刻画语言三条 τ 统计特征为分析面派生量：计算入口 = 分析面对
+        // τ 序列拉取，非窗结算内联提取（发射面契约冻结），故不在提取
+        // 映射内；登记面 = 窗结算提取面 ∪ 分析面 τ 特征（恰此三条），
+        // τ 特征自身完备性由 phase-language 专项测试锁定。
         let prev = WindowsSnapshot {
             proposals_in_total: 0,
             digested_total: 0,
@@ -932,7 +1149,26 @@ mod tests {
         let registry_ids: std::collections::BTreeSet<_> =
             EQUILIBRIUM_FEATURES.iter().map(|s| s.feature_id).collect();
         let extracted_ids: std::collections::BTreeSet<_> = values.keys().copied().collect();
-        assert_eq!(registry_ids, extracted_ids);
+        for id in &extracted_ids {
+            assert!(
+                registry_ids.contains(id),
+                "extracted id must be registered: {id}"
+            );
+        }
+        let expected_analysis: std::collections::BTreeSet<_> = [
+            "tau_first_difference",
+            "tau_sliding_variance",
+            "tau_autocorrelation",
+        ]
+        .into_iter()
+        .collect();
+        let analysis_only: std::collections::BTreeSet<_> =
+            registry_ids.difference(&extracted_ids).copied().collect();
+        assert_eq!(
+            analysis_only, expected_analysis,
+            "registry entries beyond window extraction must be exactly the \
+             analysis-face tau features"
+        );
     }
 
     #[test]
@@ -1044,6 +1280,20 @@ mod tests {
             ("certificate_count", "1"),
             ("coverage_per_mille", "1"),
             ("s", "s"),
+            // 相变刻画语言 τ 特征（分析面）：τ 为回合窗计数，全无量纲；
+            // mean_prev/mean_next 为 k=3 窗前两点/后两点的精确均值符号。
+            ("tau_first_difference", "1"),
+            ("tau_sliding_variance", "1"),
+            ("tau_autocorrelation", "1"),
+            ("tau_i", "1"),
+            ("tau_i_prev", "1"),
+            ("tau_j", "1"),
+            ("tau_k", "1"),
+            ("tau_1", "1"),
+            ("tau_2", "1"),
+            ("tau_3", "1"),
+            ("mean_prev", "1"),
+            ("mean_next", "1"),
         ]
         .iter()
         .map(|(k, v)| (*k, JsonValue::string(*v)))
@@ -1136,13 +1386,27 @@ mod tests {
             serde_json::json!(9)
         );
         let values = features.to_map();
-        for spec in EQUILIBRIUM_FEATURES.iter() {
+        // 窗结算特征值逐条记录且键集合恰 = 提取映射（相变刻画语言 τ
+        // 分析面派生量不入结算特征值——发射面契约冻结）。
+        let recorded = record
+            .get("features")
+            .and_then(|v| v.as_object())
+            .expect("features object in settlement record");
+        assert_eq!(
+            recorded.len(),
+            values.len(),
+            "settlement feature map must match the window-extraction map exactly"
+        );
+        for (id, expected) in &values {
             assert_eq!(
-                record["features"][spec.feature_id],
-                serde_json::json!(values[spec.feature_id]),
-                "feature value must be recorded: {}",
-                spec.feature_id
+                record["features"][*id],
+                serde_json::json!(expected),
+                "feature value must be recorded: {id}"
             );
+        }
+        // 全部登记条目（含分析面 τ 特征）：formula 版本戳逐条入册；
+        // evidence_anchor 声明非空且绑定实锚形态（同源声明逐条一致）。
+        for spec in EQUILIBRIUM_FEATURES.iter() {
             assert_eq!(
                 record["formula_refs"][spec.feature_id],
                 serde_json::json!(spec.formula_ref),
@@ -1235,5 +1499,170 @@ mod tests {
         assert_eq!(c1, a1, "untampered first window keeps its anchor");
         assert_ne!(c2, a2, "tampered window observation must change its anchor");
         assert_ne!(c3, a3, "tamper must propagate to all subsequent anchors");
+    }
+
+    #[test]
+    fn test_extract_relaxation_series_golden_vectors() {
+        // 黄金向量（手算）：窗 0-2 三零闭合 τ=3；窗 3 有警清零；窗 4-6
+        // 闭合 τ=3；窗 7-9 闭合 τ=3 → [3, 3, 3]（闭合后 streak 归零立即
+        // 起算，同段零告警可连续闭合多个回合）。
+        assert_eq!(
+            extract_relaxation_series(&[0, 0, 0, 1, 0, 0, 0, 0, 0, 0], 3),
+            vec![3, 3, 3]
+        );
+        // 不等长例（手算）：窗 0 有警；窗 1-3 闭合 τ=3；窗 4 零告警
+        // （streak=1）但窗 5 有警清零；窗 6-8 闭合 τ=3；窗 9-10
+        // streak=2 < 3 未闭合不产出 → [3, 3]（尾段未认证回合剔除——
+        // 诚实边界）。
+        assert_eq!(
+            extract_relaxation_series(&[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], 3),
+            vec![3, 3]
+        );
+        // required = 0 = 无判据 → 空序列；空流 → 空序列；尾段未达 → 空序列。
+        assert_eq!(extract_relaxation_series(&[0, 0, 0], 0), Vec::<u64>::new());
+        assert_eq!(extract_relaxation_series(&[], 3), Vec::<u64>::new());
+        assert_eq!(extract_relaxation_series(&[1, 0, 0], 3), Vec::<u64>::new());
+        // 窗告警计数 > 1 同样视为有警窗（非零即破零告警 streak）：
+        // [2, 0, 0, 0] required=2 → 窗 2 闭合 τ=2，窗 3 streak=1 未闭合。
+        assert_eq!(extract_relaxation_series(&[2, 0, 0, 0], 2), vec![2]);
+    }
+
+    #[test]
+    fn test_tau_features_golden_vectors() {
+        // 黄金向量（手算逐值）：[2, 3, 5, 9] 递增 = 临界慢化形态。
+        let series = [2_u64, 3, 5, 9];
+        // 一阶差分 = 末两元素差 9 - 5。
+        assert_eq!(tau_first_difference(&series), Some(4));
+        // 滑动方差（整数恒等形 Σ_{i<j}(τ_i−τ_j)² = k²·variance）：
+        // 末 k=3 窗 [3, 5, 9] → (3−5)² + (3−9)² + (5−9)² = 4 + 36 + 16 = 56。
+        assert_eq!(tau_sliding_variance(&series), Some(56));
+        // lag-1 自相关整数形：μ_prev = (3+5)/2 = 4，μ_next = (5+9)/2 = 7；
+        // 分子 = (3−4)(5−7) + (5−4)(9−7) = 2 + 2 = 4；分母 = 1 + 1 = 2。
+        assert_eq!(tau_autocorrelation(&series), Some((4, 2)));
+
+        // 常数序列：滑动方差 = 0；自相关分母 = 0 → 比值未定义 → None
+        // （诚实出口）；一阶差分 = 0。
+        let constant = [4_u64, 4, 4];
+        assert_eq!(tau_first_difference(&constant), Some(0));
+        assert_eq!(tau_sliding_variance(&constant), Some(0));
+        assert_eq!(tau_autocorrelation(&constant), None);
+
+        // 短序列：不足两回合差分 None；不足 k=3 滑窗统计 None。
+        let short = [2_u64, 3];
+        assert_eq!(tau_first_difference(&short), Some(1));
+        assert_eq!(tau_sliding_variance(&short), None);
+        assert_eq!(tau_autocorrelation(&short), None);
+        assert_eq!(tau_first_difference(&[]), None);
+        assert_eq!(tau_sliding_variance(&[]), None);
+        assert_eq!(tau_autocorrelation(&[]), None);
+
+        // 负相关例（手算）：[5, 1, 9]：μ_prev=3，μ_next=5；分子 =
+        // (5−3)(1−5) + (1−3)(9−5) = −8 − 8 = −16；分母 = 4 + 4 = 8。
+        // k=3 小窗比值 −2 超出 [−1, 1] —— 诚实边界：不钳制，仅描述性。
+        assert_eq!(tau_autocorrelation(&[5_u64, 1, 9]), Some((-16, 8)));
+
+        // 奇偶边界：精确均值下分子 = (τ1−τ2)(τ2−τ3)/2、分母 = (τ1−τ2)²/2，
+        // 精确形为半整数时超出整数量化格点 → None（fail-visible；
+        // [1, 2, 4]: 分母 = (1−2)²/2 = 1/2 非整数）。
+        assert_eq!(tau_autocorrelation(&[1_u64, 2, 4]), None);
+
+        // 域外弃权：τ 超出声明的 i64 域 → 一阶差分 None（fail-visible）。
+        assert_eq!(
+            tau_first_difference(&[0, u64::MAX]),
+            None,
+            "tau beyond the declared i64 domain is undetermined"
+        );
+        // i128 乘积域边界：滑窗方差饱和退化幅值不改号（i64::MAX）；
+        // 自相关乘积超出 i128 域 → None。
+        let huge = [u64::MAX - 1, 0, u64::MAX - 1];
+        assert_eq!(tau_sliding_variance(&huge), Some(i64::MAX));
+        assert_eq!(tau_autocorrelation(&huge), None);
+    }
+
+    #[test]
+    fn test_phase_label_descriptive_states() {
+        // 三态定义性标签（直接观测量，无调参阈值）：危机 > 吸收 > 弛豫。
+        assert_eq!(phase_label(&[0, 5, 0], 3, 9), "crisis", "尾窗有警 = 危机期");
+        assert_eq!(
+            phase_label(&[0, 0, 0], 3, 3),
+            "absorbing",
+            "无警且 streak 达标 = 吸收期/深稳态"
+        );
+        assert_eq!(
+            phase_label(&[0, 0, 0], 3, 2),
+            "relaxing",
+            "无警但 streak 未满 = 弛豫中"
+        );
+        // 标签次序：危机压倒 streak 达标（有警即危机）。
+        assert_eq!(phase_label(&[1], 1, 5), "crisis");
+        // 空尾窗 = 无警观测；streak 达标与否定吸收/弛豫。
+        assert_eq!(phase_label(&[], 3, 3), "absorbing");
+        assert_eq!(phase_label(&[], 3, 0), "relaxing");
+    }
+
+    #[test]
+    fn test_registry_includes_phase_language_features() {
+        // 相变刻画语言三条 τ 特征已登记且八字段完备（id/公式/量纲/窗口
+        // 语义/适用域/误差契约/清零语义/复算锚），锚声明同源绑定，
+        // regime 全部整数步长 + 域外弃权，量纲全零（τ = 回合窗计数）。
+        assert_eq!(TAU_SLIDING_WINDOW, 3, "滑窗长度固定 k=3（整数等价形前提）");
+        for id in [
+            "tau_first_difference",
+            "tau_sliding_variance",
+            "tau_autocorrelation",
+        ] {
+            let spec = match EQUILIBRIUM_FEATURES.iter().find(|s| s.feature_id == id) {
+                Some(spec) => spec,
+                None => panic!("feature must be registered: {id}"),
+            };
+            assert_eq!(
+                spec.dim_vector,
+                [0, 0, 0, 0, 0, 0, 0],
+                "tau features are dimensionless: {id}"
+            );
+            assert!(!spec.formula_ref.is_empty(), "{id}");
+            assert!(!spec.regime.domain.is_empty(), "{id}");
+            assert_eq!(spec.regime.quant_step, 1, "{id}");
+            assert!(spec.regime.undetermined_outside, "{id}");
+            assert!(!spec.error_contract.is_empty(), "{id}");
+            assert!(!spec.reset_semantics.is_empty(), "{id}");
+            assert_eq!(
+                spec.evidence_anchor, EVIDENCE_ANCHOR_WINDOW_STREAM,
+                "anchor declaration must describe the bound anchor form: {id}"
+            );
+        }
+        // 只加不改：既有九条窗结算特征逐条仍在册（登记面零删改）。
+        for id in [
+            "proposals_in_total",
+            "digested_total",
+            "in_rate",
+            "digest_rate",
+            "net_intake_rate",
+            "window_alert_count",
+            "alert_free_windows",
+            "coverage_ratio",
+            "certified_streak",
+        ] {
+            assert!(
+                EQUILIBRIUM_FEATURES.iter().any(|s| s.feature_id == id),
+                "existing feature must stay registered: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase_language_functions_deterministic() {
+        // 确定性双跑：同输入两跑全等输出（纯函数契约：无时钟、无随机源、
+        // 无外部状态——观测流重放口径与证据锚同源）。
+        let stream = [0_u64, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            extract_relaxation_series(&stream, 3),
+            extract_relaxation_series(&stream, 3)
+        );
+        let series = [2_u64, 3, 5, 9];
+        assert_eq!(tau_first_difference(&series), tau_first_difference(&series));
+        assert_eq!(tau_sliding_variance(&series), tau_sliding_variance(&series));
+        assert_eq!(tau_autocorrelation(&series), tau_autocorrelation(&series));
+        assert_eq!(phase_label(&[0, 0, 1], 3, 5), phase_label(&[0, 0, 1], 3, 5));
     }
 }
