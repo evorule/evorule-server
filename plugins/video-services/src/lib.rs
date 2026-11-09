@@ -32,6 +32,8 @@
 //! 6. `qc_count_check` — 结构计数判定（守恒谓词引擎原语一，规则表参数化）
 //! 7. `qc_domain_check` — 比例/数值域校验（守恒谓词引擎原语二，规则表参数化）
 //! 8. `qc_temporal_check` — 帧间守恒判定（守恒谓词引擎原语三，规则表参数化）
+//! 9. `anatomy_joint_angle_eval` — 三点关节角判定（域扩展：手部 QC 静态面）
+//! 10. `anatomy_hand_orientation_eval` — 手部朝向判定（手性/共线退化，域扩展）
 
 #![forbid(unsafe_code)]
 
@@ -45,9 +47,9 @@ use evorule_tcb::JsonValue;
 pub mod services;
 
 use services::{
-    mk_color_contrast_ratio_eval, mk_qc_count_check, mk_qc_domain_check, mk_qc_temporal_check,
-    mk_skeleton_probe, mk_timeline_consistency_check, mk_video_frame_sequence_eval,
-    mk_video_track_consistency_eval,
+    mk_anatomy_hand_orientation_eval, mk_anatomy_joint_angle_eval, mk_color_contrast_ratio_eval,
+    mk_qc_count_check, mk_qc_domain_check, mk_qc_temporal_check, mk_skeleton_probe,
+    mk_timeline_consistency_check, mk_video_frame_sequence_eval, mk_video_track_consistency_eval,
 };
 
 // ============================================================================
@@ -121,6 +123,22 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
         r#"{"type":"object","properties":{"frames":{"type":"array","items":{"type":"object"},"description":"逐帧观测 [{frame, values},...],frame 非负整数唯一,values 为 {观测名: 字符串有理数}"},"rules":{"type":"array","items":{"type":"object"},"description":"守恒规则表,每项 {rule_id, name, max_delta},max_delta 相邻帧差值上限字符串有理数非负"}},"required":["frames","rules"]}"#,
     ),
     make: mk_qc_temporal_check,
+}, NativeServiceDef {
+    name: "anatomy_joint_angle_eval",
+    sensitive: false,
+    description: "三点关节角判定核(顶点+两臂端点坐标→夹角余弦闭区间判定,1e6 定点整比较零浮点零超越函数,双 isqrt 分母防溢出,违例出规则ID+cos证据;手部QC静态面;规则表参数化;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"points":{"type":"object","description":"{点名: [x_str, y_str]} 坐标映射,字符串有理数,|坐标|≤10000 单位"},"angles":{"type":"array","items":{"type":"object","description":"{rule_id, vertex, a, b, min_cos, max_cos},cos 界字符串有理数闭区间,至少给一界"}}},"required":["points","angles"]}"#,
+    ),
+    make: mk_anatomy_joint_angle_eval,
+}, NativeServiceDef {
+    name: "anatomy_hand_orientation_eval",
+    sensitive: false,
+    description: "手部朝向判定核(标架点集→手性符号判定+链段共线/非共线退化判定,鞋带公式整数叉积和零浮点,epsilon显式入参,违例出手性翻转/退化链证据;手部QC翻转与共线面;规则表参数化;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"points":{"type":"object","description":"{点名: [x_str, y_str]} 坐标映射,同 anatomy_joint_angle_eval"},"rules":{"type":"array","items":{"type":"object","description":"{rule_id, kind, points, sign, epsilon},kind ∈ chirality|collinearity|noncollinearity,chirality 须给 sign ∈ ccw|cw,epsilon 为叉积容差(单位²,缺省 0)"}}},"required":["points","rules"]}"#,
+    ),
+    make: mk_anatomy_hand_orientation_eval,
 }];
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
@@ -175,8 +193,8 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
         assert_eq!(
-            total, 8,
-            "声明表应为 8 项(探针+时间轴校验+对比度+帧序列+轨迹守恒+守恒三原语)"
+            total, 10,
+            "声明表应为 10 项(探针+时间轴校验+对比度+帧序列+轨迹守恒+守恒三原语+anatomy 两核)"
         );
         for d in NATIVE_SERVICES {
             let _ = (d.make)();

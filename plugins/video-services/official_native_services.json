@@ -7,6 +7,8 @@
     {"name": "video_track_consistency_eval", "sensitive": false, "description": "主体轨迹守恒判定核(参考 bbox+逐帧 bbox 序列→位移/尺度漂移越限判定,l2/linf 度量缺省 l2,l2 判定面平方整比较零开方,1e6 定点精确;感知检出留引擎侧显式喂入;确定性)"},
     {"name": "qc_count_check", "sensitive": false, "description": "结构计数判定核(对象部件计数 vs 规则表期望计数/区间,闭区间判定,违例出规则ID+期望+实际证据;规则表参数化,新增检查项=加规则表不加代码;守恒谓词引擎原语一;确定性)"},
     {"name": "qc_domain_check", "sensitive": false, "description": "比例/数值域校验核(测量值落规则域区间判定,骨比域/角度域/结构比域同构,域界字符串有理数闭区间可开单侧,1e6 定点整比较,违例出规则ID+域界+实际证据;规则表参数化;守恒谓词引擎原语二;确定性)"},
-    {"name": "qc_temporal_check", "sensitive": false, "description": "帧间守恒判定核(逐帧观测序列相邻帧差值越限判定,位移/面积/计数守恒同构泛化,帧号非负整数唯一必填升序判定,首帧无前帧不判定,1e6 定点整比较,违例出规则ID+帧号+观测名+差值证据;规则表参数化;守恒谓词引擎原语三;确定性)"}
+    {"name": "qc_temporal_check", "sensitive": false, "description": "帧间守恒判定核(逐帧观测序列相邻帧差值越限判定,位移/面积/计数守恒同构泛化,帧号非负整数唯一必填升序判定,首帧无前帧不判定,1e6 定点整比较,违例出规则ID+帧号+观测名+差值证据;规则表参数化;守恒谓词引擎原语三;确定性)"},
+    {"name": "anatomy_joint_angle_eval", "sensitive": false, "description": "三点关节角判定核(顶点+两臂端点坐标→夹角余弦闭区间判定,1e6 定点整比较零浮点零超越函数,双 isqrt 分母防溢出,违例出规则ID+cos证据;手部QC静态面;规则表参数化;确定性)"},
+    {"name": "anatomy_hand_orientation_eval", "sensitive": false, "description": "手部朝向判定核(标架点集→手性符号判定+链段共线/非共线退化判定,鞋带公式整数叉积和零浮点,epsilon显式入参,违例出手性翻转/退化链证据;手部QC翻转与共线面;规则表参数化;确定性)"}
   ]
 }

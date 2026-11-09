@@ -2634,3 +2634,817 @@ mod qc_conservation_tests {
         assert!(QcTemporalCheck.execute(&missing).is_err());
     }
 }
+
+// ----------------------------------------------------------------------------
+// anatomy_joint_angle_eval — 三点关节角判定核（域扩展第一单）
+// ----------------------------------------------------------------------------
+
+/// anatomy 两核共用：解析点名→(x, y)（1e6 定点）。
+///
+/// 契约：字符串有理数（整数 ≤7 位 + 小数 ≤6 位）；坐标绝对值 ≤ 1e4
+/// 单位（1e6 定点 ≤ 1e10）。溢出预算（写实算值）：|dx| ≤ 2e10 →
+/// dx² ≤ 4e20，na2 ≤ 8e20，isqrt(na2) ≤ 2.9e10，分母积 ≤ 8.4e20，
+/// |dot| ≤ 8e20，dot×1e6 ≤ 8e26 ≪ i128 上限 1.7e38（余量 11 个量级）。
+fn anatomy_pt(
+    points: &evorule_tcb::ObjectMap,
+    name: &str,
+    ctx: &str,
+) -> Result<(i128, i128), String> {
+    let arr = points
+        .get(name)
+        .and_then(JsonValue::as_array)
+        .ok_or(format!("{ctx}: 点 {name:?} 在 points 中缺失或非数组"))?;
+    if arr.len() != 2 {
+        return Err(format!("{ctx}: 点 {name:?} 须为 [x, y] 二元数组"));
+    }
+    let px = arr
+        .first()
+        .and_then(JsonValue::as_str)
+        .ok_or(format!("{ctx}: 点 {name:?} x 须为字符串有理数"))?;
+    let py = arr
+        .get(1)
+        .and_then(JsonValue::as_str)
+        .ok_or(format!("{ctx}: 点 {name:?} y 须为字符串有理数"))?;
+    let qx = parse_qc_rational(px, &format!("{ctx}.x"), 7, 6)?;
+    let qy = parse_qc_rational(py, &format!("{ctx}.y"), 7, 6)?;
+    const PT_BOUND: i128 = 10_000_000_000;
+    if qx.abs() > PT_BOUND || qy.abs() > PT_BOUND {
+        return Err(format!(
+            "{ctx}: 点 {name:?} 坐标超契约域 |坐标|≤10000 单位 — 自诊断指引: 坐标缩放由引擎侧完成"
+        ));
+    }
+    Ok((qx, qy))
+}
+
+/// cos 值 1e6 整标度 → 证据串（负值显式带符号；共用 fmt_qc 仅稳妥用于非负值）
+fn fmt_cos(v: i128) -> String {
+    if v < 0 {
+        format!("-{}", fmt_qc(-v))
+    } else {
+        fmt_qc(v)
+    }
+}
+
+/// 三点关节角判定核：顶点角余弦值落规则域闭区间判定。
+///
+/// 判定语义：
+/// - 输入 `points`: {{点名: [x, y]}}（字符串有理数，契约见 anatomy_pt）；
+/// - 规则表逐条：{{rule_id, vertex, a, b, min_cos?, max_cos?}}——顶点 V
+///   处向量 (A−V)·(B−V) 夹角余弦须落 [min_cos, max_cos]（1e6 整标度
+///   闭区间，至少给一界）；余弦 = dot×1e6/(|a|×|b|)——两次独立 isqrt
+///   分母（不合成 na2·nb2 乘积防溢出）；整除截断偏差 ≤ ±1e-6，同输入
+///   恒同输出（位元可重放）；零超越函数（cos 域直判，角度域换算在
+///   规则编写侧完成）；
+/// - 违例出 `angle_domain_violation`（规则 ID+cos 证据）；顶点与臂点
+///   重合（零长臂）/点名缺失/双界全缺拒收（带自诊断指引）。
+struct AnatomyJointAngleEval;
+
+impl NativeService for AnatomyJointAngleEval {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let points = args
+            .get("points")
+            .and_then(JsonValue::as_object)
+            .ok_or("缺少必填参数 points — 自诊断指引: {{点名: [x_str, y_str]}},如 {{\"wrist\": [\"0\", \"0\"]}}")?;
+        let checks = args.get("angles").and_then(JsonValue::as_array).ok_or(
+            "缺少必填参数 angles — 自诊断指引: 规则表数组,每项 {{rule_id, vertex, a, b, min_cos, max_cos}}",
+        )?;
+        if checks.is_empty() {
+            return Err("angles 须为非空数组 — 自诊断指引: 至少 1 条关节角规则".to_string());
+        }
+        let mut violations: Vec<JsonValue> = Vec::new();
+        for (i, r) in checks.iter().enumerate() {
+            let obj = r.as_object().ok_or(format!(
+                "angles[{i}] 须为规则对象 — 自诊断指引: {{rule_id, vertex, a, b, min_cos, max_cos}}"
+            ))?;
+            let rule_id = req_str(obj, "rule_id", &format!("angles[{i}].rule_id"))?;
+            let vertex = req_str(obj, "vertex", &format!("angles[{i}].vertex"))?;
+            let an = req_str(obj, "a", &format!("angles[{i}].a"))?;
+            let bn = req_str(obj, "b", &format!("angles[{i}].b"))?;
+            let v = anatomy_pt(points, vertex, &format!("angles[{i}]"))?;
+            let pa = anatomy_pt(points, an, &format!("angles[{i}]"))?;
+            let pb = anatomy_pt(points, bn, &format!("angles[{i}]"))?;
+            if pa == v || pb == v {
+                return Err(format!(
+                    "angles[{i}] 顶点 {vertex:?} 与臂点重合(零长臂) — 自诊断指引: 三点须互异且两臂非零长"
+                ));
+            }
+            let dax = pa.0 - v.0;
+            let day = pa.1 - v.1;
+            let dbx = pb.0 - v.0;
+            let dby = pb.1 - v.1;
+            let dot = dax * dbx + day * dby;
+            let na = isqrt(dax * dax + day * day);
+            let nb = isqrt(dbx * dbx + dby * dby);
+            let cos_scaled = (dot * 1_000_000i128) / (na * nb);
+            let raw_min = qc_rule_str(obj, "min_cos");
+            let raw_max = qc_rule_str(obj, "max_cos");
+            if raw_min.is_none() && raw_max.is_none() {
+                return Err(format!(
+                    "angles[{i}] min_cos/max_cos 至少给一 — 自诊断指引: 角域规则 {rule_id:?} 须给 min_cos 或 max_cos"
+                ));
+            }
+            let minc = raw_min
+                .map(|s| parse_qc_rational(s, &format!("angles[{i}].min_cos"), 7, 6))
+                .transpose()?;
+            let maxc = raw_max
+                .map(|s| parse_qc_rational(s, &format!("angles[{i}].max_cos"), 7, 6))
+                .transpose()?;
+            if let (Some(lo), Some(hi)) = (minc, maxc) {
+                if lo > hi {
+                    return Err(format!(
+                        "angles[{i}] min_cos={} > max_cos={} — 自诊断指引: 域须 lo<=hi",
+                        fmt_cos(lo),
+                        fmt_cos(hi)
+                    ));
+                }
+            }
+            let below = matches!(minc, Some(lo) if cos_scaled < lo);
+            let above = matches!(maxc, Some(hi) if cos_scaled > hi);
+            if below || above {
+                let bound = if below {
+                    format!("下界 {}", fmt_cos(minc.unwrap_or(0)))
+                } else {
+                    format!("上界 {}", fmt_cos(maxc.unwrap_or(0)))
+                };
+                violations.push(qc_violation(
+                    rule_id,
+                    "angle_domain_violation",
+                    format!(
+                        "cos({vertex},{an},{bn}) 出{bound},实际 {}",
+                        fmt_cos(cos_scaled)
+                    ),
+                ));
+            }
+        }
+        let all_clean = violations.is_empty();
+        Ok(envelope(&[
+            ("service", JsonValue::string("anatomy_joint_angle_eval")),
+            ("all_clean", JsonValue::Bool(all_clean)),
+            ("violations", JsonValue::Array(violations)),
+        ]))
+    }
+}
+
+/// 声明表构造子：三点关节角判定
+pub fn mk_anatomy_joint_angle_eval() -> Arc<dyn NativeService> {
+    Arc::new(AnatomyJointAngleEval)
+}
+
+// ----------------------------------------------------------------------------
+// anatomy_hand_orientation_eval — 手部朝向判定核（手性/共线退化）
+// ----------------------------------------------------------------------------
+
+/// 手部朝向判定核：标架点集的手性符号与链段共线退化判定。
+///
+/// 判定语义：
+/// - 规则表逐条：{{rule_id, kind, points, sign?, epsilon?}}——
+///   `kind=chirality`：点集（≥3 点，按声明序成环）鞋带公式叉积和的
+///   符号须与 `sign`（ccw/cw）一致；符号相反出 `orientation_flipped`，
+///   零面积出 `degenerate_orientation`；
+///   `kind=collinearity`：三点链 {{a, b, c}}（b 为链中点）|cross(A−B,
+///   C−B)| ≤ epsilon×1e12（epsilon 单位²，与叉积同量纲；缺省 0=严格
+///   共线）判过，否则出 `chain_collinear`；
+///   `kind=noncollinearity`：同上反向——链须弯折 |cross| > epsilon×1e12，
+///   否则出 `chain_collinear`；
+/// - 全程整数叉积/鞋带和零浮点（溢出预算：单叉积 ≤ 8e20，鞋带和
+///   ≤ 64 点 ×2e20 = 1.28e22 ≪ i128 上限）；epsilon 须非负。
+struct AnatomyHandOrientationEval;
+
+impl NativeService for AnatomyHandOrientationEval {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let points = args
+            .get("points")
+            .and_then(JsonValue::as_object)
+            .ok_or("缺少必填参数 points — 自诊断指引: {{点名: [x_str, y_str]}}")?;
+        let rules = args.get("rules").and_then(JsonValue::as_array).ok_or(
+            "缺少必填参数 rules — 自诊断指引: 规则表数组,每项 {{rule_id, kind, points, sign, epsilon}}",
+        )?;
+        if rules.is_empty() {
+            return Err("rules 须为非空数组 — 自诊断指引: 至少 1 条朝向规则".to_string());
+        }
+        let mut violations: Vec<JsonValue> = Vec::new();
+        for (i, r) in rules.iter().enumerate() {
+            let obj = r.as_object().ok_or(format!(
+                "rules[{i}] 须为规则对象 — 自诊断指引: {{rule_id, kind, points, sign, epsilon}}"
+            ))?;
+            let rule_id = req_str(obj, "rule_id", &format!("rules[{i}].rule_id"))?;
+            let kind = req_str(obj, "kind", &format!("rules[{i}].kind"))?;
+            let names: Vec<&str> = obj
+                .get("points")
+                .and_then(JsonValue::as_array)
+                .ok_or(format!(
+                    "rules[{i}] 缺 points — 自诊断指引: 点名数组按声明序"
+                ))?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .ok_or(format!("rules[{i}].points 须为字符串点名数组"))
+                })
+                .collect::<Result<Vec<&str>, String>>()?;
+            match kind {
+                "chirality" => {
+                    if names.len() < 3 {
+                        return Err(format!(
+                            "rules[{i}] chirality 点集须 ≥3 点 — 自诊断指引: 按声明序成环"
+                        ));
+                    }
+                    let sign_req = req_str(obj, "sign", &format!("rules[{i}].sign"))?;
+                    let expect: i128 = match sign_req {
+                        "ccw" => 1,
+                        "cw" => -1,
+                        _ => {
+                            return Err(format!(
+                                "rules[{i}] sign={sign_req:?} 非法 — 自诊断指引: sign ∈ ccw|cw"
+                            ))
+                        }
+                    };
+                    let mut sum: i128 = 0;
+                    for k in 0..names.len() {
+                        let (x1, y1) = anatomy_pt(points, names[k], &format!("rules[{i}]"))?;
+                        let nk = (k + 1) % names.len();
+                        let (x2, y2) = anatomy_pt(points, names[nk], &format!("rules[{i}]"))?;
+                        sum += x1 * y2 - x2 * y1;
+                    }
+                    if sum == 0 {
+                        violations.push(qc_violation(
+                            rule_id,
+                            "degenerate_orientation",
+                            format!("chirality 环 {names:?} 零面积(共线退化)"),
+                        ));
+                    } else if sum.signum() != expect {
+                        violations.push(qc_violation(
+                            rule_id,
+                            "orientation_flipped",
+                            format!(
+                                "chirality 环 {names:?} 手性翻转,期望 {expect:+},实际 {:+}",
+                                sum.signum()
+                            ),
+                        ));
+                    }
+                }
+                "collinearity" | "noncollinearity" => {
+                    if names.len() != 3 {
+                        return Err(format!(
+                            "rules[{i}] {kind} 点集须恰 3 点 — 自诊断指引: [a, b, c],b 为链中点"
+                        ));
+                    }
+                    let (a, b, c) = (names[0], names[1], names[2]);
+                    let (ax, ay) = anatomy_pt(points, a, &format!("rules[{i}]"))?;
+                    let (bx, by) = anatomy_pt(points, b, &format!("rules[{i}]"))?;
+                    let (cx, cy) = anatomy_pt(points, c, &format!("rules[{i}]"))?;
+                    let cross = (ax - bx) * (cy - by) - (ay - by) * (cx - bx);
+                    let eps_scaled: i128 = match qc_rule_str(obj, "epsilon") {
+                        Some(s) => {
+                            let e = parse_qc_rational(s, &format!("rules[{i}].epsilon"), 7, 6)?;
+                            if e < 0 {
+                                return Err(format!(
+                                    "rules[{i}] epsilon 须非负 — 自诊断指引: 容差为幅度"
+                                ));
+                            }
+                            e * 1_000_000i128
+                        }
+                        None => 0,
+                    };
+                    let collinear = cross.abs() <= eps_scaled;
+                    let ok = if kind == "collinearity" {
+                        collinear
+                    } else {
+                        !collinear
+                    };
+                    if !ok {
+                        violations.push(qc_violation(
+                            rule_id,
+                            "chain_collinear",
+                            format!(
+                                "链 {a},{b},{c} 共线判定不符:{kind} 期望,|cross|={}",
+                                cross.abs()
+                            ),
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "rules[{i}] kind={kind:?} 非法 — 自诊断指引: kind ∈ chirality|collinearity|noncollinearity"
+                    ))
+                }
+            }
+        }
+        let all_clean = violations.is_empty();
+        Ok(envelope(&[
+            (
+                "service",
+                JsonValue::string("anatomy_hand_orientation_eval"),
+            ),
+            ("all_clean", JsonValue::Bool(all_clean)),
+            ("violations", JsonValue::Array(violations)),
+        ]))
+    }
+}
+
+/// 声明表构造子：手部朝向判定
+pub fn mk_anatomy_hand_orientation_eval() -> Arc<dyn NativeService> {
+    Arc::new(AnatomyHandOrientationEval)
+}
+
+#[cfg(test)]
+mod anatomy_angle_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn obj(pairs: &[(&str, JsonValue)]) -> JsonValue {
+        JsonValue::object_from_pairs(pairs)
+    }
+    fn pt(x: &str, y: &str) -> JsonValue {
+        JsonValue::Array(vec![JsonValue::string(x), JsonValue::string(y)])
+    }
+    fn run(points: &[(&str, JsonValue)], angles: Vec<JsonValue>) -> Result<JsonValue, String> {
+        let pts: Vec<(&str, JsonValue)> = points.to_vec();
+        AnatomyJointAngleEval.execute(&obj(&[
+            ("points", obj(&pts)),
+            ("angles", JsonValue::Array(angles)),
+        ]))
+    }
+    fn rule(minc: &str, maxc: &str) -> JsonValue {
+        obj(&[
+            ("rule_id", JsonValue::string("R1")),
+            ("vertex", JsonValue::string("v")),
+            ("a", JsonValue::string("a")),
+            ("b", JsonValue::string("b")),
+            ("min_cos", JsonValue::string(minc)),
+            ("max_cos", JsonValue::string(maxc)),
+        ])
+    }
+
+    #[test]
+    fn right_angle_exact_zero_cos_in_domain() {
+        // 直角锚：cos=0 精确（1e6 标度 0），闭区间内判过
+        let out = run(
+            &[
+                ("v", pt("0", "0")),
+                ("a", pt("60", "0")),
+                ("b", pt("0", "40")),
+            ],
+            vec![rule("-0.1", "0.1")],
+        )
+        .expect("直角锚须判过");
+        assert_eq!(
+            out.as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn three_four_five_exact_cos_six_tenths() {
+        // 3-4-5 精确锚：(30,40) 与 (30,0) → cos=900/1500=0.6 恰等
+        let out = run(
+            &[
+                ("v", pt("0", "0")),
+                ("a", pt("30", "40")),
+                ("b", pt("30", "0")),
+            ],
+            vec![rule("0.6", "0.6")],
+        )
+        .expect("3-4-5 锚须判过");
+        assert_eq!(
+            out.as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn obtuse_negative_cos_violation_with_signed_evidence() {
+        // 钝角：cos=-0.6 出下界 -0.5 → 违例，证据带符号 -0.600000
+        let out = run(
+            &[
+                ("v", pt("0", "0")),
+                ("a", pt("-30", "40")),
+                ("b", pt("30", "0")),
+            ],
+            vec![rule("-0.5", "1")],
+        )
+        .expect("钝角违例须出结果");
+        assert_eq!(
+            out.as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let v = out
+            .as_object()
+            .unwrap()
+            .get("violations")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(v.len(), 1);
+        let detail = v[0]
+            .as_object()
+            .unwrap()
+            .get("detail")
+            .and_then(JsonValue::as_str)
+            .unwrap();
+        assert!(detail.contains("-0.600000"), "证据须带符号: {detail}");
+    }
+
+    #[test]
+    fn upper_bound_violation_and_closed_boundary_pass() {
+        // 平行向量 cos=1.0：上限 0.999999 → 违例；上限恰 1 → 闭边界判过
+        let pts = &[
+            ("v", pt("0", "0")),
+            ("a", pt("30", "0")),
+            ("b", pt("60", "0")),
+        ];
+        let out = run(pts, vec![rule("0", "0.999999")]).expect("须出结果");
+        assert_eq!(
+            out.as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let detail = out
+            .as_object()
+            .unwrap()
+            .get("violations")
+            .and_then(JsonValue::as_array)
+            .unwrap()[0]
+            .as_object()
+            .unwrap()
+            .get("detail")
+            .and_then(JsonValue::as_str)
+            .unwrap()
+            .to_string();
+        assert!(detail.contains("1.000000"), "实际证据 {detail}");
+        let out2 = run(pts, vec![rule("0", "1")]).expect("闭边界须判过");
+        assert_eq!(
+            out2.as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn zero_length_arm_missing_point_and_bounds_guards() {
+        let pts = &[
+            ("v", pt("0", "0")),
+            ("a", pt("30", "0")),
+            ("b", pt("60", "0")),
+        ];
+        // 零长臂（a 与顶点重合）拒收
+        let zero = AnatomyJointAngleEval.execute(&obj(&[
+            ("points", obj(pts)),
+            (
+                "angles",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("R")),
+                    ("vertex", JsonValue::string("v")),
+                    ("a", JsonValue::string("v")),
+                    ("b", JsonValue::string("b")),
+                    ("max_cos", JsonValue::string("1")),
+                ])]),
+            ),
+        ]));
+        assert!(zero.is_err());
+        // 点名缺失拒收
+        assert!(!run(pts, vec![rule("0", "1")]).is_err());
+        let missing = run(
+            &[("v", pt("0", "0")), ("a", pt("30", "0"))],
+            vec![rule("0", "1")],
+        );
+        assert!(missing.is_err());
+        // 双界全缺拒收
+        let both = AnatomyJointAngleEval.execute(&obj(&[
+            ("points", obj(pts)),
+            (
+                "angles",
+                JsonValue::Array(vec![obj(&[
+                    ("rule_id", JsonValue::string("R")),
+                    ("vertex", JsonValue::string("v")),
+                    ("a", JsonValue::string("a")),
+                    ("b", JsonValue::string("b")),
+                ])]),
+            ),
+        ]));
+        assert!(both.is_err());
+    }
+
+    #[test]
+    fn double_run_bitwise_identical() {
+        let pts = &[
+            ("v", pt("0", "0")),
+            ("a", pt("30", "40")),
+            ("b", pt("30", "0")),
+        ];
+        let a = run(pts, vec![rule("0.5", "0.7")]).expect("跑 A");
+        let b = run(pts, vec![rule("0.5", "0.7")]).expect("跑 B");
+        assert_eq!(a, b, "同参双跑须位元一致");
+    }
+}
+
+#[cfg(test)]
+mod anatomy_orientation_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn obj(pairs: &[(&str, JsonValue)]) -> JsonValue {
+        JsonValue::object_from_pairs(pairs)
+    }
+    fn pt(x: &str, y: &str) -> JsonValue {
+        JsonValue::Array(vec![JsonValue::string(x), JsonValue::string(y)])
+    }
+    fn sq_points() -> Vec<(&'static str, JsonValue)> {
+        vec![
+            ("p0", pt("0", "0")),
+            ("p1", pt("100", "0")),
+            ("p2", pt("100", "100")),
+            ("p3", pt("0", "100")),
+        ]
+    }
+
+    #[test]
+    fn chirality_ccw_pass_and_flipped_violation() {
+        let run_with = |sign: &str| {
+            let pts = sq_points();
+            AnatomyHandOrientationEval.execute(&obj(&[
+                ("points", obj(&pts)),
+                (
+                    "rules",
+                    JsonValue::Array(vec![obj(&[
+                        ("rule_id", JsonValue::string("CHIR")),
+                        ("kind", JsonValue::string("chirality")),
+                        (
+                            "points",
+                            JsonValue::Array(vec![
+                                JsonValue::string("p0"),
+                                JsonValue::string("p1"),
+                                JsonValue::string("p2"),
+                                JsonValue::string("p3"),
+                            ]),
+                        ),
+                        ("sign", JsonValue::string(sign)),
+                    ])]),
+                ),
+            ]))
+        };
+        // 逆时针方环（鞋带和 > 0）：sign=ccw 判过
+        assert_eq!(
+            run_with("ccw")
+                .expect("ccw 判过")
+                .as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        // 同环声明 cw → 手性翻转违例
+        assert_eq!(
+            run_with("cw")
+                .expect("cw 出结果")
+                .as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn degenerate_collinear_ring_violation() {
+        // 三点共线环：鞋带和=0 → degenerate_orientation
+        let pts = vec![
+            ("p0", pt("0", "0")),
+            ("p1", pt("50", "0")),
+            ("p2", pt("100", "0")),
+        ];
+        let out = AnatomyHandOrientationEval
+            .execute(&obj(&[
+                ("points", obj(&pts)),
+                (
+                    "rules",
+                    JsonValue::Array(vec![obj(&[
+                        ("rule_id", JsonValue::string("DEG")),
+                        ("kind", JsonValue::string("chirality")),
+                        (
+                            "points",
+                            JsonValue::Array(vec![
+                                JsonValue::string("p0"),
+                                JsonValue::string("p1"),
+                                JsonValue::string("p2"),
+                            ]),
+                        ),
+                        ("sign", JsonValue::string("ccw")),
+                    ])]),
+                ),
+            ]))
+            .expect("退化环须出结果");
+        assert_eq!(
+            out.as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let v = out
+            .as_object()
+            .unwrap()
+            .get("violations")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(
+            v[0].as_object()
+                .unwrap()
+                .get("kind")
+                .and_then(JsonValue::as_str),
+            Some("degenerate_orientation")
+        );
+    }
+
+    #[test]
+    fn collinearity_epsilon_band() {
+        // 链 a(0,0) b(10,0) c(20,5)：|cross|=50 单位²（5e13 内标度）
+        let pts = vec![
+            ("a", pt("0", "0")),
+            ("b", pt("10", "0")),
+            ("c", pt("20", "5")),
+        ];
+        let mk = |kind: &str, eps: Option<&str>| {
+            let mut pairs = vec![
+                ("rule_id", JsonValue::string("COL")),
+                ("kind", JsonValue::string(kind)),
+                (
+                    "points",
+                    JsonValue::Array(vec![
+                        JsonValue::string("a"),
+                        JsonValue::string("b"),
+                        JsonValue::string("c"),
+                    ]),
+                ),
+            ];
+            if let Some(e) = eps {
+                pairs.push(("epsilon", JsonValue::string(e)));
+            }
+            let p = pts.clone();
+            AnatomyHandOrientationEval.execute(&obj(&[
+                ("points", obj(&p)),
+                ("rules", JsonValue::Array(vec![obj(&pairs)])),
+            ]))
+        };
+        // epsilon=60 ≥ 50 → 共线成立 → collinearity 过 / noncollinearity 违例
+        assert_eq!(
+            mk("collinearity", Some("60"))
+                .expect("过")
+                .as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            mk("noncollinearity", Some("60"))
+                .expect("违例")
+                .as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        // epsilon=40 < 50 → 反向
+        assert_eq!(
+            mk("collinearity", Some("40"))
+                .expect("违例")
+                .as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        // 严格直线缺省 epsilon=0：collinearity 过
+        let straight = vec![
+            ("a", pt("0", "0")),
+            ("b", pt("10", "0")),
+            ("c", pt("20", "0")),
+        ];
+        let out = AnatomyHandOrientationEval
+            .execute(&obj(&[
+                ("points", obj(&straight)),
+                (
+                    "rules",
+                    JsonValue::Array(vec![obj(&[
+                        ("rule_id", JsonValue::string("S")),
+                        ("kind", JsonValue::string("collinearity")),
+                        (
+                            "points",
+                            JsonValue::Array(vec![
+                                JsonValue::string("a"),
+                                JsonValue::string("b"),
+                                JsonValue::string("c"),
+                            ]),
+                        ),
+                    ])]),
+                ),
+            ]))
+            .expect("直线共线须判过");
+        assert_eq!(
+            out.as_object()
+                .unwrap()
+                .get("all_clean")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn guards_bad_kind_missing_sign_negative_epsilon() {
+        let pts = vec![
+            ("a", pt("0", "0")),
+            ("b", pt("10", "0")),
+            ("c", pt("20", "5")),
+        ];
+        let mk = |pairs: Vec<(&str, JsonValue)>| {
+            let p = pts.clone();
+            AnatomyHandOrientationEval.execute(&obj(&[
+                ("points", obj(&p)),
+                ("rules", JsonValue::Array(vec![obj(&pairs)])),
+            ]))
+        };
+        // 非法 kind
+        assert!(mk(vec![
+            ("rule_id", JsonValue::string("X")),
+            ("kind", JsonValue::string("area")),
+            (
+                "points",
+                JsonValue::Array(vec![
+                    JsonValue::string("a"),
+                    JsonValue::string("b"),
+                    JsonValue::string("c"),
+                ])
+            ),
+        ])
+        .is_err());
+        // chirality 缺 sign
+        assert!(mk(vec![
+            ("rule_id", JsonValue::string("X")),
+            ("kind", JsonValue::string("chirality")),
+            (
+                "points",
+                JsonValue::Array(vec![
+                    JsonValue::string("a"),
+                    JsonValue::string("b"),
+                    JsonValue::string("c"),
+                ])
+            ),
+        ])
+        .is_err());
+        // epsilon 负值拒收
+        assert!(mk(vec![
+            ("rule_id", JsonValue::string("X")),
+            ("kind", JsonValue::string("collinearity")),
+            (
+                "points",
+                JsonValue::Array(vec![
+                    JsonValue::string("a"),
+                    JsonValue::string("b"),
+                    JsonValue::string("c"),
+                ])
+            ),
+            ("epsilon", JsonValue::string("-1")),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn double_run_bitwise_identical() {
+        let mk = || {
+            let pts = sq_points();
+            AnatomyHandOrientationEval.execute(&obj(&[
+                ("points", obj(&pts)),
+                (
+                    "rules",
+                    JsonValue::Array(vec![obj(&[
+                        ("rule_id", JsonValue::string("CHIR")),
+                        ("kind", JsonValue::string("chirality")),
+                        (
+                            "points",
+                            JsonValue::Array(vec![
+                                JsonValue::string("p0"),
+                                JsonValue::string("p1"),
+                                JsonValue::string("p2"),
+                                JsonValue::string("p3"),
+                            ]),
+                        ),
+                        ("sign", JsonValue::string("ccw")),
+                    ])]),
+                ),
+            ]))
+        };
+        assert_eq!(mk().expect("A"), mk().expect("B"), "同参双跑须位元一致");
+    }
+}
