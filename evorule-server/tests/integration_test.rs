@@ -1232,6 +1232,9 @@ async fn wait_for_view(what: &str, cond: impl Fn(&EquilibriumView) -> bool) -> E
 }
 
 #[tokio::test]
+// 五场景一体是刻意设计：场景共享进程级窗记账（同一连续演练面），拆分
+// 会让场景间并行交错破坏相对口径断言的确定性——超行限在此豁免。
+#[allow(clippy::too_many_lines)]
 async fn test_equilibrium_drill_end_to_end() {
     // ---- 场景 A：缺观测 fail-closed——零观测窗结算不可宣称稳态 ----
     let api = spawn_drill_reactor();
@@ -1364,6 +1367,143 @@ async fn test_equilibrium_drill_end_to_end() {
         v.last_cause.as_deref(),
         Some("none"),
         "风暴消化后均衡应回归，got {v:?}"
+    );
+    evaluator.abort();
+
+    // ---- 场景 E：危机期全链演练——红灯连击→streak 重置→τ 序列实测→相标签翻转 ----
+    // provenance=harness（窗结算任务全循环 spawn_equilibrium_evaluator + 立法
+    // 判定 + 读回视图；19 号稿 §8 原定演练形态）。三段警情 episode 间以
+    // 达标无警窗闭合 τ 回合（required=2 → 每闭合回合 τ=2 恒值，一阶差分
+    // 0/滑窗方差 0/常数序列自相关分母 0 → 诚实出口），全链观测量取自
+    // 窗警量尾部拉取面（window_alert_tail）而非注入侧自记账。
+    let api = spawn_drill_reactor();
+    let evaluator = equilibrium_obs::spawn_equilibrium_evaluator(
+        api.clone(),
+        EquilibriumEvaluatorConfig {
+            window_secs: 1,
+            alert_free_windows_required: 2,
+            coverage_min: 0,
+            certified_streak_min: 2,
+        },
+    );
+    let eq = equilibrium_obs::shared();
+    eq.record_coverage(1000);
+
+    // ① 供给红灯连击：持续进料（不消化）→ in_rate_exceeds_digest_rate
+    //    跨 ≥2 窗持续（红窗采样跨度 ≥1s = 至少跨一个窗界）。先补证抬
+    //    streak 过 fail-closed 优先级（streak 低于下限时归因被③④判据
+    //    压过，供给红灯不可辨）。
+    eq.record_certificate(true);
+    eq.record_certificate(true);
+    for amount in [2_u64, 3, 2, 3] {
+        for _ in 0..amount {
+            eq.record_proposal();
+        }
+        tokio::time::sleep(Duration::from_millis(700)).await;
+    }
+    let mut first_red: Option<std::time::Instant> = None;
+    let mut last_red = first_red;
+    let mut red_samples = 0u32;
+    let sample_deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < sample_deadline {
+        let v = equilibrium_obs::view();
+        if v.stable == Some(false)
+            && v.last_cause.as_deref() == Some("in_rate_exceeds_digest_rate")
+            && v.in_rate > v.digest_rate
+        {
+            red_samples += 1;
+            if first_red.is_none() {
+                first_red = Some(std::time::Instant::now());
+            }
+            last_red = Some(std::time::Instant::now());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let red_span = match (first_red, last_red) {
+        (Some(a), Some(b)) => b.duration_since(a),
+        _ => panic!("红灯连击失真：20s 采样窗内未见持续红灯归因"),
+    };
+    assert!(
+        red_samples >= 5 && red_span >= Duration::from_millis(1000),
+        "红灯连击须跨 ≥2 窗持续（样本 {red_samples}、跨度 {red_span:?}）"
+    );
+
+    // ② 消化积压 → 弛豫回稳；补证抬 streak（会话级判定驱动面）。
+    for _ in 0..9 {
+        eq.record_digested();
+    }
+    wait_for_view("supply-relaxed verdict", |v| v.stable == Some(true)).await;
+    eq.record_certificate(true);
+    eq.record_certificate(true);
+    assert!(
+        eq.snapshot().certified_streak >= 2,
+        "回稳后补证应抬升认证 streak（重置基线）"
+    );
+
+    // ③ 三段警情 episode：每段警窗结算后断言 streak/无警连计双清零
+    //    （红灯重置可观测）+ 危机相标签；随后补证 + 两个无警窗闭合 τ 回合。
+    //    演练面记账驱动与生产 REST verify 判定后的同源映射同律
+    //    （criticality_api：stable→certificate(true)；alert/contradiction→
+    //    record_alert+certificate(false)）——此处 alert 判定读回后按同律
+    //    记证，重置可观测性来自同一映射而非旁路。
+    for _episode in 0..3 {
+        equilibrium_obs::record_alert();
+        wait_for_view("alert verdict", |v| {
+            v.stable == Some(false)
+                && v.last_cause.as_deref() == Some("alert_free_windows_below_required")
+        })
+        .await;
+        eq.record_certificate(false);
+        let snap = eq.snapshot();
+        assert_eq!(
+            snap.certified_streak, 0,
+            "警窗结算应重置认证 streak（可观测重置 2→0）"
+        );
+        assert_eq!(snap.alert_free_windows, 0, "警窗结算应清零无警连计");
+        let tail1 = eq.window_alert_tail(1);
+        assert!(
+            tail1.first().is_some_and(|&c| c > 0),
+            "尾窗警量应非零（危机期直接观测量）"
+        );
+        assert_eq!(
+            equilibrium_obs::phase_label(&tail1, 2, 0),
+            "crisis",
+            "尾窗有警 = 危机期"
+        );
+        eq.record_certificate(true);
+        eq.record_certificate(true);
+        wait_for_view("episode-relaxed verdict", |v| v.stable == Some(true)).await;
+    }
+
+    // ④ τ 序列实测（拉取面全链）：尾 10 窗 = [前导无警, 1,0,0, 1,0,0, 1,0,0]
+    //    （三段 episode × 「警窗+两无警窗」闭合结构）→ 提取 [2,2,2]。
+    let tail = eq.window_alert_tail(10);
+    assert!(
+        tail.ends_with(&[1, 0, 0, 1, 0, 0, 1, 0, 0]),
+        "尾 10 窗应呈三段警情闭合结构（1,0,0 ×3），got {tail:?}"
+    );
+    let series = equilibrium_obs::extract_relaxation_series(&tail, 2);
+    assert_eq!(
+        series,
+        vec![2, 2, 2],
+        "三段 episode 应闭合三回合（required=2 → τ 恒值）"
+    );
+    // 实测 τ 特征（常数序列的诚实出口：差分 0、方差 0、自相关分母 0 → None）
+    assert_eq!(equilibrium_obs::tau_first_difference(&series), Some(0));
+    assert_eq!(equilibrium_obs::tau_sliding_variance(&series), Some(0));
+    assert_eq!(equilibrium_obs::tau_autocorrelation(&series), None);
+
+    // ⑤ 相标签翻转端点：危机 → 吸收（弛豫中间态由纯函数面黄金钉承载）。
+    let streak = eq.snapshot().certified_streak;
+    assert!(streak >= 2, "episode 补证后 streak 应达标（吸收期判据）");
+    assert_eq!(
+        equilibrium_obs::phase_label(&eq.window_alert_tail(1), 2, streak),
+        "absorbing",
+        "无警尾窗 + streak 达标 = 吸收期"
+    );
+    eprintln!(
+        "危机期全链演练实测：红灯连击跨度 {red_span:?}（样本 {red_samples}），\
+         三段警情 episode 各经 2 无警窗闭合 τ 回合，相标签 crisis→absorbing 翻转"
     );
     evaluator.abort();
 }
