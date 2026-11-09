@@ -1,4 +1,4 @@
-# B-222 shock-propagation real-machine regression driver (graph_shock_propagate, three injections).
+# Shock-propagation real-machine regression driver (graph_shock_propagate, three injections).
 # ASCII only, PS 5.1 compatible. D1-D3 approved: scripts/experiments/ in git, full hard
 # assertions, local acceptance surface (not in CI).
 #
