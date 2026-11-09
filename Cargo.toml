@@ -36,6 +36,7 @@ members = [
     "plugins/verification-services",
     "plugins/video-services",
     "plugins/trace-audit-services",
+    "plugins/dimensional-check",
 ]
 
 [workspace.package]
