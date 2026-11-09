@@ -15,7 +15,7 @@
 #   ⑩ grav-services      ⑪ checksum-services      ⑫ cny-services
 #   ⑬ fluid-services      ⑭ quantum-services      ⑮ metrology-services
 #   ⑯ gov-services      ⑰ legal-services      ⑱ export-services
-#   ⑲ verification-services     ⑳ trace-audit-services
+#   ⑲ verification-services     ⑳ trace-audit-services     ㉑ graph-dispatch-services
 #
 # 流程 = 节奏强制（逐插件）：复制 → 字节核验 → 双侧守卫测试
 #   执行侧守卫：各插件声明文件 vs 其 NATIVE_SERVICES（三字段+序）
@@ -55,6 +55,7 @@ $plugins = @(
     @{ Id = "indicator-services"; Crate = "evorule-indicator-services" },
     @{ Id = "template-services";  Crate = "evorule-template-services" },
     @{ Id = "inference-services"; Crate = "evorule-inference-services" },
+    @{ Id = "graph-dispatch-services"; Crate = "evorule-graph-dispatch-services" },
     @{ Id = "geometry-services"; Crate = "evorule-geometry-services" },
     @{ Id = "numeric-services"; Crate = "evorule-numeric-services" },
     @{ Id = "mechanics-services"; Crate = "evorule-mechanics-services" },

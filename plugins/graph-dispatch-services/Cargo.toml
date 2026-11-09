@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+# This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
+[package]
+name = "evorule-graph-dispatch-services"
+version.workspace = true
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "确定性图分派原生服务（常数修订冲击传播）——纯计算静态分析,以 IoHandler 形式挂载到 evorule-server IoDispatcher"
+repository = "https://github.com/evorule/evorule-server"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# 核心层（主仓已发布 crates.io,纯 version——接入铁律:不依赖主仓源码路径）
+evorule-tcb = { version = "0.13" }
+evorule-reactor = { version = "0.13" }
+# 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)
+evorule-plugin-kit = { path = "../../core/plugin-kit" }
+# 常数依赖图物化(装载产物构建器,冲击传播语义底座)
+evorule-rule-loader = { path = "../../core/rule_loader" }
+# 规范哈希 SSOT(族 B 哈希纪律,禁自写 blake3 口径):input_digest 用
+evorule-hash = "0.2.0"
+# 依赖图构建与 digest 载荷的 serde 域
+serde_json = "1"
+
+# IoHandler trait object-safety
+async-trait = "0.1"
+
+[dev-dependencies]
+# 测试用 async runtime（#[tokio::test] 需要 macros + rt）
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# e2e 测试:黄金向量构造与输出字节比对
+serde_json = "1"
