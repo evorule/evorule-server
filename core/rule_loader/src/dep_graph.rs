@@ -19,7 +19,8 @@
 //! # 输入面（全部可选）
 //!
 //! - `metadata.constants`（数组，可缺）：每条 {constant_id/version/value_hash 非空串,
-//!   domain_lo/domain_hi 数字可选}；constant_id 重复拒；
+//!   domain_lo/domain_hi 可选（数字，或 TCB 域小数字符串惯例的可解析有限小数字符串）}；
+//!   constant_id 重复拒；
 //! - `metadata.formula_registry`（数组，可缺）：既有校验字段照旧
 //!   （instruction_type/formula/dimensions），新可选字段 `constants`（字符串数组）。
 //!
@@ -392,7 +393,8 @@ fn non_empty_str(
     Ok(s.to_string())
 }
 
-/// 取可选数字域界字段（缺省 None；存在但非数字 → 错误）。
+/// 取可选数字域界字段（缺省 None；数字 → 值；TCB 域小数以字符串承载的惯例形态
+/// （`serde_to_tcb` 出站转换产物）同样接受——须可解析为有限小数，否则 fail-visible）。
 fn optional_domain(
     obj: &serde_json::Map<String, Value>,
     key: &str,
@@ -402,8 +404,17 @@ fn optional_domain(
     match obj.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Number(n)) => Ok(n.as_f64()),
+        Some(Value::String(s)) => {
+            let parsed = s.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+            parsed.map(Some).ok_or_else(|| {
+                graph_err(
+                    format!("{key} 须为数字或可解析为有限小数的字符串（TCB 小数字符串惯例）"),
+                    &field_loc,
+                )
+            })
+        }
         Some(_) => Err(graph_err(
-            format!("{key} 须为数字（闭区间域界）"),
+            format!("{key} 须为数字或可解析为有限小数的字符串（闭区间域界）"),
             &field_loc,
         )),
     }
