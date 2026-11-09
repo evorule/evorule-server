@@ -4,9 +4,11 @@
 //! 分级裁决器 —— 消费 P3' verify 提案物料包，按治理矩阵决定
 //! 「低危自动集成」或「降级人工闸链」。
 //!
-//! # 治理矩阵（类别层×事实层双条件与）
+//! # 治理矩阵（元定律守卫×类别层×事实层三条件与）
 //! 自动集成判据 = `类别∈低危 ∧ 配额内 ∧ 水位未冻结`；类别层对非低危
-//! 一票否决（即使水位/配额全绿也不自动）。三条裁决闸全部纯函数可复算：
+//! 一票否决（即使水位/配额全绿也不自动）。类别层之前另有元定律守卫
+//! 前置查：提案全表面命中均衡判据定律类词表即拒收（decision=`rejected`，
+//! cause=`meta_rule_denied`，不出站不入闸）。三条裁决闸全部纯函数可复算：
 //! - ①类别判定：proposal kind→proposal_class 结构映射（`constant_update`
 //!   之外的 kind 一律非低危——只收不放宽：未知结构永远人工）；
 //! - ②水位预检：ruleset 水位达冻结档（92%）即拒自动（companion 容量
@@ -126,6 +128,35 @@ pub fn provenance_present(proposal: &Value) -> bool {
 }
 
 // ============================================================================
+// ⓪元定律守卫（前置查，纯函数；只加不改）
+// ============================================================================
+
+/// 元定律守卫：均衡判据定律类不在伴跑提案管线可提案集；扩词=改代码
+/// 过 PR+裁定留痕。
+pub const META_RULE_INSTRUCTION_IDS: [&str; 1] = ["equilibrium_gate"];
+/// 均衡判据阈值参数名（提案正文携带即视为判据修改物料）
+pub const META_RULE_THRESHOLD_PARAMS: [&str; 3] = [
+    "alert_free_windows_required",
+    "coverage_min",
+    "certified_streak_min",
+];
+/// 元定律面拒收 cause 值
+pub const REJECT_CAUSE_META_RULE: &str = "meta_rule_denied";
+
+/// 元定律面检测：提案全表面（kind/entry_id/subject/payload）序列化后保守
+/// 子串匹配词表——命中即元定律类，拒收出可提案集。保守偏置有意为之
+/// （宁可错拒不放过自我扩权；constant_update 正文提及阈值参数名即拦截，
+/// 真实低危物料不携带元定律词汇）。只加不改：未命中词表的提案路径与
+/// 既有三闸零差。
+pub fn is_meta_rule_proposal(proposal: &Value) -> bool {
+    let s = proposal.to_string();
+    META_RULE_INSTRUCTION_IDS
+        .iter()
+        .chain(META_RULE_THRESHOLD_PARAMS.iter())
+        .any(|w| s.contains(w))
+}
+
+// ============================================================================
 // ②水位预检（纯函数）
 // ============================================================================
 
@@ -209,7 +240,8 @@ pub struct AdjudicationDecision {
     pub entry_id: String,
     pub proposal_class: &'static str,
     /// `auto_integrate`=低危且三闸全绿（自动出站）；
-    /// `human_path`=非低危/缺出处/水位冻结/超配额（降级人工闸链）
+    /// `human_path`=非低危/缺出处/水位冻结/超配额（降级人工闸链）；
+    /// `rejected`=元定律面拒收（不出站不入闸）
     pub decision: &'static str,
     pub reason: String,
 }
@@ -238,6 +270,15 @@ pub fn decide(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    // 元定律守卫前置查（类别层之前第一查）：命中即拒收出可提案集
+    if is_meta_rule_proposal(proposal) {
+        return Some(AdjudicationDecision {
+            entry_id,
+            proposal_class: "entry_create",
+            decision: "rejected",
+            reason: "meta_rule_denied: 元定律面（均衡判据定律类不在伴跑提案管线可提案集）——判据修改走项目管理面立法流程".to_string(),
+        });
+    }
     let kind = proposal.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     let Some(class) = classify_proposal(kind) else {
         return Some(AdjudicationDecision {
@@ -378,5 +419,119 @@ mod tests {
         let d = decide(&constant_update_proposal("lab"), Some(10), 1000, false).unwrap();
         assert_eq!(d.decision, "human_path");
         assert!(d.reason.contains("配额"));
+    }
+
+    /// 元定律守卫前置查：均衡判据定律面物料三形态（伪装常量修正注入/
+    /// 显式 meta_rule kind/正文携带指令 id）一律 rejected——其余闸全绿
+    /// （出处齐、水位松、配额给 true）仍拒收出可提案集
+    #[test]
+    fn meta_rule_proposals_rejected() {
+        // ① 伪装注入：kind=constant_update 且出处齐全，payload 携带阈值
+        //    放宽物料（模拟「放宽 alert_free_windows_required 至 1」）
+        let d = decide(
+            &json!({
+                "kind": "constant_update",
+                "entry_id": "c-1",
+                "payload": {
+                    "measured": {"source": "lab", "value": 1.0},
+                    "target_param": "alert_free_windows_required",
+                    "new_value": 1,
+                }
+            }),
+            Some(10),
+            1000,
+            true,
+        )
+        .unwrap();
+        assert_eq!(d.decision, "rejected");
+        assert!(
+            d.reason.contains("meta_rule_denied"),
+            "reason: {}",
+            d.reason
+        );
+        // ② 显式 meta_rule kind（携带指令 id）
+        let d = decide(
+            &json!({
+                "kind": "meta_rule",
+                "entry_id": "m-2",
+                "payload": {
+                    "measured": {"source": "lab"},
+                    "instruction_id": "equilibrium_gate",
+                }
+            }),
+            Some(10),
+            1000,
+            true,
+        )
+        .unwrap();
+        assert_eq!(d.decision, "rejected");
+        assert!(
+            d.reason.contains("meta_rule_denied"),
+            "reason: {}",
+            d.reason
+        );
+        // ③ 正文携带指令 id（伪装常量修正形态）
+        let d = decide(
+            &json!({
+                "kind": "constant_update",
+                "entry_id": "c-3",
+                "payload": {
+                    "measured": {"source": "lab", "value": 9.81},
+                    "note": "re-certify equilibrium_gate before relax",
+                }
+            }),
+            Some(10),
+            1000,
+            true,
+        )
+        .unwrap();
+        assert_eq!(d.decision, "rejected");
+        assert!(
+            d.reason.contains("meta_rule_denied"),
+            "reason: {}",
+            d.reason
+        );
+    }
+
+    /// 防误伤回归：未命中元定律词表的提案与既有三闸零差——既有
+    /// constant_update 全绿仍 auto_integrate；payload 仅含无关词
+    /// 不被词表子串误命中
+    #[test]
+    fn non_meta_proposals_unaffected() {
+        let d = decide(&constant_update_proposal("lab"), Some(10), 1000, true).unwrap();
+        assert_eq!(d.decision, "auto_integrate");
+        assert_eq!(d.proposal_class, "constant_update");
+        // 无关词（"coverage" 不含词表词 "coverage_min"）：不误命中
+        let d = decide(
+            &json!({
+                "kind": "constant_update",
+                "entry_id": "c-ok",
+                "payload": {
+                    "measured": {"source": "lab", "value": 2.5},
+                    "notes": "wavelength coverage",
+                }
+            }),
+            Some(10),
+            1000,
+            true,
+        )
+        .unwrap();
+        assert_eq!(d.decision, "auto_integrate");
+    }
+
+    /// 词表常量钉死：指令 id + 三阈值参数名 + 拒收 cause 值
+    /// （扩词=改代码过 PR，词表漂移由此测试当场自捕）
+    #[test]
+    fn meta_rule_wordlist_constants() {
+        assert_eq!(META_RULE_INSTRUCTION_IDS, ["equilibrium_gate"]);
+        assert_eq!(
+            META_RULE_THRESHOLD_PARAMS,
+            [
+                "alert_free_windows_required",
+                "coverage_min",
+                "certified_streak_min",
+            ]
+        );
+        assert_eq!(REJECT_CAUSE_META_RULE, "meta_rule_denied");
     }
 }
