@@ -67,12 +67,18 @@ yanked = "warn"
 # 升级路径；抽取 API 未在服务面使用，待上游跟进后随版解除，豁免。
 # RUSTSEC-2026-0429（2026-11-02 treadmill 追加）：zip 抽取符号链接入口同族漏洞
 # （修复版同 >=9.0.0，依赖方钉死同上）；同前豁免理由，随上游升级一并解除。
+# RUSTSEC-2026-0459（2026-11-09 treadmill 追加）：libsqlite3-sys 捆绑 SQLite
+# CVE-2026-119375（vulnerability）；修复版 >=0.39.0 属大版本且要求 rusqlite
+# 0.41，依赖方 rusqlite 0.32.1 / sqlx-sqlite 0.8.6（evorule-rule dev 面 /
+# evorule-workspace / evorule-io-handlers）全为外部 crate 钉死，本地无升级
+# 路径；待 rusqlite 0.41 / sqlx 跟进后随版解除，豁免。
 # （RUSTSEC-2026-0192 ttf-parser 豁免已随 export-services 迁移 skrifa 解除摘除）
 ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
     "RUSTSEC-2026-0429",
+    "RUSTSEC-2026-0459",
 ]
 
 # ---------------------------------------------------------------------------
