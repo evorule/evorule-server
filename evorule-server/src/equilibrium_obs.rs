@@ -36,6 +36,7 @@
 //! describe this bound anchor form. The anchor is metadata only: it never
 //! enters the emitted instruction parameters or the status contract.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -725,6 +726,7 @@ async fn equilibrium_evaluator_loop(
         let window_alert_count = drain_pending_alerts();
         let had_alert = window_alert_count > 0;
         windows.close_window(had_alert);
+        windows.record_window_alert_count(window_alert_count);
         let after = windows.snapshot();
         let features = extract_feature_values(&prev_totals, &after, window_alert_count);
         // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
@@ -863,6 +865,10 @@ pub struct EquilibriumWindows {
     inner: Mutex<WindowsState>,
 }
 
+/// 窗警量尾部环形缓存容量（τ 相变分析面的观察窗深；只加不改——
+/// 发射面契约与 status 契约零动，本缓存仅为实验/分析面拉取服务）。
+const WINDOW_ALERT_TAIL_CAP: usize = 16;
+
 #[derive(Debug, Default)]
 struct WindowsState {
     proposals_in_total: u64,
@@ -874,6 +880,10 @@ struct WindowsState {
     settlements: u64,
     /// 观测流证据链当前锚（空串=尚未结算，链未起）。
     evidence_anchor: String,
+    /// 最近窗警量环形缓存（旧→新序，容量 [`WINDOW_ALERT_TAIL_CAP`]，
+    /// 每窗结算登记一条——τ 序列提取 [`extract_relaxation_series`] 与
+    /// 相标签 [`phase_label`] 的会话级拉取源）。
+    window_alert_tail: VecDeque<u64>,
 }
 
 impl EquilibriumWindows {
@@ -1005,6 +1015,31 @@ impl EquilibriumWindows {
             .evidence_anchor
             .clone()
     }
+
+    /// 登记本窗警量进尾部环形缓存（评估循环每窗结算调用一次；纯观测
+    /// 面只加不改——发射与 status 契约零动）。
+    pub fn record_window_alert_count(&self, count: u64) {
+        let mut s = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if s.window_alert_tail.len() >= WINDOW_ALERT_TAIL_CAP {
+            s.window_alert_tail.pop_front();
+        }
+        s.window_alert_tail.push_back(count);
+    }
+
+    /// 拉取最近 k 窗警量（旧→新序；k 超缓存深度则返回现存全部）——
+    /// τ 序列提取与相标签的会话级观察入口（19 号稿 §8「取值入口 =
+    /// 实验/分析面对 τ 序列拉取」的实现面）。
+    pub fn window_alert_tail(&self, k: usize) -> Vec<u64> {
+        let s = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let start = s.window_alert_tail.len().saturating_sub(k);
+        s.window_alert_tail.iter().skip(start).copied().collect()
+    }
 }
 
 /// 本窗结算观测记录（复算凭证输入面）：窗序 + 结算前后快照全量 +
@@ -1088,6 +1123,26 @@ mod tests {
             snap.proposals_in_total, 2,
             "alerts do not touch intake totals"
         );
+    }
+
+    #[test]
+    fn test_window_alert_tail_ring_cap_and_order() {
+        let eq = EquilibriumWindows::new();
+        for count in 1..=(WINDOW_ALERT_TAIL_CAP as u64 + 3) {
+            eq.record_window_alert_count(count);
+        }
+        let tail = eq.window_alert_tail(WINDOW_ALERT_TAIL_CAP);
+        let expected: Vec<u64> = (4..=(WINDOW_ALERT_TAIL_CAP as u64 + 3)).collect();
+        assert_eq!(tail, expected, "容量滚动丢最旧且保持旧→新序");
+        // k 超缓存深度 → 返回现存全部
+        assert_eq!(
+            eq.window_alert_tail(WINDOW_ALERT_TAIL_CAP + 10).len(),
+            WINDOW_ALERT_TAIL_CAP
+        );
+        // k 取尾部子段（旧→新）
+        let cap = WINDOW_ALERT_TAIL_CAP as u64;
+        assert_eq!(eq.window_alert_tail(3), vec![cap + 1, cap + 2, cap + 3]);
+        assert!(eq.window_alert_tail(0).is_empty());
     }
 
     #[test]
