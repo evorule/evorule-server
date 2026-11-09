@@ -20,7 +20,12 @@
 //!   "domains_touched":[[L,M,T,I,Θ,N,J]…字典序去重],
 //!   "graph_digest":"blake3:hex","input_digest":"blake3:hex",
 //!   "new_value":修订值原样回显,"propagation_depth":u64,
-//!   "regime_invalidated":[指令…排序],"shocked_constant":id}`
+//!   "regime_invalidated":[指令…排序],"shocked_constant":id,
+//!   "unreferenced_constants":[常数…字典序]}`
+//!
+//! `unreferenced_constants` = 声明集（metadata.constants）与引用集（引用边）
+//! 差集——已声明但零指令登记引用的常数对冲击传播零半径（地震仪不可见），
+//! 本字段使该静默态有痕可观察；与修订对象无关，逐次 invoke 均报告。
 //!
 //! # 传播语义（五步，全确定性）
 //!
@@ -399,6 +404,19 @@ impl NativeService for GraphShockPropagate {
             .get("new_value")
             .cloned()
             .unwrap_or(JsonValue::Null);
+        // 可见性面：声明集 − 引用集（零引用常数对冲击传播零半径，逐次点名）
+        let referenced: BTreeSet<&str> = graph
+            .reference_edges
+            .iter()
+            .map(|e| e.constant.as_str())
+            .collect();
+        let unreferenced: Vec<JsonValue> = graph
+            .constants
+            .iter()
+            .map(|c| c.constant_id.as_str())
+            .filter(|id| !referenced.contains(id))
+            .map(JsonValue::string)
+            .collect();
         Ok(JsonValue::object_from_pairs(&[
             ("affected_instructions", JsonValue::Array(affected_json)),
             (
@@ -427,6 +445,7 @@ impl NativeService for GraphShockPropagate {
                 ),
             ),
             ("shocked_constant", JsonValue::string(constant_id)),
+            ("unreferenced_constants", JsonValue::Array(unreferenced)),
         ]))
     }
 }

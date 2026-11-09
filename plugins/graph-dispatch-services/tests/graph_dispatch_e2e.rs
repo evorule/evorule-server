@@ -400,6 +400,76 @@ async fn non_numeric_domain_string_fails_visible() {
     );
 }
 
+// ── ②c 声明而未引用常数可见性面 ──
+//
+// 真机实验（G1 缺口实证）：已声明但零指令登记引用的常数（如 SI 级精确重定义
+// 的 k_B）对冲击传播零半径且旧出参静默无痕。出参 `unreferenced_constants`
+// 使该静默态有痕：每次 invoke 点名声明集 − 引用集差集（字典序）。
+
+#[tokio::test]
+async fn unreferenced_declared_constants_are_named_in_report() {
+    let router = GraphDispatchServiceRouter::new(noop_fallback());
+    // alpha 被引用；k_B 声明而零引用
+    let doc = serde_json::json!({
+        "metadata": {
+            "constants": [
+                { "constant_id": "alpha", "version": "design-baseline", "value_hash": "h1", "domain_lo": 0.00002, "domain_hi": 0.000026 },
+                { "constant_id": "k_B", "version": "codata-2014", "value_hash": "h2" }
+            ],
+            "formula_registry": [
+                { "instruction_type": "thermal", "formula": "f_t", "dimensions": [1, 0, 0, 0, 0, 0, 0], "constants": ["alpha"] }
+            ]
+        }
+    });
+    let revision_alpha = evorule_rule_loader::serde_to_tcb(serde_json::json!({
+        "constant_id": "alpha", "new_value": 5,
+        "source": "recalibration", "verified": true
+    }));
+    let args = JsonValue::object_from_pairs(&[
+        ("rule_set", evorule_rule_loader::serde_to_tcb(doc)),
+        ("revision", revision_alpha),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let out = router.execute(&svc_params(args)).await.unwrap();
+    let unreferenced: Vec<String> = out
+        .get("unreferenced_constants")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        unreferenced,
+        vec!["k_B"],
+        "声明而零引用的常数须逐次点名: {out:?}"
+    );
+
+    // 对照：全部声明常数均被引用 → 空数组
+    let full = serde_json::json!({
+        "metadata": {
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1" }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0], "constants": ["c1"] }
+            ]
+        }
+    });
+    let args_full = JsonValue::object_from_pairs(&[
+        ("rule_set", evorule_rule_loader::serde_to_tcb(full)),
+        ("revision", golden_revision(serde_json::json!(5))),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let out_full = router.execute(&svc_params(args_full)).await.unwrap();
+    assert!(out_full
+        .get("unreferenced_constants")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
 // ── ③ 篡改即红 ──
 
 #[tokio::test]
