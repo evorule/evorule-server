@@ -150,6 +150,10 @@ pub struct EquilibriumEvaluatorConfig {
 }
 
 impl Default for EquilibriumEvaluatorConfig {
+    /// 判据阈值缺省值：复合冲击实验定标维持（2026-11-09 实验纪实：恢复段
+    /// 实测无警窗 2-3、三轮吸收相于 streak=3 一致收敛、深稳态零假警；
+    /// 覆盖率记账面在真机形态下产出缺位——该判据门限数据待记账链勘通后
+    /// 复核，登记在案）。每条取值均可溯实验数据锚，非拍脑袋预设。
     fn default() -> Self {
         Self {
             window_secs: 60,
@@ -477,6 +481,73 @@ pub const EQUILIBRIUM_FEATURES: &[EquilibriumFeatureSpec] = &[
         reset_semantics: "not applicable (per-analysis derived quantity, no streak state)",
         evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
     },
+    // ── 相变刻画语言（恢复时间 τ_recover 序列统计：第二弛豫度量双轨）──
+    // 现行 τ 定义结构性恒等于判据门槛（回合闭合点=streak 达标，τ 恒为
+    // 常数序列，慢化统计特征真机数据恒平凡）——本族按恢复回合独立定义：
+    // 回合=非零警窗开启、闭合=首个 stable 认证窗，τ_recover=实际窗数，
+    // 携带弛豫快慢信息（复合冲击真机实验实测恢复序列非常数，见实验纪
+    // 实 2026-11-09）。计算入口 = 实验/分析面对双流拉取
+    // （[`extract_recover_series`]），统计特征复用同型纯函数
+    // （[`tau_first_difference`] / [`tau_sliding_variance`] /
+    // [`tau_autocorrelation`]），非窗结算内联发射——发射面契约冻结
+    // 不动，不在 [`FeatureValues`] / [`extract_feature_values`] 提取
+    // 映射内（登记面 = 窗结算提取面 ∪ 本族分析面派生量，双向守卫见
+    // tests）。三条 regime/error_contract/anchor 声明与 τ 族逐条同型。
+    EquilibriumFeatureSpec {
+        feature_id: "tau_recover_first_difference",
+        formula_ref: "tau_recover_first_difference = tau_recover_i - tau_recover_i_prev",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Diff,
+        regime: FeatureRegime {
+            domain: "integers within i64 (each tau_recover is a non-negative episode \
+                     window count)",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact i64 difference of the last two recovery times (positive \
+             trend = critical slowing down signal); a series shorter than two \
+             episodes is undetermined (fail-visible exit)",
+        reset_semantics: "not applicable (per-episode derived quantity, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "tau_recover_sliding_variance",
+        formula_ref: "tau_recover_sliding_variance = (tau_recover_i - tau_recover_j)**2 + (tau_recover_i - tau_recover_k)**2 + (tau_recover_j - tau_recover_k)**2",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Instant,
+        regime: FeatureRegime {
+            domain: "non-negative integers within i128 product range then saturating to i64",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "exact integer sum of pairwise squared differences over the fixed \
+             k=3 sliding window of the recovery-time series (equals k^2 * variance, \
+             integer-exact and monotonically equivalent to variance at fixed k); a \
+             series shorter than the window is undetermined; saturation degrades \
+             magnitude, never sign",
+        reset_semantics: "not applicable (per-analysis derived quantity, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
+    EquilibriumFeatureSpec {
+        feature_id: "tau_recover_autocorrelation",
+        formula_ref: "tau_recover_autocorrelation = (tau_recover_1 - mean_prev) * (tau_recover_2 - mean_next) + (tau_recover_2 - mean_prev) * (tau_recover_3 - mean_next)",
+        dim_vector: [0, 0, 0, 0, 0, 0, 0],
+        window_semantics: WindowSemantics::Instant,
+        regime: FeatureRegime {
+            domain: "non-negative integers within i128 product range then saturating to i64",
+            quant_step: 1,
+            undetermined_outside: true,
+        },
+        error_contract: "registered value = lag-1 autocorrelation numerator over the fixed \
+             k=3 window of the recovery-time series (exact integer); the ratio is \
+             recovered via the paired denominator exposed by the same accessor \
+             returning (numerator, denominator); the ratio is undetermined when \
+             the denominator is zero (constant series) and the exact integer form \
+             is undetermined when the exact rational numerator/denominator is \
+             half-integer",
+        reset_semantics: "not applicable (per-analysis derived quantity, no streak state)",
+        evidence_anchor: EVIDENCE_ANCHOR_WINDOW_STREAM,
+    },
 ];
 
 /// 一次窗结算提取的全部注册特征值（命名字段与 [`EQUILIBRIUM_FEATURES`]
@@ -573,6 +644,43 @@ pub fn extract_relaxation_series(alert_counts: &[u64], required: u64) -> Vec<u64
             }
         } else {
             streak = 0;
+        }
+    }
+    series
+}
+
+/// recover 弛豫回合序列提取（第二弛豫度量双轨，只加不改——现行
+/// [`extract_relaxation_series`] 语义与黄金钉零动）：从逐窗告警计数流 +
+/// 逐窗 stable 认证数流提取每回合恢复时间 τ_recover——回合以非零告警窗
+/// 开启（回合已开启时持续告警不重开），以**首个 stable 认证窗**闭合，
+/// τ_recover = 回合开启窗到认证窗的实际窗数（携带弛豫快慢信息：现行 τ
+/// 定义下 τ ≡ required 为结构性常数序列，临界慢化统计特征恒平凡——
+/// 真机复合冲击实验实测恢复序列非常数，为慢化度量的有效输入）。
+///
+/// 回合闭合后立即重新起算：闭合窗自身告警计数 > 0 时同窗开启新回合
+/// （告警与认证同窗：先闭合后开启）。无警窗段的认证不产出回合（回合
+/// 未开启）；流结束时未闭合的尾段回合不产出（未认证回合不进序列，
+/// 与现行 τ 的诚实边界同型）。
+///
+/// 确定性：纯函数（无时钟、无随机源、无外部状态），同一观测流对重放
+/// 必得同序列——与证据锚的观测流重放口径同源。两流长度不齐时按较短
+/// 流截断（fail-visible 不猜缺失侧）。
+pub fn extract_recover_series(alert_counts: &[u64], cert_counts: &[u64]) -> Vec<u64> {
+    let mut series = Vec::new();
+    let mut open: Option<usize> = None;
+    let n = alert_counts.len().min(cert_counts.len());
+    for i in 0..n {
+        if alert_counts[i] > 0 && open.is_none() {
+            open = Some(i);
+        }
+        if let Some(start) = open {
+            if cert_counts[i] > 0 {
+                series.push((i - start + 1) as u64);
+                open = None;
+                if alert_counts[i] > 0 {
+                    open = Some(i);
+                }
+            }
         }
     }
     series
@@ -727,12 +835,19 @@ async fn equilibrium_evaluator_loop(
         let had_alert = window_alert_count > 0;
         windows.close_window(had_alert);
         windows.record_window_alert_count(window_alert_count);
+        let window_cert_count = windows.take_window_cert_count();
+        windows.record_window_cert_count(window_cert_count);
         let after = windows.snapshot();
         let features = extract_feature_values(&prev_totals, &after, window_alert_count);
         // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
         // 链，审计日志留痕；不进发射参数与 status 契约（契约冻结不动）。
-        let anchor =
-            windows.settle_window_evidence(&prev_totals, &after, window_alert_count, &features);
+        let anchor = windows.settle_window_evidence(
+            &prev_totals,
+            &after,
+            window_alert_count,
+            window_cert_count,
+            &features,
+        );
         tracing::info!(anchor = %anchor, "equilibrium window settlement evidence anchor advanced");
         prev_totals = snap;
         let instr = build_equilibrium_gate_instruction(&features, &cfg);
@@ -884,6 +999,13 @@ struct WindowsState {
     /// 每窗结算登记一条——τ 序列提取 [`extract_relaxation_series`] 与
     /// 相标签 [`phase_label`] 的会话级拉取源）。
     window_alert_tail: VecDeque<u64>,
+    /// 最近窗 stable 认证数环形缓存（旧→新序，同容量——recover 弛豫
+    /// 回合提取 [`extract_recover_series`] 的认证侧拉取源；纯观测面
+    /// 只加不改，发射与 status 契约零动）。
+    window_cert_tail: VecDeque<u64>,
+    /// 本窗内已记账的 stable 认证数（take-and-clear：认证记账即时累计、
+    /// 窗结算排水——与 pending alert 同型对称）。
+    cert_pending: u64,
 }
 
 impl EquilibriumWindows {
@@ -940,6 +1062,9 @@ impl EquilibriumWindows {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if stable {
             s.certified_streak += 1;
+            // 本窗 stable 认证记账（take-and-clear 的累计侧）：recover 弛豫
+            // 回合提取的窗级认证流源，纯观测面只加不改。
+            s.cert_pending += 1;
         } else {
             s.certified_streak = 0;
         }
@@ -986,6 +1111,7 @@ impl EquilibriumWindows {
         prev: &WindowsSnapshot,
         after: &WindowsSnapshot,
         window_alert_count: u64,
+        window_cert_count: u64,
         features: &FeatureValues,
     ) -> String {
         let mut s = self
@@ -999,7 +1125,14 @@ impl EquilibriumWindows {
         } else {
             s.evidence_anchor.clone()
         };
-        let record = build_settlement_record(window_seq, prev, after, window_alert_count, features);
+        let record = build_settlement_record(
+            window_seq,
+            prev,
+            after,
+            window_alert_count,
+            window_cert_count,
+            features,
+        );
         let entry = serde_json::json!({ "prev_anchor": prev_anchor, "window": record });
         let anchor = evorule_hash::json_digest(&entry);
         s.evidence_anchor = anchor.clone();
@@ -1040,16 +1173,54 @@ impl EquilibriumWindows {
         let start = s.window_alert_tail.len().saturating_sub(k);
         s.window_alert_tail.iter().skip(start).copied().collect()
     }
+
+    /// 排走本窗累计的 stable 认证数（take-and-clear：认证记账即时累计、
+    /// 窗结算排水——与 pending alert 的 take-and-clear 同型对称）。
+    /// 纯观测面只加不改。
+    pub fn take_window_cert_count(&self) -> u64 {
+        let mut s = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut s.cert_pending)
+    }
+
+    /// 登记本窗 stable 认证数进尾部环形缓存（评估循环每窗结算调用一次；
+    /// 纯观测面只加不改——发射与 status 契约零动）。
+    pub fn record_window_cert_count(&self, count: u64) {
+        let mut s = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if s.window_cert_tail.len() >= WINDOW_ALERT_TAIL_CAP {
+            s.window_cert_tail.pop_front();
+        }
+        s.window_cert_tail.push_back(count);
+    }
+
+    /// 拉取最近 k 窗 stable 认证数（旧→新序；k 超缓存深度则返回现存
+    /// 全部）——recover 弛豫回合提取 [`extract_recover_series`] 的认证
+    /// 侧会话级拉取入口（与 [`Self::window_alert_tail`] 同型成对）。
+    pub fn window_cert_tail(&self, k: usize) -> Vec<u64> {
+        let s = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let start = s.window_cert_tail.len().saturating_sub(k);
+        s.window_cert_tail.iter().skip(start).copied().collect()
+    }
 }
 
 /// 本窗结算观测记录（复算凭证输入面）：窗序 + 结算前后快照全量 +
-/// 窗警量 + 全部注册特征值 + formula_ref 版本戳——观测流重放的最小
-/// 完备证据集（输入+公式版本+输出三要素齐备）。
+/// 窗警量 + 窗 stable 认证数 + 全部注册特征值 + formula_ref 版本戳——
+/// 观测流重放的最小完备证据集（输入+公式版本+输出三要素齐备；认证
+/// 侧窗流入册使 recover 回合提取可重放）。
 fn build_settlement_record(
     window_seq: u64,
     prev: &WindowsSnapshot,
     after: &WindowsSnapshot,
     window_alert_count: u64,
+    window_cert_count: u64,
     features: &FeatureValues,
 ) -> serde_json::Value {
     fn totals(v: &WindowsSnapshot) -> serde_json::Value {
@@ -1075,6 +1246,7 @@ fn build_settlement_record(
         "prev_totals": totals(prev),
         "after_totals": totals(after),
         "window_alert_count": window_alert_count,
+        "window_cert_count": window_cert_count,
         "features": serde_json::Value::Object(feature_map),
         "formula_refs": serde_json::Value::Object(formula_map),
     })
@@ -1214,6 +1386,9 @@ mod tests {
             "tau_first_difference",
             "tau_sliding_variance",
             "tau_autocorrelation",
+            "tau_recover_first_difference",
+            "tau_recover_sliding_variance",
+            "tau_recover_autocorrelation",
         ]
         .into_iter()
         .collect();
@@ -1222,7 +1397,7 @@ mod tests {
         assert_eq!(
             analysis_only, expected_analysis,
             "registry entries beyond window extraction must be exactly the \
-             analysis-face tau features"
+             analysis-face tau + tau_recover features"
         );
     }
 
@@ -1347,6 +1522,18 @@ mod tests {
             ("tau_1", "1"),
             ("tau_2", "1"),
             ("tau_3", "1"),
+            // 相变刻画语言 τ_recover 特征（分析面第二弛豫度量双轨）：同全
+            // 无量纲——τ_recover 为恢复回合实际窗计数。
+            ("tau_recover_first_difference", "1"),
+            ("tau_recover_sliding_variance", "1"),
+            ("tau_recover_autocorrelation", "1"),
+            ("tau_recover_i", "1"),
+            ("tau_recover_i_prev", "1"),
+            ("tau_recover_j", "1"),
+            ("tau_recover_k", "1"),
+            ("tau_recover_1", "1"),
+            ("tau_recover_2", "1"),
+            ("tau_recover_3", "1"),
             ("mean_prev", "1"),
             ("mean_next", "1"),
         ]
@@ -1420,7 +1607,7 @@ mod tests {
             last_coverage: 970,
         };
         let features = extract_feature_values(&prev, &after, 3);
-        let record = build_settlement_record(7, &prev, &after, 3, &features);
+        let record = build_settlement_record(7, &prev, &after, 3, 0, &features);
         assert_eq!(record["window_seq"], serde_json::json!(7));
         assert_eq!(record["window_alert_count"], serde_json::json!(3));
         for (key, expected) in [
@@ -1501,19 +1688,21 @@ mod tests {
             eq.close_window(false);
             let after_first = eq.snapshot();
             let first_features = extract_feature_values(&genesis, &after_first, 0);
-            let a1 = eq.settle_window_evidence(&genesis, &after_first, 0, &first_features);
+            let a1 = eq.settle_window_evidence(&genesis, &after_first, 0, 0, &first_features);
             let second_features =
                 extract_feature_values(&after_first, &after_first, alert_count_second);
             let a2 = eq.settle_window_evidence(
                 &after_first,
                 &after_first,
                 alert_count_second,
+                0,
                 &second_features,
             );
             let a3 = eq.settle_window_evidence(
                 &after_first,
                 &after_first,
                 alert_count_second,
+                0,
                 &second_features,
             );
             (eq, a1, a2, a3)
@@ -1719,5 +1908,140 @@ mod tests {
         assert_eq!(tau_sliding_variance(&series), tau_sliding_variance(&series));
         assert_eq!(tau_autocorrelation(&series), tau_autocorrelation(&series));
         assert_eq!(phase_label(&[0, 0, 1], 3, 5), phase_label(&[0, 0, 1], 3, 5));
+    }
+
+    #[test]
+    fn test_extract_recover_series_real_experiment_replay() {
+        // 黄金钉（真机复合冲击实验观测流重放，2026-11-09，84 窗实测）：
+        // E1 连续注入 8 警窗开启回合，E1/E2 余震全程无 stable 认证悬置至
+        // E3 轮 1 首认证闭合 τ=25（长弛豫真形态）；轮 2/3 τ=6/5（静默
+        // 间隔+认证节律）。三态判定 40/40 中，episode 形态与逐窗记账全
+        // 对账；E4 深稳态认证（无警回合未开启）正确不产出。
+        let mut alerts = vec![0_u64; 84];
+        for idx in [
+            3, 4, 5, 6, 7, 8, 9, 10, // E1: 窗 4-11 连续 8 警窗
+            13, 14, // E2 前段: 窗 14-15
+            17, 18, 19, 20, // E2 后段: 窗 18-21（窗归属竞态断段形态）
+            24, 25, // E3 r1 注入: 窗 25-26
+            38, 39, // E3 r2 注入: 窗 39-40
+            54, 55, // E3 r3 注入: 窗 55-56
+        ] {
+            alerts[idx] = 1;
+        }
+        let mut certs = vec![0_u64; 84];
+        for idx in [
+            27, 29, 31, 33, // E3 r1 认证: 窗 28/30/32/34
+            43, 45, 47, 49, // E3 r2 认证: 窗 44/46/48/50
+            58, 60, 62, 63, // E3 r3 认证: 窗 59/61/63/64
+            70, 74, 79, // E4 稀疏认证: 窗 71/75/80（无警不产出）
+        ] {
+            certs[idx] = 1;
+        }
+        let series = extract_recover_series(&alerts, &certs);
+        assert_eq!(
+            series,
+            vec![25, 6, 5],
+            "replay must reproduce the measured recovery-time series"
+        );
+        // 慢化统计三特征非平凡（真机数据 [25,6,5]：非常数序列差分/方差/
+        // 自相关均有效值域——现行 τ 定义下结构性恒平凡）。
+        assert_eq!(tau_first_difference(&series), Some(-1));
+        assert_eq!(tau_sliding_variance(&series), Some(762));
+        assert_eq!(
+            tau_autocorrelation(&series),
+            None,
+            "odd numerator = half-integer, undetermined"
+        );
+    }
+
+    #[test]
+    fn test_extract_recover_series_morphology() {
+        // 形态钉：同窗认证+告警（先闭合后重开；重开回合流尾未闭合不产出）。
+        let series = extract_recover_series(&[0, 1, 1, 0, 1], &[0, 0, 1, 0, 0]);
+        assert_eq!(series, vec![2], "close-then-reopen on the same window");
+        // 无警窗段认证不产出回合。
+        let series = extract_recover_series(&[0, 0, 0], &[0, 1, 1]);
+        assert!(series.is_empty(), "cert before any alert opens no episode");
+        // 流尾未闭合回合不产出（未认证回合不进序列，诚实边界同型）。
+        let series = extract_recover_series(&[1, 0, 0], &[0, 0, 0]);
+        assert!(series.is_empty(), "unclosed tail episode stays out");
+        // 两流长度不齐：按较短流截断（fail-visible 不猜缺失侧）。
+        let series = extract_recover_series(&[1, 0, 0, 0], &[0, 1]);
+        assert_eq!(series, vec![2]);
+        // 空流：空序列。
+        assert!(extract_recover_series(&[], &[]).is_empty());
+        // 确定性双跑。
+        let a = [0_u64, 1, 0, 1, 0];
+        let c = [0_u64, 0, 1, 0, 1];
+        assert_eq!(
+            extract_recover_series(&a, &c),
+            extract_recover_series(&a, &c)
+        );
+    }
+
+    #[test]
+    fn test_window_cert_tail_and_pending_drain() {
+        // 认证侧 take-and-clear 与环形缓存（与警侧同型对称）：认证记账
+        // 即时累计、结算排水、缓存登记、cap 裁剪、访问器窗口序。
+        let eq = EquilibriumWindows::new();
+        eq.record_certificate(true);
+        eq.record_certificate(true);
+        eq.record_certificate(false);
+        assert_eq!(
+            eq.take_window_cert_count(),
+            2,
+            "resets do not count as stable certs"
+        );
+        assert_eq!(eq.take_window_cert_count(), 0, "take-and-clear");
+        eq.record_window_cert_count(2);
+        eq.record_window_cert_count(0);
+        eq.record_window_cert_count(1);
+        assert_eq!(eq.window_cert_tail(2), vec![0, 1], "last-k window order");
+        for i in 0..(WINDOW_ALERT_TAIL_CAP as u64 + 4) {
+            eq.record_window_cert_count(i);
+        }
+        let tail = eq.window_cert_tail(usize::MAX);
+        assert_eq!(tail.len(), WINDOW_ALERT_TAIL_CAP, "cap enforced");
+        assert_eq!(
+            *tail.last().unwrap(),
+            WINDOW_ALERT_TAIL_CAP as u64 + 3,
+            "newest kept"
+        );
+    }
+
+    #[test]
+    fn test_tau_recover_features_registered_and_computed() {
+        // τ_recover 三特征注册钉：同型三件（id/formula_ref/regime/锚）在
+        // 册 + 值域计算钉（复用同型纯函数，B-218 实测序列 [25,6,5] 形态）。
+        for id in [
+            "tau_recover_first_difference",
+            "tau_recover_sliding_variance",
+            "tau_recover_autocorrelation",
+        ] {
+            let spec = EQUILIBRIUM_FEATURES
+                .iter()
+                .find(|s| s.feature_id == id)
+                .unwrap_or_else(|| panic!("tau_recover feature must be registered: {id}"));
+            assert!(
+                spec.formula_ref.starts_with(id),
+                "formula_ref must be self-describing: {id}"
+            );
+            assert_eq!(spec.dim_vector, [0, 0, 0, 0, 0, 0, 0]);
+            assert!(spec.error_contract.contains("undetermined"));
+        }
+        // 发射面契约冻结：τ_recover 族不在窗结算内联提取映射内（分析面
+        // 派生量，只加不改纪律的登记面形态）。
+        let snap = WindowsSnapshot {
+            proposals_in_total: 0,
+            digested_total: 0,
+            alert_free_windows: 0,
+            certified_streak: 0,
+            last_coverage: 0,
+        };
+        let fv = extract_feature_values(&snap, &snap, 0);
+        assert!(
+            !fv.to_map().contains_key("tau_recover_first_difference"),
+            "tau_recover family stays out of the inline extraction map"
+        );
     }
 }
