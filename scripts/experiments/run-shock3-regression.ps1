@@ -1,11 +1,11 @@
 # Shock-propagation real-machine regression driver (graph_shock_propagate, three injections).
-# ASCII only, PS 5.1 compatible. D1-D3 approved: scripts/experiments/ in git, full hard
+# ASCII only, PS 5.1 compatible. Approved design decisions: scripts/experiments/ in git, full hard
 # assertions, local acceptance surface (not in CI).
 #
 # Usage: .\run-shock3-regression.ps1 [-Port 18183]
 # Prereq: release exe built at target\release\evorule-server.exe (repo root):
 #         cargo build --release -p evorule-server
-# Asserts (design-83 s3): injection 1 zero-radius + unreferenced_constants names k_B
+# Asserts: injection 1 zero-radius + unreferenced_constants names k_B
 # (G1 closure); injection 2 domain-inside depth1 reference closure no propagation;
 # injection 3 domain-outside depth2 storm (3 affected / 3 regime / 3 adjudications
 # reverse-order, stress_check survives, dedup domain); determinism anchors (graph_digest
