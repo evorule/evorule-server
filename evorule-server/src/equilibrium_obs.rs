@@ -27,6 +27,14 @@
 //! the emitted `equilibrium_gate` instruction and the status surface remain
 //! contractually unchanged (same parameter names and values as before the
 //! registry migration).
+//!
+//! Every settlement also advances the evidence anchor ([`EquilibriumWindows::
+//! settle_window_evidence`]): an incremental hash chain over the full
+//! settlement observation records (window inputs, feature values and formula
+//! version stamps), so any recorded observation stream replays to the exact
+//! same anchor sequence — the registry's `evidence_anchor` declarations
+//! describe this bound anchor form. The anchor is metadata only: it never
+//! enters the emitted instruction parameters or the status contract.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -242,12 +250,18 @@ pub struct EquilibriumFeatureSpec {
     pub evidence_anchor: &'static str,
 }
 
-/// 复算凭证锚通用声明（首批特征同源：输入=窗观测流，公式=formula_ref
-/// 版本戳，输出=确定性可复算）。
+/// 复算凭证锚通用声明（首批特征同源：输入=窗口观测流增量哈希链头——
+/// 每窗结算时以本窗观测记录推进的 evidence anchor，genesis 起链；
+/// 公式=formula_ref 版本戳；输出=观测流重放下确定性可复算）。
 const EVIDENCE_ANCHOR_WINDOW_STREAM: &str =
-    "input: windowed observation counters (this module) replayable from the \
-     companion hash chain; formula: formula_ref version stamp; value: \
-     deterministic under replay";
+    "input: incremental hash-chain head over the windowed observation stream \
+     (advanced at every settlement with the full observation record, \
+     genesis-anchored); formula: formula_ref version stamp; value: \
+     deterministic under observation stream replay";
+
+/// 观测流证据链 genesis 哨兵（首窗 prev_anchor；上下文快照链 genesis
+/// 先例同型——首窗之前无观测，链从固定哨兵起算）。
+const EVIDENCE_ANCHOR_GENESIS: &str = "genesis";
 
 /// 均衡观测特征定义表（首批 = 窗评估任务现提取的全部特征量，自硬编码
 /// 口径原样平移；值语义逐项不变，对外发射与呈现面契约冻结）。
@@ -465,6 +479,7 @@ const READBACK_TIMEOUT: Duration = Duration::from_secs(10);
 const READBACK_POLL: Duration = Duration::from_millis(100);
 
 /// 装配均衡评估任务：每窗结算一次（取走窗内 alert 计数 → `close_window`）
+/// → 结算观测记录推进证据锚链（复算凭证实锚，审计日志留痕）
 /// → 组装九参发射 `equilibrium_gate` 进单反应器 → 读回
 /// `payload.equilibrium`（立法 v0.12.0 起 gate 接管主契约，
 /// `equilibrium_check` 规则与影子双跑机制已退役）缓存视图供 status 呈现。
@@ -499,6 +514,11 @@ async fn equilibrium_evaluator_loop(
         windows.close_window(had_alert);
         let after = windows.snapshot();
         let features = extract_feature_values(&prev_totals, &after, window_alert_count);
+        // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
+        // 链，审计日志留痕；不进发射参数与 status 契约（契约冻结不动）。
+        let anchor =
+            windows.settle_window_evidence(&prev_totals, &after, window_alert_count, &features);
+        tracing::info!(anchor = %anchor, "equilibrium window settlement evidence anchor advanced");
         prev_totals = snap;
         let instr = build_equilibrium_gate_instruction(&features, &cfg);
         let in_rate = features.in_rate;
@@ -637,6 +657,10 @@ struct WindowsState {
     alert_free_windows: u64,
     certified_streak: u64,
     last_coverage: i64,
+    /// 已结算窗数（证据记录窗序，单调递增）。
+    settlements: u64,
+    /// 观测流证据链当前锚（空串=尚未结算，链未起）。
+    evidence_anchor: String,
 }
 
 impl EquilibriumWindows {
@@ -725,6 +749,87 @@ impl EquilibriumWindows {
             last_coverage: s.last_coverage,
         }
     }
+
+    /// 推进窗结算证据锚（evidence_anchor 实锚绑定）：以本窗结算观测记录
+    /// （结算前后快照+窗警量+全部注册特征值+formula_ref 版本戳）构造链步
+    /// `{prev_anchor, window}`，经 `evorule_hash::json_digest`（紧凑
+    /// serde_json、无前缀 64-hex）推进观测流增量哈希链并缓存链头。
+    ///
+    /// 哈希域声明：均衡观测流自有哈希链事实（companion 伴随链同型先例——
+    /// server 本地链自声明、原始原语计算），与其他哈希域不可互证；
+    /// genesis 首窗起链；单结算写者（评估任务每窗调用一次）。
+    pub fn settle_window_evidence(
+        &self,
+        prev: &WindowsSnapshot,
+        after: &WindowsSnapshot,
+        window_alert_count: u64,
+        features: &FeatureValues,
+    ) -> String {
+        let mut s = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.settlements += 1;
+        let window_seq = s.settlements;
+        let prev_anchor = if s.evidence_anchor.is_empty() {
+            EVIDENCE_ANCHOR_GENESIS.to_string()
+        } else {
+            s.evidence_anchor.clone()
+        };
+        let record = build_settlement_record(window_seq, prev, after, window_alert_count, features);
+        let entry = serde_json::json!({ "prev_anchor": prev_anchor, "window": record });
+        let anchor = evorule_hash::json_digest(&entry);
+        s.evidence_anchor = anchor.clone();
+        anchor
+    }
+
+    /// 当前观测流证据锚（空串=尚未结算，链未起）。元数据面：不进
+    /// 发射参数与 status 契约，仅供审计日志与对账面取用。
+    pub fn evidence_anchor(&self) -> String {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .evidence_anchor
+            .clone()
+    }
+}
+
+/// 本窗结算观测记录（复算凭证输入面）：窗序 + 结算前后快照全量 +
+/// 窗警量 + 全部注册特征值 + formula_ref 版本戳——观测流重放的最小
+/// 完备证据集（输入+公式版本+输出三要素齐备）。
+fn build_settlement_record(
+    window_seq: u64,
+    prev: &WindowsSnapshot,
+    after: &WindowsSnapshot,
+    window_alert_count: u64,
+    features: &FeatureValues,
+) -> serde_json::Value {
+    fn totals(v: &WindowsSnapshot) -> serde_json::Value {
+        serde_json::json!({
+            "proposals_in_total": v.proposals_in_total,
+            "digested_total": v.digested_total,
+            "alert_free_windows": v.alert_free_windows,
+            "certified_streak": v.certified_streak,
+            "last_coverage": v.last_coverage,
+        })
+    }
+    let feature_map: serde_json::Map<String, serde_json::Value> = features
+        .to_map()
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect();
+    let formula_map: serde_json::Map<String, serde_json::Value> = EQUILIBRIUM_FEATURES
+        .iter()
+        .map(|s| (s.feature_id.to_string(), serde_json::json!(s.formula_ref)))
+        .collect();
+    serde_json::json!({
+        "window_seq": window_seq,
+        "prev_totals": totals(prev),
+        "after_totals": totals(after),
+        "window_alert_count": window_alert_count,
+        "features": serde_json::Value::Object(feature_map),
+        "formula_refs": serde_json::Value::Object(formula_map),
+    })
 }
 
 /// Point-in-time view of the equilibrium observation state.
@@ -988,5 +1093,147 @@ mod tests {
                 spec.feature_id
             );
         }
+    }
+
+    #[test]
+    fn test_settlement_record_carries_full_evidence_set() {
+        // 结算观测记录 = 复算凭证最小完备集：窗序 + 前后快照全量 + 窗警量
+        // + 全部注册特征值 + formula_ref 版本戳逐条绑定；registry 逐特征
+        // evidence_anchor 声明非空且绑定实锚形态（同源声明逐条一致）。
+        let prev = WindowsSnapshot {
+            proposals_in_total: 4,
+            digested_total: 2,
+            alert_free_windows: 1,
+            certified_streak: 1,
+            last_coverage: 950,
+        };
+        let after = WindowsSnapshot {
+            proposals_in_total: 9,
+            digested_total: 5,
+            alert_free_windows: 2,
+            certified_streak: 2,
+            last_coverage: 970,
+        };
+        let features = extract_feature_values(&prev, &after, 3);
+        let record = build_settlement_record(7, &prev, &after, 3, &features);
+        assert_eq!(record["window_seq"], serde_json::json!(7));
+        assert_eq!(record["window_alert_count"], serde_json::json!(3));
+        for (key, expected) in [
+            ("proposals_in_total", 4),
+            ("digested_total", 2),
+            ("alert_free_windows", 1),
+            ("certified_streak", 1),
+            ("last_coverage", 950),
+        ] {
+            assert_eq!(
+                record["prev_totals"][key],
+                serde_json::json!(expected),
+                "prev totals must be recorded verbatim: {key}"
+            );
+        }
+        assert_eq!(
+            record["after_totals"]["proposals_in_total"],
+            serde_json::json!(9)
+        );
+        let values = features.to_map();
+        for spec in EQUILIBRIUM_FEATURES.iter() {
+            assert_eq!(
+                record["features"][spec.feature_id],
+                serde_json::json!(values[spec.feature_id]),
+                "feature value must be recorded: {}",
+                spec.feature_id
+            );
+            assert_eq!(
+                record["formula_refs"][spec.feature_id],
+                serde_json::json!(spec.formula_ref),
+                "formula version stamp must be recorded: {}",
+                spec.feature_id
+            );
+            assert!(
+                !spec.evidence_anchor.is_empty(),
+                "registry anchor declaration non-empty: {}",
+                spec.feature_id
+            );
+            assert_eq!(
+                spec.evidence_anchor, EVIDENCE_ANCHOR_WINDOW_STREAM,
+                "anchor declaration must describe the bound anchor form: {}",
+                spec.feature_id
+            );
+        }
+    }
+
+    #[test]
+    fn test_evidence_anchor_chain_deterministic_and_tamper_propagating() {
+        // 同观测序列双跑 → 锚链逐窗一致（确定性，genesis 起链）；逐窗推进
+        // 相邻锚必不等；任一窗观测被改 → 该窗及其后所有锚分叉（增量链
+        // 篡改传播红）。锚形态 = 无前缀 64-hex。
+        let settle_two = |alert_count_second: u64| {
+            let eq = EquilibriumWindows::new();
+            let genesis = WindowsSnapshot {
+                proposals_in_total: 0,
+                digested_total: 0,
+                alert_free_windows: 0,
+                certified_streak: 0,
+                last_coverage: 0,
+            };
+            eq.record_proposal();
+            eq.record_digested();
+            eq.record_coverage(900);
+            eq.close_window(false);
+            let after_first = eq.snapshot();
+            let first_features = extract_feature_values(&genesis, &after_first, 0);
+            let a1 = eq.settle_window_evidence(&genesis, &after_first, 0, &first_features);
+            let second_features =
+                extract_feature_values(&after_first, &after_first, alert_count_second);
+            let a2 = eq.settle_window_evidence(
+                &after_first,
+                &after_first,
+                alert_count_second,
+                &second_features,
+            );
+            let a3 = eq.settle_window_evidence(
+                &after_first,
+                &after_first,
+                alert_count_second,
+                &second_features,
+            );
+            (eq, a1, a2, a3)
+        };
+
+        let (eq_a, a1, a2, a3) = settle_two(0);
+        assert_eq!(
+            eq_a.evidence_anchor(),
+            a3,
+            "cached head must track last settlement"
+        );
+        for a in [&a1, &a2, &a3] {
+            assert_eq!(a.len(), 64, "anchor body must be 64-hex: {a}");
+            assert!(
+                a.chars().all(|c| c.is_ascii_hexdigit()),
+                "anchor must be hex: {a}"
+            );
+        }
+        assert_ne!(
+            a1, a2,
+            "per-window progression: adjacent anchors must differ"
+        );
+        assert_ne!(
+            a2, a3,
+            "per-window progression: adjacent anchors must differ"
+        );
+
+        let (_, b1, b2, b3) = settle_two(0);
+        assert_eq!(
+            a1, b1,
+            "same observation sequence replays to the same anchor"
+        );
+        assert_eq!(a2, b2);
+        assert_eq!(a3, b3);
+
+        // 篡改传播：第二窗窗警量不同 → 第二窗起锚链全分叉（第一窗不变）。
+        let (_, c1, c2, c3) = settle_two(2);
+        assert_eq!(c1, a1, "untampered first window keeps its anchor");
+        assert_ne!(c2, a2, "tampered window observation must change its anchor");
+        assert_ne!(c3, a3, "tamper must propagate to all subsequent anchors");
     }
 }
