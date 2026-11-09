@@ -1323,7 +1323,8 @@ mod tests {
             cfg: Arc::new(cfg),
             http: Arc::new(reqwest::Client::new()),
             execute_http: Arc::new(reqwest::Client::new()),
-            allowlist: Arc::new(None),
+            allowlist: AllowlistHot::unready(),
+            routes: None,
             caller_token,
         }
     }

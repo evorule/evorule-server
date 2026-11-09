@@ -1908,25 +1908,59 @@ pub async fn call_llm_ext(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let resp = http
-        .post(&upstream.execute_url)
-        .bearer_auth(&upstream.api_key)
-        .json(&merged)
-        .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({}): {e}", upstream.execute_url)))?;
-    let resp = check_llm_ext_response(resp).await?;
-    if is_stream {
-        let resp = check_sse_content_type(resp).await?;
-        execute_stream_aggregate(resp).await
-    } else {
-        let v: Value = resp
-            .json()
-            .await
-            .map_err(|e| PluginError::Llm(format!("LLM 响应 JSON 解析失败: {e}")))?;
-        completion_four_keys(&v)
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
+        let result = async {
+            let resp = http
+                .post(&upstream.execute_url)
+                .bearer_auth(&upstream.api_key)
+                .json(&merged)
+                .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
+                .send()
+                .await
+                .map_err(|e| {
+                    PluginError::Llm(format!("LLM 请求失败({}): {e}", upstream.execute_url))
+                })?;
+            let resp = check_llm_ext_response(resp).await?;
+            if is_stream {
+                let resp = check_sse_content_type(resp).await?;
+                execute_stream_aggregate(resp).await
+            } else {
+                let v: Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| PluginError::Llm(format!("LLM 响应 JSON 解析失败: {e}")))?;
+                completion_four_keys(&v)
+            }
+        }
+        .await;
+        match result {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                // 有界重试：provider 流完整性闸两态判死（提前关闭/零 data 帧）
+                // = 传输类瞬断，聚合路径下行前可安全重放（单 Result，重放对
+                // 调用方无重复）；业务类错误重试不会成功，不触发。恰好一次
+                // 重试（两次出站封顶），终态保持 fail-visible。
+                if attempt == 1 && is_premature_close_error(&e) {
+                    tracing::warn!(
+                        error = %e,
+                        "provider 流提前关闭,聚合路径出站重试一次"
+                    );
+                    continue;
+                }
+                return Err(e);
+            }
+        }
     }
+}
+
+/// 传输类断链判定（聚合路径有界重试触发面）：provider 流完整性闸两态
+/// 判死——提前关闭（finish_reason 缺失）或零 data 帧。业务类错误（鉴权/
+/// 参数/base_resp 拒绝等）重试不会成功，不触发。
+fn is_premature_close_error(err: &PluginError) -> bool {
+    matches!(err, PluginError::Llm(msg)
+        if msg.starts_with("SSE 流提前关闭") || msg.starts_with("SSE 流不含任何 data 帧"))
 }
 
 /// 出站前执法段（/llm/execute 与 /llm/execute-stream 共用）：model 非空 +
@@ -4459,6 +4493,7 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
             &cfg,
             &build_http_client().unwrap(),
             &allowlist_one("MiniMax-M2.5"),
+            None,
             &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
         )
         .await
@@ -4467,6 +4502,128 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
         assert!(
             msg.contains("finish_reason 缺失"),
             "截断流必须显式报 finish_reason 缺失: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_premature_close_retries_once() {
+        // 聚合路径有界重试：首响应截断（流完整性闸判死）→ 次响应完整 →
+        // 出站+聚合重试一次成功，恰好两次出站。下行是单 Result（聚合完成后
+        // 才出函数），重放对调用方无重复。
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_in = hits.clone();
+        let truncated = r#"data: {"choices":[{"delta":{"content":"partial "}}]}"#;
+        let complete = r#"data: {"choices":[{"delta":{"content":"最终"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#;
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let hits = hits_in.clone();
+                let truncated = truncated.to_string();
+                let complete = complete.to_string();
+                async move {
+                    let n = hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let body = if n == 0 { truncated } else { complete };
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let out = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            None,
+            &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
+        )
+        .await
+        .expect("断链重试一次后应成功");
+        assert_eq!(out["content"], "最终");
+        assert_eq!(out["finish_reason"], "stop");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "恰好两次出站（一次重试）"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_premature_close_persistent_bounded() {
+        // 持续截断：重试有界（恰好两次出站），终态保持 fail-visible 不吞错。
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_in = hits.clone();
+        let truncated = r#"data: {"choices":[{"delta":{"content":"partial "}}]}"#;
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let hits = hits_in.clone();
+                let truncated = truncated.to_string();
+                async move {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        truncated,
+                    )
+                }
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let err = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            None,
+            &json!({"model": "MiniMax-M2.5", "messages": [], "stream": true}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("finish_reason 缺失"), "{err}");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "重试有界：恰好两次出站"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_business_error_not_retried() {
+        // 业务类错误（base_resp 拒绝，重试不会成功）不触发重试：恰好一次出站。
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_in = hits.clone();
+        let app = Router::new().route(
+            "/v1/text/chatcompletion_v2",
+            post(move || {
+                let hits = hits_in.clone();
+                async move {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        r#"{"base_resp":{"status_code":1004,"status_msg":"invalid api key"},"choices":[]}"#
+                            .to_string(),
+                    )
+                }
+            }),
+        );
+        let addr = spawn_app(app).await;
+        let cfg = ext_cfg(&format!("http://{addr}/v1/text/chatcompletion_v2"));
+        let err = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allowlist_one("MiniMax-M2.5"),
+            None,
+            &json!({"model": "MiniMax-M2.5", "messages": [], "stream": false}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid api key"), "{err}");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "业务类错误不重试：恰好一次出站"
         );
     }
 
