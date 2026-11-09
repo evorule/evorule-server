@@ -903,7 +903,7 @@ mod parameters_contract_tests {
             ("geometry-services", 7),
             ("physics-services", 3),
             ("template-services", 1),
-            ("video-services", 10),
+            ("video-services", 12),
         ];
         for (plugin_id, expected_count) in EXPECTED {
             let def = PLUGIN_DEFS
