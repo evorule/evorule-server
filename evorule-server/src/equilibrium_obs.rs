@@ -101,6 +101,10 @@ pub fn drain_pending_alerts() -> u64 {
 ///
 /// `stable = None` = 反应器不可达或读回超时（fail-visible：不猜稳态，
 /// 呈现层原样透出 null）。
+///
+/// `phase` = 均衡相位标签（`crisis`/`relaxing`/`absorbing`），在窗结算
+/// 原子点以本窗实值计算（尾窗警量/判据门槛/认证连击三输入同源快照，
+/// 与结算记录同源可回放；status 呈现层读缓存不做二次派生）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EquilibriumView {
     pub stable: Option<bool>,
@@ -108,6 +112,7 @@ pub struct EquilibriumView {
     pub window_secs: u64,
     pub in_rate: i64,
     pub digest_rate: i64,
+    pub phase: &'static str,
 }
 
 static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
@@ -116,6 +121,7 @@ static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
     window_secs: 0,
     in_rate: 0,
     digest_rate: 0,
+    phase: "relaxing",
 });
 
 /// 发布最近窗结算视图（评估任务内部调用）。
@@ -839,6 +845,14 @@ async fn equilibrium_evaluator_loop(
         windows.record_window_cert_count(window_cert_count);
         let after = windows.snapshot();
         let features = extract_feature_values(&prev_totals, &after, window_alert_count);
+        // 相位在窗结算原子点以本窗实值计算（尾窗警量/判据门槛/认证连击
+        // 三输入同源），与结算记录同源可回放；status 呈现层读缓存二次
+        // 派生不做（防读算与窗结算异相竞态）。
+        let phase = phase_label(
+            &[window_alert_count],
+            cfg.certified_streak_min.max(0) as u64,
+            after.certified_streak,
+        );
         // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
         // 链，审计日志留痕；不进发射参数与 status 契约（契约冻结不动）。
         let anchor = windows.settle_window_evidence(
@@ -871,6 +885,7 @@ async fn equilibrium_evaluator_loop(
                     window_secs: cfg.window_secs,
                     in_rate,
                     digest_rate,
+                    phase,
                 },
                 None => EquilibriumView {
                     stable: None,
@@ -878,6 +893,7 @@ async fn equilibrium_evaluator_loop(
                     window_secs: cfg.window_secs,
                     in_rate,
                     digest_rate,
+                    phase,
                 },
             },
             Err(e) => EquilibriumView {
@@ -886,6 +902,7 @@ async fn equilibrium_evaluator_loop(
                 window_secs: cfg.window_secs,
                 in_rate,
                 digest_rate,
+                phase,
             },
         };
         publish_view(view);
@@ -981,8 +998,9 @@ pub struct EquilibriumWindows {
 }
 
 /// 窗警量尾部环形缓存容量（τ 相变分析面的观察窗深；只加不改——
-/// 发射面契约与 status 契约零动，本缓存仅为实验/分析面拉取服务）。
-const WINDOW_ALERT_TAIL_CAP: usize = 16;
+/// 发射面契约零动，缓存本体旧→新序语义不变；status 呈现面全量透出
+/// 供真机拉取）。
+pub(crate) const WINDOW_ALERT_TAIL_CAP: usize = 16;
 
 #[derive(Debug, Default)]
 struct WindowsState {
@@ -1001,7 +1019,7 @@ struct WindowsState {
     window_alert_tail: VecDeque<u64>,
     /// 最近窗 stable 认证数环形缓存（旧→新序，同容量——recover 弛豫
     /// 回合提取 [`extract_recover_series`] 的认证侧拉取源；纯观测面
-    /// 只加不改，发射与 status 契约零动）。
+    /// 只加不改，发射契约零动，status 呈现面全量透出）。
     window_cert_tail: VecDeque<u64>,
     /// 本窗内已记账的 stable 认证数（take-and-clear：认证记账即时累计、
     /// 窗结算排水——与 pending alert 同型对称）。
