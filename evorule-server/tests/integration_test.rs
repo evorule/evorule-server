@@ -1372,7 +1372,7 @@ async fn test_equilibrium_drill_end_to_end() {
 
     // ---- 场景 E：危机期全链演练——红灯连击→streak 重置→τ 序列实测→相标签翻转 ----
     // provenance=harness（窗结算任务全循环 spawn_equilibrium_evaluator + 立法
-    // 判定 + 读回视图；19 号稿 §8 原定演练形态）。三段警情 episode 间以
+    // 判定 + 读回视图；设计档原定演练形态）。三段警情 episode 间以
     // 达标无警窗闭合 τ 回合（required=2 → 每闭合回合 τ=2 恒值，一阶差分
     // 0/滑窗方差 0/常数序列自相关分母 0 → 诚实出口），全链观测量取自
     // 窗警量尾部拉取面（window_alert_tail）而非注入侧自记账。
