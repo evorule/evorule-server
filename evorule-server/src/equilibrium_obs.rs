@@ -1182,8 +1182,7 @@ async fn equilibrium_evaluator_loop(
         // rules=域级相位复合、data=待裁位势面；位势总和与按域分账同源
         // （同一快照可回放）。
         let phi_total: u64 = phi_snapshot.values().sum();
-        let layer_phases =
-            compose_layer_phases(phase, &domain_phases, pending_snapshot, phi_total);
+        let layer_phases = compose_layer_phases(phase, &domain_phases, pending_snapshot, phi_total);
         // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
         // 链，审计日志留痕；不进发射参数与 status 契约（契约冻结不动）。
         let anchor = windows.settle_window_evidence(
