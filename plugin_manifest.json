@@ -20,8 +20,6 @@
 
     "finance-config": { "enabled": true, "manifest": "plugins/finance-config/plugin.json" },
 
-    "flow-studio": { "enabled": true },
-
     "fluid-services": { "enabled": true },
 
     "geometry-services": { "enabled": true },
