@@ -23,10 +23,15 @@
 #   4 readjudication: contradicting verify (numeric sigma) emits a law_review
 #     proposal -> readjudication advances (phi 1) and the law-domain alert
 #     lands -> rules layer crisis.
-#   5 unattributed alert window: a held-potential stall alarm (global-only
-#     attribution) plus a cross-dataset contradicting verify (proposals from
-#     two datasets => unattributed alert bucket) drive the capability-layer
-#     crisis last; the cross verify also completes the drain (phi 0).
+#   5 unattributed alert window: a cross-dataset contradicting verify
+#     (proposals from two datasets => no domain attribution) is fired
+#     immediately after the rules-crisis observation; its unattributed
+#     alert drives the capability-layer crisis last and completes the
+#     drain (phi 0). No held-potential stall episode is scripted here:
+#     the stall alarm mechanism is covered by unit tests, and holding
+#     the pending potential across two settlements would let the data
+#     layer's derived phase backtrack (crisis->relaxing->crisis),
+#     violating the strict-sequence ruling.
 #   6 convergence: alert tails age out (relaxing while the certified streak
 #     is below minimum), two stable verifies build the streak, every layer
 #     reaches absorbing, system_phase absorbing, system_balanced true.
@@ -523,13 +528,14 @@ function Invoke-Round([int]$RoundNo, [string]$Tag) {
         $gateB = Wait-PhaseStep { param($st) (LayerPhaseOf $st 'rules') -eq 'crisis' } 15
         Assert-True "$Tag.L3.rules_crisis_observed" ($gateB.hit -and ((First-StepIndex 'rules' 'crisis') -ne $null)) "rules layer must observe crisis with the readjudication; last equilibrium=$(EqDetail $gateB.snapshot)"
 
-        # ---- unattributed alert window: held potential stalls (global-only
-        # alarm) or the cross-dataset contradiction's unattributed bucket
-        # drives the capability layer crisis last ----
-        $holdC = Wait-PhaseStep { param($st) (LayerPhaseOf $st 'capability') -eq 'crisis' } 8
-        # cross-dataset contradicting verify: proposals from two datasets =>
-        # unattributed alert bucket; its thermal law_review completes the
-        # drain (phi 1 -> 0)
+        # ---- unattributed alert window: the cross-dataset contradicting
+        # verify (proposals from two datasets => unattributed alert bucket)
+        # is fired immediately after the rules-crisis observation so the
+        # pending potential never holds across two settlements. No stall
+        # episode is scripted (stall alarm remains covered by unit tests),
+        # and the data layer's strict crisis->relaxing->absorbing traversal
+        # stays backtrack-free regardless of polling phase. Its thermal
+        # law_review completes the drain (phi 1 -> 0). ----
         $vM = Invoke-Api '/v1/criticality/verify' "$Tag-verify-cross" $vCrossViolate
         Assert-True "$Tag.X4.cross_verify_contradiction" (($vM.status -eq 200) -and ($vM.body.verdict -eq 'contradiction')) "cross-dataset violating claim must produce contradiction, got $($vM.status)/$($vM.body.verdict)"
 
@@ -575,11 +581,14 @@ function Invoke-Round([int]$RoundNo, [string]$Tag) {
             }
             $fa[$l] = $a
         }
-        # S1: session face includes domain-attributed alerts, so the
-        # capability onset necessarily coincides with or follows the rules
-        # onset; only data < rules is a cross-face invariant, capability
-        # is recorded (asserted non-strict).
-        Assert-True "$Tag.S1.crisis_onset_stagger_strict" (($null -ne $fc.data) -and ($null -ne $fc.rules) -and ($null -ne $fc.capability) -and ($fc.data -lt $fc.rules) -and ($fc.capability -ge $fc.rules)) "crisis onsets: data strictly before rules, capability same or later (structural containment): data=$($fc.data) rules=$($fc.rules) capability=$($fc.capability)"
+        # S1: alert-source attribution split — the capability layer is driven
+        # by its own unattributed account only (domain-attributed alerts feed
+        # the rules layer exclusively), so in this scenario (rules crisis from
+        # the law-domain alert, capability crisis from the cross-dataset
+        # unattributed bucket fired right after) the capability onset follows
+        # the rules onset; only data < rules is a cross-face invariant,
+        # capability is recorded (asserted non-strict).
+        Assert-True "$Tag.S1.crisis_onset_stagger_strict" (($null -ne $fc.data) -and ($null -ne $fc.rules) -and ($null -ne $fc.capability) -and ($fc.data -lt $fc.rules) -and ($fc.capability -ge $fc.rules)) "crisis onsets: data strictly before rules, capability later (attribution split: capability account sees no domain-attributed alerts): data=$($fc.data) rules=$($fc.rules) capability=$($fc.capability)"
         Assert-True "$Tag.S2.absorbing_step_order" (($null -ne $fa.data) -and ($null -ne $fa.rules) -and ($null -ne $fa.capability) -and ($fa.capability -ge $fa.rules) -and ($fa.rules -ge $fa.data)) "absorbing steps must order capability >= rules >= data: data=$($fa.data) rules=$($fa.rules) capability=$($fa.capability)"
         if ($RelaxAbsorbingStagger) {
             Assert-True "$Tag.S3.absorbing_step_stagger_recorded" (($null -ne $fa.data) -and ($null -ne $fa.rules) -and ($null -ne $fa.capability)) "relaxed mode: absorbing steps recorded, stagger matrix data=$($fa.data) rules=$($fa.rules) capability=$($fa.capability)"

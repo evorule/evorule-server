@@ -1188,6 +1188,14 @@ impl CompanionHub {
             // 三层位势总和（只加不改）：Σ域 Φ，与按域分账 phi_by_domain 同
             // 账本两视图。
             "phi_total": eq_view.phi_total,
+            // 警量分账块（只加不改新键）：capability 独立账 + 真域分账 +
+            // 全局总数；不变式 capability + Σdomains == total 逐窗严格成立
+            // （域归因警不混入 capability 层警源，无归因警不伪装成域）。
+            "alert_attribution": {
+                "capability": eq_view.alert_attribution.capability,
+                "domains": eq_view.alert_attribution.domains,
+                "total": eq_view.alert_attribution.total,
+            },
             "window_alert_tail": crate::equilibrium_obs::shared()
                 .window_alert_tail(crate::equilibrium_obs::WINDOW_ALERT_TAIL_CAP),
             "window_cert_tail": crate::equilibrium_obs::shared()

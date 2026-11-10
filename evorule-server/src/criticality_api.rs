@@ -133,9 +133,12 @@ async fn verify_handler(State(app): State<AppState>, Json(doc): Json<Value>) -> 
                 Some("alert") | Some("contradiction") => {
                     // 域归因（纯观测零拦截）：本判定为全域三态聚合，警情按
                     // 提案物料包 dataset_id 归账——全部提案同库 = 记入该域；
-                    // 跨库多提案/缺物料包 = 不可单域归因，落全局归因桶 ""
-                    // （不丢账 fail-visible，不静默）。全局计数在
-                    // record_alert_in 内同步 +1，全局口径恒 = 分账之和。
+                    // 跨库多提案/缺物料包 = 无域归因，归 capability 独立账
+                    // （record_alert_in("")——警源分账语义：不再落 `""` 伪
+                    // 域桶参与 rules 层复合）。全局计数在 record_alert_in
+                    // 内同步 +1，全局口径 = capability 分账 + Σ真域分账。
+                    // 注：待裁 Φ 位势账（phi_by_domain）的 `""` 桶口径独立
+                    // 且零动——分账只改警量归因，位势归因不在此列。
                     let mut domains: std::collections::BTreeSet<&str> =
                         std::collections::BTreeSet::new();
                     if let Some(proposals) = body.get("proposals").and_then(|p| p.as_array()) {
