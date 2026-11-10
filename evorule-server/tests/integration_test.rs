@@ -1189,6 +1189,108 @@ async fn test_equilibrium_gate_legislation() {
     );
 }
 
+/// 构造 system_phase 指令（系统级相位裁决立法：调用方在结算原子点算好的
+/// 四整数参数直传，规则层只比大小零数据变形）。
+fn make_system_phase_instruction(
+    layers_in_crisis: i64,
+    layers_absorbing: i64,
+    layer_total: i64,
+    phi_total: i64,
+) -> JsonValue {
+    let mut params = BTreeMap::new();
+    params.insert(
+        "layers_in_crisis".to_string(),
+        JsonValue::Integer(layers_in_crisis),
+    );
+    params.insert(
+        "layers_absorbing".to_string(),
+        JsonValue::Integer(layers_absorbing),
+    );
+    params.insert("layer_total".to_string(), JsonValue::Integer(layer_total));
+    params.insert("phi_total".to_string(), JsonValue::Integer(phi_total));
+    let mut instr = BTreeMap::new();
+    instr.insert("type".to_string(), JsonValue::string("system_phase"));
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+/// system_phase 裁决读回：返回（相位原词, 归因, 契约 schema_version）。
+async fn run_system_phase_verdict(
+    instr: JsonValue,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let core_eval = load_core_eval();
+    let reactor = Reactor::builder(core_eval).max_rounds(100).build();
+    let (tx, mut rx, _event_tx, _handle, facts_log) = reactor.spawn();
+    tx.send(Fact::Command {
+        id: FactId(1),
+        instruction: instr,
+    })
+    .unwrap();
+    let snapshot = wait_for_stable(&mut rx, &facts_log)
+        .await
+        .expect("Timed out waiting for Stable");
+    (
+        snapshot
+            .get("system_phase")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        snapshot
+            .get("system_phase_cause")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        snapshot
+            .get("system_phase_schema_version")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    )
+}
+
+/// system_phase 立法场景（系统级相位裁决）：黄金向量（任一层 crisis /
+/// 三层全 absorbing 且零位势 / 混合收敛）+ 负路径（缺参 payload 键不写，
+/// exists 门空臂静默留痕，调用方读回自行回落）。
+#[tokio::test]
+async fn test_system_phase_legislation() {
+    // 场景 1：任一层 crisis（layers_in_crisis >= 1，严格 lt 开区间 on_false
+    // 边界）-> crisis，仲裁优先级最高。
+    let (phase, cause, schema) =
+        run_system_phase_verdict(make_system_phase_instruction(1, 0, 3, 2)).await;
+    assert_eq!(
+        phase.as_deref(),
+        Some("crisis"),
+        "任一层 crisis 应判 system_phase=crisis; cause={cause:?}"
+    );
+    assert_eq!(cause.as_deref(), Some("layer_in_crisis"));
+    assert_eq!(schema.as_deref(), Some("1"), "crisis 臂应写 schema_version");
+
+    // 场景 2：三层全 absorbing（layers_absorbing == layer_total 计数等号
+    // 边界）且零位势（phi_total == 0）-> absorbing。
+    let (phase, cause, schema) =
+        run_system_phase_verdict(make_system_phase_instruction(0, 3, 3, 0)).await;
+    assert_eq!(phase.as_deref(), Some("absorbing"));
+    assert_eq!(cause.as_deref(), Some("system_balanced"));
+    assert_eq!(schema.as_deref(), Some("1"));
+
+    // 场景 3：混合（无 crisis、吸收层未满员）-> relaxing。
+    let (phase, cause, schema) =
+        run_system_phase_verdict(make_system_phase_instruction(0, 1, 3, 4)).await;
+    assert_eq!(phase.as_deref(), Some("relaxing"));
+    assert_eq!(cause.as_deref(), Some("layers_converging"));
+    assert_eq!(schema.as_deref(), Some("1"));
+
+    // 场景 4：缺任一 param（去掉 phi_total 参）-> exists 门空臂，payload
+    // system_phase 键不被写（调用方读回面按自身缺省回落，规则层不代猜）。
+    let mut instr = make_system_phase_instruction(0, 3, 3, 0);
+    if let JsonValue::Object(ref mut m) = instr {
+        if let Some(JsonValue::Object(ref mut p)) = m.get_mut("params") {
+            p.remove("phi_total");
+        }
+    }
+    let (phase, cause, schema) = run_system_phase_verdict(instr).await;
+    assert_eq!(phase, None, "缺参时 system_phase 键不应被写");
+    assert_eq!(cause, None, "缺参时 system_phase_cause 键不应被写");
+    assert_eq!(schema, None, "缺参时 schema_version 键不应被写");
+}
+
 // ============================================================================
 // 均衡观测演练（接线 e2e）：窗结算任务发射 + 规则层判定 + 读回视图
 // ============================================================================
