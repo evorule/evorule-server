@@ -153,6 +153,10 @@ async fn verify_handler(State(app): State<AppState>, Json(doc): Json<Value>) -> 
                 }
                 _ => eq.record_certificate(false),
             }
+            // 待重裁推进记账（纯观测零拦截）：待裁账中 law 在本报告重新产出
+            // 裁决（law_substitution 步骤目标 / law_review 提案条目）即推进
+            // 其重裁水位——与上方均衡记账同零拦截口径，不改裁决/响应语义。
+            advance_readjudication_from_report(&body);
             // 分级裁决面（缺省关）：显式配置激活后，对 verify 提案物料包
             // 逐笔三闸裁决并在响应附 adjudications[]；低危自动出站由
             // 机器闸受端六检最终执法，降级决策只记录不改写人工路径。
@@ -162,6 +166,36 @@ async fn verify_handler(State(app): State<AppState>, Json(doc): Json<Value>) -> 
             (StatusCode::OK, Json(body)).into_response()
         }
         Err(err) => rejection(&err),
+    }
+}
+
+/// 待重裁推进记账（纯观测零拦截）：扫描本报告内 law 重裁证据——
+/// `law_substitution` 步骤目标（定律 id）与 `law_review` 提案条目
+/// （entry_id）——对命中待裁账的 id 调 [`crate::equilibrium_obs::
+/// record_readjudicated`] 推进重裁水位；未知 id 账面 no-op（纯观测）。
+/// 只读报告记观测，不改裁决/响应语义。
+fn advance_readjudication_from_report(report: &serde_json::Value) {
+    let mut targets: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    if let Some(steps) = report.get("steps").and_then(|v| v.as_array()) {
+        for s in steps {
+            if s.get("kind").and_then(|k| k.as_str()) == Some("law_substitution") {
+                if let Some(t) = s.get("target").and_then(|t| t.as_str()) {
+                    targets.insert(t);
+                }
+            }
+        }
+    }
+    if let Some(proposals) = report.get("proposals").and_then(|v| v.as_array()) {
+        for p in proposals {
+            if p.get("kind").and_then(|k| k.as_str()) == Some("law_review") {
+                if let Some(e) = p.get("entry_id").and_then(|e| e.as_str()) {
+                    targets.insert(e);
+                }
+            }
+        }
+    }
+    for id in targets {
+        crate::equilibrium_obs::record_readjudicated(id);
     }
 }
 
