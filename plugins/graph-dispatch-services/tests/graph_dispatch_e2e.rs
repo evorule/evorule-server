@@ -808,3 +808,81 @@ async fn same_first_domain_cross_edge_declaration_fails_visible() {
         "诊断应含 JSON 路径: {err}"
     );
 }
+
+// ── ⑦ 数据反馈形态：revision.version 单调守卫 + pending_readjudication ──
+
+#[tokio::test]
+async fn revision_version_feedback_and_pending_readjudication() {
+    let router = GraphDispatchServiceRouter::new(noop_fallback());
+    let revision = |value: serde_json::Value, version: Option<&str>| {
+        let mut doc = serde_json::json!({
+            "constant_id": "c1", "new_value": value,
+            "source": "constants-table-review", "verified": true
+        });
+        if let Some(v) = version {
+            doc["version"] = serde_json::json!(v);
+        }
+        evorule_rule_loader::serde_to_tcb(doc)
+    };
+
+    // 域外修订（5 ∉ [0,1]）携带推进版本 2019：new_version 原样回显；
+    // pending_readjudication = 受影响 ∩ 裁决失效（A depth1 reference；D 未失效不出现）
+    let args = JsonValue::object_from_pairs(&[
+        ("rule_set", golden_rule_set()),
+        ("revision", revision(serde_json::json!(5), Some("2019"))),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let out = router.execute(&svc_params(args)).await.unwrap();
+    assert_eq!(out.get("new_version").unwrap().as_str(), Some("2019"));
+    let pending = out
+        .get("pending_readjudication")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    let pending_desc: Vec<(String, i64, String)> = pending
+        .iter()
+        .map(|e| {
+            (
+                e.get("instruction_type")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                e.get("depth").unwrap().as_i64().unwrap(),
+                e.get("via").unwrap().as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pending_desc,
+        vec![("A".to_string(), 1, "reference".to_string())],
+        "手算期望: 仅 A 的裁决被击穿（depth1, reference）；D 未失效不出现"
+    );
+
+    // 同版本修订（2018 == 现行声明版本）拒收：零推进，报因点名版本代数单调推进
+    let args_same = JsonValue::object_from_pairs(&[
+        ("rule_set", golden_rule_set()),
+        ("revision", revision(serde_json::json!(5), Some("2018"))),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let err = router.execute(&svc_params(args_same)).await.unwrap_err();
+    assert!(err.contains("单调推进"), "同版本须拒收: {err}");
+
+    // 未携带 version：new_version 键缺省不出现；域内修订零失效 → pending 空数组（键恒在）
+    let args_plain = JsonValue::object_from_pairs(&[
+        ("rule_set", golden_rule_set()),
+        ("revision", revision(serde_json::json!(0.5), None)),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let out_plain = router.execute(&svc_params(args_plain)).await.unwrap();
+    assert!(
+        out_plain.get("new_version").is_none(),
+        "未携带 version → new_version 键缺省不出现"
+    );
+    assert!(out_plain
+        .get("pending_readjudication")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+}

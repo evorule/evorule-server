@@ -8,9 +8,10 @@
 //! 入参 `{"rule_set": {…}, "revision": {…}, "adjudications": […]}`：
 //! - `rule_set`：规则集对象（含 `metadata.formula_registry` 与可选
 //!   `metadata.constants`）——原样交依赖图构建器物化，构建错误透传；
-//! - `revision`：修订提案 `{constant_id, new_value, new_uncertainty?, source, verified}`——
+//! - `revision`：修订提案 `{constant_id, new_value, new_uncertainty?, source, verified, version?}`——
 //!   出处元数据强制（source 非空 + verified 恰为 true，CODATA 级修订不例外）；
-//!   `new_value` 修订对象须为图中已声明常数；
+//!   `new_value` 修订对象须为图中已声明常数；可选 `version` = 修订后的版本代数
+//!   值（非空字符串），单调守卫语义见下文；
 //! - `adjudications`：历史裁决清单（元素 {instruction_type, state}），调用方从
 //!   审计链 lifecycle 取数后传入，服务不做生命周期过滤。
 //!
@@ -22,13 +23,33 @@
 //!   "domains_touched":[[L,M,T,I,Θ,N,J]…字典序去重],
 //!   "graph_digest":"blake3:hex","input_digest":"blake3:hex",
 //!   "knowledge_domains_touched":[知识域…字典序去重],
-//!   "new_value":修订值原样回显,"propagation_depth":u64,
+//!   "new_value":修订值原样回显,
+//!   "new_version":修订 version 原样回显（未携带则键缺省不出现）,
+//!   "pending_readjudication":[{instruction_type,depth,via}…按指令排序],
+//!   "propagation_depth":u64,
 //!   "regime_invalidated":[指令…排序],"shocked_constant":id,
 //!   "unreferenced_constants":[常数…字典序]}`
 //!
 //! `unreferenced_constants` = 声明集（metadata.constants）与引用集（引用边）
 //! 差集——已声明但零指令登记引用的常数对冲击传播零半径（地震仪不可见），
 //! 本字段使该静默态有痕可观察；与修订对象无关，逐次 invoke 均报告。
+//!
+//! # 版本代数单调守卫（revision.version 可选字段）
+//!
+//! 修订可携带 `version`（非空字符串）= 修订后的版本代数值。当 rule_set 中该
+//! constant_id 声明了现行 version 且 revision.version 与之相同 → 拒收（同版本
+//! = 零推进，报错含「版本代数须单调推进」）；取值不同或现行未声明 version →
+//! 放行。放行且携带时出参 `new_version` 原样回显修订携带值；revision 未携带
+//! version 时该键缺省不出现。
+//!
+//! # 待重裁标记面（pending_readjudication）
+//!
+//! 数据反馈通道的闭环出口：受影响集 ∩ 裁决失效集的每条指令（即
+//! adjudications_invalidated 所命中的受影响指令），逐条携带其受影响路径
+//! 元数据 `{instruction_type, depth, via}`，按 instruction_type 字典序——
+//! 语义 = 这些指令的历史裁决已被本次修订击穿，调用方据此将其重排队进入
+//! 再裁决流程。无失效裁决时为空数组（键恒在，与 affected_instructions
+//! 键恒在口径一致）。
 //!
 //! # 传播语义（六步，全确定性）
 //!
@@ -131,6 +152,22 @@ fn non_empty_str_field(obj: &JsonValue, key: &str, why: &str) -> Result<String, 
     }
 }
 
+/// 提取可选非空字符串字段（缺省 None；存在须为非空字符串，否则 fail-visible）。
+fn optional_non_empty_str_field(
+    obj: &JsonValue,
+    key: &str,
+    why: &str,
+) -> Result<Option<String>, String> {
+    match obj.get(key) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::String(s)) if !s.is_empty() => Ok(Some(s.to_string())),
+        Some(JsonValue::String(_)) => Err(format!(
+            "revision.{key} 为空串 — {why} — 自诊断指引: 补齐后重试或省略该字段"
+        )),
+        Some(_) => Err(format!("revision.{key} 须为字符串 — {why}")),
+    }
+}
+
 /// 提取数值字段（整数 / u64 / 可解析为有限小数的数字字符串——TCB 域小数
 /// 以字符串承载的引擎惯例；其余形态 → Err）。
 fn numeric_field(obj: &JsonValue, key: &str) -> Result<f64, String> {
@@ -160,7 +197,8 @@ fn numeric_field(obj: &JsonValue, key: &str) -> Result<f64, String> {
 }
 
 /// 解析修订提案（出处元数据强制：CODATA 级修订不例外）。
-fn parse_revision(revision: &JsonValue) -> Result<(String, f64), String> {
+/// 返回 (constant_id, new_value, version?)——version 为可选的修订后版本代数值。
+fn parse_revision(revision: &JsonValue) -> Result<(String, f64, Option<String>), String> {
     let why = "修订提案强制出处元数据（可溯源性），缺出处/未验证的修订不接受";
     let constant_id = non_empty_str_field(revision, "constant_id", why)?;
     let new_value = numeric_field(revision, "new_value")?;
@@ -183,7 +221,11 @@ fn parse_revision(revision: &JsonValue) -> Result<(String, f64), String> {
             ));
         }
     }
-    Ok((constant_id, new_value))
+    // version 可选：存在则须为非空字符串（修订后的版本代数值，单调守卫用；
+    // 不参与传播计算，仅入 input_digest 与 new_version 回显）
+    let version =
+        optional_non_empty_str_field(revision, "version", "版本代数值（修订后的版本代数）")?;
+    Ok((constant_id, new_value, version))
 }
 
 /// 解析历史裁决清单（元素 {instruction_type, state} 均非空字符串；保序保留原始条目）。
@@ -244,6 +286,8 @@ struct ShockOutcome {
     regime_invalidated: Vec<String>,
     /// 已裁命题反推命中条目（原始条目保序）
     adjudications_invalidated: Vec<JsonValue>,
+    /// 待重裁标记面：受影响 ∩ 裁决失效的指令（按指令字典序），带受影响路径元数据
+    pending_readjudication: Vec<(String, u64, &'static str)>,
     /// 失效指令量纲去重清单（字典序）
     domains_touched: Vec<[i64; 7]>,
     /// 受影响集最大深度（无受影响 = 0）
@@ -353,6 +397,19 @@ fn compute_shock(
         .map(|(_, item)| item.clone())
         .collect();
 
+    // 待重裁标记面：受影响集 ∩ 裁决失效集的每条指令（失效集 ⊆ 受影响集，
+    // BTreeMap 迭代序 = 指令字典序），带受影响路径元数据（depth/via）
+    let adjudicated_hit: BTreeSet<&str> = adjudications
+        .iter()
+        .filter(|(t, _)| invalidated.contains(t))
+        .map(|(t, _)| t.as_str())
+        .collect();
+    let pending_readjudication: Vec<(String, u64, &'static str)> = affected
+        .iter()
+        .filter(|(t, _)| adjudicated_hit.contains(t.as_str()))
+        .map(|(t, (d, via))| (t.clone(), *d, *via))
+        .collect();
+
     // ⑤ 深度汇总 + 失效指令量纲去重（字典序）+ 跨域深度 + 知识域并集
     let propagation_depth = affected.values().map(|(d, _)| *d).max().unwrap_or(0);
     let cross_domain_depth = affected
@@ -389,6 +446,7 @@ fn compute_shock(
             .collect(),
         regime_invalidated: invalidated.into_iter().collect(),
         adjudications_invalidated,
+        pending_readjudication,
         domains_touched: domains.into_iter().collect(),
         propagation_depth,
         cross_domain_depth,
@@ -408,7 +466,7 @@ impl NativeService for GraphShockPropagate {
         // ── 入参解析（缺任一必选键 → fail-visible）──
         let rule_set = object_arg(args, "rule_set")?;
         let revision = object_arg(args, "revision")?;
-        let (constant_id, new_value) = parse_revision(revision)?;
+        let (constant_id, new_value, new_version) = parse_revision(revision)?;
         let adjudications = parse_adjudications(args)?;
 
         // ── 依赖图物化（构建错误透传；serde 域交接）──
@@ -421,6 +479,24 @@ impl NativeService for GraphShockPropagate {
                 "修订常数 \"{constant_id}\" 未在 rule_set metadata.constants 声明 — \
                  自诊断指引: 修订对象必须是依赖图已声明的常数（先声明后修订）"
             ));
+        }
+
+        // 版本代数单调守卫：修订携带 version 且与现行声明版本相同 → 拒收
+        // （同版本 = 零推进）；取值不同或现行未声明 version → 放行。
+        let declared_version = graph
+            .constants
+            .iter()
+            .find(|c| c.constant_id == constant_id)
+            .map(|c| c.version.as_str())
+            .filter(|v| !v.is_empty());
+        if let (Some(proposed), Some(current)) = (&new_version, declared_version) {
+            if proposed.as_str() == current {
+                return Err(format!(
+                    "revision.version=\"{proposed}\" 与常数现行版本代数 \"{current}\" 相同 \
+                     （同版本 = 零推进）— 版本代数须单调推进 — 自诊断指引: \
+                     修订须推进版本代数取值（如 2018 → 2019）后重试"
+                ));
+            }
         }
 
         // ── input_digest：三输入规范化哈希（篡改即红锚）──
@@ -488,7 +564,22 @@ impl NativeService for GraphShockPropagate {
             .filter(|id| !referenced.contains(id))
             .map(JsonValue::string)
             .collect();
-        Ok(JsonValue::object_from_pairs(&[
+        // 待重裁标记面 JSON（元素形态与 affected_instructions 同构）
+        let pending_json: Vec<JsonValue> = outcome
+            .pending_readjudication
+            .iter()
+            .map(|(t, d, via)| {
+                JsonValue::object_from_pairs(&[
+                    ("instruction_type", JsonValue::string(t.as_str())),
+                    (
+                        "depth",
+                        JsonValue::Integer(i64::try_from(*d).unwrap_or(i64::MAX)),
+                    ),
+                    ("via", JsonValue::string(*via)),
+                ])
+            })
+            .collect();
+        let mut outcome_pairs: Vec<(&str, JsonValue)> = vec![
             ("affected_instructions", JsonValue::Array(affected_json)),
             (
                 "adjudications_invalidated",
@@ -515,23 +606,29 @@ impl NativeService for GraphShockPropagate {
                 ),
             ),
             ("new_value", raw_new_value),
-            (
-                "propagation_depth",
-                JsonValue::Integer(i64::try_from(outcome.propagation_depth).unwrap_or(i64::MAX)),
+        ];
+        // new_version 条件回显：revision 携带 version 时原样回显，未携带键缺省不出现
+        if let Some(v) = &new_version {
+            outcome_pairs.push(("new_version", JsonValue::string(v.as_str())));
+        }
+        outcome_pairs.push(("pending_readjudication", JsonValue::Array(pending_json)));
+        outcome_pairs.push((
+            "propagation_depth",
+            JsonValue::Integer(i64::try_from(outcome.propagation_depth).unwrap_or(i64::MAX)),
+        ));
+        outcome_pairs.push((
+            "regime_invalidated",
+            JsonValue::Array(
+                outcome
+                    .regime_invalidated
+                    .iter()
+                    .map(|s| JsonValue::string(s.as_str()))
+                    .collect(),
             ),
-            (
-                "regime_invalidated",
-                JsonValue::Array(
-                    outcome
-                        .regime_invalidated
-                        .iter()
-                        .map(|s| JsonValue::string(s.as_str()))
-                        .collect(),
-                ),
-            ),
-            ("shocked_constant", JsonValue::string(constant_id)),
-            ("unreferenced_constants", JsonValue::Array(unreferenced)),
-        ]))
+        ));
+        outcome_pairs.push(("shocked_constant", JsonValue::string(constant_id)));
+        outcome_pairs.push(("unreferenced_constants", JsonValue::Array(unreferenced)));
+        Ok(JsonValue::object_from_pairs(&outcome_pairs))
     }
 }
 
@@ -781,5 +878,165 @@ mod tests {
             "零失效 → 知识域并集为空"
         );
         assert!(out.adjudications_invalidated.is_empty());
+    }
+
+    // ── 待重裁标记面（数据反馈通道）──
+
+    #[test]
+    fn pending_readjudication_matches_invalidated_adjudications_with_depth_via() {
+        // 复用跨域语料：A(1,reference) 与 B(2,cross_domain) 均失效；裁决命中 B、A
+        let graph = build_graph(json!({
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0],
+                  "constants": ["c1"], "domains": ["engineering"] },
+                { "instruction_type": "B", "formula": "f_b", "dimensions": [0, 0, 1, 0, 0, 0, 0],
+                  "domains": ["economic"] }
+            ],
+            "cross_domain_edges": [{ "from": "A", "to": "B" }]
+        }));
+        let adjs = vec![adjudication("B"), adjudication("A")];
+        let out = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &domains_of(&graph),
+            "c1",
+            5.0,
+            &adjs,
+        );
+        // 待重裁按指令字典序（与裁决声明序无关），depth/via 取受影响路径元数据
+        assert_eq!(
+            out.pending_readjudication,
+            vec![
+                ("A".to_string(), 1u64, VIA_REFERENCE),
+                ("B".to_string(), 2u64, VIA_CROSS_DOMAIN),
+            ],
+            "手算期望: A 引用闭包 depth1; B 跨域波及 depth2"
+        );
+        // 集合一致性：pending 指令集 == adjudications_invalidated 指令集
+        let inv_types: BTreeSet<String> = out
+            .adjudications_invalidated
+            .iter()
+            .map(|e| {
+                e.get("instruction_type")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        let pending_types: BTreeSet<String> = out
+            .pending_readjudication
+            .iter()
+            .map(|(t, _, _)| t.clone())
+            .collect();
+        assert_eq!(pending_types, inv_types, "两集合须一致");
+    }
+
+    #[test]
+    fn pending_readjudication_empty_when_no_adjudication_invalidated() {
+        // 裁决含未失效指令 Z 与空清单两形态 → 待重裁恒空（零失效裁决不标记）
+        let graph = build_graph(json!({
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0],
+                  "constants": ["c1"] },
+                { "instruction_type": "B", "formula": "f_b", "dimensions": [0, 0, 1, 0, 0, 0, 0] }
+            ],
+            "cross_domain_edges": [{ "from": "A", "to": "B" }]
+        }));
+        let out = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &domains_of(&graph),
+            "c1",
+            5.0,
+            &[adjudication("Z")],
+        );
+        assert!(out.pending_readjudication.is_empty(), "Z 未失效 → 不标记");
+        let out_empty = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &domains_of(&graph),
+            "c1",
+            5.0,
+            &[],
+        );
+        assert!(
+            out_empty.pending_readjudication.is_empty(),
+            "空裁决清单 → 恒空"
+        );
+    }
+
+    // ── 版本代数单调守卫 + new_version 回显（直调 execute 全链）──
+
+    /// 语料：常数 c1（版本可变，域 [0,1]）+ 指令 A 引用 c1
+    fn tcb_rule_set_with_version(version: &str) -> JsonValue {
+        evorule_rule_loader::serde_to_tcb(json!({
+            "metadata": {
+                "constants": [
+                    { "constant_id": "c1", "version": version, "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+                ],
+                "formula_registry": [
+                    { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0], "constants": ["c1"] }
+                ]
+            }
+        }))
+    }
+
+    /// 修订提案（可选携带 version）
+    fn tcb_revision(version: Option<&str>) -> JsonValue {
+        let mut doc = json!({
+            "constant_id": "c1", "new_value": 5,
+            "source": "constants-table-review", "verified": true
+        });
+        if let Some(v) = version {
+            doc["version"] = json!(v);
+        }
+        evorule_rule_loader::serde_to_tcb(doc)
+    }
+
+    #[test]
+    fn revision_version_same_as_declared_rejected() {
+        let args = JsonValue::object_from_pairs(&[
+            ("rule_set", tcb_rule_set_with_version("2018")),
+            ("revision", tcb_revision(Some("2018"))),
+            ("adjudications", JsonValue::Array(vec![])),
+        ]);
+        let err = GraphShockPropagate.execute(&args).unwrap_err();
+        assert!(err.contains("单调推进"), "同版本修订须拒收: {err}");
+        assert!(err.contains("2018"), "报因应点名版本取值: {err}");
+    }
+
+    #[test]
+    fn revision_version_different_passes_and_echoes_new_version() {
+        let args = JsonValue::object_from_pairs(&[
+            ("rule_set", tcb_rule_set_with_version("2018")),
+            ("revision", tcb_revision(Some("2019"))),
+            ("adjudications", JsonValue::Array(vec![])),
+        ]);
+        let out = GraphShockPropagate.execute(&args).unwrap();
+        assert_eq!(
+            out.get("new_version").and_then(JsonValue::as_str),
+            Some("2019"),
+            "放行时 new_version 原样回显"
+        );
+    }
+
+    #[test]
+    fn revision_version_absent_passes_without_new_version_key() {
+        let args = JsonValue::object_from_pairs(&[
+            ("rule_set", tcb_rule_set_with_version("2018")),
+            ("revision", tcb_revision(None)),
+            ("adjudications", JsonValue::Array(vec![])),
+        ]);
+        let out = GraphShockPropagate.execute(&args).unwrap();
+        assert!(
+            out.get("new_version").is_none(),
+            "未携带 version → new_version 键缺省不出现"
+        );
     }
 }
