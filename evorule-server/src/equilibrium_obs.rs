@@ -333,7 +333,6 @@ pub(crate) fn veto_stalled_absorbing(
 pub(crate) fn compose_layer_phases(
     capability: &str,
     domain_phases: &BTreeMap<String, String>,
-    pending_total: u64,
     phi_total: u64,
     prev_phi_total: u64,
 ) -> BTreeMap<String, String> {
@@ -1185,16 +1184,10 @@ async fn equilibrium_evaluator_loop(
         );
         veto_stalled_absorbing(&mut domain_phases, &stalled);
         // 三层相位复合（结算原子点纯派生）：capability=集级相位、
-        // rules=域级相位复合、data=待裁位势面；位势总和与按域分账同源
+        // rules=域级相位复合、data=位势进度面；位势总和与按域分账同源
         // （同一快照可回放）。
         let phi_total: u64 = phi_snapshot.values().sum();
-        let layer_phases = compose_layer_phases(
-            phase,
-            &domain_phases,
-            pending_snapshot,
-            phi_total,
-            prev_phi_total,
-        );
+        let layer_phases = compose_layer_phases(phase, &domain_phases, phi_total, prev_phi_total);
         prev_phi_total = phi_total;
         // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
         // 链，审计日志留痕；不进发射参数与 status 契约（契约冻结不动）。
@@ -2942,7 +2935,7 @@ mod tests {
         let mut rules = BTreeMap::new();
         rules.insert("alpha".to_string(), "absorbing".to_string());
         rules.insert("beta".to_string(), "crisis".to_string());
-        let layers = compose_layer_phases("relaxing", &rules, 2, 7, 7);
+        let layers = compose_layer_phases("relaxing", &rules, 7, 7);
         let keys: Vec<&str> = layers.keys().map(String::as_str).collect();
         assert_eq!(
             keys,
@@ -2959,7 +2952,7 @@ mod tests {
         // 场景 2：三层全 absorbing（rules 层含空域集同判 absorbing）且
         // data 层位势总和为零 ⇒ absorbing。
         let empty = BTreeMap::new();
-        let layers = compose_layer_phases("absorbing", &empty, 0, 0, 0);
+        let layers = compose_layer_phases("absorbing", &empty, 0, 0);
         assert_eq!(
             layers.get("capability").map(String::as_str),
             Some("absorbing")
@@ -2976,7 +2969,7 @@ mod tests {
         let mut mixed = BTreeMap::new();
         mixed.insert("alpha".to_string(), "absorbing".to_string());
         mixed.insert("beta".to_string(), "relaxing".to_string());
-        let layers = compose_layer_phases("relaxing", &mixed, 0, 5, 8);
+        let layers = compose_layer_phases("relaxing", &mixed, 5, 8);
         assert_eq!(layers.get("rules").map(String::as_str), Some("relaxing"));
         assert_eq!(
             layers.get("data").map(String::as_str),
@@ -2986,9 +2979,9 @@ mod tests {
 
         // 场景 4：data 层新扰动（首窗位势出现，参照基线 0）⇒ crisis；
         // 位势等值停滞亦 crisis（不降即危机）。
-        let layers = compose_layer_phases("relaxing", &empty, 2, 7, 0);
+        let layers = compose_layer_phases("relaxing", &empty, 7, 0);
         assert_eq!(layers.get("data").map(String::as_str), Some("crisis"));
-        let layers = compose_layer_phases("relaxing", &empty, 0, 3, 3);
+        let layers = compose_layer_phases("relaxing", &empty, 3, 3);
         assert_eq!(layers.get("data").map(String::as_str), Some("crisis"));
     }
 
