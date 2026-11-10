@@ -2957,7 +2957,7 @@ pub fn mk_anatomy_hand_orientation_eval() -> Arc<dyn NativeService> {
 ///   （点名按序 ≥2 点成链，相邻两点成一段），L=Σ段长（isqrt 整数）；
 ///   d=|target−链首|（平方整数比较，无开方截断入判定）；
 /// - 可达域内界分段闭式：单段=[0,L]；二段=|L1−L2|=L−2·Lmin；
-///   三段以上（折叠定理）=L−2·Lmax；均为整数运算；
+///   三段以上（折叠定理）=2·Lmax−L（支配链内洞半径）；均为整数运算；
 /// - d>L 出 `unreachable`（数学证明不可达，硬判）；d<内界出
 ///   `unreachable`（内洞，同硬判）；d 恰在域内=未见数学不可达
 ///   （数值 IK 收敛性与关节限位属引擎侧浮点面，不在本核判定域
@@ -3038,7 +3038,7 @@ impl NativeService for AnatomyIkReachabilityEval {
             let inner_len: i128 = match n_seg {
                 1 => 0,
                 2 => (big_l - 2 * min_seg).max(0),
-                _ => (big_l - 2 * max_seg).max(0),
+                _ => (2 * max_seg - big_l).max(0),
             };
             let outside = d2 > big_l * big_l;
             let in_hole = n_seg >= 2 && d2 < inner_len * inner_len;
@@ -3821,19 +3821,36 @@ mod anatomy_reach_tests {
 
     #[test]
     fn three_link_fold_inner_boundary_and_hole() {
-        // 三段链 L=60, 内界=L-2·Lmax=20: d=20 恰过, d=10 内洞
+        // 三段支配链 40+15+15, L=70, 内界=2·Lmax−L=10: d=10 恰过, d=5 内洞
         let pts = [
             ("a", pt("0", "0")),
-            ("b", pt("20", "0")),
-            ("c", pt("20", "20")),
-            ("d", pt("0", "20")),
-            ("t1", pt("0", "20")),
-            ("t2", pt("0", "10")),
+            ("b", pt("40", "0")),
+            ("c", pt("40", "15")),
+            ("d", pt("25", "15")),
+            ("t1", pt("10", "0")),
+            ("t2", pt("5", "0")),
         ];
         let ok = run(&pts, vec![rule("r1", &["a", "b", "c", "d"], "t1")]).unwrap();
         assert!(clean(&ok));
         let bad = run(&pts, vec![rule("r2", &["a", "b", "c", "d"], "t2")]).unwrap();
         assert!(bad.to_string().contains("内洞"), "{}", bad);
+    }
+
+    #[test]
+    fn three_link_uniform_chain_full_disk_no_hole() {
+        // 均匀三段 20+20+20, L=60, Lmax=L/2 → 内界 0, 满圆盘: d=10 与 d=0 均可达
+        let pts = [
+            ("a", pt("0", "0")),
+            ("b", pt("20", "0")),
+            ("c", pt("20", "20")),
+            ("d", pt("0", "20")),
+            ("near", pt("0", "10")),
+            ("base", pt("0", "0")),
+        ];
+        let ok = run(&pts, vec![rule("r1", &["a", "b", "c", "d"], "near")]).unwrap();
+        assert!(clean(&ok), "{}", ok.to_string());
+        let at_base = run(&pts, vec![rule("r2", &["a", "b", "c", "d"], "base")]).unwrap();
+        assert!(clean(&at_base), "{}", at_base.to_string());
     }
 
     #[test]
