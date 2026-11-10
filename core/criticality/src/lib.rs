@@ -1037,7 +1037,9 @@ mod tests {
             "id": "newton_second",
             "formula": "F = m * a",
             "symbols": { "F": "合外力", "m": "质量", "a": "加速度" },
-            "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" }
+            "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
+            "max_version_depth": 4,
+            "monotone_form": true
         }))
         .unwrap()
     }
@@ -1052,7 +1054,9 @@ mod tests {
             "si_units": {
                 "F": "newton", "G": "m^3*kg^-1*s^-2", "m1": "kilogram",
                 "m2": "kilogram", "r": "m"
-            }
+            },
+            "max_version_depth": 4,
+            "monotone_form": true
         }))
         .unwrap()
     }
@@ -1337,7 +1341,9 @@ mod tests {
                     "id": format!("law_{i}"),
                     "formula": "F = m * a",
                     "symbols": { "F": "力", "m": "质量", "a": "加速度" },
-                    "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" }
+                    "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
+                    "max_version_depth": 4,
+                    "monotone_form": true
                 }))
                 .unwrap();
                 LawRef {
@@ -1363,7 +1369,9 @@ mod tests {
             "id": "ideal_gas",
             "formula": "P * V = n * R * T",
             "symbols": { "P": "压强", "V": "体积", "n": "物质的量", "R": "气体常数", "T": "温度" },
-            "si_units": { "P": "pascal", "V": "m^3", "n": "mol", "R": "joule*mol^-1*K^-1", "T": "kelvin" }
+            "si_units": { "P": "pascal", "V": "m^3", "n": "mol", "R": "joule*mol^-1*K^-1", "T": "kelvin" },
+            "max_version_depth": 4,
+            "monotone_form": true
         }))
         .unwrap();
         let laws = [LawRef {
