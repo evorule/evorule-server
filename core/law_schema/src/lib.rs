@@ -202,6 +202,21 @@ pub fn is_valid_domain_id(id: &str) -> bool {
 // 校验结果
 // ============================================================================
 
+/// 未验证条目（量纲第三态的结构化透出面）
+///
+/// 跳过 ≠ 通过：量纲能力层因 si_units 缺失/单位不可解析等原因未执行时，
+/// 该条目不进入通过集，也不构成拒收，而以独立判定态「未验证」列明
+/// （禁以 warning 静默埋没；见 law_set 装配呈现面同口径透出）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct UnverifiedEntry {
+    /// 条目路径（含 law id，形如 `laws[0] (id=newton_second): `）
+    pub at: String,
+    /// law id
+    pub law_id: String,
+    /// 未执行量纲校验的具体原因
+    pub reason: String,
+}
+
 /// 校验报告：valid + 结构化错误列表（含实例路径），供上层显示明确提示
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaReport {
@@ -211,9 +226,12 @@ pub struct SchemaReport {
     pub mode: &'static str,
     /// 错误列表（每条含实例路径 + 具体原因）
     pub errors: Vec<String>,
-    /// warning 级结果（量纲能力层跳过等；不影响 valid，不构成拒收）
+    /// warning 级结果（不影响 valid，不构成拒收）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// 未验证条目（量纲第三态：跳过 ≠ 通过 ≠ 拒收，独立判定态列明）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unverified: Vec<UnverifiedEntry>,
 }
 
 impl SchemaReport {
@@ -223,6 +241,7 @@ impl SchemaReport {
             mode,
             errors: Vec::new(),
             warnings: Vec::new(),
+            unverified: Vec::new(),
         }
     }
 
@@ -232,6 +251,7 @@ impl SchemaReport {
             mode,
             errors,
             warnings: Vec::new(),
+            unverified: Vec::new(),
         }
     }
 }
@@ -589,12 +609,13 @@ fn check_monotone_form(idx: usize, law: &Law, errors: &mut Vec<String>) {
 // 量纲能力层接线
 // ============================================================================
 
-/// 单条定律的量纲能力层接线：不一致 → 硬错误；跳过 → warning 级结果（不拒收）
+/// 单条定律的量纲能力层接线：不一致 → 硬错误；跳过 → 未验证第三态
+/// （结构化列明，不拒收、不静默；跳过 ≠ 通过）
 fn apply_dimensional_verdict(
     idx: usize,
     law: &Law,
     errors: &mut Vec<String>,
-    warnings: &mut Vec<String>,
+    unverified: &mut Vec<UnverifiedEntry>,
 ) {
     let at = format!("laws[{idx}] (id={}): ", law.id);
     match dimensional::check_law(law) {
@@ -606,7 +627,11 @@ fn apply_dimensional_verdict(
             "{at}等式内加减两侧操作分量纲不一致（量纲违例，硬拒收）：{report}"
         )),
         dimensional::DimensionalVerdict::Skipped(reason) => {
-            warnings.push(format!("{at}量纲校验跳过（warning 级，不拒收）：{reason}"));
+            unverified.push(UnverifiedEntry {
+                at: at.trim_end().to_string(),
+                law_id: law.id.clone(),
+                reason,
+            });
         }
     }
 }
@@ -619,7 +644,8 @@ fn apply_dimensional_verdict(
 ///
 /// 用于：law_set 部署件装载、API 提交、golden 验证。
 /// 量纲能力层为可选启用（law 引用符号全部有 si_units 才生效），
-/// 跳过情况记入 `SchemaReport.warnings`（warning 级，不影响 valid）。
+/// 跳过情况记入 `SchemaReport.unverified`（未验证第三态，独立判定态列明，
+/// 不影响 valid、不静默）。
 pub fn validate_law_set(doc: &Value) -> SchemaReport {
     let mut errors: Vec<String> = match VALIDATORS.law_set.validate(doc) {
         Ok(()) => Vec::new(),
@@ -630,7 +656,7 @@ pub fn validate_law_set(doc: &Value) -> SchemaReport {
     // formula 结构层 + 域归属/跨域引用边层 + 量纲能力层（schema 表达不了的
     // 语义边界）：schema 校验失败条目的 formula 可能不可反序列化，逐条
     // best-effort；反序列化失败处 schema 层已报因。
-    let mut warnings: Vec<String> = Vec::new();
+    let mut unverified: Vec<UnverifiedEntry> = Vec::new();
     if let Some(laws) = doc.get("laws").and_then(|v| v.as_array()) {
         // 先收集全 set 已反序列化定律（id → 定律），供跨域引用边 target
         // 存在性与目标域归属判定检索。
@@ -653,7 +679,7 @@ pub fn validate_law_set(doc: &Value) -> SchemaReport {
             check_cross_refs(*idx, law, &laws_by_id, &mut errors);
             check_law_finiteness(*idx, law, &mut errors);
             check_monotone_form(*idx, law, &mut errors);
-            apply_dimensional_verdict(*idx, law, &mut errors, &mut warnings);
+            apply_dimensional_verdict(*idx, law, &mut errors, &mut unverified);
         }
     }
     let mut report = if errors.is_empty() {
@@ -661,7 +687,7 @@ pub fn validate_law_set(doc: &Value) -> SchemaReport {
     } else {
         SchemaReport::fail("law_set", errors)
     };
-    report.warnings = warnings;
+    report.unverified = unverified;
     report
 }
 
@@ -864,9 +890,9 @@ mod tests {
     }
 
     #[test]
-    fn golden_dim_g6_missing_si_units_symbol_warns_but_not_rejected() {
-        // G6：formula 引用符号缺 si_units → 跳过量纲校验记 warning，不硬拒
-        // （G 类纯数学定律兼容；valid 保持 true）
+    fn golden_dim_g6_missing_si_units_symbol_unverified_but_not_rejected() {
+        // G6：formula 引用符号缺 si_units → 跳过量纲校验记未验证第三态，不硬拒
+        // （G 类纯数学定律兼容；valid 保持 true；跳过 ≠ 通过，独立判定态列明）
         let mut doc = golden_newton();
         doc["laws"][0]["formula"] = json!("F = m * x");
         doc["laws"][0]["symbols"] = json!({ "F": "合外力", "m": "质量", "x": "任意标量" });
@@ -876,18 +902,19 @@ mod tests {
             "缺 si_units 符号应跳过不拒收: {:?}",
             report.errors
         );
+        assert!(report.warnings.is_empty(), "跳过不得静默落 warning 面");
+        assert_eq!(report.unverified.len(), 1, "应恰一条未验证条目");
+        let entry = &report.unverified[0];
+        assert_eq!(entry.law_id, "newton_second");
         assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.contains('x') && w.contains("缺 si_units")),
-            "warning 须指明缺 si_units 的符号: {:?}",
-            report.warnings
+            entry.reason.contains('x') && entry.reason.contains("缺 si_units"),
+            "未验证原因须指明缺 si_units 的符号: {:?}",
+            entry.reason
         );
     }
 
     #[test]
-    fn golden_dim_g7_pure_math_law_without_si_units_warns_not_rejected() {
+    fn golden_dim_g7_pure_math_law_without_si_units_unverified_not_rejected() {
         // G7：si_units 为空（纯数学定律）→ 全符号缺 si_units，整体跳过不拒收
         let mut doc = golden_newton();
         doc["laws"][0]["formula"] = json!("y = a * x");
@@ -899,13 +926,12 @@ mod tests {
             "纯数学定律应跳过量纲校验不拒收: {:?}",
             report.errors
         );
+        assert_eq!(report.unverified.len(), 1);
+        let entry = &report.unverified[0];
         assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.contains("y") && w.contains("a") && w.contains("x")),
-            "warning 须列出全部缺 si_units 符号: {:?}",
-            report.warnings
+            entry.reason.contains("y") && entry.reason.contains("a") && entry.reason.contains("x"),
+            "未验证原因须列出全部缺 si_units 符号: {:?}",
+            entry.reason
         );
     }
 
@@ -918,7 +944,10 @@ mod tests {
         doc["laws"][0]["si_units"] = json!({ "v": "m*s^-1", "d": "m", "t": "s" });
         let report = validate_law_set(&doc);
         assert!(report.valid, "除法量纲一致应过: {:?}", report.errors);
-        assert!(report.warnings.is_empty(), "不应有跳过 warning");
+        assert!(
+            report.warnings.is_empty() && report.unverified.is_empty(),
+            "不应有跳过或 warning"
+        );
 
         let mut doc = golden_einstein();
         doc["laws"][0]["formula"] = json!("E = 0.5 * m * v^2");
@@ -929,19 +958,19 @@ mod tests {
     }
 
     #[test]
-    fn golden_dim_g9_unparseable_unit_name_warns_but_not_rejected() {
-        // G9：si_units 单位名不可解析（拼写错误）→ 跳过记 warning，不硬拒
+    fn golden_dim_g9_unparseable_unit_name_unverified_but_not_rejected() {
+        // G9：si_units 单位名不可解析（拼写错误）→ 跳过记未验证第三态，不硬拒
         let mut doc = golden_newton();
         doc["laws"][0]["si_units"]["F"] = json!("newtn");
         let report = validate_law_set(&doc);
         assert!(report.valid, "未知单位应跳过不拒收: {:?}", report.errors);
+        assert!(report.warnings.is_empty(), "跳过不得静默落 warning 面");
+        assert_eq!(report.unverified.len(), 1);
+        let entry = &report.unverified[0];
         assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.contains("未知单位") && w.contains("newtn")),
-            "warning 须指明不可解析单位: {:?}",
-            report.warnings
+            entry.reason.contains("未知单位") && entry.reason.contains("newtn"),
+            "未验证原因须指明不可解析单位: {:?}",
+            entry.reason
         );
     }
 
@@ -964,7 +993,7 @@ mod tests {
     fn golden_g12_multidomain_with_legal_cross_refs_passes() {
         // G12 正例：多域归属 + 合法跨域引用边（落点 = 目标声明域，且不属于
         // 本律式自身 domains）。目标律式以旧单域 domain 字段声明归属
-        // （③ 的旧字段归并路径同验）；目标纯数学形态，量纲层跳过记 warning。
+        // （③ 的旧字段归并路径同验）；目标纯数学形态，量纲层跳过记未验证第三态。
         let mut doc = golden_newton();
         doc["laws"][0]["domains"] = json!(["physical", "engineering"]);
         doc["laws"][0]["cross_refs"] =

@@ -168,6 +168,10 @@ struct FilePathsConfig {
     rules_dir: Option<PathBuf>,
     /// law_set 部署目录（可选；未配置=装配面关闭）
     law_sets_dir: Option<PathBuf>,
+    /// law_set 远端源 rule serve base URL（可选；与 law_sets_dir 可并用）
+    law_sets_remote: Option<String>,
+    /// 远端登记 dataset_id 清单（逗号分隔；缺省自动发现）
+    law_sets_remote_datasets: Option<String>,
     db_path: Option<PathBuf>,
     memory_dir: Option<PathBuf>,
     /// WAL 文件存储目录（可选，指定后启用 WAL 持久化）
@@ -328,6 +332,17 @@ struct Cli {
     /// 未配置=law_set 装配面关闭，现行为不变）
     #[arg(long, env = "EVORULE_LAW_SETS_DIR")]
     law_sets_dir: Option<PathBuf>,
+
+    /// law_set 远端源 rule serve base URL（可选；配置后启动按 dataset_id
+    /// 拉取 law_set 数据集条目，组装部署件后走与本地装载相同的注册路径。
+    /// 鉴权凭证从环境 EVORULE_RULE_SERVE_API_KEY 解析（禁命令行/落盘））
+    #[arg(long, env = "EVORULE_LAW_SETS_REMOTE")]
+    law_sets_remote: Option<String>,
+
+    /// 远端登记 dataset_id 清单（逗号分隔；显式给定序=登记序，可回放；
+    /// 未配置=自动发现全部 law_set 数据集按 id 升序登记）
+    #[arg(long, env = "EVORULE_LAW_SETS_REMOTE_DATASETS")]
+    law_sets_remote_datasets: Option<String>,
 
     /// SQLite 数据库文件路径
     #[arg(long, env = "EVORULE_DB_PATH")]
@@ -570,6 +585,10 @@ struct ResolvedConfig {
     rules_dir: PathBuf,
     /// law_set 部署目录（可选；CLI > env > file > default None）
     law_sets_dir: Option<PathBuf>,
+    /// law_set 远端源 rule serve base URL（可选；CLI > env > file > default None）
+    law_sets_remote: Option<String>,
+    /// 远端登记 dataset_id 清单（逗号分隔；缺省自动发现按 id 升序）
+    law_sets_remote_datasets: Option<String>,
     db_path: PathBuf,
     memory_dir: PathBuf,
     max_rounds: usize,
@@ -669,6 +688,10 @@ impl ResolvedConfig {
                 .or(file.paths.rules_dir)
                 .unwrap_or_else(|| PathBuf::from("./rules")),
             law_sets_dir: cli.law_sets_dir.or(file.paths.law_sets_dir),
+            law_sets_remote: cli.law_sets_remote.or(file.paths.law_sets_remote),
+            law_sets_remote_datasets: cli
+                .law_sets_remote_datasets
+                .or(file.paths.law_sets_remote_datasets),
             db_path: cli
                 .db_path
                 .or(file.paths.db_path)
@@ -3058,21 +3081,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     companion_hub.with_uplink_config(companion_uplink_cfg);
 
-    // law_set 装配面（独立部署件，不经 rule_loader）：--law-sets-dir 显式配置
-    // 才启用（缺省关=现行为不变）。启动扫描逐集 validate_law_set 装配：
-    // 逐集隔离拒收（一库校验失败不阻断他库装载），装配报告逐集列明
-    // （拒绝静默降级）；结论同步伴跑 status 投影（纯呈现面，零触 lint 漏斗）。
-    let law_host: Option<Arc<evorule_server::law_host::LawHost>> = match cfg.law_sets_dir.as_deref()
-    {
-        Some(dir) => {
+    // law_set 装配面（独立部署件，不经 rule_loader）：--law-sets-dir 本地目录与
+    // --law-sets-remote 远端源（rule serve）均可显式启用且可并用（缺省均关=现
+    // 行为不变）。启动逐集 validate_law_set 装配：逐集隔离拒收（一库校验失败
+    // 不阻断他库装载），装配报告逐集列明（拒绝静默降级）；结论同步伴跑
+    // status 投影（纯呈现面，零触 lint 漏斗；本地+远端合并一次投影）。
+    // 量纲第三态（si_units 占位/单位不可解析）以 unverified 独立判定态透出，
+    // 不计入拒收、不以 warning 静默。
+    let mut law_host_opt: Option<Arc<evorule_server::law_host::LawHost>> = None;
+    let mut law_sets_projection: Vec<serde_json::Value> = Vec::new();
+    if cfg.law_sets_dir.is_some() || cfg.law_sets_remote.is_some() {
+        // 本地目录装配（既有路径）
+        if let Some(dir) = cfg.law_sets_dir.as_deref() {
             let (host, report) = evorule_server::law_host::LawHost::load_dir(dir);
             for st in report.statuses() {
                 if st.valid {
                     info!(
-                        "law_set 装配 [{}]: valid=true laws={} warnings={} digest={}",
+                        "law_set 装配 [{}]: valid=true laws={} warnings={} unverified={} (ids={:?}) digest={}",
                         st.dataset_id,
                         st.law_count,
                         st.warning_count,
+                        st.unverified_count,
+                        st.unverified_laws,
                         st.content_digest.as_deref().unwrap_or("-")
                     );
                 } else {
@@ -3089,22 +3119,148 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 warn!("law_set 跨库同 id 告警: {w}");
             }
             info!(
-                "law_set 装配完成: {} 集装载 / {} 集拒收（目录 {}）",
+                "law_set 本地装配完成: {} 集装载 / {} 集拒收（目录 {}）",
                 report.loaded_count(),
                 report.rejected_count(),
                 dir.display()
             );
-            // 伴跑 status 最小投影：逐集结论（valid/warn 计数+blake3 锚）
-            let projection = report
-                .statuses()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap_or_default();
-            companion_hub.with_law_sets_projection(projection);
-            Some(Arc::new(host))
+            law_sets_projection.extend(
+                report
+                    .statuses()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_default(),
+            );
+            law_host_opt = Some(Arc::new(host));
         }
-        None => None,
-    };
+        // 远端源登记（rule serve）：dataset_id 清单显式给定序=登记序（可回放），
+        // 缺省自动发现全部 law_set 数据集按 id 升序。
+        if let Some(base) = cfg.law_sets_remote.as_deref() {
+            let api_key = std::env::var("EVORULE_RULE_SERVE_API_KEY").ok();
+            if api_key.is_some() {
+                info!("law_set 远端源鉴权: x-api-key 已从环境解析（凭证不落日志）");
+            }
+            let http = reqwest::Client::new();
+            let dataset_ids: Vec<String> = match cfg.law_sets_remote_datasets.as_deref() {
+                Some(list) => list
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+                None => {
+                    // 自动发现：全量数据集列表 → kind=law_set 过滤 → id 升序
+                    let mut req = http.get(format!("{}/v1/datasets", base.trim_end_matches('/')));
+                    req = req.query(&[("limit", "100")]);
+                    if let Some(key) = api_key.as_deref() {
+                        req = req.header("x-api-key", key);
+                    }
+                    match req.send().await {
+                        Err(e) => {
+                            warn!(
+                                "law_set 远端源自动发现失败（fail-visible，未登记任何远端集）: {e}"
+                            );
+                            Vec::new()
+                        }
+                        Ok(resp) if !resp.status().is_success() => {
+                            warn!(
+                                "law_set 远端源自动发现失败（fail-visible，未登记任何远端集）: HTTP {}",
+                                resp.status()
+                            );
+                            Vec::new()
+                        }
+                        Ok(resp) => match resp.json::<serde_json::Value>().await {
+                            Err(e) => {
+                                warn!("law_set 远端源自动发现响应解析失败: {e}");
+                                Vec::new()
+                            }
+                            Ok(page) => {
+                                let mut ids: Vec<String> = page
+                                    .get("items")
+                                    .and_then(|v| v.as_array())
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter(|d| {
+                                                d.get("dataset_kind").and_then(|k| k.as_str())
+                                                    == Some("law_set")
+                                            })
+                                            .filter_map(|d| {
+                                                d.get("dataset_id")
+                                                    .and_then(|v| v.as_str())
+                                                    .map(|s| s.to_string())
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                ids.sort();
+                                info!("law_set 远端源自动发现: {} 个 law_set 数据集", ids.len());
+                                ids
+                            }
+                        },
+                    }
+                }
+            };
+            if dataset_ids.is_empty() {
+                warn!(
+                    "law_set 远端源登记清单为空（base={base}）：未登记任何远端集（fail-visible）"
+                );
+            } else {
+                let (host, report) = evorule_server::law_host::LawHost::load_remote(
+                    &http,
+                    base,
+                    api_key.as_deref(),
+                    &dataset_ids,
+                )
+                .await;
+                for st in report.statuses() {
+                    if st.valid {
+                        info!(
+                            "law_set 远端登记 [{}]: valid=true laws={} unverified={} (ids={:?}) digest={}",
+                            st.dataset_id,
+                            st.law_count,
+                            st.unverified_count,
+                            st.unverified_laws,
+                            st.content_digest.as_deref().unwrap_or("-")
+                        );
+                    } else {
+                        warn!(
+                            "law_set 远端登记 [{}] 拒收（逐集隔离，不阻断他集）: {:?}",
+                            st.dataset_id, st.errors
+                        );
+                    }
+                }
+                for w in host.cross_set_id_warnings() {
+                    warn!("law_set 跨库同 id 告警: {w}");
+                }
+                info!(
+                    "law_set 远端登记完成: {} 集装载 / {} 集拒收（源 {base}）",
+                    report.loaded_count(),
+                    report.rejected_count()
+                );
+                law_sets_projection.extend(
+                    report
+                        .statuses()
+                        .map(serde_json::to_value)
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap_or_default(),
+                );
+                match law_host_opt {
+                    Some(existing) => {
+                        let mut merged = (*existing).clone();
+                        let yielded = merged.merge_from(host);
+                        if yielded > 0 {
+                            warn!(
+                                "law_set 本地/远端同 dataset_id 共 {yielded} 集：远端登记条目让位本地（先到先得，不覆盖）"
+                            );
+                        }
+                        law_host_opt = Some(Arc::new(merged));
+                    }
+                    None => law_host_opt = Some(Arc::new(host)),
+                }
+            }
+        }
+        companion_hub.with_law_sets_projection(law_sets_projection);
+    }
+    let law_host = law_host_opt;
 
     let session_api = SessionApi::new_with_full_config(
         core_eval,

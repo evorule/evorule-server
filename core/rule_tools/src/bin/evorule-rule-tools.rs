@@ -10,6 +10,7 @@
 //! ```text
 //! evorule-rule-tools validate --file rules/pricing_rule.json
 //! evorule-rule-tools validate --dir rules/ --strict
+//! evorule-rule-tools validate --file law_sets/newton.json   （kind=law_set 自动分流）
 //! evorule-rule-tools new --kind rule_set --out rules/my_rule.json
 //! evorule-rule-tools safety --file rules/pricing_rule.json
 //! ```
@@ -164,14 +165,44 @@ fn run_validate(
     strict: bool,
 ) -> Result<Outcome, String> {
     let mut had_violation = false;
+    let mut validate_one = |f: &Path, content: &str, had_violation: &mut bool| {
+        // 按 kind 自动分流：law_set 走 law_set 权威校验器（量纲三层契约），
+        // 其余走 rule_set 校验器（既有路径，形态不变）
+        let is_law_set = serde_json::from_str::<serde_json::Value>(content)
+            .ok()
+            .and_then(|doc| {
+                doc.get("kind")
+                    .and_then(|k| k.as_str())
+                    .map(|k| k == "law_set")
+            })
+            .unwrap_or(false);
+        if is_law_set {
+            let doc = serde_json::from_str::<serde_json::Value>(content)
+                .map_err(|e| format!("解析 JSON 失败 {}: {e}", f.display()))?;
+            let report = evorule_law_schema::validate_law_set(&doc);
+            print_law_set_report(&report, f);
+            if !report.valid {
+                *had_violation = true;
+            }
+            // 未验证第三态 ≠ 违规：列明透出但不进退出码（跳过 ≠ 通过 ≠ 拒收）；
+            // strict 语义不变（warning 计违规；law_set 报告现无 warning 级结果）
+            if strict && !report.warnings.is_empty() {
+                *had_violation = true;
+            }
+            Ok(())
+        } else {
+            let report = evorule_rule_tools::validate_rule_json(content);
+            print_report(&report, f, content);
+            if !report.valid || (strict && report.warning_count > 0) {
+                *had_violation = true;
+            }
+            Ok::<(), String>(())
+        }
+    };
     if let Some(f) = file {
         let content = std::fs::read_to_string(&f)
             .map_err(|e| format!("读取文件失败 {}: {e}", f.display()))?;
-        let report = evorule_rule_tools::validate_rule_json(&content);
-        print_report(&report, &f, &content);
-        if !report.valid || (strict && report.warning_count > 0) {
-            had_violation = true;
-        }
+        validate_one(&f, &content, &mut had_violation)?;
     } else if let Some(d) = dir {
         let files =
             collect_rule_files(&d).map_err(|e| format!("无法读取目录 {}: {e}", d.display()))?;
@@ -181,12 +212,8 @@ fn run_validate(
         for f in files {
             let content = std::fs::read_to_string(&f)
                 .map_err(|e| format!("读取文件失败 {}: {e}", f.display()))?;
-            let report = evorule_rule_tools::validate_rule_json(&content);
-            print_report(&report, &f, &content);
+            validate_one(&f, &content, &mut had_violation)?;
             println!();
-            if !report.valid || (strict && report.warning_count > 0) {
-                had_violation = true;
-            }
         }
     } else {
         return Err("需要指定 --file 或 --dir".to_string());
@@ -384,6 +411,36 @@ const SKELETON_WORKFLOW_DAG: &str = r#"{
 // 输出
 // ============================================================================
 
+/// law_set 报告输出：通过/失败 + 未验证第三态独立列明（跳过 ≠ 通过 ≠ 拒收）
+fn print_law_set_report(report: &evorule_law_schema::SchemaReport, file: &Path) {
+    let status = if report.valid {
+        "✓ 通过"
+    } else {
+        "✗ 失败"
+    };
+    println!("文件: {}", file.display());
+    println!("规则: law_set ({})", report.mode);
+    println!(
+        "状态: {} (错误 {} / 警告 {} / 未验证 {})",
+        status,
+        report.errors.len(),
+        report.warnings.len(),
+        report.unverified.len()
+    );
+    for e in &report.errors {
+        println!("  ✗ {e}");
+    }
+    for w in &report.warnings {
+        println!("  ⚠ WARN  {w}");
+    }
+    for u in &report.unverified {
+        println!(
+            "  ◐ UNVERIFIED [{}] {}（量纲第三态：未验证 ≠ 通过 ≠ 拒收）",
+            u.at, u.reason
+        );
+    }
+}
+
 fn print_report(report: &evorule_rule_tools::ValidationReport, file: &Path, content: &str) {
     let status = if report.valid {
         "✓ 通过"
@@ -553,6 +610,47 @@ mod tests {
         assert!(run_validate(None, None, false).is_err());
         // 目录不存在 → 工具自身错（IO 面）
         assert!(run_validate(None, Some(dir.join("missing")), false).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// law_set kind 自动分流：合法件过权威校验器（si_units 占位 → 未验证
+    /// 第三态列明但不进退出码，Clean）；违规件（formula 双等号）→ Violations
+    #[test]
+    fn run_validate_routes_law_set_kind() {
+        let dir = temp_dir("lawset");
+        let good = dir.join("law.json");
+        std::fs::write(
+            &good,
+            r#"{
+  "$schema": "https://evorule.org/schemas/law_set/v1.0.json",
+  "kind": "law_set",
+  "id": "test-law-slice",
+  "version": "0.1.0",
+  "laws": [{
+    "id": "test_law",
+    "formula": "F = m * a",
+    "symbols": { "F": "force", "m": "mass", "a": "acceleration" },
+    "si_units": {},
+    "domains": ["physical"],
+    "max_version_depth": 1,
+    "monotone_form": true
+  }]
+}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            run_validate(Some(good.clone()), None, false),
+            Ok(Outcome::Clean)
+        ));
+        let bad = dir.join("law_bad.json");
+        let bad_doc = std::fs::read_to_string(&good)
+            .unwrap()
+            .replace("F = m * a", "F == m * a");
+        std::fs::write(&bad, bad_doc).unwrap();
+        assert!(matches!(
+            run_validate(Some(bad), None, false),
+            Ok(Outcome::Violations)
+        ));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
