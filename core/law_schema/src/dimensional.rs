@@ -647,7 +647,8 @@ mod tests {
         let kinetic = law_from_json(json!({
             "id": "kinetic", "formula": "E = (1/2)*m*v^2",
             "symbols": { "E": "动能", "m": "质量", "v": "速度" },
-            "si_units": { "E": "kg*m^2*s^-2", "m": "kg", "v": "m*s^-1" }
+            "si_units": { "E": "kg*m^2*s^-2", "m": "kg", "v": "m*s^-1" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         assert_eq!(check_law(&kinetic), DimensionalVerdict::Consistent);
 
@@ -655,7 +656,8 @@ mod tests {
         let gravity = law_from_json(json!({
             "id": "gravity", "formula": "F = G*(m1*m2)/r^2",
             "symbols": { "F": "引力", "G": "引力常量", "m1": "质量一", "m2": "质量二", "r": "距离" },
-            "si_units": { "F": "newton", "G": "m^3*kg^-1*s^-2", "m1": "kg", "m2": "kg", "r": "m" }
+            "si_units": { "F": "newton", "G": "m^3*kg^-1*s^-2", "m1": "kg", "m2": "kg", "r": "m" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         assert_eq!(check_law(&gravity), DimensionalVerdict::Consistent);
 
@@ -663,7 +665,8 @@ mod tests {
         let power = law_from_json(json!({
             "id": "power", "formula": "P = ((m*g)*h)/t",
             "symbols": { "P": "功率", "m": "质量", "g": "重力加速度", "h": "高度", "t": "时间" },
-            "si_units": { "P": "watt", "m": "kg", "g": "m*s^-2", "h": "m", "t": "s" }
+            "si_units": { "P": "watt", "m": "kg", "g": "m*s^-2", "h": "m", "t": "s" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         assert_eq!(check_law(&power), DimensionalVerdict::Consistent);
     }
@@ -705,14 +708,16 @@ mod tests {
         let consistent = law_from_json(json!({
             "id": "f_ma", "formula": "F = m * a",
             "symbols": { "F": "力", "m": "质量", "a": "加速度" },
-            "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" }
+            "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         assert_eq!(check_law(&consistent), DimensionalVerdict::Consistent);
 
         let mismatch = law_from_json(json!({
             "id": "f_mv", "formula": "F = m * v",
             "symbols": { "F": "力", "m": "质量", "v": "速度" },
-            "si_units": { "F": "newton", "m": "kilogram", "v": "m*s^-1" }
+            "si_units": { "F": "newton", "m": "kilogram", "v": "m*s^-1" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         match check_law(&mismatch) {
             DimensionalVerdict::Mismatch { lhs, rhs } => {
@@ -725,7 +730,8 @@ mod tests {
         let skipped = law_from_json(json!({
             "id": "pure_math", "formula": "y = a * x",
             "symbols": { "y": "因变量", "a": "系数", "x": "自变量" },
-            "si_units": {}
+            "si_units": {},
+            "max_version_depth": 1, "monotone_form": true
         }));
         match check_law(&skipped) {
             DimensionalVerdict::Skipped(reason) => {
@@ -741,7 +747,8 @@ mod tests {
         let bad_unit = law_from_json(json!({
             "id": "typo", "formula": "F = m * a",
             "symbols": { "F": "力", "m": "质量", "a": "加速度" },
-            "si_units": { "F": "newtn", "m": "kilogram", "a": "m*s^-2" }
+            "si_units": { "F": "newtn", "m": "kilogram", "a": "m*s^-2" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         match check_law(&bad_unit) {
             DimensionalVerdict::Skipped(reason) => {
@@ -753,7 +760,8 @@ mod tests {
         let bad_token = law_from_json(json!({
             "id": "plus", "formula": "y = a * +x",
             "symbols": { "y": "积", "a": "项一", "x": "项二" },
-            "si_units": { "y": "m", "a": "m", "x": "m" }
+            "si_units": { "y": "m", "a": "m", "x": "m" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         match check_law(&bad_token) {
             DimensionalVerdict::Skipped(reason) => {
@@ -765,7 +773,8 @@ mod tests {
         let trailing = law_from_json(json!({
             "id": "adjacent", "formula": "y = a x",
             "symbols": { "y": "积", "a": "项一", "x": "项二" },
-            "si_units": { "y": "m", "a": "m", "x": "m" }
+            "si_units": { "y": "m", "a": "m", "x": "m" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         match check_law(&trailing) {
             DimensionalVerdict::Skipped(reason) => {
@@ -781,7 +790,8 @@ mod tests {
         let ok = law_from_json(json!({
             "id": "sum", "formula": "y = a + x",
             "symbols": { "y": "和", "a": "项一", "x": "项二" },
-            "si_units": { "y": "m", "a": "m", "x": "m" }
+            "si_units": { "y": "m", "a": "m", "x": "m" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         assert_eq!(check_law(&ok), DimensionalVerdict::Consistent);
 
@@ -789,7 +799,8 @@ mod tests {
         let prec = law_from_json(json!({
             "id": "energy", "formula": "E = m0 * c^2 + KE",
             "symbols": { "E": "总能量", "m0": "静质量", "c": "光速", "KE": "动能" },
-            "si_units": { "E": "joule", "m0": "kilogram", "c": "m*s^-1", "KE": "joule" }
+            "si_units": { "E": "joule", "m0": "kilogram", "c": "m*s^-1", "KE": "joule" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         assert_eq!(check_law(&prec), DimensionalVerdict::Consistent);
 
@@ -798,7 +809,8 @@ mod tests {
         let mixed = law_from_json(json!({
             "id": "mix", "formula": "total = length + price",
             "symbols": { "total": "总额", "length": "长度", "price": "单价" },
-            "si_units": { "total": "CNY", "length": "m", "price": "CNY*m^-1" }
+            "si_units": { "total": "CNY", "length": "m", "price": "CNY*m^-1" },
+            "max_version_depth": 1, "monotone_form": true
         }));
         match check_law(&mixed) {
             DimensionalVerdict::AdditiveMismatch { report } => {

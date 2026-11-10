@@ -380,6 +380,8 @@ mod tests {
                 "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
                 "solvable": ["F", "m", "a"],
                 "tier": "light",
+                "max_version_depth": 1,
+                "monotone_form": true,
                 "metadata": { "source": "Newton, Principia (1687)" }
             }]
         })
@@ -401,7 +403,9 @@ mod tests {
                 "si_units": {
                     "P": "pascal", "V": "m^3", "n": "mol",
                     "R": "joule*mol^-1*K^-1", "T": "kelvin"
-                }
+                },
+                "max_version_depth": 1,
+                "monotone_form": true
             }]
         })
     }

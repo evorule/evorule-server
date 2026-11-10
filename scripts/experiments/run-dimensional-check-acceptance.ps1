@@ -49,6 +49,7 @@ function Invoke-Measurement {
            "id" = "mixed_add"; "formula" = "total = length + price"
            "symbols" = @{ "total" = "total amount"; "length" = "length"; "price" = "unit price" }
            "si_units" = @{ "total" = "CNY"; "length" = "m"; "price" = "CNY*m^-1" }
+           "max_version_depth" = 1; "monotone_form" = $true
        }) } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $lawDir "a-mixed-add.json")
 
     # 集 B：跨币种换算律（金额 * 汇率 = 换算金额；异币种同货币维，量纲一致）——预期装配通过
@@ -59,6 +60,7 @@ function Invoke-Measurement {
            "id" = "usd_convert"; "formula" = "total_usd = amount_cny * rate"
            "symbols" = @{ "total_usd" = "amount in usd"; "amount_cny" = "amount in cny"; "rate" = "exchange rate" }
            "si_units" = @{ "total_usd" = "USD"; "amount_cny" = "CNY"; "rate" = "USD*CNY^-1" }
+           "max_version_depth" = 1; "monotone_form" = $true
        }) } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $lawDir "b-convert.json")
 
     # ---- 起独立实验实例 ----
