@@ -23,6 +23,10 @@
 //! - **域归属/跨域引用边层**：律式 `domains`（多域归属）与 `cross_refs`
 //!   （跨域引用边，D2=A：注册时显式声明，禁自动发现）落点域必须在域目录
 //!   注册，且引用边落点须属于目标律式的域归属、域内引用不得声明为跨域边。
+//! - **有限性/单调形态层**：`max_version_depth`（版本链高度 h_p 有限性声明）
+//!   必填且 ≥1；`monotone_form` 必填且值须为 true（非单调形态律式拒收）；
+//!   formula 否定类构造（一元负号作用标识符/括号组、逻辑否定记号 `not`/`¬`）
+//!   静态扫描命中且未声明 `time_anchor` → 拒收（时间锚定改写放行）。
 //!
 //! # 域目录嵌入副本
 //! 治理侧 SSOT = evorule-rule `src/model/domain_catalog.v1.json`，
@@ -113,6 +117,15 @@ pub struct Law {
     pub derivation: Vec<String>,
     #[serde(default)]
     pub tier: Tier,
+    /// 版本链高度 h_p（有限性声明）：该律式版本链的最大深度，必填且 ≥1
+    /// （serde 不加 default：缺字段即反序列化失败，schema 层 required 同向报因）
+    pub max_version_depth: u32,
+    /// 单调形态声明：值必须为 true（false 一律拒收，非单调形态律式
+    /// 须以时间锚定改写重交）
+    pub monotone_form: bool,
+    /// 时间锚定改写声明锚（可选）：formula 命中否定类构造时必须非空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_anchor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<LawMetadata>,
 }
@@ -431,6 +444,148 @@ fn check_cross_refs(
 }
 
 // ============================================================================
+// 有限性声明 + 单调形态静态检查（formula 否定类构造扫描）
+// ============================================================================
+
+/// 否定类构造扫描命中（独立纯函数返回值，便于单测与报因回显）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NegationHit {
+    /// 命中形态：`unary_minus`（一元负号）或 `logical_not`（逻辑否定记号）
+    pub kind: &'static str,
+    /// 命中位置（formula 内字符偏移，0 起）
+    pub pos: usize,
+    /// 命中片段（含少量上下文，供报因回显）
+    pub snippet: String,
+}
+
+/// 一元负号的前缀字符（减号前最近非空白字符必须是这些之一或行首）；
+/// `a - b` 二元减法（前缀是标识符）与 `-3.14` 负数字面量（后随数字）不命中。
+const UNARY_MINUS_PRECEDERS: [char; 9] = ['=', '(', '+', '*', '/', '^', '<', '>', ','];
+
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// 命中片段截取（前后各取少量上下文，越界端加省略号）
+fn negation_snippet(chars: &[char], pos: usize, width: usize) -> String {
+    let start = pos.saturating_sub(width);
+    let end = (pos + width).min(chars.len());
+    let mut s: String = chars[start..end].iter().collect();
+    if start > 0 {
+        s.insert(0, '…');
+    }
+    if end < chars.len() {
+        s.push('…');
+    }
+    s
+}
+
+/// formula 否定类构造静态扫描（独立纯函数，便于单测）：
+///
+/// 两类命中形态——
+/// ① 一元负号作用于标识符或括号组：减号前最近非空白字符是行首/运算符/分隔符
+///    （`=(+*/^<>,`），且减号后（跳过空白）紧跟标识符字母或左括号；
+///    `-3.14` 负数字面量与 `a - b` 二元减法不命中；
+/// ② 逻辑否定记号：词边界 `not`、`¬`。
+pub fn scan_negation_constructs(formula: &str) -> Vec<NegationHit> {
+    let chars: Vec<char> = formula.chars().collect();
+    let mut hits = Vec::new();
+    for i in 0..chars.len() {
+        if chars[i] == '-' {
+            // 前瞻：减号后跳过空白须紧跟标识符字母或左括号
+            let next = chars[i + 1..].iter().find(|c| !c.is_whitespace());
+            let next_ok = next.is_some_and(|c| c.is_ascii_alphabetic() || *c == '(');
+            if !next_ok {
+                continue;
+            }
+            // 回溯：减号前最近非空白字符须为行首/运算符/分隔符
+            let unary = chars[..i]
+                .iter()
+                .rev()
+                .find(|c| !c.is_whitespace())
+                .map(|c| UNARY_MINUS_PRECEDERS.contains(c))
+                .unwrap_or(true);
+            if unary {
+                hits.push(NegationHit {
+                    kind: "unary_minus",
+                    pos: i,
+                    snippet: negation_snippet(&chars, i, 8),
+                });
+            }
+        } else if chars[i] == '¬' {
+            hits.push(NegationHit {
+                kind: "logical_not",
+                pos: i,
+                snippet: negation_snippet(&chars, i, 8),
+            });
+        } else if chars[i] == 'n'
+            && chars[i..].len() >= 3
+            && chars[i + 1] == 'o'
+            && chars[i + 2] == 't'
+        {
+            let before_ok = i == 0 || !is_word_char(chars[i - 1]);
+            let after_idx = i + 3;
+            let after_ok = after_idx >= chars.len() || !is_word_char(chars[after_idx]);
+            if before_ok && after_ok {
+                hits.push(NegationHit {
+                    kind: "logical_not",
+                    pos: i,
+                    snippet: negation_snippet(&chars, i, 8),
+                });
+            }
+        }
+    }
+    hits
+}
+
+/// 单条定律的有限性校验：max_version_depth 须为整数且 ≥1。
+/// 缺字段/非整数/负数形态由 schema 层 required + minimum 报因（serde 必填
+/// 不加 default 同向拒收）；此处守反序列化成功条目的值域下界（0 拒收）。
+fn check_law_finiteness(idx: usize, law: &Law, errors: &mut Vec<String>) {
+    if law.max_version_depth == 0 {
+        errors.push(format!(
+            "laws[{idx}] (id={}): max_version_depth 须为整数且 ≥1（有限性声明：版本链高度下界为 1，当前 0）",
+            law.id
+        ));
+    }
+}
+
+/// 单条定律的单调形态校验：
+///
+/// ① monotone_form 声明须为 true（false 一律拒收，中性技术语报因）；
+/// ② formula 否定类构造静态扫描：命中且无 time_anchor → 拒收；
+///    命中但 time_anchor 非空 → 放行（时间锚定改写）；未命中 → 放行。
+fn check_monotone_form(idx: usize, law: &Law, errors: &mut Vec<String>) {
+    let at = format!("laws[{idx}] (id={}): ", law.id);
+    if !law.monotone_form {
+        errors.push(format!(
+            "{at}monotone_form=false：非单调形态律式拒收（须以时间锚定改写重交：改写 formula 消除否定类构造并声明 time_anchor 与 monotone_form=true）"
+        ));
+        return;
+    }
+    let hits = scan_negation_constructs(&law.formula);
+    if hits.is_empty() {
+        return;
+    }
+    let anchored = law
+        .time_anchor
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if anchored {
+        return;
+    }
+    for h in &hits {
+        errors.push(format!(
+            "{at}formula 含否定类构造（{kind}，位置 {pos}：`{snippet}`）；如属时间锚定改写请声明 time_anchor，否则拒收",
+            kind = h.kind,
+            pos = h.pos,
+            snippet = h.snippet,
+        ));
+    }
+}
+
+// ============================================================================
 // 量纲能力层接线
 // ============================================================================
 
@@ -496,6 +651,8 @@ pub fn validate_law_set(doc: &Value) -> SchemaReport {
             check_formula_structure(*idx, law, &mut errors);
             check_law_domains(*idx, law, &mut errors);
             check_cross_refs(*idx, law, &laws_by_id, &mut errors);
+            check_law_finiteness(*idx, law, &mut errors);
+            check_monotone_form(*idx, law, &mut errors);
             apply_dimensional_verdict(*idx, law, &mut errors, &mut warnings);
         }
     }
@@ -533,6 +690,8 @@ mod tests {
                 "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
                 "solvable": ["F", "m", "a"],
                 "tier": "light",
+                "max_version_depth": 1,
+                "monotone_form": true,
                 "metadata": { "source": "Newton, Principia (1687)" }
             }]
         })
@@ -550,7 +709,9 @@ mod tests {
                 "symbols": { "E": "能量", "m": "质量", "c": "真空光速" },
                 "si_units": { "E": "joule", "m": "kilogram", "c": "m*s^-1" },
                 "solvable": ["E", "m"],
-                "tier": "full"
+                "tier": "full",
+                "max_version_depth": 1,
+                "monotone_form": true
             }]
         })
     }
@@ -571,7 +732,9 @@ mod tests {
                 "si_units": {
                     "P": "pascal", "V": "m^3", "n": "mol",
                     "R": "joule*mol^-1*K^-1", "T": "kelvin"
-                }
+                },
+                "max_version_depth": 1,
+                "monotone_form": true
             }]
         })
     }
@@ -791,7 +954,9 @@ mod tests {
             "formula": "w = g * m",
             "symbols": { "w": "重量", "g": "重力加速度", "m": "质量" },
             "si_units": {},
-            "domains": ["physical"]
+            "domains": ["physical"],
+            "max_version_depth": 1,
+            "monotone_form": true
         })
     }
 
@@ -913,6 +1078,175 @@ mod tests {
             "报因须指明未注册域: {:?}",
             report.errors
         );
+    }
+
+    // ── 有限性声明 + 单调形态 golden（G17-G21：必填/值域 + 否定类构造静态扫描）──
+
+    #[test]
+    fn golden_g17_missing_max_version_depth_rejected_with_field_path() {
+        // G17 反例：缺 max_version_depth → 拒收，报因含字段定位
+        let mut doc = golden_newton();
+        doc["laws"][0]
+            .as_object_mut()
+            .expect("law 应为 object")
+            .remove("max_version_depth");
+        let report = validate_law_set(&doc);
+        assert!(!report.valid, "G17 缺 max_version_depth 应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("laws") && e.contains("max_version_depth")),
+            "报因须含 laws 条目定位与字段名: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn golden_g18_monotone_form_missing_or_false_rejected() {
+        // G18 反例两支：monotone_form 缺失 → schema 层拒收；
+        // monotone_form=false → 结构层拒收（中性技术语报因）
+        let mut missing = golden_newton();
+        missing["laws"][0]
+            .as_object_mut()
+            .expect("law 应为 object")
+            .remove("monotone_form");
+        let report = validate_law_set(&missing);
+        assert!(!report.valid, "G18 缺 monotone_form 应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("laws") && e.contains("monotone_form")),
+            "报因须含条目定位与字段名: {:?}",
+            report.errors
+        );
+
+        let mut false_form = golden_newton();
+        false_form["laws"][0]["monotone_form"] = json!(false);
+        let report = validate_law_set(&false_form);
+        assert!(!report.valid, "G18 monotone_form=false 应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("非单调形态律式拒收") && e.contains("time_anchor")),
+            "报因须为中性技术语并指明时间锚定改写通路: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn golden_g19_unary_minus_without_time_anchor_rejected() {
+        // G19 反例：formula 含一元负号作用标识符且无 time_anchor → 拒收
+        // （报因含否定类构造措辞与命中片段回显）
+        let mut doc = golden_newton();
+        doc["laws"][0]["formula"] = json!("v = -a * t");
+        doc["laws"][0]["symbols"] = json!({ "v": "速度", "a": "加速度", "t": "时间" });
+        doc["laws"][0]["si_units"] = json!({ "v": "m*s^-1", "a": "m*s^-2", "t": "s" });
+        let report = validate_law_set(&doc);
+        assert!(!report.valid, "G19 一元负号无 time_anchor 应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("否定类构造") && e.contains("time_anchor") && e.contains("-a")),
+            "报因须含否定类构造措辞、时间锚定指引与命中片段: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn golden_g20_unary_minus_with_time_anchor_passes() {
+        // G20 正例：同 formula + time_anchor 非空 → 时间锚定改写通过
+        let mut doc = golden_newton();
+        doc["laws"][0]["formula"] = json!("v = -a * t");
+        doc["laws"][0]["symbols"] = json!({ "v": "速度", "a": "加速度", "t": "时间" });
+        doc["laws"][0]["si_units"] = json!({ "v": "m*s^-1", "a": "m*s^-2", "t": "s" });
+        doc["laws"][0]["time_anchor"] = json!("anchored at t0 = 0 (time-anchored rewrite)");
+        let report = validate_law_set(&doc);
+        assert!(report.valid, "G20 时间锚定改写应通过: {:?}", report.errors);
+
+        // time_anchor 空白串不等价于声明在场（minLength 1 语义同向）：
+        // 仅含空白 → 仍按未声明拒收
+        let mut blank = doc.clone();
+        blank["laws"][0]["time_anchor"] = json!("   ");
+        let report = validate_law_set(&blank);
+        assert!(!report.valid, "time_anchor 仅空白应视为未声明而拒收");
+    }
+
+    #[test]
+    fn golden_g21_monotone_law_without_negation_passes() {
+        // G21 正例：合法单调律式（无否定类构造）通过，且 serde 三新字段
+        // 强类型往返一致（bool true / Option None 序列化省略）
+        let doc = golden_ideal_gas();
+        let lawset: LawSet =
+            serde_json::from_value(doc.clone()).expect("G21 应可反序列化为 LawSet");
+        assert_eq!(lawset.laws[0].max_version_depth, 1);
+        assert!(lawset.laws[0].monotone_form);
+        assert_eq!(lawset.laws[0].time_anchor, None);
+        let report = validate_law_set(&doc);
+        assert!(report.valid, "G21 合法单调律式应通过: {:?}", report.errors);
+    }
+
+    // ── 否定类构造扫描器单元面（独立纯函数边界形态）──
+
+    #[test]
+    fn negation_scan_unary_minus_forms() {
+        // 命中：行首/运算符/分隔符前缀 + 标识符或括号后随
+        for (formula, pos) in [
+            ("-x = y", 0usize),
+            ("a = -b * c", 4),
+            ("F = m * (-g)", 9),
+            ("a * -b = c", 4),
+            ("a = - b", 4), // 减号后空白再标识符仍命中（`\s*` 形态）
+        ] {
+            let hits = scan_negation_constructs(formula);
+            assert_eq!(hits.len(), 1, "formula `{formula}` 应恰一命中");
+            assert_eq!(hits[0].kind, "unary_minus");
+            assert_eq!(hits[0].pos, pos, "formula `{formula}` 命中位置");
+            assert!(
+                hits[0].snippet.contains('-'),
+                "片段须回显减号: {:?}",
+                hits[0]
+            );
+        }
+    }
+
+    #[test]
+    fn negation_scan_non_hits() {
+        // 不命中：负数字面量、二元减法、指数负幂、标识符内 not
+        for formula in [
+            "y = -3.14 * x",   // 负数字面量（后随数字）
+            "a - b = c",       // 二元减法（前缀是标识符）
+            "y = a ^ -2",      // 指数负幂（后随数字）
+            "F = (a) - b",     // 括号组后二元减法（前缀是右括号）
+            "s = t * (1/2)",   // 无减号
+            "x = a and_not b", // `not` 前有词字符（非词边界）
+            "y = a + x",       // 干净等式
+        ] {
+            let hits = scan_negation_constructs(formula);
+            assert!(hits.is_empty(), "formula `{formula}` 不应命中: {:?}", hits);
+        }
+    }
+
+    #[test]
+    fn negation_scan_logical_not_forms() {
+        // 词边界 not 与逻辑否定记号 ¬ 均命中
+        let hits = scan_negation_constructs("y = not a");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, "logical_not");
+        assert_eq!(hits[0].pos, 4);
+
+        let hits = scan_negation_constructs("y = ¬a");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, "logical_not");
+
+        // 语句内多命中逐个报（一元负号 + 词边界 not）
+        let hits = scan_negation_constructs("y = -a and not b");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].kind, "unary_minus");
+        assert_eq!(hits[1].kind, "logical_not");
     }
 
     // ── formula 结构层：判定语义禁入 + 等式结构边界 ──

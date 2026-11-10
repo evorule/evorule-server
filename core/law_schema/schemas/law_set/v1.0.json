@@ -19,7 +19,7 @@
   "$defs": {
     "law": {
       "type": "object",
-      "required": ["id", "formula", "symbols", "si_units"],
+      "required": ["id", "formula", "symbols", "si_units", "max_version_depth", "monotone_form"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
         "formula": { "type": "string", "minLength": 3 },
@@ -58,6 +58,20 @@
         "solvable": { "type": "array", "items": { "type": "string" } },
         "derivation": { "type": "array", "items": { "type": "string" } },
         "tier": { "enum": ["light", "full"], "default": "full" },
+        "max_version_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "版本链高度 h_p（有限性声明）：该律式版本链的最大深度，必填且 ≥1"
+        },
+        "monotone_form": {
+          "type": "boolean",
+          "description": "单调形态声明：值必须为 true（非单调形态律式拒收，须以时间锚定改写重交）"
+        },
+        "time_anchor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "时间锚定改写声明锚（可选；formula 命中否定类构造时必须非空）"
+        },
         "metadata": {
           "type": "object",
           "required": ["source"],

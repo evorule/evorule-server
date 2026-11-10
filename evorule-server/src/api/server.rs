@@ -20122,7 +20122,9 @@ mod tests {
                 "id": "newton_second",
                 "formula": "F = m * a",
                 "symbols": { "F": "合外力", "m": "质量", "a": "加速度" },
-                "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" }
+                "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
+                "max_version_depth": 1,
+                "monotone_form": true
             }]
         });
         let constant_set = serde_json::json!({
