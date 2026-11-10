@@ -3036,63 +3036,83 @@ impl SessionApi {
     /// 全部失败 → 空清单（count=0）。排序确定：按文件名排序。
     pub fn l2_inventory(rules_dir: &std::path::Path) -> L2InventoryResponse {
         let mut files: Vec<L2InventoryEntry> = Vec::new();
-        let Ok(read_dir) = std::fs::read_dir(rules_dir) else {
+        // HOST-D003-b：治理约束目录（rules_dir 兄弟 agent-governance/rules/）
+        // 纳入只读清单第二扫描根——治理约束可见性（显示层），不并入装载规则集
+        // （执法仍由引擎+执行体双层既有通道承担，避免双源白名单裁决冲突）。
+        let gov_rules_dir = rules_dir
+            .parent()
+            .map(|p| p.join("agent-governance").join("rules"));
+        let mut roots: Vec<&std::path::Path> = vec![rules_dir];
+        if let Some(g) = &gov_rules_dir {
+            roots.push(g);
+        }
+        let mut saw_loaded_root = false;
+        for root in &roots {
+            let is_primary = root.as_os_str() == rules_dir.as_os_str();
+            let Ok(read_dir) = std::fs::read_dir(root) else {
+                continue;
+            };
+            if is_primary {
+                saw_loaded_root = true;
+            }
+            for entry in read_dir.flatten() {
+                let p = entry.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !(is_l2_meta_file_name(name) && name.ends_with(".json")) {
+                    continue;
+                }
+                // fail-soft：读取或解析失败 → 跳过该文件
+                let json = std::fs::read_to_string(&p)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+                let Some(json) = json else {
+                    continue;
+                };
+                // 主根（rules_dir）文件须过装载门禁（四步门）；治理约束根的文件
+                // 只做清单可见（不参与装载/执法），同样要求合法 JSON 即可
+                if is_primary && Self::rule_file_gate(&json, &p, rules_dir).is_err() {
+                    continue;
+                }
+                let meta = json.get("metadata");
+                let title = meta
+                    .and_then(|m| m.get("title"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let guard_for = meta
+                    .and_then(|m| m.get("guard_for"))
+                    .and_then(|g| g.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let path = p
+                    .strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+                let meta_str = |key: &str| -> Option<String> {
+                    meta.and_then(|m| m.get(key))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                };
+                files.push(L2InventoryEntry {
+                    path,
+                    title,
+                    guard_for,
+                    promoted_from: meta_str("promoted_from"),
+                    promoted_at: meta_str("promoted_at"),
+                    promoted_by: meta_str("promoted_by"),
+                });
+            }
+        }
+        if !saw_loaded_root {
             return L2InventoryResponse { count: 0, files };
-        };
-        for entry in read_dir.flatten() {
-            let p = entry.path();
-            if !p.is_file() {
-                continue;
-            }
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !(is_l2_meta_file_name(name) && name.ends_with(".json")) {
-                continue;
-            }
-            // fail-soft：读取或解析失败 → 跳过该文件
-            let json = std::fs::read_to_string(&p)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
-            let Some(json) = json else {
-                continue;
-            };
-            // 未过装载门禁（四步门）的不投影（清单只列加载生效文件，与 tier_inventory
-            // 口径一致，同一通道判定）
-            if Self::rule_file_gate(&json, &p, rules_dir).is_err() {
-                continue;
-            }
-            let meta = json.get("metadata");
-            let title = meta
-                .and_then(|m| m.get("title"))
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string();
-            let guard_for = meta
-                .and_then(|m| m.get("guard_for"))
-                .and_then(|g| g.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let path = p
-                .strip_prefix(rules_dir)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .replace('\\', "/");
-            let meta_str = |key: &str| -> Option<String> {
-                meta.and_then(|m| m.get(key))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            };
-            files.push(L2InventoryEntry {
-                path,
-                title,
-                guard_for,
-                promoted_from: meta_str("promoted_from"),
-                promoted_at: meta_str("promoted_at"),
-                promoted_by: meta_str("promoted_by"),
-            });
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
         L2InventoryResponse {
@@ -22280,6 +22300,38 @@ mod tests {
         );
         assert_eq!(promoted.promoted_by.as_deref(), Some("console"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_l2_inventory_governance_sibling_root_visible() {
+        // HOST-D003-b：治理约束目录（rules_dir 兄弟 agent-governance/rules/）
+        // 纳入第二扫描根——治理约束文件只读可见（显示层），不并入装载规则集
+        // （执法仍由引擎+执行体双层既有通道承担，避免双源白名单裁决冲突）。
+        let base = std::env::temp_dir().join("l2inv_gov_sibling");
+        let _ = std::fs::remove_dir_all(&base);
+        let rules_dir = base.join("rules");
+        let gov_dir = base.join("agent-governance").join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::create_dir_all(&gov_dir).unwrap();
+        // 主根：一条普通 L2 业务规则（非 00_ 前缀，走装载通道）
+        tier_gate_fixture(
+            &rules_dir,
+            "20_business.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"meta","title":"业务规则","guard_for":["robot_move"]},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
+        );
+        // 治理约束根：00_constraint_ 前缀（第二根可见面）
+        tier_gate_fixture(
+            &gov_dir,
+            "00_constraint_model_allowlist.json",
+            r#"{"kind":"rule_set","metadata":{"tier":"constraint","title":"会话模型准入白名单","guard_for":["call_external"]},"transform":[{"type":"set","params":{"attr":"x","operation":"set","value":1}}]}"#,
+        );
+        let inv = SessionApi::l2_inventory(&rules_dir);
+        // 两个根的 L2 约束文件都入清单（主根非 00_ 前缀文件按既有判定不投影）
+        assert_eq!(inv.count, 1, "只投影治理约束文件: {inv:?}");
+        // path 相对治理约束根（strip_prefix(gov_dir)），与主根条目同构
+        assert_eq!(inv.files[0].path, "00_constraint_model_allowlist.json");
+        assert_eq!(inv.files[0].title, "会话模型准入白名单");
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
