@@ -1,0 +1,9 @@
+{
+  "$schema": "https://evorule.org/schemas/criticality/domain_catalog/v1.0.json",
+  "version": "1.0",
+  "domains": [
+    { "domain_id": "physical",   "name": "物理域",   "description": "物理定律与基本常数（CODATA 类）" },
+    { "domain_id": "engineering", "name": "工程域",  "description": "工程判据与带限命题" },
+    { "domain_id": "economic",   "name": "经济域",   "description": "经济与货币量纲命题" }
+  ]
+}

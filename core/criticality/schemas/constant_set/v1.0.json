@@ -57,6 +57,12 @@
           "maxLength": 64,
           "description": "SI unit expression (unit-engine parseable), e.g. \"m^3*kg^-1*s^-2\""
         },
+        "domain": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "maxLength": 64,
+          "description": "Knowledge domain the constant belongs to (catalog-registered id); optional, absent = legacy un-attributed"
+        },
         "metadata": {
           "type": "object",
           "required": ["source"],

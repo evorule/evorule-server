@@ -34,6 +34,27 @@
           "description": "symbol -> pint-parseable SI unit expression"
         },
         "domain": { "type": "string" },
+        "domains": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "多域归属（域向量扩多域；缺省=单域 domain 字段语义不变）"
+        },
+        "cross_refs": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": ["target", "domain"],
+            "additionalProperties": false,
+            "properties": {
+              "target": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "被引用律式 id（同集内）" },
+              "domain": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "引用边落点域（跨域声明）" }
+            }
+          },
+          "description": "跨域引用边显式声明（D2=A：注册时声明，禁自动发现）"
+        },
         "solvable": { "type": "array", "items": { "type": "string" } },
         "derivation": { "type": "array", "items": { "type": "string" } },
         "tier": { "enum": ["light", "full"], "default": "full" },

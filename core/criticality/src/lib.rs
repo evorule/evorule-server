@@ -41,6 +41,7 @@ use std::collections::BTreeMap;
 
 use evorule_law_schema::dimensional::{parse_unit_expr, DimensionVector};
 use evorule_law_schema::Law;
+use evorule_law_schema::{domain_catalog, is_valid_domain_id};
 use jsonschema::{Draft, Retrieve, UriRef, Validator};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -127,6 +128,10 @@ pub struct ConstantEntry {
     pub id: String,
     pub value: f64,
     pub si_unit: String,
+    /// 知识域归属（域目录注册 id，SSOT = evorule-rule domain_catalog；
+    /// 可选，缺省 = 旧件未归属）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
     pub metadata: ConstantMetadata,
 }
 
@@ -327,6 +332,21 @@ pub fn validate_constant_set(doc: &Value) -> SchemaReport {
                 if parse_uncertainty(u).is_none() {
                     errors.push(format!(
                         "常量 `{}` 的 uncertainty `{u}` 须为非负有限数字字面量",
+                        c.id
+                    ));
+                }
+            }
+            // 域归属（可选字段，缺省 = 旧件未归属）：存在时校验命名规约与
+            // 域目录注册（目录单源复用 law_schema 嵌入副本，禁另持副本）
+            if let Some(domain) = &c.domain {
+                if !is_valid_domain_id(domain) {
+                    errors.push(format!(
+                        "常量 `{}` 的 domain `{domain}` 违反域 id 命名规约（^[a-z][a-z0-9_]*$）",
+                        c.id
+                    ));
+                } else if !domain_catalog().contains_key(domain) {
+                    errors.push(format!(
+                        "常量 `{}` 的 domain `{domain}` 未在域目录注册",
                         c.id
                     ));
                 }
@@ -1042,6 +1062,7 @@ mod tests {
             id: "G".to_string(),
             value,
             si_unit: "m^3*kg^-1*s^-2".to_string(),
+            domain: None,
             metadata: ConstantMetadata {
                 source: "CODATA 2018".to_string(),
                 uncertainty: Some(uncertainty.to_string()),
@@ -1443,6 +1464,61 @@ mod tests {
         let mut kind_drift = valid.clone();
         kind_drift["kind"] = json!("law_set");
         assert!(!validate_constant_set(&kind_drift).valid);
+    }
+
+    // ── constant_set 域归属（可选字段：注册域过 / 未注册域与规约违例拒收 / 缺省旧件过）──
+
+    #[test]
+    fn constant_set_domain_attribution_validation() {
+        let base = json!({
+            "$schema": CONSTANT_SET_ID,
+            "kind": "constant_set",
+            "id": "fundamental",
+            "version": "1.0.0",
+            "constants": [{
+                "id": "G", "value": 6.674e-11, "si_unit": "m^3*kg^-1*s^-2",
+                "metadata": { "source": "CODATA 2018", "uncertainty": "0.0003e-11" }
+            }]
+        });
+        // 缺省（无 domain 字段）= 旧件未归属 → 通过
+        assert!(
+            validate_constant_set(&base).valid,
+            "旧件无 domain 字段应通过"
+        );
+
+        // 注册域 → 通过
+        let mut attributed = base.clone();
+        attributed["constants"][0]["domain"] = json!("physical");
+        assert!(
+            validate_constant_set(&attributed).valid,
+            "注册域应通过: {:?}",
+            validate_constant_set(&attributed).errors
+        );
+
+        // 未注册域（形态合规）→ 拒收
+        let mut unregistered = attributed.clone();
+        unregistered["constants"][0]["domain"] = json!("bogus_domain");
+        let report = validate_constant_set(&unregistered);
+        assert!(!report.valid, "未注册域应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("未在域目录注册") && e.contains("bogus_domain")),
+            "{:?}",
+            report.errors
+        );
+
+        // 命名规约违例 → 拒收（schema 层 pattern + 结构层镜像双报因）
+        let mut bad_shape = attributed.clone();
+        bad_shape["constants"][0]["domain"] = json!("Bad-Domain");
+        let report = validate_constant_set(&bad_shape);
+        assert!(!report.valid, "命名规约违例应拒收");
+        assert!(
+            report.errors.iter().any(|e| e.contains("命名规约")),
+            "{:?}",
+            report.errors
+        );
     }
 
     // ── verify_request schema 自洽 + serde 确定性 ──

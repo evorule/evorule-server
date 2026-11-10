@@ -20,6 +20,13 @@
 //!   si_units 时校验等式两侧量纲一致性（不一致硬拒收并报两侧量纲向量）；
 //!   缺 si_units / 单位不可解析的定律跳过并记 warning 级结果，不硬拒
 //!   （兼容 G 类纯数学定律）。
+//! - **域归属/跨域引用边层**：律式 `domains`（多域归属）与 `cross_refs`
+//!   （跨域引用边，D2=A：注册时显式声明，禁自动发现）落点域必须在域目录
+//!   注册，且引用边落点须属于目标律式的域归属、域内引用不得声明为跨域边。
+//!
+//! # 域目录嵌入副本
+//! 治理侧 SSOT = evorule-rule `src/model/domain_catalog.v1.json`，
+//! 本 crate 持嵌入副本，由 scripts/sync-domain-catalog.ps1 同步（CI 漂移检查 fail-closed）。
 //!
 //! # 正确性保证
 //! - 构建期由 build.rs 校验三件合法性 + $id 自洽 + 定稿锚；运行期缓存校验器。
@@ -73,6 +80,15 @@ pub struct LawMetadata {
     pub verified: Option<String>,
 }
 
+/// 跨域引用边（D2=A：注册时显式声明，禁自动发现）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrossRef {
+    /// 被引用律式 id（同集内）
+    pub target: String,
+    /// 引用边落点域（跨域声明）
+    pub domain: String,
+}
+
 /// 单条定律（law $def 的强类型镜像）
 ///
 /// symbols/si_units 用 BTreeMap 保证序列化确定性（可回放/可审计）。
@@ -85,6 +101,12 @@ pub struct Law {
     pub si_units: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+    /// 多域归属（域向量扩多域；缺省 = 单域 domain 字段语义不变）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<String>,
+    /// 跨域引用边显式声明（D2=A：注册时声明，禁自动发现）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cross_refs: Vec<CrossRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub solvable: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -106,6 +128,61 @@ pub struct LawSet {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
     pub laws: Vec<Law>,
+}
+
+// ============================================================================
+// 域目录（嵌入副本；治理侧 SSOT = evorule-rule src/model/domain_catalog.v1.json）
+// ============================================================================
+
+/// 域目录条目（域 id -> 名称/描述）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainCatalogEntry {
+    pub domain_id: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// 域目录嵌入副本（治理侧 SSOT = evorule-rule `src/model/domain_catalog.v1.json`，
+/// 由 scripts/sync-domain-catalog.ps1 同步，CI 域目录漂移检查 fail-closed）
+const DOMAIN_CATALOG_JSON: &str = include_str!("domain_catalog.embedded.json");
+
+// 重复 domain_id 属静态输入不变量破坏（嵌入副本经同步脚本自 SSOT 生成），
+// 与 build_validators 同口径：expect fail-fast（非运行时错误路径）。
+#[allow(clippy::expect_used)]
+fn build_domain_catalog() -> BTreeMap<String, DomainCatalogEntry> {
+    let raw: Value = serde_json::from_str(DOMAIN_CATALOG_JSON)
+        .expect("域目录嵌入副本非法 JSON（静态输入不变量）");
+    let entries: Vec<DomainCatalogEntry> =
+        serde_json::from_value(raw.get("domains").cloned().unwrap_or(Value::Null))
+            .expect("域目录嵌入副本缺 domains 数组或条目形态非法（静态输入不变量）");
+    let mut map = BTreeMap::new();
+    for entry in entries {
+        let is_new = map.insert(entry.domain_id.clone(), entry).is_none();
+        is_new
+            .then_some(())
+            .expect("域目录嵌入副本含重复 domain_id（静态输入不变量破坏）");
+    }
+    map
+}
+
+static DOMAIN_CATALOG: Lazy<BTreeMap<String, DomainCatalogEntry>> = Lazy::new(build_domain_catalog);
+
+/// 域目录（嵌入副本单源；criticality 等下游复用本函数，禁止各自再持副本）
+pub fn domain_catalog() -> &'static BTreeMap<String, DomainCatalogEntry> {
+    &DOMAIN_CATALOG
+}
+
+/// 域 id 命名规约（pattern `^[a-z][a-z0-9_]*$` 的结构层镜像；schema 层已守
+/// 命名规约，此处供 criticality 等下游做防御性复检与单源复用）
+pub fn is_valid_domain_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    match bytes.first() {
+        Some(b) if b.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    bytes[1..]
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
 }
 
 // ============================================================================
@@ -268,6 +345,92 @@ fn check_formula_structure(idx: usize, law: &Law, errors: &mut Vec<String>) {
 }
 
 // ============================================================================
+// 域归属/跨域引用边校验（D2=A：注册时显式声明，禁自动发现）
+// ============================================================================
+
+/// 单条定律的域归属校验：domains 逐个必须在域目录注册（schema 层已守命名
+/// 规约，此处守注册在册性——目录为治理侧 SSOT 嵌入副本）
+fn check_law_domains(idx: usize, law: &Law, errors: &mut Vec<String>) {
+    if law.domains.is_empty() {
+        return;
+    }
+    let catalog = domain_catalog();
+    let at = format!("laws[{idx}] (id={}): ", law.id);
+    for d in &law.domains {
+        if !catalog.contains_key(d) {
+            errors.push(format!("{at}domains 含未注册域 `{d}`（须先在域目录注册）"));
+        }
+    }
+}
+
+/// 单条定律的跨域引用边校验。
+///
+/// ① target 必须在同集 laws 内存在（否则硬错误报因含 target id）；
+/// ② domain 必须在域目录注册（否则硬错误）；
+/// ③ domain 必须属于目标律式的域归属（目标 domains 数组 ∪ 旧 domain 字段；
+///    目标无任何域声明 → 硬错误「目标律式未声明域归属，跨域引用边落点不可判定」）；
+/// ④ 域内引用不得声明为跨域引用边（本律式自身声明 domains 且落点 ∈ 自身 domains）。
+///
+/// laws_by_id = 全 set 已反序列化定律（id → 定律）；目标条目反序列化失败的
+/// 情形 schema 层已报因，此处 best-effort（与 formula 结构层同口径）。
+fn check_cross_refs(
+    idx: usize,
+    law: &Law,
+    laws_by_id: &BTreeMap<&str, &Law>,
+    errors: &mut Vec<String>,
+) {
+    if law.cross_refs.is_empty() {
+        return;
+    }
+    let catalog = domain_catalog();
+    let at = format!("laws[{idx}] (id={}): ", law.id);
+    for edge in &law.cross_refs {
+        let Some(target) = laws_by_id.get(edge.target.as_str()) else {
+            errors.push(format!(
+                "{at}跨域引用边 target `{}` 不在同集 laws 内（引用边仅指向同集律式，禁自动发现）",
+                edge.target
+            ));
+            continue;
+        };
+        if !catalog.contains_key(&edge.domain) {
+            errors.push(format!(
+                "{at}跨域引用边 domain `{}` 未在域目录注册",
+                edge.domain
+            ));
+            continue;
+        }
+        // ③ 目标律式的域归属（domains 数组 ∪ 旧 domain 字段）
+        let mut attribution: Vec<&str> = target.domains.iter().map(String::as_str).collect();
+        if let Some(d) = &target.domain {
+            attribution.push(d);
+        }
+        if attribution.is_empty() {
+            errors.push(format!(
+                "{at}目标律式未声明域归属，跨域引用边落点不可判定：目标律式 `{}`（domains/domain 均缺）",
+                edge.target
+            ));
+            continue;
+        }
+        if !attribution.contains(&edge.domain.as_str()) {
+            errors.push(format!(
+                "{at}跨域引用边 domain `{}` 不属于目标律式 `{}` 的域归属 [{}]（落点须为目标声明域之一）",
+                edge.domain,
+                edge.target,
+                attribution.join(", ")
+            ));
+            continue;
+        }
+        // ④ 域内引用不得声明为跨域引用边
+        if !law.domains.is_empty() && law.domains.contains(&edge.domain) {
+            errors.push(format!(
+                "{at}跨域引用边 domain `{}` 属于本律式自身 domains（域内引用不得声明为跨域引用边）",
+                edge.domain
+            ));
+        }
+    }
+}
+
+// ============================================================================
 // 量纲能力层接线
 // ============================================================================
 
@@ -309,15 +472,31 @@ pub fn validate_law_set(doc: &Value) -> SchemaReport {
             .map(|e| format!("{}: {}", e.instance_path, e))
             .collect(),
     };
-    // formula 结构层（schema 表达不了的语义边界）：schema 校验失败条目的
-    // formula 可能不可反序列化，逐条 best-effort；反序列化失败处 schema 层已报因。
+    // formula 结构层 + 域归属/跨域引用边层 + 量纲能力层（schema 表达不了的
+    // 语义边界）：schema 校验失败条目的 formula 可能不可反序列化，逐条
+    // best-effort；反序列化失败处 schema 层已报因。
     let mut warnings: Vec<String> = Vec::new();
     if let Some(laws) = doc.get("laws").and_then(|v| v.as_array()) {
-        for (idx, item) in laws.iter().enumerate() {
-            if let Ok(law) = serde_json::from_value::<Law>(item.clone()) {
-                check_formula_structure(idx, &law, &mut errors);
-                apply_dimensional_verdict(idx, &law, &mut errors, &mut warnings);
-            }
+        // 先收集全 set 已反序列化定律（id → 定律），供跨域引用边 target
+        // 存在性与目标域归属判定检索。
+        let parsed: Vec<(usize, Law)> = laws
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                serde_json::from_value::<Law>(item.clone())
+                    .ok()
+                    .map(|law| (idx, law))
+            })
+            .collect();
+        let laws_by_id: BTreeMap<&str, &Law> = parsed
+            .iter()
+            .map(|(_, law)| (law.id.as_str(), law))
+            .collect();
+        for (idx, law) in &parsed {
+            check_formula_structure(*idx, law, &mut errors);
+            check_law_domains(*idx, law, &mut errors);
+            check_cross_refs(*idx, law, &laws_by_id, &mut errors);
+            apply_dimensional_verdict(*idx, law, &mut errors, &mut warnings);
         }
     }
     let mut report = if errors.is_empty() {
@@ -600,6 +779,139 @@ mod tests {
                 .any(|w| w.contains("未知单位") && w.contains("newtn")),
             "warning 须指明不可解析单位: {:?}",
             report.warnings
+        );
+    }
+
+    // ── 域归属/跨域引用边 golden（G12-G16：多域归属 + 引用边四判据 + law 自身域注册）──
+
+    /// 跨域引用边的目标律式（默认声明 physical 域；测试按需改写）
+    fn golden_target_law() -> Value {
+        json!({
+            "id": "grav_identity",
+            "formula": "w = g * m",
+            "symbols": { "w": "重量", "g": "重力加速度", "m": "质量" },
+            "si_units": {},
+            "domains": ["physical"]
+        })
+    }
+
+    #[test]
+    fn golden_g12_multidomain_with_legal_cross_refs_passes() {
+        // G12 正例：多域归属 + 合法跨域引用边（落点 = 目标声明域，且不属于
+        // 本律式自身 domains）。目标律式以旧单域 domain 字段声明归属
+        // （③ 的旧字段归并路径同验）；目标纯数学形态，量纲层跳过记 warning。
+        let mut doc = golden_newton();
+        doc["laws"][0]["domains"] = json!(["physical", "engineering"]);
+        doc["laws"][0]["cross_refs"] =
+            json!([{ "target": "price_identity", "domain": "economic" }]);
+        let mut target = golden_target_law();
+        target["id"] = json!("price_identity");
+        target
+            .as_object_mut()
+            .expect("target 应为 object")
+            .remove("domains");
+        target["domain"] = json!("economic");
+        doc["laws"]
+            .as_array_mut()
+            .expect("laws 应为数组")
+            .push(target);
+
+        let lawset: LawSet =
+            serde_json::from_value(doc.clone()).expect("G12 应可反序列化为 LawSet");
+        assert_eq!(lawset.laws[0].domains, vec!["physical", "engineering"]);
+        assert_eq!(
+            lawset.laws[0].cross_refs,
+            vec![CrossRef {
+                target: "price_identity".to_string(),
+                domain: "economic".to_string(),
+            }]
+        );
+        assert_eq!(lawset.laws[1].domain.as_deref(), Some("economic"));
+        let report = validate_law_set(&doc);
+        assert!(
+            report.valid,
+            "G12 多域+合法跨域引用边应通过: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn golden_g13_cross_ref_target_missing_rejected() {
+        // G13 反例：target 不在同集 laws 内 → 拒收，报因含 target id
+        let mut doc = golden_newton();
+        doc["laws"][0]["domains"] = json!(["physical"]);
+        doc["laws"][0]["cross_refs"] = json!([{ "target": "missing_law", "domain": "physical" }]);
+        let report = validate_law_set(&doc);
+        assert!(!report.valid, "G13 target 不存在应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("不在同集 laws 内") && e.contains("missing_law")),
+            "报因须含 target id: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn golden_g14_cross_ref_domain_unregistered_rejected() {
+        // G14 反例：引用边落点域未在域目录注册 → 拒收
+        let mut doc = golden_newton();
+        doc["laws"][0]["domains"] = json!(["physical"]);
+        doc["laws"][0]["cross_refs"] =
+            json!([{ "target": "grav_identity", "domain": "astrophysics" }]);
+        doc["laws"]
+            .as_array_mut()
+            .expect("laws 应为数组")
+            .push(golden_target_law());
+        let report = validate_law_set(&doc);
+        assert!(!report.valid, "G14 落点域未注册应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("未在域目录注册") && e.contains("astrophysics")),
+            "报因须指明未注册域: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn golden_g15_intra_domain_edge_declared_cross_domain_rejected() {
+        // G15 反例：落点域属于本律式自身 domains（域内引用）误声明为跨域引用边 → 拒收
+        let mut doc = golden_newton();
+        doc["laws"][0]["domains"] = json!(["physical"]);
+        doc["laws"][0]["cross_refs"] = json!([{ "target": "grav_identity", "domain": "physical" }]);
+        doc["laws"]
+            .as_array_mut()
+            .expect("laws 应为数组")
+            .push(golden_target_law());
+        let report = validate_law_set(&doc);
+        assert!(!report.valid, "G15 域内引用误声明跨域应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("域内引用不得声明为跨域引用边")),
+            "报因须指明域内引用误声明: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn golden_g16_law_domains_unregistered_rejected() {
+        // G16 反例：law.domains 含未注册域 → 拒收（law 自身域归属注册在册性）
+        let mut doc = golden_newton();
+        doc["laws"][0]["domains"] = json!(["physical", "bogus_domain"]);
+        let report = validate_law_set(&doc);
+        assert!(!report.valid, "G16 law.domains 含未注册域应拒收");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("domains 含未注册域") && e.contains("bogus_domain")),
+            "报因须指明未注册域: {:?}",
+            report.errors
         );
     }
 
