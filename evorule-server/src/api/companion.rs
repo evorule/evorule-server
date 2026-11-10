@@ -1168,6 +1168,9 @@ impl CompanionHub {
             "last_cause": eq_view.last_cause,
             "window_secs": eq_view.window_secs,
             "phase": eq_view.phase,
+            // 域级相位（只加不改新键：域 id → crisis/relaxing/absorbing；
+            // 空域账不出现；认证 streak 属集级全域共用，见视图字段注释）。
+            "domain_phases": eq_view.domain_phases,
             "window_alert_tail": crate::equilibrium_obs::shared()
                 .window_alert_tail(crate::equilibrium_obs::WINDOW_ALERT_TAIL_CAP),
             "window_cert_tail": crate::equilibrium_obs::shared()
@@ -2022,6 +2025,20 @@ mod tests {
             "window_secs",
         ] {
             assert!(eq.get(key).is_some(), "既有字段 {key} 仍在");
+        }
+        // 域级相位键（只加不改回归：对象形态 {域id: 相位}，值在词表内；
+        // 进程级共享视图无域账时为空对象）
+        let dp = eq["domain_phases"]
+            .as_object()
+            .expect("domain_phases 应为对象");
+        for (domain, phase) in dp {
+            assert!(
+                matches!(
+                    phase.as_str(),
+                    Some("crisis") | Some("relaxing") | Some("absorbing")
+                ),
+                "域 {domain} 相位应在词表内, got {phase}"
+            );
         }
     }
 
