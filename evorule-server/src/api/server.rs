@@ -12942,6 +12942,13 @@ impl GovernanceServer {
             .route("/api/sessions/{id}/wal/rotate", post(session_wal_rotate))
             // 全通道 WAL checkpoint（治理面运维端点，管理员硬校验在 handler 内）
             .route("/api/admin/wal/checkpoint", post(admin_wal_checkpoint))
+            // 共享分区压实（登记 marker 下一轮重启生效 / 最后一轮报告；
+            // 管理员硬校验在 handler 内，与 WAL checkpoint 同面）
+            .route(
+                "/api/admin/shared/compaction",
+                post(crate::api::shared_compaction::admin_shared_compaction)
+                    .get(crate::api::shared_compaction::get_shared_compaction_report),
+            )
             // 发布域治理端点（approve_mode 切换须管理员在场+双落账;
             // start_session 纯编排 fork 试验会话, 不接管生产状态）
             .route(
@@ -18505,6 +18512,82 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "非管理员必须 403");
+    }
+
+    /// 共享分区压实端点：未认证 401；mode 非法 400；管理员（测试态未注入
+    /// wal_dir = 纯内存模式）→ 400 拒绝并说明；GET 报告（纯内存）→ 404。
+    /// marker 写入 / 执行位串联由 shared_compaction 模块单测覆盖
+    /// （SHARED_WAL_DIR 为进程级 OnceLock，测试不注入，保持纯内存断言确定性）。
+    #[tokio::test]
+    async fn admin_shared_compaction_gated_and_memory_mode_rejected() {
+        let (state, _) = make_test_state();
+        let router = make_test_router(&state);
+
+        // 未认证 → 401
+        let (status, _) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/admin/shared/compaction",
+            Some(r#"{"mode":"archive"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // bootstrap 管理员 + 登录
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/bootstrap",
+            Some(r#"{"username":"root","password":"admin-pass-123","display_name":""}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = oneshot_json(
+            router.clone(),
+            "POST",
+            "/api/platform/auth/login",
+            Some(r#"{"username":"root","password":"admin-pass-123"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let admin_token = body["token"].as_str().unwrap().to_string();
+
+        // mode 非法 → 400
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/admin/shared/compaction",
+            &admin_token,
+            Some(r#"{"mode":"wipe"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        // 管理员 + 纯内存模式（wal_dir 未注入）→ 400 拒绝并说明
+        let (status, body) = oneshot_json_with_token(
+            router.clone(),
+            "POST",
+            "/api/admin/shared/compaction",
+            &admin_token,
+            Some(r#"{"mode":"archive"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"].as_str().unwrap_or("").contains("纯内存"),
+            "拒绝说明应点名纯内存模式: {body}"
+        );
+
+        // GET 报告（纯内存模式）→ 404
+        let (status, _) = oneshot_json_with_token(
+            router,
+            "GET",
+            "/api/admin/shared/compaction",
+            &admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     /// 发布试验会话：未初始化生产会话（current_session_id 缺省 NULL）→ 409。
