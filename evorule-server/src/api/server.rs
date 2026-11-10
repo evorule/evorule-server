@@ -3491,10 +3491,18 @@ impl SessionApi {
                 _ => {}
             }
 
-            // 内容对照（BND-D-03 演进收口）:沙盒记录携带 draft 规则快照时，
-            // 逐条 bundle 条目的 rule_body 必须命中快照中的某条规则
-            // （canonical JSON 同构比对，evorule_hash::json_digest 键序稳定）——
-            // 把「沙盒测过这些规则」从 hash 绑定升级为内容对照。
+            // 内容对照（条目-沙盒一致性协议：BND-D-03 演进收口的多条目修正）:
+            // 沙盒记录携带 draft 规则快照时，按条目类型分治——
+            // - Rule 条目: rule_body 即可执行规则文本，逐条必须命中快照
+            //   （canonical JSON 同构比对，evorule_hash::json_digest 键序稳定）
+            //   ——「导入的每条规则都被沙盒实测过」的内容级对照。
+            // - Knowledge 条目: rule_body 是领域知识载荷（数据非规则），沙盒
+            //   测试机只对 draft 规则集跑测试用例，结构上不处理载荷——载荷级
+            //   逐条对照是类型错配（真实快照只含规则文本，知识载荷永远命中
+            //   不了，会把全部知识包拒之门外；多条目知识种子链实测复现）。
+            //   knowledge 载荷完整性由既有四层保护承担（全包 content_hash
+            //   防篡改 + 发布签名来源认证 + 领域 schema 强校验 + 报告↔沙盒
+            //   规则集指纹绑定），沙盒证据语义=批次级「导出时治理环境已验证」。
             // 快照缺失（v9 前创建的存量沙盒）放行并留痕，零迁移。
             if let Some(draft_json) = sb.draft_rules_json.as_deref() {
                 let draft: Vec<serde_json::Value> =
@@ -3504,11 +3512,14 @@ impl SessionApi {
                 let tested: std::collections::BTreeSet<String> =
                     draft.iter().map(evorule_hash::json_digest).collect();
                 for entry in &bundle.entries {
+                    if entry.entry_kind != evorule_bundle::EntryKind::Rule {
+                        continue; // knowledge 载荷走批次级证据（见上，不逐条对照）
+                    }
                     let d = evorule_hash::json_digest(&entry.rule_body);
                     if !tested.contains(&d) {
                         return Err(format!(
                             "测试证据校验失败（不静默）: 条目 {} 的规则内容未被沙盒 #{sid} 的\
-                             draft 规则集覆盖（内容对照失配）——沙盒所测规则集与包内条目不一致,\
+                             draft 规则集覆盖（内容对照失配）——沙盒所测规则集与包内规则条目不一致,\
                              不得作为 pass 证据",
                             entry.entry_id
                         ));
@@ -21748,14 +21759,21 @@ mod tests {
         std::fs::create_dir_all(&report_dir).unwrap();
         let facts_1 = format!("audit_sandbox_1_{ts}.json");
         let facts_2 = format!("audit_sandbox_2_{ts}.json");
-        // PASS 沙盒的 draft 快照 = bundle 条目的 rule_body 原文(内容对照的
-        // 数据面:快照含条目内容才放行)
-        let sb_pass_draft = serde_json::json!([{
-            "scenario_id": "spring-single-particle",
-            "gravity": [0.0, -9.81, 0.0],
-            "restitution": 1.0,
-            "bodies": [{"id": "particle-1"}]
-        }])
+        // PASS 沙盒的 draft 快照 = 规则形态内容（条目-沙盒一致性协议下真实
+        // 沙盒流的数据面：快照只含规则文本；knowledge 条目走批次级证据不
+        // 逐条对照，快照内容不影响其放行）
+        let sb_pass_draft = serde_json::json!([
+            {
+                "id": "install.governance_surface",
+                "transform": [{"params": {"domain": {"inner": [], "type": "all"}, "on_true": []}, "type": "branch"}],
+                "version": 1
+            },
+            {
+                "id": "install.knowledge_surface",
+                "transform": [{"params": {"domain": {"inner": [], "type": "all"}, "on_true": []}, "type": "branch"}],
+                "version": 1
+            }
+        ])
         .to_string();
         let sb_pass = ws_db
             .insert_sandbox_session(

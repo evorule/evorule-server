@@ -26,6 +26,13 @@
 # - Without pre-existing sandbox evidence the import cannot claim verdict=pass;
 #   the script fails with an explicit message (run a sandbox test in the
 #   desktop workspace first - fail-closed, no evidence fabrication).
+# - Entry-sandbox consistency (server-side gate): rule entries are matched
+#   per-entry against the sandbox draft-rules snapshot; knowledge entries
+#   (this script's flow) take batch-level evidence - the closed sandbox with
+#   a 0-failed report attests the governance environment at export time.
+#   If you extend the chain to rule bundles, build each entry's rule_body
+#   verbatim from the tested rules (the snapshot contents), or the import
+#   gate rejects the bundle.
 
 [CmdletBinding()]
 param(
