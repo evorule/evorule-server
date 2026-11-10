@@ -9,10 +9,13 @@
 //!   唯一运行时装配与查询面，消费 [`evorule_law_schema::validate_law_set`]
 //!   （schema 三层：结构 + formula 恒真语义 + 量纲能力层）。
 //! - 装配形态（MVP）：启动时扫描本地部署目录逐集装载；远端源（rule serve
-//!   URL + dataset_id）为后续配置面扩展，本模块接口已按 dataset_id 命名空间
-//!   预留，不阻塞远端登记。
+//!   URL + dataset_id）经 [`LawHost::load_remote`] 登记（dataset_id 命名空间
+//!   同本地形态），不阻塞远端登记。
 //! - 逐集隔离：一库校验失败不阻断他库装载，装配报告逐集列明报因
 //!   （fail-visible，拒绝静默降级）。
+//! - 量纲第三态：si_units 缺失/单位不可解析的条目以「未验证」独立判定态
+//!   透出（[`LawSetStatus::unverified_count`] / [`LawSetStatus::unverified_laws`]），
+//!   跳过 ≠ 通过 ≠ 拒收，禁止以 warning 静默埋没。
 //! - 查询键 = `(dataset_id, law_id)` 双键：跨库同 id 允许（命名空间 =
 //!   dataset_id），仅告警不拦截（判定只提案不改写）。
 //! - 常量臂：部署目录同置 `kind=constant_set` 文档时按常量集装载（载荷
@@ -50,8 +53,13 @@ pub struct LawSetStatus {
     pub law_count: usize,
     /// 常量条数（constant_set 集=实装条数；law_set 集恒 0）
     pub constant_count: usize,
-    /// warning 级结果数（量纲跳过等；不构成拒收）
+    /// warning 级结果数（不构成拒收；量纲跳过不再落此面，见 unverified_count）
     pub warning_count: usize,
+    /// 未验证条数（量纲第三态：si_units 缺失/单位不可解析等跳过；跳过 ≠ 通过，
+    /// 独立判定态列明，不构成拒收、不静默）
+    pub unverified_count: usize,
+    /// 未验证条目的 law id 列表（与 unverified_count 同源，呈现面直读）
+    pub unverified_laws: Vec<String>,
     /// 错误数（>0 即拒收）
     pub error_count: usize,
     /// 逐条报因（拒收集列明；valid 集为空）
@@ -69,6 +77,8 @@ impl LawSetStatus {
             law_count: 0,
             constant_count: 0,
             warning_count: 0,
+            unverified_count: 0,
+            unverified_laws: Vec::new(),
             error_count: errors.len(),
             errors,
             content_digest: None,
@@ -105,7 +115,7 @@ impl LawHostLoadReport {
 // 装配完成态（查询面）
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct LoadedSet {
     status: LawSetStatus,
     laws: BTreeMap<String, Law>,
@@ -116,7 +126,8 @@ struct LoadedSet {
 /// law_set/constant_set 运行时装配与查询面（启动期构建一次，不可变共享）
 ///
 /// 仅 valid 集注册入查询面；拒收集只存在于报告与 status 呈现面。
-#[derive(Debug, Default)]
+/// `Clone` 供本地/远端并装配并（启动期合并，先到先得不覆盖）。
+#[derive(Debug, Default, Clone)]
 pub struct LawHost {
     sets: BTreeMap<String, LoadedSet>,
     /// 跨库同 law_id 告警（允许并存不拦截；判定只提案不改写）
@@ -154,103 +165,79 @@ impl LawHost {
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
             let source = path.display().to_string();
-            let raw = match std::fs::read_to_string(&path) {
-                Ok(r) => r,
+            match std::fs::read_to_string(&path) {
                 Err(e) => {
                     report.rejected.push(LawSetStatus::invalid(
                         dataset_id,
                         source,
                         vec![format!("读取失败: {e}")],
                     ));
-                    continue;
                 }
-            };
-            let doc: serde_json::Value = match serde_json::from_str(&raw) {
-                Ok(d) => d,
-                Err(e) => {
-                    report.rejected.push(LawSetStatus::invalid(
-                        dataset_id,
-                        source,
-                        vec![format!("JSON 解析失败: {e}")],
-                    ));
-                    continue;
-                }
-            };
-            let digested = evorule_hash::try_json_digest(&doc).ok();
-
-            // 常量臂（kind=constant_set）：载荷契约照 rule 仓 constant 条目镜像，
-            // 逐集校验照 evorule-criticality 契约（无出处/单位或不确定度
-            // 不可解析 = 拒收，fail-fast）；拒收逐集隔离，不牵连他集。
-            let kind = doc.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            if kind == "constant_set" {
-                let constants_declared = doc
-                    .get("constants")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                let r = evorule_criticality::validate_constant_set(&doc);
-                let status = LawSetStatus {
-                    dataset_id: dataset_id.clone(),
-                    source: source.clone(),
-                    valid: r.valid,
-                    law_count: 0,
-                    constant_count: constants_declared,
-                    // constant_set 校验全 fail-fast（无 warning 级）
-                    warning_count: 0,
-                    error_count: r.errors.len(),
-                    errors: r.errors,
-                    content_digest: digested,
-                };
-                if !status.valid {
-                    report.rejected.push(status);
-                    continue;
-                }
-                let mut constants = BTreeMap::new();
-                if let Ok(set) = serde_json::from_value::<ConstantSet>(doc.clone()) {
-                    for c in set.constants {
-                        constants.insert(c.id.clone(), c);
+                Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Err(e) => {
+                        report.rejected.push(LawSetStatus::invalid(
+                            dataset_id,
+                            source,
+                            vec![format!("JSON 解析失败: {e}")],
+                        ));
                     }
-                }
-                report.loaded.push(status.clone());
-                host.sets.insert(
-                    dataset_id,
-                    LoadedSet {
-                        status,
-                        laws: BTreeMap::new(),
-                        constants,
-                    },
-                );
-                continue;
+                    Ok(doc) => {
+                        Self::register_doc(&mut host, &mut report, dataset_id, source, doc);
+                    }
+                },
             }
+        }
 
-            // law 臂（既有路径，kind=law_set；零改动）
-            let law_set: Option<LawSet> = serde_json::from_value(doc.clone()).ok();
-            let law_count_declared = doc
-                .get("laws")
+        host.cross_set_id_warnings = Self::compute_cross_set_id_warnings(&host.sets);
+        host.cross_set_constant_id_warnings =
+            Self::compute_cross_set_constant_id_warnings(&host.sets);
+        (host, report)
+    }
+
+    /// 单文档注册（本地目录与远端登记共用路径）：哈希锚 → 常量臂/law 臂分派
+    /// → 逐集校验 → 注册或隔离拒收。逐集隔离语义在此收口（单集失败不牵连他集）。
+    fn register_doc(
+        host: &mut LawHost,
+        report: &mut LawHostLoadReport,
+        dataset_id: String,
+        source: String,
+        doc: serde_json::Value,
+    ) {
+        let digested = evorule_hash::try_json_digest(&doc).ok();
+
+        // 常量臂（kind=constant_set）：载荷契约照 rule 仓 constant 条目镜像，
+        // 逐集校验照 evorule-criticality 契约（无出处/单位或不确定度
+        // 不可解析 = 拒收，fail-fast）；拒收逐集隔离，不牵连他集。
+        let kind = doc.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind == "constant_set" {
+            let constants_declared = doc
+                .get("constants")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            let r = validate_law_set(&doc);
+            let r = evorule_criticality::validate_constant_set(&doc);
             let status = LawSetStatus {
                 dataset_id: dataset_id.clone(),
                 source: source.clone(),
                 valid: r.valid,
-                law_count: law_count_declared,
-                constant_count: 0,
-                warning_count: r.warnings.len(),
+                law_count: 0,
+                constant_count: constants_declared,
+                // constant_set 校验全 fail-fast（无 warning 级、无未验证第三态）
+                warning_count: 0,
+                unverified_count: 0,
+                unverified_laws: Vec::new(),
                 error_count: r.errors.len(),
                 errors: r.errors,
                 content_digest: digested,
             };
             if !status.valid {
                 report.rejected.push(status);
-                continue;
+                return;
             }
-            // valid 集：按 law_id 建域内索引（集内 id 唯一由 schema/结构层保证）
-            let mut laws = BTreeMap::new();
-            if let Some(ls) = law_set {
-                for law in ls.laws {
-                    laws.insert(law.id.clone(), law);
+            let mut constants = BTreeMap::new();
+            if let Ok(set) = serde_json::from_value::<ConstantSet>(doc.clone()) {
+                for c in set.constants {
+                    constants.insert(c.id.clone(), c);
                 }
             }
             report.loaded.push(status.clone());
@@ -258,16 +245,249 @@ impl LawHost {
                 dataset_id,
                 LoadedSet {
                     status,
-                    laws,
-                    constants: BTreeMap::new(),
+                    laws: BTreeMap::new(),
+                    constants,
                 },
             );
+            return;
+        }
+
+        // law 臂（kind=law_set；本地与远端登记同路径）
+        let law_set: Option<LawSet> = serde_json::from_value(doc.clone()).ok();
+        let law_count_declared = doc
+            .get("laws")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let r = validate_law_set(&doc);
+        let unverified_laws: Vec<String> = r.unverified.iter().map(|u| u.law_id.clone()).collect();
+        let status = LawSetStatus {
+            dataset_id: dataset_id.clone(),
+            source: source.clone(),
+            valid: r.valid,
+            law_count: law_count_declared,
+            constant_count: 0,
+            warning_count: r.warnings.len(),
+            unverified_count: unverified_laws.len(),
+            unverified_laws,
+            error_count: r.errors.len(),
+            errors: r.errors,
+            content_digest: digested,
+        };
+        if !status.valid {
+            report.rejected.push(status);
+            return;
+        }
+        // valid 集：按 law_id 建域内索引（集内 id 唯一由 schema/结构层保证）
+        let mut laws = BTreeMap::new();
+        if let Some(ls) = law_set {
+            for law in ls.laws {
+                laws.insert(law.id.clone(), law);
+            }
+        }
+        report.loaded.push(status.clone());
+        host.sets.insert(
+            dataset_id,
+            LoadedSet {
+                status,
+                laws,
+                constants: BTreeMap::new(),
+            },
+        );
+    }
+
+    /// 远端源登记（rule serve）：按 dataset_id 逐个拉取 law_set 数据集条目，
+    /// 组装独立部署件文档后走与本地装载完全相同的注册路径
+    /// （[`Self::register_doc`]，校验/隔离/双键语义零分叉）。
+    ///
+    /// - 登记序 = 调用方 `dataset_ids` 给定序（可回放；排序责任在配置面）。
+    /// - `api_key` 经 `x-api-key` 头传递（rule serve 鉴权面）；凭证由调用方
+    ///   从环境解析（禁命令行/落盘），不写日志。
+    /// - 数据集 kind 非 `law_set`、条目为空或任一请求失败 → 该集隔离拒收
+    ///   （fail-visible 报因），不阻断他集。
+    /// - 组装文档 `version` = 装配格式版本（常量 `1.0.0`）；rule serve 侧
+    ///   数据集真实版本锚入 `metadata.source`（`@ <current>`），内容锚 =
+    ///   文档 blake3 digest。
+    pub async fn load_remote(
+        http: &reqwest::Client,
+        base_url: &str,
+        api_key: Option<&str>,
+        dataset_ids: &[String],
+    ) -> (LawHost, LawHostLoadReport) {
+        let base = base_url.trim_end_matches('/');
+        let mut host = LawHost::default();
+        let mut report = LawHostLoadReport::default();
+
+        for dataset_id in dataset_ids {
+            // ① 数据集元信息：kind 必须 = law_set（否则隔离拒收）
+            let mut req = http.get(format!("{base}/v1/datasets/{dataset_id}"));
+            if let Some(key) = api_key {
+                req = req.header("x-api-key", key);
+            }
+            let ds: serde_json::Value = match req.send().await {
+                Err(e) => {
+                    report.rejected.push(LawSetStatus::invalid(
+                        dataset_id.clone(),
+                        format!("rule serve {base} dataset {dataset_id}"),
+                        vec![format!("数据集元信息请求失败: {e}")],
+                    ));
+                    continue;
+                }
+                Ok(resp) if !resp.status().is_success() => {
+                    report.rejected.push(LawSetStatus::invalid(
+                        dataset_id.clone(),
+                        format!("rule serve {base} dataset {dataset_id}"),
+                        vec![format!("数据集元信息请求失败: HTTP {}", resp.status())],
+                    ));
+                    continue;
+                }
+                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        report.rejected.push(LawSetStatus::invalid(
+                            dataset_id.clone(),
+                            format!("rule serve {base} dataset {dataset_id}"),
+                            vec![format!("数据集元信息解析失败: {e}")],
+                        ));
+                        continue;
+                    }
+                },
+            };
+            let ds_kind = ds
+                .get("dataset_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if ds_kind != "law_set" {
+                report.rejected.push(LawSetStatus::invalid(
+                    dataset_id.clone(),
+                    format!("rule serve {base} dataset {dataset_id}"),
+                    vec![format!(
+                        "数据集 kind 为 `{ds_kind}`，远端登记仅接受 law_set 数据集"
+                    )],
+                ));
+                continue;
+            }
+            let ds_version = ds
+                .pointer("/versioning/current")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            // 呈现面 source 与组装文档 metadata.source 同源：数据集真实版本
+            // 锚入（`@ <current>`）
+            let source = format!("rule serve {base} dataset {dataset_id} @ {ds_version}");
+
+            // ② 条目拉取（翻页跟随 next_cursor；law_set ≤128 条，页数留裕度）
+            let mut payloads: Vec<(String, serde_json::Value)> = Vec::new();
+            let mut cursor: Option<String> = None;
+            let mut fetch_error: Option<String> = None;
+            for _ in 0..16 {
+                let mut path = format!("/v1/datasets/{dataset_id}/entries?limit=100");
+                if let Some(c) = &cursor {
+                    path.push_str(&format!("&offset={c}"));
+                }
+                let mut req = http.get(format!("{base}{path}"));
+                if let Some(key) = api_key {
+                    req = req.header("x-api-key", key);
+                }
+                match req.send().await {
+                    Err(e) => {
+                        fetch_error = Some(format!("条目请求失败: {e}"));
+                        break;
+                    }
+                    Ok(resp) if !resp.status().is_success() => {
+                        fetch_error = Some(format!("条目请求失败: HTTP {}", resp.status()));
+                        break;
+                    }
+                    Ok(resp) => match resp.json::<serde_json::Value>().await {
+                        Err(e) => {
+                            fetch_error = Some(format!("条目响应解析失败: {e}"));
+                            break;
+                        }
+                        Ok(page) => {
+                            let items = page
+                                .get("items")
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            for item in &items {
+                                let entry_id = item
+                                    .get("entry_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let payload = item
+                                    .get("payload")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null);
+                                payloads.push((entry_id, payload));
+                            }
+                            cursor = page
+                                .get("next_cursor")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            if cursor.is_none() {
+                                break;
+                            }
+                        }
+                    },
+                }
+            }
+            if let Some(err) = fetch_error {
+                report.rejected.push(LawSetStatus::invalid(
+                    dataset_id.clone(),
+                    source.clone(),
+                    vec![err],
+                ));
+                continue;
+            }
+            if payloads.is_empty() {
+                report.rejected.push(LawSetStatus::invalid(
+                    dataset_id.clone(),
+                    source.clone(),
+                    vec!["远端数据集无 law 条目（拒绝装配空集）".to_string()],
+                ));
+                continue;
+            }
+            payloads.sort_by(|a, b| a.0.cmp(&b.0));
+            let laws: Vec<serde_json::Value> =
+                payloads.into_iter().map(|(_, payload)| payload).collect();
+
+            // ③ 组装部署件文档（与本地形态同构）→ 共享注册路径
+            let doc = serde_json::json!({
+                "$schema": "https://evorule.org/schemas/law_set/v1.0.json",
+                "kind": "law_set",
+                "id": dataset_id,
+                "version": "1.0.0",
+                "metadata": {
+                    "source": format!("rule serve {base} dataset {dataset_id} @ {ds_version}"),
+                },
+                "laws": laws,
+            });
+            Self::register_doc(&mut host, &mut report, dataset_id.clone(), source, doc);
         }
 
         host.cross_set_id_warnings = Self::compute_cross_set_id_warnings(&host.sets);
         host.cross_set_constant_id_warnings =
             Self::compute_cross_set_constant_id_warnings(&host.sets);
         (host, report)
+    }
+
+    /// 本地/远端并装配并（启动期）：把 `other` 的 valid 集并入本装配面。
+    /// 先到先得：同 dataset_id 时 `other` 条目让位（不覆盖），返回让位集数。
+    /// 合并后跨库告警按合并后全集重算。
+    pub fn merge_from(&mut self, other: LawHost) -> usize {
+        let mut yielded = 0;
+        for (ds, set) in other.sets {
+            if self.sets.contains_key(&ds) {
+                yielded += 1;
+                continue;
+            }
+            self.sets.insert(ds, set);
+        }
+        self.cross_set_id_warnings = Self::compute_cross_set_id_warnings(&self.sets);
+        self.cross_set_constant_id_warnings =
+            Self::compute_cross_set_constant_id_warnings(&self.sets);
+        yielded
     }
 
     /// 跨库同 law_id 检测（告警不拦截：命名空间=dataset_id，双键不撞）
@@ -777,5 +997,146 @@ mod tests {
             dup.formula, probe_formula,
             "探针集双键应查到同 formula（同 id 不同命名空间并存不撞）"
         );
+    }
+
+    fn placeholder_law_set_doc(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "$schema": "https://evorule.org/schemas/law_set/v1.0.json",
+            "kind": "law_set",
+            "id": id,
+            "version": "0.1.0",
+            "laws": [{
+                "id": "test_law",
+                "formula": "F = m * a",
+                "symbols": { "F": "force", "m": "mass", "a": "acceleration" },
+                "si_units": {},
+                "domains": ["physical"],
+                "max_version_depth": 1,
+                "monotone_form": true
+            }]
+        })
+    }
+
+    /// 量纲第三态透出：si_units 占位装载成功（valid=true），「未验证」独立
+    /// 判定态列明（unverified_count/unverified_laws），不以 warning 静默
+    #[test]
+    fn si_units_placeholder_loads_with_explicit_unverified_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let doc = placeholder_law_set_doc("slice-test");
+        std::fs::write(
+            tmp.path().join("slice-test.json"),
+            serde_json::to_string_pretty(&doc).unwrap(),
+        )
+        .unwrap();
+        let (host, report) = LawHost::load_dir(tmp.path());
+        assert_eq!(
+            report.loaded_count(),
+            1,
+            "占位件应装载: {:?}",
+            report.rejected
+        );
+        assert!(report.rejected.is_empty());
+        let st = &report.loaded[0];
+        assert!(st.valid, "si_units 占位不构成拒收: {:?}", st.errors);
+        assert_eq!(st.law_count, 1);
+        assert_eq!(st.warning_count, 0, "跳过不得落 warning 面");
+        assert_eq!(st.unverified_count, 1, "未验证第三态应独立列明");
+        assert_eq!(st.unverified_laws, vec!["test_law".to_string()]);
+        assert!(st.content_digest.is_some());
+        assert!(host.lookup("slice-test", "test_law").is_some());
+    }
+
+    /// 远端源登记（rule serve）：按 dataset_id 拉取条目组装部署件 → 与本地
+    /// 同注册路径（valid + 未验证第三态同源透出 + blake3 锚 + 版本锚入 source）
+    #[tokio::test]
+    async fn load_remote_registers_law_set_from_rule_serve() {
+        let payload = placeholder_law_set_doc("remote-slice")["laws"][0].clone();
+        let app = axum::Router::new()
+            .route(
+                "/v1/datasets/{id}",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "dataset_id": "remote-slice",
+                        "dataset_kind": "law_set",
+                        "versioning": { "current": "v2" }
+                    }))
+                }),
+            )
+            .route(
+                "/v1/datasets/{id}/entries",
+                axum::routing::get(move || {
+                    let payload = payload.clone();
+                    async move {
+                        axum::Json(serde_json::json!({
+                            "items": [{ "entry_id": "a", "payload": payload }]
+                        }))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let (host, report) =
+            LawHost::load_remote(&http, &base, None, &["remote-slice".to_string()]).await;
+        assert_eq!(
+            report.loaded_count(),
+            1,
+            "远端 law_set 应登记: rejected={:?}",
+            report.rejected
+        );
+        let st = &report.loaded[0];
+        assert!(st.valid, "远端件应过同一校验路径: {:?}", st.errors);
+        assert_eq!(st.unverified_count, 1, "远端件第三态同源透出");
+        assert_eq!(st.unverified_laws, vec!["test_law".to_string()]);
+        assert!(st.content_digest.is_some(), "组装文档应有 blake3 锚");
+        assert!(
+            st.source.contains("@ v2"),
+            "数据集真实版本应锚入 source: {}",
+            st.source
+        );
+        assert!(
+            host.lookup("remote-slice", "test_law").is_some(),
+            "双键可查"
+        );
+    }
+
+    /// 远端源登记拒收面：kind 非 law_set → 逐集隔离拒收（fail-visible 报因），
+    /// 不阻断他集
+    #[tokio::test]
+    async fn load_remote_rejects_non_law_set_dataset() {
+        let app = axum::Router::new().route(
+            "/v1/datasets/{id}",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({
+                    "dataset_id": "not-law",
+                    "dataset_kind": "knowledge",
+                    "versioning": { "current": "v1" }
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let (host, report) = LawHost::load_remote(
+            &http,
+            &base,
+            None,
+            &["not-law".to_string(), "other".to_string()],
+        )
+        .await;
+        assert_eq!(report.loaded_count(), 0);
+        assert_eq!(report.rejected.len(), 2, "两集均应隔离拒收");
+        assert!(
+            report.rejected[0].errors[0].contains("knowledge"),
+            "报因应指明 kind: {:?}",
+            report.rejected[0].errors
+        );
+        assert!(host.lookup("not-law", "test_law").is_none());
     }
 }

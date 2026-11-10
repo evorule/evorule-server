@@ -1447,6 +1447,7 @@ version = "0.11.0"
 dependencies = [
  "axum",
  "clap",
+ "evorule-law-schema",
  "evorule-rule-schema",
  "http",
  "http-body-util",

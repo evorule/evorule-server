@@ -22,6 +22,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 # Schema 门禁（线1 防御层）：校验器以固化 v1.0 Schema 为权威基准
 evorule-rule-schema = { path = "../rule_schema" }
+# law_set 部署件校验（CLI validate 按 kind 自动分流；同 workspace 权威契约）
+evorule-law-schema = { path = "../law_schema" }
 
 [dev-dependencies]
 # handler 层 oneshot 测试
