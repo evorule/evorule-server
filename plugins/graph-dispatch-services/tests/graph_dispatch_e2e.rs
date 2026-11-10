@@ -614,3 +614,197 @@ async fn double_run_output_bytes_identical() {
     let b2 = serde_json::to_vec(&tcb_to_serde_test(&out2)).unwrap();
     assert_eq!(b1, b2, "同输入双跑输出序列化字节全等");
 }
+
+// ── ⑥ 跨域单向传播 ──
+//
+// 三域链手算可溯：k_B（物理域常数，域 [0,1]，知识域 physics）
+// → temp_band（工程域，引用 k_B，dims L）→ dependent_prop（经济域，dims T，
+//   与 temp_band 零耦合可达路径，仅跨域边 temp_band→dependent_prop 可达）。
+// 域外修订 5：temp_band 直接失效 → 跨域单向波及 dependent_prop（depth=2, cross_domain）。
+
+/// 三域链规则集（跨域边显式声明 + 指令知识域归属）
+fn cross_domain_rule_set() -> JsonValue {
+    let doc = serde_json::json!({
+        "metadata": {
+            "constants": [
+                { "constant_id": "k_B", "version": "codata-2018", "value_hash": "h1",
+                  "domain_lo": 0, "domain_hi": 1, "domain": "physics" }
+            ],
+            "formula_registry": [
+                { "instruction_type": "temp_band", "formula": "f_t", "dimensions": [1, 0, 0, 0, 0, 0, 0],
+                  "constants": ["k_B"], "domains": ["engineering"] },
+                { "instruction_type": "dependent_prop", "formula": "f_p", "dimensions": [0, 0, 1, 0, 0, 0, 0],
+                  "domains": ["economic"] }
+            ],
+            "cross_domain_edges": [
+                { "from": "temp_band", "to": "dependent_prop" }
+            ]
+        }
+    });
+    evorule_rule_loader::serde_to_tcb(doc)
+}
+
+/// 三域链裁决清单（temp_band/dependent_prop/unrelated 声明序，保序探针）
+fn cross_domain_adjudications() -> JsonValue {
+    let doc = serde_json::json!([
+        { "instruction_type": "temp_band", "state": "adjudicated" },
+        { "instruction_type": "dependent_prop", "state": "adjudicated" },
+        { "instruction_type": "unrelated", "state": "adjudicated" }
+    ]);
+    evorule_rule_loader::serde_to_tcb(doc)
+}
+
+#[tokio::test]
+async fn cross_domain_chain_propagates_new_via_and_outputs() {
+    let router = GraphDispatchServiceRouter::new(noop_fallback());
+    let revision = |value: serde_json::Value| {
+        evorule_rule_loader::serde_to_tcb(serde_json::json!({
+            "constant_id": "k_B", "new_value": value,
+            "source": "codata-review", "verified": true
+        }))
+    };
+
+    // 域外修订：耦合 + 跨域混合传播
+    let args = JsonValue::object_from_pairs(&[
+        ("rule_set", cross_domain_rule_set()),
+        ("revision", revision(serde_json::json!(5))),
+        ("adjudications", cross_domain_adjudications()),
+    ]);
+    let out = router.execute(&svc_params(args)).await.unwrap();
+
+    // 受影响集：temp_band(1,reference) + dependent_prop(2,cross_domain)，按指令排序
+    let affected = out
+        .get("affected_instructions")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    let affected_desc: Vec<(String, i64, String)> = affected
+        .iter()
+        .map(|e| {
+            (
+                e.get("instruction_type")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                e.get("depth").unwrap().as_i64().unwrap(),
+                e.get("via").unwrap().as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        affected_desc,
+        vec![
+            ("dependent_prop".to_string(), 2, "cross_domain".to_string()),
+            ("temp_band".to_string(), 1, "reference".to_string()),
+        ],
+        "手算期望: temp_band 引用闭包 depth1; dependent_prop 跨域单向 depth2（零耦合可达路径）"
+    );
+
+    // 两新出参键
+    assert_eq!(out.get("cross_domain_depth").unwrap().as_i64(), Some(2));
+    let knowledge: Vec<String> = out
+        .get("knowledge_domains_touched")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        knowledge,
+        vec!["economic".to_string(), "engineering".to_string()],
+        "失效集全部指令知识域并集（字典序去重）"
+    );
+
+    // 现有键零动：regime 失效 + 传播深度
+    let invalidated: Vec<String> = out
+        .get("regime_invalidated")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(invalidated, vec!["dependent_prop", "temp_band"]);
+    assert_eq!(out.get("propagation_depth").unwrap().as_i64(), Some(2));
+
+    // 已裁命题反推：temp_band/dependent_prop 条目按声明序保序命中，unrelated 不出现
+    let adj_inv = out
+        .get("adjudications_invalidated")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert_eq!(adj_inv.len(), 2, "反推命中两条目");
+    let hit_types: Vec<&str> = adj_inv
+        .iter()
+        .map(|e| e.get("instruction_type").unwrap().as_str().unwrap())
+        .collect();
+    assert_eq!(hit_types, vec!["temp_band", "dependent_prop"], "保序");
+    assert!(
+        adj_inv
+            .iter()
+            .all(|e| e.get("state").unwrap().as_str() == Some("adjudicated")),
+        "原始条目原样保留"
+    );
+
+    // 域内修订：直接失效集为空 → 跨域亦不传播（现行门不变）
+    let args_in = JsonValue::object_from_pairs(&[
+        ("rule_set", cross_domain_rule_set()),
+        ("revision", revision(serde_json::json!(0.5))),
+        ("adjudications", cross_domain_adjudications()),
+    ]);
+    let out_in = router.execute(&svc_params(args_in)).await.unwrap();
+    assert_eq!(
+        out_in.get("cross_domain_depth").unwrap().as_i64(),
+        Some(0),
+        "域内修订跨域深度 = 0"
+    );
+    assert!(out_in
+        .get("knowledge_domains_touched")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let affected_in = out_in
+        .get("affected_instructions")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert_eq!(affected_in.len(), 1, "域内仅引用闭包 temp_band");
+    assert_eq!(
+        affected_in[0].get("via").unwrap().as_str(),
+        Some("reference")
+    );
+}
+
+#[tokio::test]
+async fn same_first_domain_cross_edge_declaration_fails_visible() {
+    let router = GraphDispatchServiceRouter::new(noop_fallback());
+    // 同首域引用（x1/x2 均 physics 域）误声明为跨域边
+    // → 依赖图构建拒收，构建错误自服务层透传（fail-visible）
+    let doc = serde_json::json!({
+        "metadata": {
+            "formula_registry": [
+                { "instruction_type": "x1", "formula": "f1", "dimensions": [1, 0, 0, 0, 0, 0, 0], "domains": ["physics"] },
+                { "instruction_type": "x2", "formula": "f2", "dimensions": [0, 1, 0, 0, 0, 0, 0], "domains": ["physics"] }
+            ],
+            "cross_domain_edges": [{ "from": "x1", "to": "x2" }]
+        }
+    });
+    let args = JsonValue::object_from_pairs(&[
+        ("rule_set", evorule_rule_loader::serde_to_tcb(doc)),
+        ("revision", golden_revision(serde_json::json!(5))),
+        ("adjudications", golden_adjudications()),
+    ]);
+    let err = router.execute(&svc_params(args)).await.unwrap_err();
+    assert!(err.contains("首域相同"), "应点明两端首域相同: {err}");
+    assert!(
+        err.contains("x1") && err.contains("x2"),
+        "诊断应点名两端 id: {err}"
+    );
+    assert!(
+        err.contains("$.metadata.cross_domain_edges"),
+        "诊断应含 JSON 路径: {err}"
+    );
+}

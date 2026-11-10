@@ -15,10 +15,13 @@
 //!   审计链 lifecycle 取数后传入，服务不做生命周期过滤。
 //!
 //! 出参（确定性键序）：
-//! `{"affected_instructions":[{instruction_type,depth,via}…按指令排序],
+//! `{"affected_instructions":[{instruction_type,depth,via}…按指令排序,
+//!   via∈{reference,coupling,cross_domain}],
 //!   "adjudications_invalidated":[原始条目…保序],
+//!   "cross_domain_depth":u64,
 //!   "domains_touched":[[L,M,T,I,Θ,N,J]…字典序去重],
 //!   "graph_digest":"blake3:hex","input_digest":"blake3:hex",
+//!   "knowledge_domains_touched":[知识域…字典序去重],
 //!   "new_value":修订值原样回显,"propagation_depth":u64,
 //!   "regime_invalidated":[指令…排序],"shocked_constant":id,
 //!   "unreferenced_constants":[常数…字典序]}`
@@ -27,7 +30,7 @@
 //! 差集——已声明但零指令登记引用的常数对冲击传播零半径（地震仪不可见），
 //! 本字段使该静默态有痕可观察；与修订对象无关，逐次 invoke 均报告。
 //!
-//! # 传播语义（五步，全确定性）
+//! # 传播语义（六步，全确定性）
 //!
 //! ① 引用闭包：引用边命中修订常数的全部指令 = 直接受影响（depth=1, via=reference）；
 //! ② regime 复查：直接受影响指令在常数域界声明存在时查 new_value——
@@ -35,7 +38,14 @@
 //! ③ 量纲耦合层间传播：沿耦合边自「直接失效集」BFS 至不动点——被波及指令
 //!    入失效集且入受影响集（via=coupling，depth=BFS 层数+1）；直接失效集为空则不传播；
 //! ④ 已裁命题反推：裁决清单中 instruction_type ∈ 失效集的条目原样列入 invalidated；
-//! ⑤ propagation_depth = 受影响集最大 depth（无受影响 = 0）。
+//! ⑤ propagation_depth = 受影响集最大 depth（无受影响 = 0）；
+//! ⑥ 跨域单向传播：与 ③ 同一轮 BFS 混合推进——失效集节点若为某跨域边
+//!    from 端，则 to 入失效集且入受影响集（via=cross_domain，depth=BFS 层数+1），
+//!    跨域波及节点继续参与后续耦合/跨域混合 frontier 至不动点（直接失效集为空
+//!    则不传播，门与 ③ 同一）。出参新增两键：
+//!    `cross_domain_depth` = 受影响集内 via=cross_domain 条目的最大 depth（无 = 0）；
+//!    `knowledge_domains_touched` = 失效集全部指令的知识域归属并集
+//!    （字典序去重；未声明域的指令不贡献）。
 //!
 //! # 确定性
 //!
@@ -54,12 +64,14 @@ use evorule_plugin_kit::NativeService;
 use evorule_reactor::IoResult;
 use evorule_tcb::JsonValue;
 
-use evorule_rule_loader::dep_graph::{build_dependency_graph, DependencyGraph};
+use evorule_rule_loader::dep_graph::{build_dependency_graph, CrossDomainEdge, DependencyGraph};
 
 /// 受影响深度标记：引用闭包（修订常数被直接引用）
 const VIA_REFERENCE: &str = "reference";
 /// 受影响深度标记：量纲耦合层间传播
 const VIA_COUPLING: &str = "coupling";
+/// 受影响深度标记：跨域单向传播（显式声明跨域边 from→to）
+const VIA_CROSS_DOMAIN: &str = "cross_domain";
 
 /// TCB 域 → serde 域转换（服务边界专用；TCB 无 serde 依赖，跨域交接在此收口）。
 ///
@@ -221,7 +233,7 @@ fn parse_adjudications(args: &JsonValue) -> Result<Vec<(String, JsonValue)>, Str
 }
 
 // ============================================================================
-// 冲击传播计算（五步全确定性）
+// 冲击传播计算（六步全确定性）
 // ============================================================================
 
 /// 冲击传播结果（确定性结构：全部集合有序）
@@ -236,11 +248,64 @@ struct ShockOutcome {
     domains_touched: Vec<[i64; 7]>,
     /// 受影响集最大深度（无受影响 = 0）
     propagation_depth: u64,
+    /// 跨域传播最大深度（受影响集内 via=cross_domain 条目的最大 depth；无 = 0）
+    cross_domain_depth: u64,
+    /// 失效指令知识域归属并集（字典序去重；未声明域的指令不贡献）
+    knowledge_domains_touched: Vec<String>,
 }
 
-/// 五步传播推演（引用闭包 → regime 复查 → 耦合 BFS → 命题反推 → 深度汇总）。
+/// 量纲耦合 + 跨域混合 BFS：自失效集边界推进至不动点
+/// （耦合边无向双向邻接；跨域边单向 from→to 仅自源端外扩）。
+/// 波及节点入失效集且入受影响集（depth = BFS 层数 + 1，via 按边型标记）；
+/// 直接失效集为空 = 空 frontier = 不传播（调用方门在种子集）。
+fn propagate_bfs(
+    graph: &DependencyGraph,
+    cross_edges: &[CrossDomainEdge],
+    invalidated: &mut BTreeSet<String>,
+    affected: &mut BTreeMap<String, (u64, &'static str)>,
+) {
+    let mut visited: BTreeSet<String> = invalidated.clone();
+    let mut frontier: Vec<String> = invalidated.iter().cloned().collect();
+    let mut layer: u64 = 0;
+    while !frontier.is_empty() {
+        layer += 1;
+        let mut next: Vec<String> = Vec::new();
+        for node in &frontier {
+            // 混合邻接收集：耦合边无向（双向）+ 跨域边有向（仅 from 端外扩）
+            let mut neighbors: Vec<(&str, &str)> = Vec::new();
+            for edge in &graph.coupling_edges {
+                if edge.a == *node {
+                    neighbors.push((edge.b.as_str(), VIA_COUPLING));
+                } else if edge.b == *node {
+                    neighbors.push((edge.a.as_str(), VIA_COUPLING));
+                }
+            }
+            for edge in cross_edges {
+                if edge.from == *node {
+                    neighbors.push((edge.to.as_str(), VIA_CROSS_DOMAIN));
+                }
+            }
+            for (neighbor, via) in neighbors {
+                if visited.insert(neighbor.to_string()) {
+                    // 被波及指令：入失效集且入受影响集（depth = BFS 层数 + 1）
+                    invalidated.insert(neighbor.to_string());
+                    affected
+                        .entry(neighbor.to_string())
+                        .or_insert((layer + 1, via));
+                    next.push(neighbor.to_string());
+                }
+            }
+        }
+        next.sort();
+        frontier = next;
+    }
+}
+
+/// 六步传播推演（引用闭包 → regime 复查 → 耦合/跨域混合 BFS → 命题反推 → 深度汇总）。
 fn compute_shock(
     graph: &DependencyGraph,
+    cross_edges: &[CrossDomainEdge],
+    instruction_domains: &BTreeMap<String, Vec<String>>,
     constant_id: &str,
     new_value: f64,
     adjudications: &[(String, JsonValue)],
@@ -276,35 +341,10 @@ fn compute_shock(
         .map(|s| ((*s).to_string(), (1u64, VIA_REFERENCE)))
         .collect();
 
-    // ③ 量纲耦合层间传播：自直接失效集 BFS 至不动点（直接失效集为空则不传播）
-    let mut visited: BTreeSet<String> = invalidated.clone();
-    let mut frontier: Vec<String> = invalidated.iter().cloned().collect();
-    let mut layer: u64 = 0;
-    while !frontier.is_empty() {
-        layer += 1;
-        let mut next: Vec<String> = Vec::new();
-        for node in &frontier {
-            for edge in &graph.coupling_edges {
-                let neighbor = if edge.a == *node {
-                    Some(&edge.b)
-                } else if edge.b == *node {
-                    Some(&edge.a)
-                } else {
-                    None
-                };
-                let Some(n) = neighbor else { continue };
-                if visited.insert(n.clone()) {
-                    // 被波及指令：入失效集且入受影响集（depth = BFS 层数 + 1）
-                    invalidated.insert(n.clone());
-                    let depth = layer + 1;
-                    affected.entry(n.clone()).or_insert((depth, VIA_COUPLING));
-                    next.push(n.clone());
-                }
-            }
-        }
-        next.sort();
-        frontier = next;
-    }
+    // ③⑥ 量纲耦合 + 跨域单向混合传播：自直接失效集 BFS 至不动点
+    //     （直接失效集为空则不传播——空 frontier 短路；跨域波及节点
+    //      继续参与后续混合 frontier，与耦合同律取 depth = BFS 层数 + 1）
+    propagate_bfs(graph, cross_edges, &mut invalidated, &mut affected);
 
     // ④ 已裁命题反推：裁决清单中指令命中失效集的条目原样保留（保序）
     let adjudications_invalidated: Vec<JsonValue> = adjudications
@@ -313,8 +353,14 @@ fn compute_shock(
         .map(|(_, item)| item.clone())
         .collect();
 
-    // ⑤ 深度汇总 + 失效指令量纲去重（字典序）
+    // ⑤ 深度汇总 + 失效指令量纲去重（字典序）+ 跨域深度 + 知识域并集
     let propagation_depth = affected.values().map(|(d, _)| *d).max().unwrap_or(0);
+    let cross_domain_depth = affected
+        .values()
+        .filter(|(_, via)| *via == VIA_CROSS_DOMAIN)
+        .map(|(d, _)| *d)
+        .max()
+        .unwrap_or(0);
     let mut domains: BTreeSet<[i64; 7]> = BTreeSet::new();
     for inst in &invalidated {
         if let Some(node) = graph
@@ -325,6 +371,16 @@ fn compute_shock(
             domains.insert(node.dimensions);
         }
     }
+    // 知识域并集：失效集全部指令的域归属（字典序去重；未声明域的指令不贡献）
+    let mut knowledge: BTreeSet<&str> = BTreeSet::new();
+    for inst in &invalidated {
+        if let Some(declared) = instruction_domains.get(inst) {
+            for d in declared {
+                knowledge.insert(d.as_str());
+            }
+        }
+    }
+    let knowledge_domains_touched: Vec<String> = knowledge.into_iter().map(String::from).collect();
 
     ShockOutcome {
         affected: affected
@@ -335,6 +391,8 @@ fn compute_shock(
         adjudications_invalidated,
         domains_touched: domains.into_iter().collect(),
         propagation_depth,
+        cross_domain_depth,
+        knowledge_domains_touched,
     }
 }
 
@@ -380,7 +438,20 @@ impl NativeService for GraphShockPropagate {
             .map_err(|e| format!("输入序列化失败: {e}"))?;
 
         // ── 传播推演 + 出参（确定性键序：BTreeMap 自动排序）──
-        let outcome = compute_shock(&graph, &constant_id, new_value, &adjudications);
+        // 指令→知识域归属映射（从图节点清单物化；跨域波及知识域并集用）
+        let instruction_domains: BTreeMap<String, Vec<String>> = graph
+            .instructions
+            .iter()
+            .map(|n| (n.instruction_type.clone(), n.domains.clone()))
+            .collect();
+        let outcome = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &instruction_domains,
+            &constant_id,
+            new_value,
+            &adjudications,
+        );
         let affected_json: Vec<JsonValue> = outcome
             .affected
             .iter()
@@ -423,11 +494,25 @@ impl NativeService for GraphShockPropagate {
                 "adjudications_invalidated",
                 JsonValue::Array(outcome.adjudications_invalidated),
             ),
+            (
+                "cross_domain_depth",
+                JsonValue::Integer(i64::try_from(outcome.cross_domain_depth).unwrap_or(i64::MAX)),
+            ),
             ("domains_touched", JsonValue::Array(domains_json)),
             ("graph_digest", JsonValue::string(graph.digest)),
             (
                 "input_digest",
                 JsonValue::string(evorule_hash::prefixed(&input_hex)),
+            ),
+            (
+                "knowledge_domains_touched",
+                JsonValue::Array(
+                    outcome
+                        .knowledge_domains_touched
+                        .iter()
+                        .map(|s| JsonValue::string(s.as_str()))
+                        .collect(),
+                ),
             ),
             ("new_value", raw_new_value),
             (
@@ -453,4 +538,248 @@ impl NativeService for GraphShockPropagate {
 /// 声明表构造子：常数修订冲击传播服务
 pub fn mk_graph_shock_propagate() -> Arc<dyn NativeService> {
     Arc::new(GraphShockPropagate)
+}
+
+// ============================================================================
+// 测试（跨域传播语义单元面：直调 compute_shock，手算可溯）
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use serde_json::json;
+
+    /// 语料构建：metadata 直传入依赖图构建器（跨域边显式声明面）
+    fn build_graph(metadata: serde_json::Value) -> DependencyGraph {
+        build_dependency_graph(&json!({ "metadata": metadata })).expect("测试语料应过构建")
+    }
+
+    /// 指令→知识域归属映射（与 execute 同源物化）
+    fn domains_of(graph: &DependencyGraph) -> BTreeMap<String, Vec<String>> {
+        graph
+            .instructions
+            .iter()
+            .map(|n| (n.instruction_type.clone(), n.domains.clone()))
+            .collect()
+    }
+
+    fn adjudication(t: &str) -> (String, JsonValue) {
+        (
+            t.to_string(),
+            JsonValue::object_from_pairs(&[
+                ("instruction_type", JsonValue::string(t)),
+                ("state", JsonValue::string("adjudicated")),
+            ]),
+        )
+    }
+
+    #[test]
+    fn cross_domain_propagation_marks_via_depth_and_domains() {
+        // A(L 轴,工程域,引用 c1) 与 B(T 轴,经济域) 无耦合可达路径；
+        // 域外修订 → A 直接失效 → 跨域边 A→B 单向波及（depth=2, cross_domain）
+        let graph = build_graph(json!({
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0],
+                  "constants": ["c1"], "domains": ["engineering"] },
+                { "instruction_type": "B", "formula": "f_b", "dimensions": [0, 0, 1, 0, 0, 0, 0],
+                  "domains": ["economic"] }
+            ],
+            "cross_domain_edges": [{ "from": "A", "to": "B" }]
+        }));
+        let adjs = vec![adjudication("B"), adjudication("A")];
+        let out = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &domains_of(&graph),
+            "c1",
+            5.0,
+            &adjs,
+        );
+
+        // 受影响集：A(1,reference) + B(2,cross_domain)；跨域深度 = 2
+        assert_eq!(
+            out.affected,
+            vec![
+                ("A".to_string(), 1u64, VIA_REFERENCE),
+                ("B".to_string(), 2u64, VIA_CROSS_DOMAIN),
+            ],
+            "手算期望: A 引用闭包 depth1; B 跨域单向波及 depth2"
+        );
+        assert_eq!(out.propagation_depth, 2);
+        assert_eq!(out.cross_domain_depth, 2, "跨域条目最大深度");
+        // 知识域并集：engineering ∪ economic 字典序
+        assert_eq!(
+            out.knowledge_domains_touched,
+            vec!["economic".to_string(), "engineering".to_string()]
+        );
+        assert_eq!(out.regime_invalidated, vec!["A", "B"]);
+        // 已裁命题反推：B/A 条目按声明序保序命中
+        let hit_types: Vec<String> = out
+            .adjudications_invalidated
+            .iter()
+            .map(|e| {
+                e.get("instruction_type")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(hit_types, vec!["B", "A"], "反推命中须保声明序");
+    }
+
+    #[test]
+    fn mixed_frontier_coupling_then_cross_domain() {
+        // A-B 共享 L 轴耦合；B→C 跨域边；C(T 轴) 与任何人零耦合
+        // 手算: A(1,reference) → B(2,coupling) → C(3,cross_domain)
+        let graph = build_graph(json!({
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0],
+                  "constants": ["c1"], "domains": ["physics"] },
+                { "instruction_type": "B", "formula": "f_b", "dimensions": [1, 0, 0, 0, 0, 0, 0] },
+                { "instruction_type": "C", "formula": "f_c", "dimensions": [0, 0, 1, 0, 0, 0, 0],
+                  "domains": ["economic"] }
+            ],
+            "cross_domain_edges": [{ "from": "B", "to": "C" }]
+        }));
+        let out = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &domains_of(&graph),
+            "c1",
+            5.0,
+            &[],
+        );
+        assert_eq!(
+            out.affected,
+            vec![
+                ("A".to_string(), 1u64, VIA_REFERENCE),
+                ("B".to_string(), 2u64, VIA_COUPLING),
+                ("C".to_string(), 3u64, VIA_CROSS_DOMAIN),
+            ],
+            "混合 frontier: 耦合层1 波及 B, 跨域自 B 层2 波及 C"
+        );
+        assert_eq!(out.cross_domain_depth, 3);
+        assert_eq!(out.propagation_depth, 3);
+        // B 零域声明不贡献；并集字典序去重
+        assert_eq!(
+            out.knowledge_domains_touched,
+            vec!["economic".to_string(), "physics".to_string()]
+        );
+    }
+
+    #[test]
+    fn cross_edge_into_directly_affected_node_keeps_first_via() {
+        // 跨域边指向已直接受影响节点（visited 种子集内）→ 不重复波及，
+        // 既有 (depth, via) 保持 reference，跨域深度不虚增。
+        // X 端不声明域（增量面放行路径），其知识域亦不并入并集
+        let graph = build_graph(json!({
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0],
+                  "constants": ["c1"], "domains": ["physics"] },
+                { "instruction_type": "X", "formula": "f_x", "dimensions": [0, 0, 1, 0, 0, 0, 0],
+                  "constants": ["c1"] }
+            ],
+            "cross_domain_edges": [{ "from": "A", "to": "X" }]
+        }));
+        let out = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &domains_of(&graph),
+            "c1",
+            5.0,
+            &[],
+        );
+        assert_eq!(
+            out.affected,
+            vec![
+                ("A".to_string(), 1u64, VIA_REFERENCE),
+                ("X".to_string(), 1u64, VIA_REFERENCE),
+            ],
+            "直接命中在先, via 保持 reference"
+        );
+        assert_eq!(out.cross_domain_depth, 0, "无 cross_domain 条目 = 0");
+        assert_eq!(out.knowledge_domains_touched, vec!["physics".to_string()]);
+    }
+
+    #[test]
+    fn cross_edge_reverse_direction_does_not_propagate() {
+        // 跨域边单向：B→A 声明下自 A 失效不反向波及 B（to 端不外扩）
+        let graph = build_graph(json!({
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0],
+                  "constants": ["c1"], "domains": ["engineering"] },
+                { "instruction_type": "B", "formula": "f_b", "dimensions": [0, 0, 1, 0, 0, 0, 0],
+                  "domains": ["economic"] }
+            ],
+            "cross_domain_edges": [{ "from": "B", "to": "A" }]
+        }));
+        let out = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &domains_of(&graph),
+            "c1",
+            5.0,
+            &[adjudication("B")],
+        );
+        assert_eq!(
+            out.affected,
+            vec![("A".to_string(), 1u64, VIA_REFERENCE)],
+            "单向传播: 仅引用闭包 A, B 不受影响"
+        );
+        assert_eq!(out.cross_domain_depth, 0);
+        assert_eq!(
+            out.knowledge_domains_touched,
+            vec!["engineering".to_string()]
+        );
+        assert!(
+            out.adjudications_invalidated.is_empty(),
+            "B 未失效 → 其裁决条目不命中"
+        );
+    }
+
+    #[test]
+    fn empty_direct_invalidation_blocks_all_propagation() {
+        // 域内修订 → 直接失效集为空 → 耦合与跨域均不传播（门不变）
+        let graph = build_graph(json!({
+            "constants": [
+                { "constant_id": "c1", "version": "2018", "value_hash": "h1", "domain_lo": 0, "domain_hi": 1 }
+            ],
+            "formula_registry": [
+                { "instruction_type": "A", "formula": "f_a", "dimensions": [1, 0, 0, 0, 0, 0, 0],
+                  "constants": ["c1"], "domains": ["engineering"] },
+                { "instruction_type": "B", "formula": "f_b", "dimensions": [0, 0, 1, 0, 0, 0, 0],
+                  "domains": ["economic"] }
+            ],
+            "cross_domain_edges": [{ "from": "A", "to": "B" }]
+        }));
+        let out = compute_shock(
+            &graph,
+            &graph.cross_edges,
+            &domains_of(&graph),
+            "c1",
+            0.5,
+            &[adjudication("B")],
+        );
+        assert!(out.regime_invalidated.is_empty(), "域内修订零失效");
+        assert_eq!(out.affected.len(), 1, "仅引用闭包 A");
+        assert_eq!(out.cross_domain_depth, 0);
+        assert!(
+            out.knowledge_domains_touched.is_empty(),
+            "零失效 → 知识域并集为空"
+        );
+        assert!(out.adjudications_invalidated.is_empty());
+    }
 }
