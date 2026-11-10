@@ -3279,6 +3279,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace_db.clone(),
         session_ops.clone(),
     ));
+    // HOST-D003 裁决 A 全量：空库时种执行侧默认 workspace（幂等），治理写族
+    // 工具（rule_create 等）自此有可写之家；agent 侧写调用走 needs_approval
+    // 人审提案，activate 激活永远人工。种子失败不阻断启动（fail-visible 日志）。
+    match workspace_service.seed_execution_workspace() {
+        Ok(Some(ws)) => tracing::info!(
+            workspace_id = %ws.id,
+            "seeded execution-side default workspace (name=execution)"
+        ),
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "workspace seed skipped: {e}"),
+    }
     let rule_meta_service = Arc::new(evorule_workspace::RuleMetaService::new(
         workspace_db.clone(),
     ));
