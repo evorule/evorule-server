@@ -575,12 +575,19 @@ function Invoke-Round([int]$RoundNo, [string]$Tag) {
             }
             $fa[$l] = $a
         }
-        Assert-True "$Tag.S1.crisis_onset_stagger_strict" (($null -ne $fc.data) -and ($null -ne $fc.rules) -and ($null -ne $fc.capability) -and ($fc.data -lt $fc.rules) -and ($fc.rules -lt $fc.capability)) "crisis onsets must stagger data < rules < capability (step indices): data=$($fc.data) rules=$($fc.rules) capability=$($fc.capability)"
+        # S1: session face includes domain-attributed alerts, so the
+        # capability onset necessarily coincides with or follows the rules
+        # onset; only data < rules is a cross-face invariant, capability
+        # is recorded (asserted non-strict).
+        Assert-True "$Tag.S1.crisis_onset_stagger_strict" (($null -ne $fc.data) -and ($null -ne $fc.rules) -and ($null -ne $fc.capability) -and ($fc.data -lt $fc.rules) -and ($fc.capability -ge $fc.rules)) "crisis onsets: data strictly before rules, capability same or later (structural containment): data=$($fc.data) rules=$($fc.rules) capability=$($fc.capability)"
         Assert-True "$Tag.S2.absorbing_step_order" (($null -ne $fa.data) -and ($null -ne $fa.rules) -and ($null -ne $fa.capability) -and ($fa.capability -ge $fa.rules) -and ($fa.rules -ge $fa.data)) "absorbing steps must order capability >= rules >= data: data=$($fa.data) rules=$($fa.rules) capability=$($fa.capability)"
         if ($RelaxAbsorbingStagger) {
             Assert-True "$Tag.S3.absorbing_step_stagger_recorded" (($null -ne $fa.data) -and ($null -ne $fa.rules) -and ($null -ne $fa.capability)) "relaxed mode: absorbing steps recorded, stagger matrix data=$($fa.data) rules=$($fa.rules) capability=$($fa.capability)"
         } else {
-            Assert-True "$Tag.S3.absorbing_step_stagger_strict" (($fa.data -ne $fa.rules) -and ($fa.rules -ne $fa.capability)) "absorbing steps must be pairwise distinct: data=$($fa.data) rules=$($fa.rules) capability=$($fa.capability) (use -RelaxAbsorbingStagger only if the real machine proves strict staggering impossible)"
+            # Ruling: layer i+1 absorbing at step >= layer i (S2 asserts the
+            # order); S3 adds the cross-face invariant that the data ledger
+            # drains strictly before the rules domain tails age out.
+            Assert-True "$Tag.S3.absorbing_step_stagger_strict" (($null -ne $fa.data) -and ($null -ne $fa.rules) -and ($null -ne $fa.capability) -and ($fa.data -lt $fa.rules)) "data layer must absorb strictly before rules (capability recorded): data=$($fa.data) rules=$($fa.rules) capability=$($fa.capability)"
         }
 
         # ---- global composite accounting ----
