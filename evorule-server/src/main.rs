@@ -27,7 +27,7 @@
 // C5 (unwrap/expect/panic = deny) 仅约束生产代码;测试代码保留 unwrap 惯例
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -194,6 +194,24 @@ struct FileLogConfig {
     max_size_mb: Option<u64>,
 }
 
+/// 读入运行时 JSON 数据文件，并容忍 UTF-8 BOM。
+///
+/// 部分生成侧工具（典型：Windows PowerShell 的 `Out-File -Encoding utf8`）会写入
+/// UTF-8 BOM(EF BB BF)，而 JSON 解析器把 BOM 当作非法首字符 ⇒ 内容完全合法的
+/// 文件会被判为「JSON 非法」。此处只剥掉 BOM，**内容本身的合法性校验完全不变**；
+/// 命中 BOM 时显式告警（可见而非静默）。
+fn read_runtime_json_text(path: &Path) -> std::io::Result<String> {
+    let raw = std::fs::read_to_string(path)?;
+    if let Some(stripped) = raw.strip_prefix('\u{feff}') {
+        warn!(
+            "运行时 JSON 文件含 UTF-8 BOM，已忽略（仅为编码痕迹，内容校验不变）: {}",
+            path.display()
+        );
+        return Ok(stripped.to_string());
+    }
+    Ok(raw)
+}
+
 /// 加载 JSON 配置文件
 ///
 /// 文件不存在时返回空配置（不报错，允许纯 CLI 启动）。
@@ -202,7 +220,7 @@ struct FileLogConfig {
 fn load_config_file(path: &Option<PathBuf>) -> FileConfig {
     match path {
         Some(p) if p.exists() => {
-            let content = match std::fs::read_to_string(p) {
+            let content = match read_runtime_json_text(p) {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(
@@ -1092,7 +1110,7 @@ fn load_plugin_mounts(path: Option<&PathBuf>) -> Result<Vec<(&'static str, Plugi
             .map(|d| (d.id, PluginMount::All))
             .collect());
     };
-    let content = std::fs::read_to_string(p).map_err(|e| {
+    let content = read_runtime_json_text(p).map_err(|e| {
         format!(
             "读取插件清单失败 {}: {}（自诊断指引: ① 确认 --plugins / paths.plugins 路径正确; \
              ② 确认进程对该文件有读权限; ③ 修复后重启服务）",
@@ -1412,7 +1430,7 @@ fn load_external_plugins(
     let Some(p) = path else {
         return Ok(Vec::new()); // 未配置清单 → 外部插件不装载（显式安装语义，与进程内"缺省全启"相反）
     };
-    let content = std::fs::read_to_string(p).map_err(|e| {
+    let content = read_runtime_json_text(p).map_err(|e| {
         format!(
             "读取插件清单失败 {}: {}（自诊断指引: ① 确认 --plugins 路径正确; \
              ② 确认进程对该文件有读权限）",
@@ -1462,7 +1480,7 @@ fn load_external_plugins(
         } else {
             manifest_base.join(rel_path)
         };
-        let raw = std::fs::read_to_string(&pj).map_err(|e| {
+        let raw = read_runtime_json_text(&pj).map_err(|e| {
             format!(
                 "外部插件清单读取失败 {}: {e}（自诊断指引: ① 路径相对插件清单所在目录; \
                  ② plugin.json 是插件包 SSOT,不可读即拒绝装载）",
@@ -4720,6 +4738,40 @@ mod tests {
         let ids: Vec<&str> = mounts.iter().map(|(id, _)| *id).collect();
         let expected: Vec<&str> = PLUGIN_DEFS.iter().map(|d| d.id).collect();
         assert_eq!(ids, expected);
+    }
+
+    /// 运行时 JSON 数据文件带 UTF-8 BOM 时不得被判为非法内容。
+    ///
+    /// BOM(EF BB BF) 只是编码痕迹：内容合法的清单必须照常装载，
+    /// 不得因文件头的编码标记而启动失败。
+    #[test]
+    fn test_plugin_manifest_utf8_bom_is_accepted() {
+        let dir = TempDir::new().unwrap();
+        let p = write_manifest(
+            &dir,
+            concat!(
+                "\u{feff}",
+                r#"{ "plugins": { "demo-services": { "enabled": true } } }"#
+            ),
+        );
+        let mounts = load_plugin_mounts(Some(&p)).expect("带 BOM 的清单应被接受");
+        assert_eq!(mount_of(&mounts, "demo-services"), &PluginMount::All);
+    }
+
+    /// 助手行为：剥掉 BOM、内容原样保留、缺文件仍报错。
+    #[test]
+    fn test_read_runtime_json_text_strips_bom() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("bom.json");
+        std::fs::write(&p, "\u{feff}{\"a\":1}").unwrap();
+        assert_eq!(read_runtime_json_text(&p).unwrap(), "{\"a\":1}");
+        // 无 BOM 时内容原样返回
+        let p2 = dir.path().join("plain.json");
+        std::fs::write(&p2, "{\"b\":2}").unwrap();
+        assert_eq!(read_runtime_json_text(&p2).unwrap(), "{\"b\":2}");
+        // 文件不存在 → 仍报错(不降级为空串)
+        let err = read_runtime_json_text(&dir.path().join("missing.json")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
