@@ -131,7 +131,24 @@ async fn verify_handler(State(app): State<AppState>, Json(doc): Json<Value>) -> 
             match body.get("verdict").and_then(|v| v.as_str()) {
                 Some("stable") => eq.record_certificate(true),
                 Some("alert") | Some("contradiction") => {
-                    crate::equilibrium_obs::record_alert();
+                    // 域归因（纯观测零拦截）：本判定为全域三态聚合，警情按
+                    // 提案物料包 dataset_id 归账——全部提案同库 = 记入该域；
+                    // 跨库多提案/缺物料包 = 不可单域归因，落全局归因桶 ""
+                    // （不丢账 fail-visible，不静默）。全局计数在
+                    // record_alert_in 内同步 +1，全局口径恒 = 分账之和。
+                    let mut domains: std::collections::BTreeSet<&str> =
+                        std::collections::BTreeSet::new();
+                    if let Some(proposals) = body.get("proposals").and_then(|p| p.as_array()) {
+                        for p in proposals {
+                            if let Some(d) = p.get("dataset_id").and_then(|d| d.as_str()) {
+                                domains.insert(d);
+                            }
+                        }
+                    }
+                    match domains.len() {
+                        1 => eq.record_alert_in(domains.iter().next().copied().unwrap_or_default()),
+                        _ => eq.record_alert_in(""),
+                    }
                     eq.record_certificate(false);
                 }
                 _ => eq.record_certificate(false),
