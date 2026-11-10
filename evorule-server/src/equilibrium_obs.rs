@@ -83,9 +83,18 @@ pub fn shared() -> std::sync::Arc<EquilibriumWindows> {
 /// 一次性取走清空，聚合件零改动）。
 static PENDING_ALERTS: AtomicU64 = AtomicU64::new(0);
 
-/// 一次 alert/contradiction 判定记入当前窗（纯观测，零拦截）。
+/// 当前窗内无域归因警量（capability 独立账累计侧）：[`record_alert`]
+/// 自由函数路径与 [`EquilibriumWindows::record_alert_in`] 空域串路径
+/// 共同归集；窗结算时与全局面同锁成对取走清空（警源三分账：全局 =
+/// capability 分账 + Σ真域分账，逐窗严格成立）。
+static CAPABILITY_PENDING_ALERTS: AtomicU64 = AtomicU64::new(0);
+
+/// 一次 alert/contradiction 判定记入当前窗（纯观测，零拦截）。无域
+/// 归因路径：计入全局窗警量 + capability 独立账（域归因警不再混入
+/// capability 层警源——分账语义直接生效）。
 pub fn record_alert() {
     PENDING_ALERTS.fetch_add(1, Ordering::Relaxed);
+    CAPABILITY_PENDING_ALERTS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 窗结算：取走并清空当前窗 alert 计数（>0 = 本窗有警）。
@@ -135,7 +144,8 @@ fn readjudication_ledger() -> &'static Mutex<ReadjudicationLedger> {
     READJUDICATION_LEDGER.get_or_init(|| Mutex::new(ReadjudicationLedger::default()))
 }
 
-/// 域账键（None = 不可单域归因，落全局归因桶 `""`，与域警账同口径不丢账）。
+/// 待裁 Φ 位势账的域键（None = 不可归因，落 `""` 桶；口径独立且零动——
+/// 警源分账只改警量归因面，位势账 `""` 桶承接待裁位势不受扰）。
 fn domain_key(domain: Option<&str>) -> String {
     domain.unwrap_or("").to_string()
 }
@@ -320,9 +330,12 @@ pub(crate) fn veto_stalled_absorbing(
 
 /// 三层相位复合（结算原子点确定性纯函数；status 呈现面与系统级裁决
 /// 发射共用同一派生，呈现层零二次派生）。三层各自独立三态标签：
-/// - `capability` 层 = 集级相位（窗结算 [`phase_label`] 结果原样透传）；
-/// - `rules` 层 = 域级相位复合：任一域 crisis ⇒ crisis；全域 absorbing
-///   （含空域集）⇒ absorbing；否则 relaxing；
+/// - `capability` 层 = 独立警源相位：无域归因警量独立成账（`record_alert`
+///   自由函数路径 + 空域串路径），capability 相位仅由独立账警量驱动，
+///   域归因警不混入（警源分账语义）；认证 streak 属集级共享（批 2 裁定
+///   维持：域账只分警量不分认证，capability 独立账同口径）；
+/// - `rules` 层 = 真域级相位复合：任一域 crisis ⇒ crisis；全域 absorbing
+///   （含空域集）⇒ absorbing；否则 relaxing（无 `""` 伪域条目）；
 /// - `data` 层 = 位势进度面：位势总和归零 ⇒ absorbing；位势存在且相对
 ///   上一结算窗不降（新扰动或排空停滞）⇒ crisis；位势存在且逐窗下降
 ///   （排空中）⇒ relaxing。（待裁账与位势账同源同排空：单立"待裁>0"
@@ -373,6 +386,20 @@ pub(crate) fn reset_readjudication_state() {
 // 均衡态视图（评估任务发布，status 呈现面取用）
 // ---------------------------------------------------------------------------
 
+/// 本窗警量分账块（只加不改新键；结算原子点快照，与视图同窗同源）。
+/// 不变式 `capability + Σdomains == total` 逐窗严格成立（全局窗警量 =
+/// capability 分账 + Σ真域分账；同锁成对记账+同锁成对排水保证），真机
+/// 断言面可直查。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AlertAttribution {
+    /// 本窗无域归因警量（`record_alert` 自由函数路径 + 空域串路径）。
+    pub capability: u64,
+    /// 本窗按域归因警量（仅真域账，BTreeMap 确定序；零警域不出现）。
+    pub domains: BTreeMap<String, u64>,
+    /// 本窗全局警量（= capability + Σdomains，同一计数器两视图）。
+    pub total: u64,
+}
+
 /// 最近一次窗结算后的均衡态呈现快照。
 ///
 /// `stable = None` = 反应器不可达或读回超时（fail-visible：不猜稳态，
@@ -405,8 +432,9 @@ pub struct EquilibriumView {
     /// 件④振荡报警面）。
     pub stall_domains: Vec<String>,
     /// 三层相位复合（只加不改新键：键 `capability`/`rules`/`data` 各自
-    /// 独立三态标签，键序 BTreeMap 确定性）。capability 层 = 集级相位，
-    /// rules 层 = 域级相位复合，data 层 = 待裁位势面。
+    /// 独立三态标签，键序 BTreeMap 确定性）。capability 层 = 独立警源
+    /// 相位（无归因警量独立成账驱动，域归因警不混入——警源分账语义），
+    /// rules 层 = 真域级相位复合（无伪域条目），data 层 = 待裁位势面。
     pub layer_phases: BTreeMap<String, String>,
     /// 系统级相位标签（三层复合经规则层裁决读回，`crisis`/`relaxing`/
     /// `absorbing`；读回失败回落 `relaxing`，不猜）。
@@ -415,6 +443,9 @@ pub struct EquilibriumView {
     pub system_balanced: bool,
     /// 三层位势总和（Σ域 Φ，与按域分账同一账本两视图；结算原子点快照）。
     pub phi_total: u64,
+    /// 本窗警量分账块（只加不改新键；capability 独立账 + 真域分账 +
+    /// 全局总数，不变式 capability + Σdomains == total 逐窗严格成立）。
+    pub alert_attribution: AlertAttribution,
 }
 
 static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
@@ -432,6 +463,11 @@ static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
     system_phase: String::new(),
     system_balanced: false,
     phi_total: 0,
+    alert_attribution: AlertAttribution {
+        capability: 0,
+        domains: BTreeMap::new(),
+        total: 0,
+    },
 });
 
 /// 发布最近窗结算视图（评估任务内部调用）。
@@ -1151,13 +1187,16 @@ async fn equilibrium_evaluator_loop(
         // 特征量按定义表口径统一提取（提取顺序与平移前逐点一致：
         // 快照 → 窗警排水 → 窗结算 → 结算后快照）。
         let snap = windows.snapshot();
-        // 窗结算成对排水（只加不改：全局侧同一 PENDING_ALERTS 计数器、同一
-        // 窗界，口径零动；按域侧同锁成对取走——全局口径 = 分账之和逐窗严格
-        // 成立；既有 drain_pending_alerts 自由函数保留为零改动兼容面）。
-        let (window_alert_count, domain_alert_counts) = windows.drain_window_alerts();
+        // 窗结算三账成对排水（警源分账语义直接生效：全局侧同一
+        // PENDING_ALERTS 计数器、同一窗界；capability 独立账与按域侧同锁
+        // 成对取走——全局口径 = capability 分账 + Σ真域分账逐窗严格成立；
+        // 既有 drain_pending_alerts 自由函数保留为零改动兼容面）。
+        let (window_alert_count, capability_alert_count, domain_alert_counts) =
+            windows.drain_window_alerts();
         let had_alert = window_alert_count > 0;
         windows.close_window(had_alert);
         windows.record_window_alert_count(window_alert_count);
+        windows.record_capability_window_alert_count(capability_alert_count);
         windows.record_domain_window_alert_counts(&domain_alert_counts);
         let window_cert_count = windows.take_window_cert_count();
         windows.record_window_cert_count(window_cert_count);
@@ -1168,6 +1207,14 @@ async fn equilibrium_evaluator_loop(
         // 派生不做（防读算与窗结算异相竞态）。
         let phase = phase_label(
             &[window_alert_count],
+            cfg.certified_streak_min.max(0) as u64,
+            after.certified_streak,
+        );
+        // capability 层独立警源相位（警源分账语义）：无归因警量独立成账，
+        // 域归因警不再把 capability 层拉进 crisis；集级认证 streak 共享
+        // 维持批 2 裁定（域账只分警量不分认证，capability 独立账同口径）。
+        let capability_phase = phase_label(
+            &[capability_alert_count],
             cfg.certified_streak_min.max(0) as u64,
             after.certified_streak,
         );
@@ -1183,12 +1230,20 @@ async fn equilibrium_evaluator_loop(
             after.certified_streak,
         );
         veto_stalled_absorbing(&mut domain_phases, &stalled);
-        // 三层相位复合（结算原子点纯派生）：capability=集级相位、
-        // rules=域级相位复合、data=位势进度面；位势总和与按域分账同源
+        // 三层相位复合（结算原子点纯派生）：capability=独立警源相位、
+        // rules=真域级相位复合、data=位势进度面；位势总和与按域分账同源
         // （同一快照可回放）。
         let phi_total: u64 = phi_snapshot.values().sum();
-        let layer_phases = compose_layer_phases(phase, &domain_phases, phi_total, prev_phi_total);
+        let layer_phases =
+            compose_layer_phases(capability_phase, &domain_phases, phi_total, prev_phi_total);
         prev_phi_total = phi_total;
+        // 本窗警量分账块（结算原子点快照；不变式 capability + Σdomains
+        // == total 逐窗严格成立）。
+        let alert_attribution = AlertAttribution {
+            capability: capability_alert_count,
+            domains: domain_alert_counts.clone(),
+            total: window_alert_count,
+        };
         // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
         // 链，审计日志留痕；不进发射参数与 status 契约（契约冻结不动）。
         let anchor = windows.settle_window_evidence(
@@ -1259,6 +1314,7 @@ async fn equilibrium_evaluator_loop(
                         system_phase: system_phase.clone(),
                         system_balanced,
                         phi_total,
+                        alert_attribution: alert_attribution.clone(),
                     },
                     None => EquilibriumView {
                         stable: None,
@@ -1275,6 +1331,7 @@ async fn equilibrium_evaluator_loop(
                         system_phase,
                         system_balanced,
                         phi_total,
+                        alert_attribution: alert_attribution.clone(),
                     },
                 }
             }
@@ -1293,6 +1350,7 @@ async fn equilibrium_evaluator_loop(
                 system_phase: "relaxing".to_string(),
                 system_balanced: false,
                 phi_total,
+                alert_attribution,
             },
         };
         publish_view(view);
@@ -1455,14 +1513,21 @@ struct WindowsState {
     /// 窗结算排水——与 pending alert 同型对称）。
     cert_pending: u64,
     /// 本窗内按域 pending 警量（take-and-clear：归因记账即时累计、窗结算
-    /// 与全局面同锁成对排水——与 cert_pending 同型对称；`""` = 全局归因
-    /// 桶，承接空串/不可单域归因警情，不丢账）。
+    /// 与全局面同锁成对排水——与 cert_pending 同型对称；仅真域账：空域串/
+    /// 不可归因警情归 capability 独立账（`CAPABILITY_PENDING_ALERTS`），
+    /// 不落 `""` 桶——分账语义直接生效）。
     domain_alert_pending: BTreeMap<String, u64>,
     /// 按域窗警量尾部环形缓存（只加不改：域 → 最近窗警量序列，旧→新序，
     /// 容量 [`WINDOW_ALERT_TAIL_CAP`]，与 [`Self::window_alert_tail`] 同型
-    /// 语义；`""` = 全局归因桶；在册域每窗必推进一条——无警窗记 0，保持
-    /// 域尾窗序与全局面同型；域自首次归因警情起入册）。
+    /// 语义；仅真域账（`""` 桶已随分账语义移除，rules 层复合不再有伪域
+    /// 条目）；在册域每窗必推进一条——无警窗记 0，保持域尾窗序与全局面
+    /// 同型；域自首次归因警情起入册）。
     domain_alert_tail: BTreeMap<String, VecDeque<u64>>,
+    /// capability 独立账窗警量尾部环形缓存（旧→新序，容量
+    /// [`WINDOW_ALERT_TAIL_CAP`]——无归因警量 [`Self::record_alert`] 自由
+    /// 函数路径 + 空域串路径的尾窗序列，capability 层相位与分账审计的
+    /// 会话级拉取源；与 [`Self::window_alert_tail`] 同型对称）。
+    capability_alert_tail: VecDeque<u64>,
 }
 
 impl EquilibriumWindows {
@@ -1494,21 +1559,28 @@ impl EquilibriumWindows {
         }
     }
 
-    /// 一次 alert/contradiction 判定按域归因记账（只加不改；纯观测零拦截）。
+    /// 一次 alert/contradiction 判定按域归因记账（警源三分账；纯观测
+    /// 零拦截）。
     ///
-    /// 全局口径 = 分账之和：全局 pending 计数与本域 pending 在同一锁内成对
-    /// +1（空串/不可单域归因 → 落全局归因桶 `""`，不丢账——fail-visible
-    /// 优于静默丢弃）。域账自首次归因警情起自作物料化，无预注册域清单
-    /// （非空域串原样入账；既有 [`record_alert`] 自由函数语义零动 = 纯全局
-    /// 计数，兼容面保留）。
+    /// 非空域串 → 真域账（`domain_alert_pending` 同锁成对 +1）；空域串/
+    /// 不可单域归因 → capability 独立账（`CAPABILITY_PENDING_ALERTS`
+    /// 同锁成对 +1，不丢账 fail-visible），不再落 `""` 归因桶伪装成域
+    /// 参与 rules 层复合。全局口径 = capability 分账 + Σ真域分账，逐窗
+    /// 严格成立；既有 [`record_alert`] 自由函数语义 = 无归因路径计入
+    /// capability 账（分账语义直接生效）。
     pub fn record_alert_in(&self, domain: &str) {
         let mut s = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         PENDING_ALERTS.fetch_add(1, Ordering::Relaxed);
-        let key = if domain.is_empty() { "" } else { domain };
-        *s.domain_alert_pending.entry(key.to_string()).or_insert(0) += 1;
+        if domain.is_empty() {
+            CAPABILITY_PENDING_ALERTS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            *s.domain_alert_pending
+                .entry(domain.to_string())
+                .or_insert(0) += 1;
+        }
     }
 
     /// Close one observation window: `had_alert == false` extends the alert-free streak,
@@ -1528,18 +1600,20 @@ impl EquilibriumWindows {
         }
     }
 
-    /// 窗结算成对排水：全局与按域 pending 警量在同一锁内取走清空（全局侧
-    /// 与 [`drain_pending_alerts`] 为同一计数器、同一口径——评估任务改走本
-    /// 入口后，全局口径 = 分账之和逐窗严格成立；自由函数保留为零改动兼容
-    /// 面，返回 (全局窗警量, 按域窗警量)）。
-    pub fn drain_window_alerts(&self) -> (u64, BTreeMap<String, u64>) {
+    /// 窗结算成对排水：全局、capability 独立账与按域 pending 警量在同一
+    /// 锁内取走清空（三账同窗同界；全局侧与 [`drain_pending_alerts`] 为
+    /// 同一计数器、同一口径——评估任务走本入口，全局口径 = capability
+    /// 分账 + Σ真域分账逐窗严格成立；自由函数保留为零改动兼容面，返回
+    /// (全局窗警量, capability 分账, 按域窗警量)）。
+    pub fn drain_window_alerts(&self) -> (u64, u64, BTreeMap<String, u64>) {
         let mut s = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let global = PENDING_ALERTS.swap(0, Ordering::Relaxed);
+        let capability = CAPABILITY_PENDING_ALERTS.swap(0, Ordering::Relaxed);
         let domains = std::mem::take(&mut s.domain_alert_pending);
-        (global, domains)
+        (global, capability, domains)
     }
 
     /// One certificate outcome: stable extends the certified streak, anything else resets it.
@@ -1705,10 +1779,40 @@ impl EquilibriumWindows {
         }
     }
 
+    /// 登记本窗无归因警量进 capability 独立尾窗环形缓存（评估循环每窗
+    /// 结算调用一次；纯观测面只加不改——发射与 status 契约零动）。
+    pub fn record_capability_window_alert_count(&self, count: u64) {
+        let mut s = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if s.capability_alert_tail.len() >= WINDOW_ALERT_TAIL_CAP {
+            s.capability_alert_tail.pop_front();
+        }
+        s.capability_alert_tail.push_back(count);
+    }
+
+    /// 拉取最近 k 窗无归因警量（旧→新序；k 超缓存深度返回现存全部）——
+    /// capability 层独立警源的会话级拉取入口（与 [`Self::window_alert_tail`]
+    /// / [`Self::domain_alert_tail`] 同型成对）。
+    pub fn capability_alert_tail(&self, k: usize) -> Vec<u64> {
+        let s = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let start = s.capability_alert_tail.len().saturating_sub(k);
+        s.capability_alert_tail
+            .iter()
+            .skip(start)
+            .copied()
+            .collect()
+    }
+
     /// 域级相位视图（窗结算原子点发布面取用）：每域以自身窗警量尾部独立
     /// [`phase_label`] 标签；认证 streak 属集级——全局认证连击全域共用同一
     /// 输入（域账只分警量不分认证，该裁定为准）；空域账（尾部无窗）不出
-    /// 现在 map。
+    /// 现在 map；`""` 伪域条目已随警源分账语义移除（无归因警量归 capability
+    /// 独立账，不落域账）。
     pub fn domain_phase_views(
         &self,
         required: u64,
@@ -1924,21 +2028,122 @@ mod tests {
         let _serial = PENDING_ALERTS_TEST_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // 互斥前置清残留（与既有全局计数测试同款口径前提）。
-        drain_pending_alerts();
         let eq = EquilibriumWindows::new();
+        // 互斥前置清残留（全局与 capability 独立账同锁成对清零，与既有
+        // 全局计数测试同款口径前提）。
+        let _ = eq.drain_window_alerts();
         eq.record_alert_in("alpha");
         eq.record_alert_in("alpha");
         eq.record_alert_in("beta");
-        // 空串归因 → 全局归因桶 ""（不丢账，fail-visible）。
+        // 空串/不可归因 → capability 独立账（不再落 `""` 伪域桶，不丢账）。
         eq.record_alert_in("");
-        let (global, domains) = eq.drain_window_alerts();
+        let (global, capability, domains) = eq.drain_window_alerts();
         assert_eq!(domains.get("alpha"), Some(&2));
         assert_eq!(domains.get("beta"), Some(&1));
-        assert_eq!(domains.get(""), Some(&1), "空串归因落全局归因桶");
+        assert!(
+            !domains.contains_key(""),
+            "空串归因不再落伪域桶（警源分账语义直接生效）"
+        );
         let sum: u64 = domains.values().sum();
-        assert_eq!(global, sum, "全局口径 = 分账之和（含 \"\" 桶）");
+        assert_eq!(
+            capability + sum,
+            global,
+            "全局口径 = capability 分账 + Σ真域分账"
+        );
         assert_eq!(global, 4);
+        assert_eq!(capability, 1);
+    }
+
+    #[test]
+    fn test_capability_account_independence_and_tail() {
+        let _serial = PENDING_ALERTS_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let eq = EquilibriumWindows::new();
+        // 互斥前置清残留（全局 + capability 独立账成对清零）。
+        let _ = eq.drain_window_alerts();
+        // 三分账归集：自由函数路径×2 + 空域串路径×1 → capability 独立账；
+        // 真域串路径 → 真域账；域归因警绝不混入 capability 层警源。
+        eq.record_alert_in("phys");
+        eq.record_alert_in("chem");
+        eq.record_alert_in("chem");
+        record_alert();
+        record_alert();
+        eq.record_alert_in("");
+        let (global, capability, domains) = eq.drain_window_alerts();
+        assert_eq!(capability, 3, "自由函数×2 + 空域串×1 归 capability 独立账");
+        assert_eq!(domains.get("phys"), Some(&1));
+        assert_eq!(domains.get("chem"), Some(&2));
+        assert_eq!(global, 6);
+        let sum: u64 = domains.values().sum();
+        assert_eq!(
+            capability + sum,
+            global,
+            "分账不变式：全局 = capability 分账 + Σ真域分账"
+        );
+        // 尾窗环形缓存同型语义（capability / 全局 / 真域三面同窗推进）。
+        eq.close_window(global > 0);
+        eq.record_window_alert_count(global);
+        eq.record_capability_window_alert_count(capability);
+        eq.record_domain_window_alert_counts(&domains);
+        assert_eq!(eq.capability_alert_tail(4), vec![3]);
+        assert_eq!(eq.window_alert_tail(4), vec![6]);
+        assert_eq!(eq.domain_alert_tail("chem", 4), vec![2]);
+        // 环形容量滚动丢最旧且保持旧→新序。
+        for count in 1..=WINDOW_ALERT_TAIL_CAP as u64 {
+            eq.record_capability_window_alert_count(count);
+        }
+        let expected: Vec<u64> = (1..=WINDOW_ALERT_TAIL_CAP as u64).collect();
+        assert_eq!(eq.capability_alert_tail(WINDOW_ALERT_TAIL_CAP), expected);
+    }
+
+    #[test]
+    fn test_layer_compose_capability_independent_of_domain_alerts() {
+        // 层独立性（分账语义的核心断言面）：同窗内域归因警只影响 rules
+        // 层复合，capability 层标签仅由独立账警量驱动；无归因警量反向
+        // 独立驱动 capability crisis 而 rules 层不受扰。
+        let mut domain_phases = BTreeMap::new();
+        domain_phases.insert("alpha".to_string(), "crisis".to_string());
+        let lp = compose_layer_phases("absorbing", &domain_phases, 0, 0);
+        assert_eq!(
+            lp.get("capability").map(String::as_str),
+            Some("absorbing"),
+            "域 crisis 不混入 capability 层（警源分账）"
+        );
+        assert_eq!(lp.get("rules").map(String::as_str), Some("crisis"));
+        assert_eq!(lp.get("data").map(String::as_str), Some("absorbing"));
+        // 反向：capability crisis + 真域全静默（空域集）→ rules absorbing。
+        let empty: BTreeMap<String, String> = BTreeMap::new();
+        let lp = compose_layer_phases("crisis", &empty, 0, 0);
+        assert_eq!(lp.get("capability").map(String::as_str), Some("crisis"));
+        assert_eq!(
+            lp.get("rules").map(String::as_str),
+            Some("absorbing"),
+            "空域集 absorbing（无伪域条目）"
+        );
+        assert_eq!(lp.get("data").map(String::as_str), Some("absorbing"));
+    }
+
+    #[test]
+    fn test_alert_attribution_view_shape() {
+        // 分账块形态：默认零值；不变式 capability + Σdomains == total。
+        assert_eq!(
+            AlertAttribution::default(),
+            AlertAttribution {
+                capability: 0,
+                domains: BTreeMap::new(),
+                total: 0
+            }
+        );
+        let mut domains = BTreeMap::new();
+        domains.insert("phys".to_string(), 2u64);
+        let att = AlertAttribution {
+            capability: 3,
+            domains,
+            total: 5,
+        };
+        let sum: u64 = att.domains.values().sum();
+        assert_eq!(att.capability + sum, att.total);
     }
 
     #[test]
@@ -1951,7 +2156,7 @@ mod tests {
         // 窗 1：两域各 1 警入账（域账自首次归因警情物料化）。
         eq.record_alert_in("alpha");
         eq.record_alert_in("beta");
-        let (global, domains) = eq.drain_window_alerts();
+        let (global, _capability, domains) = eq.drain_window_alerts();
         assert_eq!(global, 2);
         assert_eq!(domains.get("alpha"), Some(&1));
         assert_eq!(domains.get("beta"), Some(&1));
@@ -1961,8 +2166,9 @@ mod tests {
         // 窗 2-17：全域静默 → 在册域每窗推进一条 0（窗序对齐），首警滚出
         // 16 容量环（两域各自 tail 推进）。
         for _ in 0..16 {
-            let (g, d) = eq.drain_window_alerts();
+            let (g, c, d) = eq.drain_window_alerts();
             assert_eq!(g, 0);
+            assert_eq!(c, 0, "静默窗 capability 独立账零分账");
             assert!(d.is_empty(), "静默窗零分账");
             eq.close_window(false);
             eq.record_window_alert_count(g);
@@ -1980,8 +2186,9 @@ mod tests {
         // 窗 18：仅 alpha 域复警 → 两域相位独立：alpha 尾窗有警 = crisis；
         // beta 尾全零 + streak 达标 = absorbing。
         eq.record_alert_in("alpha");
-        let (global, domains) = eq.drain_window_alerts();
+        let (global, capability, domains) = eq.drain_window_alerts();
         assert_eq!(global, 1);
+        assert_eq!(capability, 0, "域归因警不进 capability 独立账（分账语义）");
         assert_eq!(domains.get("alpha"), Some(&1));
         assert!(!domains.contains_key("beta"), "beta 静默窗零分账");
         eq.close_window(global > 0);
@@ -2020,6 +2227,7 @@ mod tests {
             system_phase: String::new(),
             system_balanced: false,
             phi_total: 0,
+            alert_attribution: AlertAttribution::default(),
         });
         let read = view();
         assert_eq!(
@@ -2916,6 +3124,7 @@ mod tests {
             system_phase: String::new(),
             system_balanced: false,
             phi_total: 0,
+            alert_attribution: AlertAttribution::default(),
         });
         let read = view();
         assert_eq!(read.phi_by_domain.get("alpha"), Some(&4));
@@ -3017,6 +3226,7 @@ mod tests {
             system_phase: "absorbing".to_string(),
             system_balanced: true,
             phi_total: 9,
+            alert_attribution: AlertAttribution::default(),
         });
         let read = view();
         assert_eq!(
