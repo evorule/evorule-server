@@ -42,8 +42,8 @@ use serde_json::Value;
 
 pub mod dep_graph;
 pub use dep_graph::{
-    build_dependency_graph, ConstantNode, CouplingEdge, DependencyGraph, DependencyGraphError,
-    InstructionNode, ReferenceEdge,
+    build_dependency_graph, ConstantNode, CouplingEdge, CrossDomainEdge, DependencyGraph,
+    DependencyGraphError, InstructionNode, ReferenceEdge,
 };
 
 /// 宪法 schema 版本（与本 crate 依赖的 rule_schema 副本一致，provenance 用）
