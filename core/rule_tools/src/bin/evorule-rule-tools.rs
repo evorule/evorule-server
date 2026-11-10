@@ -165,7 +165,7 @@ fn run_validate(
     strict: bool,
 ) -> Result<Outcome, String> {
     let mut had_violation = false;
-    let mut validate_one = |f: &Path, content: &str, had_violation: &mut bool| {
+    let validate_one = |f: &Path, content: &str, had_violation: &mut bool| {
         // 按 kind 自动分流：law_set 走 law_set 权威校验器（量纲三层契约），
         // 其余走 rule_set 校验器（既有路径，形态不变）
         let is_law_set = serde_json::from_str::<serde_json::Value>(content)
