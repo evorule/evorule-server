@@ -382,7 +382,9 @@ function Invoke-Round([int]$RoundNo, [string]$Tag) {
             }
             if ($exit -ne 0) { throw "curl exit $exit reading companion status" }
             $raw = [System.IO.File]::ReadAllText($respPath, [System.Text.Encoding]::UTF8)
-            return ($raw | ConvertFrom-Json)
+            # session-level attribution can surface an empty-name domain key
+            # in domain_phases/phi_by_domain; only hashtable parsing accepts it
+            return ($raw | ConvertFrom-Json -AsHashTable)
         }
 
         function Step-Track($Status) {
@@ -433,6 +435,10 @@ function Invoke-Round([int]$RoundNo, [string]$Tag) {
             if ($null -eq $eq) { return $null }
             $lp = $eq.layer_phases
             if ($null -eq $lp) { return $null }
+            if ($lp -is [System.Collections.IDictionary]) {
+                if (-not $lp.Contains($Layer)) { return $null }
+                return $lp[$Layer]
+            }
             $prop = $lp.PSObject.Properties[$Layer]
             if ($null -eq $prop) { return $null }
             return $prop.Value
@@ -459,7 +465,12 @@ function Invoke-Round([int]$RoundNo, [string]$Tag) {
         $baseSt = $baseGate.snapshot
         $lpKeys = @()
         if ($null -ne $baseSt.equilibrium.layer_phases) {
-            $lpKeys = @($baseSt.equilibrium.layer_phases.PSObject.Properties.Name | Sort-Object)
+            $lpObj = $baseSt.equilibrium.layer_phases
+            if ($lpObj -is [System.Collections.IDictionary]) {
+                $lpKeys = @($lpObj.Keys | Sort-Object)
+            } else {
+                $lpKeys = @($lpObj.PSObject.Properties.Name | Sort-Object)
+            }
         }
         Assert-Eq "$Tag.P1.layer_phases_keys_exact" $lpKeys @('capability', 'data', 'rules')
         $lpVals = @()
