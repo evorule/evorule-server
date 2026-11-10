@@ -9,8 +9,8 @@
 //! - 独立 crate（`plugins/graph-dispatch-services`），不修改核心 crate，
 //!   仅经 `IoDispatcher` 挂载（机制同 physics-services / inference-services 先例）。
 //! - 语义底座 = `evorule-rule-loader` 装载产物层的常数依赖图
-//!   （`dep_graph::build_dependency_graph`：指令-常数引用闭包 + 量纲耦合边），
-//!   服务对调用方传入的规则集文档独立物化同构图后做传播推演。
+//!   （`dep_graph::build_dependency_graph`：指令-常数引用闭包 + 量纲耦合边
+//!   + 显式跨域引用边），服务对调用方传入的规则集文档独立物化同构图后做传播推演。
 //!
 //! # 路由设计
 //! - `GraphDispatchServiceRouter` 实现 [`IoHandler`]，按 `params.service_name` 分发：
@@ -21,7 +21,7 @@
 //! # 服务清单（SSOT = official_native_services.json，双侧守卫锁定）
 //! 1. `graph_shock_propagate` — 常数修订冲击半径传播分析：
 //!    引用闭包（depth=1）→ regime 复查（域界闭区间外=失效）→
-//!    量纲耦合层间传播（BFS 至不动点）→ 已裁命题反推；
+//!    量纲耦合层间传播 + 跨域单向传播（混合 BFS 至不动点）→ 已裁命题反推；
 //!    修订提案强制出处元数据（source 非空 + verified 恒真），
 //!    确定性（同输入双跑逐位一致）。
 
