@@ -1959,6 +1959,112 @@ mod tests {
             .expect("条目在沙盒 draft 快照中应放行");
     }
 
+    #[tokio::test]
+    async fn knowledge_entries_pass_evidence_against_rule_snapshot() {
+        // 条目-沙盒一致性协议（knowledge 侧回归；多条目知识种子链实测形态）:
+        // 真实沙盒快照只含规则文本（沙盒测试机只对规则集跑用例），knowledge
+        // 条目走批次级证据（closed+报告 0 失败+指纹绑定），不做逐条内容对照
+        // ——载荷与快照规则零交集的多条目知识包必须放行。
+        let tmp = tempfile::tempdir().unwrap();
+        // 领域 schema 注册（knowledge 条目 D3 强校验需要；knowledge_dir 由
+        // rules_dir 父目录派生）
+        let ddir = tmp.path().join("knowledge").join("domain_schemas");
+        std::fs::create_dir_all(&ddir).unwrap();
+        std::fs::write(
+            ddir.join("seed_surface.json"),
+            r#"{
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "https://evorule.org/schemas/seed-surface/v1.json",
+                "type": "object",
+                "required": ["surface", "summary"],
+                "properties": {"surface": {"type": "string"}, "summary": {"type": "string"}}
+            }"#,
+        )
+        .unwrap();
+        let ws_db = Arc::new(evorule_workspace::WorkspaceDb::in_memory().unwrap());
+        // 快照 = 治理面种子链真实形态：规则体（非知识载荷）
+        let sandbox_id = crate::api::evidence_fixture::seed_pass_sandbox_with_draft(
+            &ws_db,
+            r#"[{"id":"install.governance_surface","transform":[{"params":{"domain":{"inner":[],"type":"all"},"on_true":[]},"type":"branch"}],"version":1},{"id":"install.knowledge_surface","transform":[{"params":{"domain":{"inner":[],"type":"all"},"on_true":[]},"type":"branch"}],"version":1}]"#,
+        );
+        assert_eq!(sandbox_id, 1);
+        let api = test_api(&tmp).with_workspace_db(ws_db);
+        let entry = |id: &str, surface: &str| -> BundleEntry {
+            BundleEntry {
+                entry_id: id.into(),
+                entry_kind: EntryKind::Knowledge,
+                rule_body: serde_json::json!({
+                    "surface": surface,
+                    "summary": format!("{surface} seeded at deploy time"),
+                }),
+                schema_ref: Some("https://evorule.org/schemas/seed-surface/v1.json".into()),
+                provenance: Provenance {
+                    source: "seed:engine-runtime".into(),
+                    clause: None,
+                    document_id: None,
+                    effective_from: None,
+                    effective_to: None,
+                    last_verified: None,
+                    verified_by: None,
+                },
+                domain: "general".into(),
+                tags: vec![],
+                dependencies: vec![],
+                knowledge_kind: None,
+                trust_level: None,
+                license_ref: None,
+                execution_contract: None,
+            }
+        };
+        let mut bundle = DatasetBundle {
+            bundle_schema_version: evorule_bundle::BUNDLE_SCHEMA_VERSION.to_string(),
+            bundle_id: "bundle-protocol-knowledge-v1".into(),
+            dataset: BundleDatasetMeta {
+                dataset_id: "ds-protocol-knowledge".into(),
+                name: "entry-sandbox consistency protocol regression".into(),
+                tenant_id: "org-evorule".into(),
+                instance_id: "org-evorule".into(),
+                versioning: Versioning::default(),
+                version_selection: Some(VersionSelection {
+                    mode: VersionSelectionMode::AutoByEffectiveDate,
+                    pinned_version: None,
+                    pinned_include_patch: None,
+                }),
+                law_ref: Some(LawRef {
+                    document_id: "seed-engine-runtime".into(),
+                    law_version: None,
+                    effective_from: Some("2026-11-09".into()),
+                    effective_to: None,
+                }),
+                view_of: None,
+                event_schemas: vec![],
+            },
+            entries: vec![
+                entry("entry-surface-001", "governance_surface"),
+                entry("entry-surface-002", "knowledge_surface"),
+                entry("entry-surface-003", "execution_rules_surface"),
+            ],
+            data_dependencies: None,
+            recipe_snapshot: None,
+            tests: BundleTests {
+                subset: vec!["sandbox:1".into()],
+                fixtures: vec![],
+                verdict: TestVerdict::Pass,
+            },
+            audit: BundleAudit {
+                exported_at: "2026-11-09T00:00:00Z".into(),
+                exported_by: "seed-deploy".into(),
+                source_version: "v1".into(),
+                content_hash: String::new(),
+                hash_algo: "blake3".into(),
+            },
+            publish_signature: None,
+        };
+        bundle.audit.content_hash = bundle.compute_content_hash();
+        let result = api.import_bundle(&bundle, true).await.unwrap();
+        assert_eq!(result.entry_count, 3, "三条目知识包应整体放行");
+    }
+
     // ===== 发布签名与信任策略（来源认证面）测试 =====
 
     /// 构造测试密钥与已签名包（直接以 ed25519 对 content hash 签名，
