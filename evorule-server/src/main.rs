@@ -2592,6 +2592,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_facts = if let Some(wal_dir) = &cfg.wal_dir {
         let shared_wal = wal_dir.join("shared_facts.wal");
         let shared_meta = wal_dir.join("shared_facts_meta.json");
+        // 共享分区记忆值物理释放（stop-world 压实）：marker 在位时于 recover
+        // 前执行一轮。成功清 marker + 写报告；失败告警、marker 保留、下轮重试
+        // （启动不阻——随后的恢复验链仍是独立 fail-closed 闸）。无 marker 零动作
+        // （缺省不变式）。同时注入 WAL 目录供登记端点写 marker（纯内存模式不注入，
+        // 端点拒绝）。
+        evorule_server::api::shared_compaction::set_shared_wal_dir(wal_dir.clone());
+        match evorule_server::api::shared_compaction::run_requested_compaction(wal_dir) {
+            Ok(report) if report.executed => info!(
+                "共享事实压实完成：释放 {} 条、保留 {} 条（孤立携带 {}），字节 {}→{}，version {}→{}",
+                report.released,
+                report.kept,
+                report.orphans_carried,
+                report.bytes_before,
+                report.bytes_after,
+                report.version_before,
+                report.version_after
+            ),
+            Ok(_) => {}
+            Err(e) => warn!("共享事实压实执行失败（marker 保留，下次启动重试）: {e}"),
+        }
         // 批 H：共享账本锚点（同 EVORULE_ANCHOR_SEED 体系——一密钥护三账本；
         // 未配置 seed=锚点关，行为不变）
         let shared_anchor = evorule_server::anchor_setup::anchor_config_from_env();

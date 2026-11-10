@@ -28,6 +28,7 @@ pub mod plugin_packs;
 pub mod plugin_probe;
 pub mod route_policy_loader;
 pub mod server;
+pub mod shared_compaction;
 pub mod template_render;
 pub mod writeback_forward;
 
