@@ -318,6 +318,42 @@ pub(crate) fn veto_stalled_absorbing(
     }
 }
 
+/// 三层相位复合（结算原子点确定性纯函数；status 呈现面与系统级裁决
+/// 发射共用同一派生，呈现层零二次派生）。三层各自独立三态标签：
+/// - `capability` 层 = 集级相位（窗结算 [`phase_label`] 结果原样透传）；
+/// - `rules` 层 = 域级相位复合：任一域 crisis ⇒ crisis；全域 absorbing
+///   （含空域集）⇒ absorbing；否则 relaxing；
+/// - `data` 层 = 待裁位势面：待裁总数>0 ⇒ crisis；待裁归零且位势总和
+///   ==0 ⇒ absorbing；否则 relaxing。
+///
+/// 返回 map 键序 BTreeMap 确定性（`capability`/`data`/`rules`）。
+pub(crate) fn compose_layer_phases(
+    capability: &str,
+    domain_phases: &BTreeMap<String, String>,
+    pending_total: u64,
+    phi_total: u64,
+) -> BTreeMap<String, String> {
+    let rules = if domain_phases.values().any(|p| p == "crisis") {
+        "crisis"
+    } else if domain_phases.values().all(|p| p == "absorbing") {
+        "absorbing"
+    } else {
+        "relaxing"
+    };
+    let data = if pending_total > 0 {
+        "crisis"
+    } else if phi_total == 0 {
+        "absorbing"
+    } else {
+        "relaxing"
+    };
+    let mut layers = BTreeMap::new();
+    layers.insert("capability".to_string(), capability.to_string());
+    layers.insert("rules".to_string(), rules.to_string());
+    layers.insert("data".to_string(), data.to_string());
+    layers
+}
+
 /// 测试隔离辅助（进程级共享态先到先得坑的复位面，仅测试构建内编译；
 /// 调用方须先取本文件测试串行锁防互串账）。
 #[cfg(test)]
@@ -365,6 +401,17 @@ pub struct EquilibriumView {
     /// 本窗末停滞域集合（pending>0 且 Φ 连续 [`STALL_WINDOWS`] 窗全等；
     /// 件④振荡报警面）。
     pub stall_domains: Vec<String>,
+    /// 三层相位复合（只加不改新键：键 `capability`/`rules`/`data` 各自
+    /// 独立三态标签，键序 BTreeMap 确定性）。capability 层 = 集级相位，
+    /// rules 层 = 域级相位复合，data 层 = 待裁位势面。
+    pub layer_phases: BTreeMap<String, String>,
+    /// 系统级相位标签（三层复合经规则层裁决读回，`crisis`/`relaxing`/
+    /// `absorbing`；读回失败回落 `relaxing`，不猜）。
+    pub system_phase: String,
+    /// 系统级均衡布尔（= 读回 `system_phase` 是否 `absorbing`）。
+    pub system_balanced: bool,
+    /// 三层位势总和（Σ域 Φ，与按域分账同一账本两视图；结算原子点快照）。
+    pub phi_total: u64,
 }
 
 static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
@@ -378,6 +425,10 @@ static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
     phi_by_domain: BTreeMap::new(),
     pending_readjudication: 0,
     stall_domains: Vec::new(),
+    layer_phases: BTreeMap::new(),
+    system_phase: String::new(),
+    system_balanced: false,
+    phi_total: 0,
 });
 
 /// 发布最近窗结算视图（评估任务内部调用）。
@@ -1066,7 +1117,9 @@ const READBACK_POLL: Duration = Duration::from_millis(100);
 /// → 结算观测记录推进证据锚链（复算凭证实锚，审计日志留痕）
 /// → 组装九参发射 `equilibrium_gate` 进单反应器 → 读回
 /// `payload.equilibrium`（立法 v0.12.0 起 gate 接管主契约，
-/// `equilibrium_check` 规则与影子双跑机制已退役）缓存视图供 status 呈现。
+/// `equilibrium_check` 规则与影子双跑机制已退役）→ 追加发射
+/// `system_phase`（三层相位复合的系统级裁决，立法 v0.14.0）读回
+/// `payload.system_phase`（读回失败回落 relaxing）缓存视图供 status 呈现。
 ///
 /// 纯观测零拦截：任何失败路径只影响本任务的视图发布（stable=None），
 /// 不改写任何既有响应路径。
@@ -1125,6 +1178,12 @@ async fn equilibrium_evaluator_loop(
             after.certified_streak,
         );
         veto_stalled_absorbing(&mut domain_phases, &stalled);
+        // 三层相位复合（结算原子点纯派生）：capability=集级相位、
+        // rules=域级相位复合、data=待裁位势面；位势总和与按域分账同源
+        // （同一快照可回放）。
+        let phi_total: u64 = phi_snapshot.values().sum();
+        let layer_phases =
+            compose_layer_phases(phase, &domain_phases, pending_snapshot, phi_total);
         // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
         // 链，审计日志留痕；不进发射参数与 status 契约（契约冻结不动）。
         let anchor = windows.settle_window_evidence(
@@ -1148,34 +1207,72 @@ async fn equilibrium_evaluator_loop(
         // payload.equilibrium/_cause，影子双跑与比对机制随 equilibrium_check
         // 规则退役同批退场；undetermined 经 cause=missing_observation 可辨。
         let view = match api.send_command(instr) {
-            Ok(_) => match read_verdict(&api, baseline_version, "equilibrium", "equilibrium_cause")
-                .await
-            {
-                Some((verdict, cause)) => EquilibriumView {
-                    stable: verdict.as_deref().map(|s| s == "stable"),
-                    last_cause: cause,
-                    window_secs: cfg.window_secs,
-                    in_rate,
-                    digest_rate,
-                    phase,
-                    domain_phases: domain_phases.clone(),
-                    phi_by_domain: phi_snapshot.clone(),
-                    pending_readjudication: pending_snapshot,
-                    stall_domains: stalled.clone(),
-                },
-                None => EquilibriumView {
-                    stable: None,
-                    last_cause: Some("readback_timeout".to_string()),
-                    window_secs: cfg.window_secs,
-                    in_rate,
-                    digest_rate,
-                    phase,
-                    domain_phases: domain_phases.clone(),
-                    phi_by_domain: phi_snapshot.clone(),
-                    pending_readjudication: pending_snapshot,
-                    stall_domains: stalled.clone(),
-                },
-            },
+            Ok(_) => {
+                let gate =
+                    read_verdict(&api, baseline_version, "equilibrium", "equilibrium_cause").await;
+                // 系统级相位（三层复合经规则层裁决）：gate 读回后追加发送
+                // system_phase 指令并读回 payload.system_phase；读回失败
+                // 回落 relaxing 且均衡布尔置假（fail-visible 不猜，不 panic）。
+                let readback_baseline = match api.snapshot().await {
+                    Ok((_, _, v)) => v,
+                    Err(_) => u64::MAX,
+                };
+                let system_readback = match api
+                    .send_command(build_system_phase_instruction(&layer_phases, phi_total))
+                {
+                    Ok(_) => {
+                        read_verdict(
+                            &api,
+                            readback_baseline,
+                            "system_phase",
+                            "system_phase_cause",
+                        )
+                        .await
+                    }
+                    Err(_) => None,
+                };
+                let (system_phase, system_balanced) = match system_readback {
+                    Some((Some(p), _)) => {
+                        let balanced = p == "absorbing";
+                        (p, balanced)
+                    }
+                    _ => ("relaxing".to_string(), false),
+                };
+                match gate {
+                    Some((verdict, cause)) => EquilibriumView {
+                        stable: verdict.as_deref().map(|s| s == "stable"),
+                        last_cause: cause,
+                        window_secs: cfg.window_secs,
+                        in_rate,
+                        digest_rate,
+                        phase,
+                        domain_phases: domain_phases.clone(),
+                        phi_by_domain: phi_snapshot.clone(),
+                        pending_readjudication: pending_snapshot,
+                        stall_domains: stalled.clone(),
+                        layer_phases: layer_phases.clone(),
+                        system_phase: system_phase.clone(),
+                        system_balanced,
+                        phi_total,
+                    },
+                    None => EquilibriumView {
+                        stable: None,
+                        last_cause: Some("readback_timeout".to_string()),
+                        window_secs: cfg.window_secs,
+                        in_rate,
+                        digest_rate,
+                        phase,
+                        domain_phases: domain_phases.clone(),
+                        phi_by_domain: phi_snapshot.clone(),
+                        pending_readjudication: pending_snapshot,
+                        stall_domains: stalled.clone(),
+                        layer_phases: layer_phases.clone(),
+                        system_phase,
+                        system_balanced,
+                        phi_total,
+                    },
+                }
+            }
             Err(e) => EquilibriumView {
                 stable: None,
                 last_cause: Some(format!("reactor_unavailable: {e}")),
@@ -1187,6 +1284,10 @@ async fn equilibrium_evaluator_loop(
                 phi_by_domain: phi_snapshot,
                 pending_readjudication: pending_snapshot,
                 stall_domains: stalled,
+                layer_phases,
+                system_phase: "relaxing".to_string(),
+                system_balanced: false,
+                phi_total,
             },
         };
         publish_view(view);
@@ -1271,6 +1372,46 @@ fn build_equilibrium_gate_instruction(
     );
     let mut instr = BTreeMap::new();
     instr.insert("type".to_string(), JsonValue::string("equilibrium_gate"));
+    instr.insert("params".to_string(), JsonValue::Object(params));
+    JsonValue::Object(instr)
+}
+
+/// 组装 `system_phase` 指令（系统级相位裁决立法 v0.14.0 参数面：调用方
+/// 在结算原子点把三层复合折算成四整数参数直传，规则层只比大小）。
+fn build_system_phase_instruction(
+    layer_phases: &BTreeMap<String, String>,
+    phi_total: u64,
+) -> evorule_tcb::JsonValue {
+    use std::collections::BTreeMap;
+
+    use evorule_tcb::JsonValue;
+
+    let layer_total = layer_phases.len() as i64;
+    let layers_in_crisis = layer_phases
+        .values()
+        .filter(|p| p.as_str() == "crisis")
+        .count() as i64;
+    let layers_absorbing = layer_phases
+        .values()
+        .filter(|p| p.as_str() == "absorbing")
+        .count() as i64;
+
+    let mut params = BTreeMap::new();
+    params.insert(
+        "layers_in_crisis".to_string(),
+        JsonValue::Integer(layers_in_crisis),
+    );
+    params.insert(
+        "layers_absorbing".to_string(),
+        JsonValue::Integer(layers_absorbing),
+    );
+    params.insert("layer_total".to_string(), JsonValue::Integer(layer_total));
+    params.insert(
+        "phi_total".to_string(),
+        JsonValue::Integer(phi_total as i64),
+    );
+    let mut instr = BTreeMap::new();
+    instr.insert("type".to_string(), JsonValue::string("system_phase"));
     instr.insert("params".to_string(), JsonValue::Object(params));
     JsonValue::Object(instr)
 }
@@ -1870,6 +2011,10 @@ mod tests {
             phi_by_domain: BTreeMap::new(),
             pending_readjudication: 0,
             stall_domains: Vec::new(),
+            layer_phases: BTreeMap::new(),
+            system_phase: String::new(),
+            system_balanced: false,
+            phi_total: 0,
         });
         let read = view();
         assert_eq!(
@@ -2762,11 +2907,112 @@ mod tests {
             phi_by_domain: phi,
             pending_readjudication: 6,
             stall_domains: vec!["alpha".to_string()],
+            layer_phases: BTreeMap::new(),
+            system_phase: String::new(),
+            system_balanced: false,
+            phi_total: 0,
         });
         let read = view();
         assert_eq!(read.phi_by_domain.get("alpha"), Some(&4));
         assert_eq!(read.pending_readjudication, 6);
         assert_eq!(read.stall_domains, vec!["alpha".to_string()]);
+        // 既有字段零动（回归口径）。
+        assert_eq!(read.window_secs, 60);
+        assert_eq!(read.phase, "relaxing");
+        assert_eq!(read.stable, None);
+    }
+
+    #[test]
+    fn test_compose_layer_phases() {
+        // 场景 1：rules 层任一域 crisis ⇒ crisis；data 层待裁>0 ⇒ crisis；
+        // capability 层集级相位原样透传。BTreeMap 键序确定性断言。
+        let mut rules = BTreeMap::new();
+        rules.insert("alpha".to_string(), "absorbing".to_string());
+        rules.insert("beta".to_string(), "crisis".to_string());
+        let layers = compose_layer_phases("relaxing", &rules, 2, 7);
+        let keys: Vec<&str> = layers.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            vec!["capability", "data", "rules"],
+            "键序 BTreeMap 确定性"
+        );
+        assert_eq!(
+            layers.get("capability").map(String::as_str),
+            Some("relaxing")
+        );
+        assert_eq!(layers.get("rules").map(String::as_str), Some("crisis"));
+        assert_eq!(layers.get("data").map(String::as_str), Some("crisis"));
+
+        // 场景 2：三层全 absorbing（rules 层含空域集同判 absorbing）且
+        // data 层待裁归零、位势总和为零 ⇒ absorbing。
+        let empty = BTreeMap::new();
+        let layers = compose_layer_phases("absorbing", &empty, 0, 0);
+        assert_eq!(
+            layers.get("capability").map(String::as_str),
+            Some("absorbing")
+        );
+        assert_eq!(
+            layers.get("rules").map(String::as_str),
+            Some("absorbing"),
+            "空域集全域 absorbing 同判"
+        );
+        assert_eq!(layers.get("data").map(String::as_str), Some("absorbing"));
+
+        // 场景 3：混合（无 crisis、吸收未满员）⇒ rules 层 relaxing；data
+        // 层待裁归零而位势总和>0 ⇒ relaxing。
+        let mut mixed = BTreeMap::new();
+        mixed.insert("alpha".to_string(), "absorbing".to_string());
+        mixed.insert("beta".to_string(), "relaxing".to_string());
+        let layers = compose_layer_phases("relaxing", &mixed, 0, 5);
+        assert_eq!(layers.get("rules").map(String::as_str), Some("relaxing"));
+        assert_eq!(
+            layers.get("data").map(String::as_str),
+            Some("relaxing"),
+            "待裁归零而位势总和>0 仍 relaxing"
+        );
+    }
+
+    #[test]
+    fn test_view_carries_system_phase() {
+        let _serial = PENDING_ALERTS_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // 缺省视图：空三层账 / 未裁决系统相位 / 非均衡 / 零位势总和。
+        let d = EquilibriumView::default();
+        assert!(d.layer_phases.is_empty());
+        assert_eq!(d.system_phase, "");
+        assert!(!d.system_balanced);
+        assert_eq!(d.phi_total, 0);
+        // 视图发布通道透传：四新字段经 publish_view/view() 往返。phase 保持
+        // 词表内、stable 保持 None：进程级共享态不扰动并行读取（同款口径）。
+        let mut layer_phases = BTreeMap::new();
+        layer_phases.insert("capability".to_string(), "absorbing".to_string());
+        layer_phases.insert("rules".to_string(), "absorbing".to_string());
+        layer_phases.insert("data".to_string(), "absorbing".to_string());
+        publish_view(EquilibriumView {
+            stable: None,
+            last_cause: None,
+            window_secs: 60,
+            in_rate: 0,
+            digest_rate: 0,
+            phase: "relaxing",
+            domain_phases: BTreeMap::new(),
+            phi_by_domain: BTreeMap::new(),
+            pending_readjudication: 0,
+            stall_domains: Vec::new(),
+            layer_phases,
+            system_phase: "absorbing".to_string(),
+            system_balanced: true,
+            phi_total: 9,
+        });
+        let read = view();
+        assert_eq!(
+            read.layer_phases.get("capability").map(String::as_str),
+            Some("absorbing")
+        );
+        assert_eq!(read.system_phase, "absorbing");
+        assert!(read.system_balanced);
+        assert_eq!(read.phi_total, 9);
         // 既有字段零动（回归口径）。
         assert_eq!(read.window_secs, 60);
         assert_eq!(read.phase, "relaxing");
