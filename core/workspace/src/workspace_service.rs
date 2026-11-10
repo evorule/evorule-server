@@ -96,6 +96,32 @@ impl WorkspaceService {
         Ok(ws)
     }
 
+    /// 启动种子（HOST-D003 裁决 A 全量）：workspace 库为空时种一个执行侧
+    /// 默认 workspace（name=`execution`，owner=`system`），使治理写族工具
+    /// （rule_create/rule_activate 等，agent 侧走 needs_approval 人审提案）
+    /// 有可写之家。非空库不种（幂等）。返回 Some(种下的记录)。
+    pub fn seed_execution_workspace(&self) -> WorkspaceResult<Option<WorkspaceRecord>> {
+        let existing = self.db.list_workspaces(None)?;
+        if !existing.is_empty() {
+            return Ok(None);
+        }
+        let now = Utc::now();
+        let ws = WorkspaceRecord {
+            id: ulid::Ulid::new().to_string(),
+            name: "execution".to_string(),
+            owner_id: "system".to_string(),
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            state: WorkspaceState::Active,
+            description: Some("execution-side default workspace (seeded at startup)".to_string()),
+        };
+        self.db.insert_workspace(&ws)?;
+        self.db
+            .insert_member(&ws.id, "system", MemberRole::Owner.as_str())?;
+        Ok(Some(ws))
+    }
+
     /// 获取工作空间
     pub async fn get_workspace(&self, id: &str) -> WorkspaceResult<WorkspaceRecord> {
         self.db.get_workspace(id)
@@ -545,6 +571,29 @@ mod tests {
             description: None,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn seed_execution_workspace_seeds_only_when_empty() {
+        // 空库 → 种下 execution workspace（幂等键=库名单非空即停）
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (svc, _ops) = make_service();
+            let seeded = svc.seed_execution_workspace().expect("seed should succeed");
+            assert!(seeded.is_some(), "空库应种下 execution workspace");
+            assert_eq!(seeded.as_ref().unwrap().name, "execution");
+            assert_eq!(
+                seeded.as_ref().unwrap().owner_id,
+                "system",
+                "种子 owner=system（装机操作者身份由治理部署面另行归属）"
+            );
+            // 非空 → 不重复种
+            let again = svc.seed_execution_workspace().expect("second seed");
+            assert!(again.is_none(), "非空库不重复种");
+            let list = svc.list_workspaces(None).await.expect("list");
+            assert_eq!(list.len(), 1, "仍只有一个 workspace");
+            assert_eq!(list[0].name, "execution");
+        });
     }
 
     #[test]
