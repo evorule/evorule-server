@@ -94,6 +94,243 @@ pub fn drain_pending_alerts() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// Φ 位势与待裁观测（分层分域：law_id → (domain, h_p, lvl_p)；纯观测零拦截）
+// ---------------------------------------------------------------------------
+
+/// 一次待重裁入账条目（graph_shock_propagate 结果回包 `pending_readjudication[]`
+/// 元素经 law 注册面映射后的 server 侧记账产物）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingReadjudication {
+    /// law/指令 id（与 law_set 注册面同 id 空间）。
+    pub law_id: String,
+    /// 归属域（law 的 domains[0]；None = 不可单域归因）。
+    pub domain: Option<String>,
+    /// 版本链高度 h_p（重裁水位 lvl_p 推进上限；来自 law 注册面
+    /// max_version_depth）。
+    pub chain_height: u32,
+}
+
+/// 单 law 待重裁账目：(归属域, 链高 h_p, 重裁水位 lvl_p)。
+#[derive(Debug, Clone)]
+struct PendingEntry {
+    domain: Option<String>,
+    height: u32,
+    level: u32,
+}
+
+/// 待重裁账（Φ 位势增量维护面）：Φ_dom = Σ_p (h_p − lvl_p)，入账/推进点
+/// 成对增量增减（O(1) 摊还，不重算）；全局待裁总数 = Σ(h_p − lvl_p)，
+/// 与按域分账同一账本两视图。
+#[derive(Debug, Default)]
+struct ReadjudicationLedger {
+    entries: BTreeMap<String, PendingEntry>,
+    phi_by_domain: BTreeMap<String, u64>,
+    pending_total: u64,
+}
+
+static READJUDICATION_LEDGER: std::sync::OnceLock<Mutex<ReadjudicationLedger>> =
+    std::sync::OnceLock::new();
+
+fn readjudication_ledger() -> &'static Mutex<ReadjudicationLedger> {
+    READJUDICATION_LEDGER.get_or_init(|| Mutex::new(ReadjudicationLedger::default()))
+}
+
+/// 域账键（None = 不可单域归因，落全局归因桶 `""`，与域警账同口径不丢账）。
+fn domain_key(domain: Option<&str>) -> String {
+    domain.unwrap_or("").to_string()
+}
+
+/// 待重裁入账（纯观测零拦截）。
+///
+/// - 同 law_id 同 (domain, h_p) 重复入账 = no-op 守卫（不重复计）；
+/// - 同 law_id 不同 (domain, h_p) 以新值为准刷新（旧 Φ 贡献成对减除，
+///   新值自 lvl=0 重计）；
+/// - Φ 与全局待裁总数同一锁内成对增量维护。
+pub fn record_pending_readjudication(entries: &[PendingReadjudication]) {
+    let mut ledger = readjudication_ledger()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for e in entries {
+        if let Some(old) = ledger.entries.get(&e.law_id) {
+            if old.domain == e.domain && old.height == e.chain_height {
+                continue;
+            }
+        }
+        if let Some(old) = ledger.entries.remove(&e.law_id) {
+            let outstanding = u64::from(old.height.saturating_sub(old.level));
+            let key = domain_key(old.domain.as_deref());
+            if let Some(phi) = ledger.phi_by_domain.get_mut(&key) {
+                *phi = phi.saturating_sub(outstanding);
+                if *phi == 0 {
+                    ledger.phi_by_domain.remove(&key);
+                }
+            }
+            ledger.pending_total = ledger.pending_total.saturating_sub(outstanding);
+        }
+        ledger.entries.insert(
+            e.law_id.clone(),
+            PendingEntry {
+                domain: e.domain.clone(),
+                height: e.chain_height,
+                level: 0,
+            },
+        );
+        let key = domain_key(e.domain.as_deref());
+        let phi = ledger.phi_by_domain.entry(key).or_insert(0);
+        *phi = phi.saturating_add(u64::from(e.chain_height));
+        ledger.pending_total = ledger
+            .pending_total
+            .saturating_add(u64::from(e.chain_height));
+    }
+}
+
+/// 重裁推进（纯观测零拦截）：该 law 重裁水位 lvl_p +1，封顶 h_p（单调只升
+/// 不降，封顶后再推进 no-op）；Φ_dom 与全局待裁总数成对 −1。未知 law_id
+/// no-op（纯观测，无需 fail-visible）。
+pub fn record_readjudicated(law_id: &str) {
+    let mut ledger = readjudication_ledger()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(entry) = ledger.entries.get_mut(law_id) else {
+        return;
+    };
+    if entry.level >= entry.height {
+        return;
+    }
+    entry.level += 1;
+    let key = domain_key(entry.domain.as_deref());
+    if let Some(phi) = ledger.phi_by_domain.get_mut(&key) {
+        *phi = phi.saturating_sub(1);
+        if *phi == 0 {
+            ledger.phi_by_domain.remove(&key);
+        }
+    }
+    ledger.pending_total = ledger.pending_total.saturating_sub(1);
+}
+
+/// 当前按域待裁位势（Φ_dom = Σ_p (h_p − lvl_p)；零值域不出现在 map）。
+pub fn phi_by_domain() -> BTreeMap<String, u64> {
+    readjudication_ledger()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .phi_by_domain
+        .clone()
+}
+
+/// 全局待裁总数（Σ(h_p − lvl_p)，与 [`phi_by_domain`] 按域分账同一账本
+/// 两视图）。
+pub fn pending_readjudication_total() -> u64 {
+    readjudication_ledger()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pending_total
+}
+
+// ---------------------------------------------------------------------------
+// 振荡报警（件④：停滞域判定与一次报警；纯观测零拦截）
+// ---------------------------------------------------------------------------
+
+/// 停滞窗数阈值：某域 pending>0 且 Φ 连续 N 窗全等 = 停滞（报警一次）。
+pub const STALL_WINDOWS: u32 = 2;
+
+/// 停滞判定态（进程级共享，结算循环每窗推进一次）。
+#[derive(Debug, Default)]
+struct StallState {
+    /// domain → 上一窗 Φ（缺席 = 零/无基线）。
+    last_phi: BTreeMap<String, u64>,
+    /// domain → 当前正值 Φ 持续窗数（首见窗立基线计 1，全等递增）。
+    stagnation_windows: BTreeMap<String, u32>,
+    /// 当前停滞域集合（解除即移除可复位；在集即一次报警守卫——持续停滞
+    /// 不重复累报）。
+    stalled: std::collections::BTreeSet<String>,
+}
+
+static STALL_STATE: std::sync::OnceLock<Mutex<StallState>> = std::sync::OnceLock::new();
+
+fn stall_state() -> &'static Mutex<StallState> {
+    STALL_STATE.get_or_init(|| Mutex::new(StallState::default()))
+}
+
+/// 结算点停滞判定（评估循环每窗调用一次；纯观测零拦截）。返回本窗末
+/// 停滞域集合（view.stall_domains 契约面）。
+///
+/// 逐域判定：pending>0 即 Φ_dom>0（按域分账与全域总数同一账本两视图，
+/// 域 pending>0 ⟺ Φ_dom>0）且 Φ 跨窗保持全等。正值首见窗立基线计 1，
+/// 其后每窗全等递增，计数达 [`STALL_WINDOWS`] 即停滞并经 [`record_alert`]
+/// 报警一次（计入窗警量账，既有 certified-streak/相位机自然响应）；Φ
+/// 变化或归零（pending 归零）= 停滞解除，计数复位并出集（解除后再停滞
+/// 可再报）。
+pub(crate) fn settle_stall_domains(phi: &BTreeMap<String, u64>) -> Vec<String> {
+    let mut st = stall_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // 基线域 ∪ 本窗域并集，BTreeMap 确定序（重放可复算）。
+    let mut domains: Vec<String> = st.last_phi.keys().cloned().collect();
+    for k in phi.keys() {
+        if !st.last_phi.contains_key(k) {
+            domains.push(k.clone());
+        }
+    }
+    for d in domains {
+        let cur = phi.get(&d).copied().unwrap_or(0);
+        let last = st.last_phi.get(&d).copied().unwrap_or(0);
+        let count = if cur > 0 && cur == last {
+            st.stagnation_windows.get(&d).copied().unwrap_or(0) + 1
+        } else if cur > 0 {
+            // 正值但与上一窗不等（或首见）：以新值立基线计 1。
+            1
+        } else {
+            0
+        };
+        if count == 0 {
+            // 停滞解除（Φ 归零 = pending 归零）：全量复位。
+            st.stagnation_windows.remove(&d);
+            st.stalled.remove(&d);
+            st.last_phi.remove(&d);
+        } else {
+            if cur != last {
+                // Φ 变化：旧停滞出集复位，新值重立基线。
+                st.stalled.remove(&d);
+            }
+            st.stagnation_windows.insert(d.clone(), count);
+            st.last_phi.insert(d.clone(), cur);
+            if count >= STALL_WINDOWS && st.stalled.insert(d.clone()) {
+                // 新停滞域报警一次（持续停滞在集不重复累报）。
+                record_alert();
+            }
+        }
+    }
+    st.stalled.iter().cloned().collect()
+}
+
+/// 停滞域吸收相否决门（结算点相位标签处加门；相位机只加不改）：stalled
+/// 域的 absorbing 判定被否决回落 relaxing，crisis/relaxing 照常推算
+/// （否决门只压"深稳态"误判，不改其余两态推算；停滞域不在相位 map
+/// 不虚造条目）。
+pub(crate) fn veto_stalled_absorbing(
+    domain_phases: &mut BTreeMap<String, String>,
+    stalled: &[String],
+) {
+    for d in stalled {
+        if domain_phases.get(d).map(String::as_str) == Some("absorbing") {
+            domain_phases.insert(d.clone(), "relaxing".to_string());
+        }
+    }
+}
+
+/// 测试隔离辅助（进程级共享态先到先得坑的复位面，仅测试构建内编译；
+/// 调用方须先取本文件测试串行锁防互串账）。
+#[cfg(test)]
+pub(crate) fn reset_readjudication_state() {
+    *readjudication_ledger()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ReadjudicationLedger::default();
+    *stall_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = StallState::default();
+}
+
+// ---------------------------------------------------------------------------
 // 均衡态视图（评估任务发布，status 呈现面取用）
 // ---------------------------------------------------------------------------
 
@@ -116,8 +353,18 @@ pub struct EquilibriumView {
     /// 域级相位（只加不改：每域独立三态标签，域 id → `crisis`/`relaxing`/
     /// `absorbing`）。每域以自身窗警量尾部独立 [`phase_label`]；认证
     /// streak 属集级——全局认证连击全域共用同一输入（域账只分警量不分
-    /// 认证，该裁定为准）。空域账（尾部无窗）不出现在 map。
+    /// 认证，该裁定为准）。空域账（尾部无窗）不出现在 map。stalled 域的
+    /// absorbing 判定在结算点被否决门回落 relaxing（见
+    /// [`veto_stalled_absorbing`]）。
     pub domain_phases: BTreeMap<String, String>,
+    /// 按域待裁位势（Φ_dom = Σ_p (h_p − lvl_p)；零值域不出现）。结算
+    /// 原子点快照（publish_view 前），与相位同源可回放。
+    pub phi_by_domain: BTreeMap<String, u64>,
+    /// 全局待裁总数（Σ(h_p − lvl_p)，与按域分账同一账本两视图）。
+    pub pending_readjudication: u64,
+    /// 本窗末停滞域集合（pending>0 且 Φ 连续 [`STALL_WINDOWS`] 窗全等；
+    /// 件④振荡报警面）。
+    pub stall_domains: Vec<String>,
 }
 
 static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
@@ -128,6 +375,9 @@ static VIEW: Mutex<EquilibriumView> = Mutex::new(EquilibriumView {
     digest_rate: 0,
     phase: "relaxing",
     domain_phases: BTreeMap::new(),
+    phi_by_domain: BTreeMap::new(),
+    pending_readjudication: 0,
+    stall_domains: Vec::new(),
 });
 
 /// 发布最近窗结算视图（评估任务内部调用）。
@@ -865,10 +1115,16 @@ async fn equilibrium_evaluator_loop(
         );
         // 域级相位（只加不改）：每域以自身窗警量尾部独立标签；认证 streak
         // 属集级（全局认证连击全域共用同一输入，域账只分警量不分认证）。
-        let domain_phases = windows.domain_phase_views(
+        // Φ 位势与待裁观测快照（结算原子点，publish_view 前）+ 停滞判定
+        // （件④）与停滞域吸收相否决门。
+        let phi_snapshot = phi_by_domain();
+        let pending_snapshot = pending_readjudication_total();
+        let stalled = settle_stall_domains(&phi_snapshot);
+        let mut domain_phases = windows.domain_phase_views(
             cfg.certified_streak_min.max(0) as u64,
             after.certified_streak,
         );
+        veto_stalled_absorbing(&mut domain_phases, &stalled);
         // 复算凭证实锚（元数据面）：本窗结算观测记录推进观测流增量哈希
         // 链，审计日志留痕；不进发射参数与 status 契约（契约冻结不动）。
         let anchor = windows.settle_window_evidence(
@@ -903,6 +1159,9 @@ async fn equilibrium_evaluator_loop(
                     digest_rate,
                     phase,
                     domain_phases: domain_phases.clone(),
+                    phi_by_domain: phi_snapshot.clone(),
+                    pending_readjudication: pending_snapshot,
+                    stall_domains: stalled.clone(),
                 },
                 None => EquilibriumView {
                     stable: None,
@@ -912,6 +1171,9 @@ async fn equilibrium_evaluator_loop(
                     digest_rate,
                     phase,
                     domain_phases: domain_phases.clone(),
+                    phi_by_domain: phi_snapshot.clone(),
+                    pending_readjudication: pending_snapshot,
+                    stall_domains: stalled.clone(),
                 },
             },
             Err(e) => EquilibriumView {
@@ -922,6 +1184,9 @@ async fn equilibrium_evaluator_loop(
                 digest_rate,
                 phase,
                 domain_phases,
+                phi_by_domain: phi_snapshot,
+                pending_readjudication: pending_snapshot,
+                stall_domains: stalled,
             },
         };
         publish_view(view);
@@ -1408,14 +1673,17 @@ pub struct WindowsSnapshot {
     pub last_coverage: i64,
 }
 
+/// 全局 pending 警量计数面测试串行锁：record_alert/record_alert_in 及
+/// 各排水入口落同一进程级计数器，涉及全局口径断言的测试须互斥执行，
+/// 防并行线程互串账（域侧分账为实例级，不受此锁约束）。文件级
+/// pub(crate)（仅测试构建）：跨模块账面测试（如服务回包映射面）共用
+/// 同一把锁与 reset 面。
+#[cfg(test)]
+pub(crate) static PENDING_ALERTS_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 全局 pending 警量计数面测试串行锁：record_alert/record_alert_in 及
-    /// 各排水入口落同一进程级计数器，涉及全局口径断言的测试须互斥执行，
-    /// 防并行线程互串账（域侧分账为实例级，不受此锁约束）。
-    static PENDING_ALERTS_TEST_SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_window_accounting_and_resets() {
@@ -1599,6 +1867,9 @@ mod tests {
             digest_rate: 0,
             phase: "relaxing",
             domain_phases,
+            phi_by_domain: BTreeMap::new(),
+            pending_readjudication: 0,
+            stall_domains: Vec::new(),
         });
         let read = view();
         assert_eq!(
@@ -2307,5 +2578,198 @@ mod tests {
             !fv.to_map().contains_key("tau_recover_first_difference"),
             "tau_recover family stays out of the inline extraction map"
         );
+    }
+
+    #[test]
+    fn test_phi_ledger_increment_cap_and_noop() {
+        let _serial = PENDING_ALERTS_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_readjudication_state();
+        // 3 条入账（h=2）：alpha×2、beta×1 → Φ = 6。
+        record_pending_readjudication(&[
+            PendingReadjudication {
+                law_id: "law_a".to_string(),
+                domain: Some("alpha".to_string()),
+                chain_height: 2,
+            },
+            PendingReadjudication {
+                law_id: "law_b".to_string(),
+                domain: Some("alpha".to_string()),
+                chain_height: 2,
+            },
+            PendingReadjudication {
+                law_id: "law_c".to_string(),
+                domain: Some("beta".to_string()),
+                chain_height: 2,
+            },
+        ]);
+        assert_eq!(pending_readjudication_total(), 6, "Φ = Σ h_p");
+        assert_eq!(phi_by_domain().get("alpha"), Some(&4), "Φ_dom 按域分账");
+        assert_eq!(phi_by_domain().get("beta"), Some(&2));
+        // 逐级推进：law_a 推满（2 次）→ alpha −2。
+        record_readjudicated("law_a");
+        record_readjudicated("law_a");
+        assert_eq!(phi_by_domain().get("alpha"), Some(&2));
+        assert_eq!(pending_readjudication_total(), 4, "每推进一次 Φ −1");
+        // 封顶断言：lvl+1 不越过 h——推满后再推进 no-op（不产生负位势）。
+        record_readjudicated("law_a");
+        assert_eq!(phi_by_domain().get("alpha"), Some(&2));
+        assert_eq!(pending_readjudication_total(), 4);
+        // 未知 law_id no-op。
+        record_readjudicated("never_accounted");
+        assert_eq!(pending_readjudication_total(), 4);
+        // law_b/law_c 推满 → Φ 清零、pending 清零（零值域不出 map）。
+        record_readjudicated("law_b");
+        record_readjudicated("law_b");
+        record_readjudicated("law_c");
+        record_readjudicated("law_c");
+        assert_eq!(pending_readjudication_total(), 0);
+        assert!(phi_by_domain().is_empty(), "零值域不出现在 map");
+    }
+
+    #[test]
+    fn test_pending_noop_guard_and_refresh() {
+        let _serial = PENDING_ALERTS_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset_readjudication_state();
+        record_pending_readjudication(&[PendingReadjudication {
+            law_id: "law_x".to_string(),
+            domain: Some("alpha".to_string()),
+            chain_height: 3,
+        }]);
+        assert_eq!(pending_readjudication_total(), 3);
+        // 同 (domain, h_p) 重复入账 no-op（不重复计）。
+        record_pending_readjudication(&[PendingReadjudication {
+            law_id: "law_x".to_string(),
+            domain: Some("alpha".to_string()),
+            chain_height: 3,
+        }]);
+        assert_eq!(pending_readjudication_total(), 3);
+        // 推进一次后同域不同 h 刷新 → 以新值为准（旧贡献减除，lvl 归零重计）。
+        record_readjudicated("law_x");
+        assert_eq!(pending_readjudication_total(), 2);
+        record_pending_readjudication(&[PendingReadjudication {
+            law_id: "law_x".to_string(),
+            domain: Some("alpha".to_string()),
+            chain_height: 5,
+        }]);
+        assert_eq!(
+            pending_readjudication_total(),
+            5,
+            "刷新：旧贡献成对减除，新值自 lvl=0 重计"
+        );
+        // 跨域刷新 → 旧域清账、新域重计。
+        record_pending_readjudication(&[PendingReadjudication {
+            law_id: "law_x".to_string(),
+            domain: Some("beta".to_string()),
+            chain_height: 2,
+        }]);
+        assert_eq!(pending_readjudication_total(), 2);
+        let phi = phi_by_domain();
+        assert!(!phi.contains_key("alpha"), "旧域零值不出 map");
+        assert_eq!(phi.get("beta"), Some(&2));
+        // 不可归因（None）落全局归因桶 ""（不丢账，fail-visible 同口径）。
+        record_pending_readjudication(&[PendingReadjudication {
+            law_id: "law_none".to_string(),
+            domain: None,
+            chain_height: 1,
+        }]);
+        assert_eq!(phi_by_domain().get(""), Some(&1));
+        assert_eq!(pending_readjudication_total(), 3);
+    }
+
+    #[test]
+    fn test_stall_alarm_once_and_reset() {
+        let _serial = PENDING_ALERTS_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drain_pending_alerts();
+        reset_readjudication_state();
+        let mut phi = BTreeMap::new();
+        phi.insert("alpha".to_string(), 1_u64);
+        // 窗 1：正值首见 → 立基线计 1，未达阈值不停滞。
+        assert!(settle_stall_domains(&phi).is_empty());
+        assert_eq!(drain_pending_alerts(), 0, "未停滞不报警");
+        // 窗 2：Φ 全等且计数达 STALL_WINDOWS → 停滞入集 + 报警一次。
+        assert_eq!(settle_stall_domains(&phi), vec!["alpha".to_string()]);
+        assert!(
+            drain_pending_alerts() >= 1,
+            "停滞报警经 record_alert 计入窗警量账"
+        );
+        // 窗 3：持续停滞 → 在集不重复累报。
+        assert_eq!(settle_stall_domains(&phi), vec!["alpha".to_string()]);
+        assert_eq!(drain_pending_alerts(), 0, "持续停滞不重复累报");
+        // 窗 4：Φ 变化（1→2）→ 旧停滞出集复位，新值重立基线。
+        let mut phi2 = BTreeMap::new();
+        phi2.insert("alpha".to_string(), 2_u64);
+        assert!(settle_stall_domains(&phi2).is_empty());
+        assert_eq!(drain_pending_alerts(), 0);
+        // 窗 5：新值全等 → 重新停滞 + 再报警（解除复位后再停滞可再报）。
+        assert_eq!(settle_stall_domains(&phi2), vec!["alpha".to_string()]);
+        assert!(drain_pending_alerts() >= 1, "解除复位后重新停滞可再报警");
+        // 窗 6：Φ 归零（pending 归零，域键缺席）→ 解除复位出集。
+        assert!(settle_stall_domains(&BTreeMap::new()).is_empty());
+        assert!(drain_pending_alerts() == 0, "解除后不报警");
+        // STALL_WINDOWS 阈值钉：N=2。
+        assert_eq!(STALL_WINDOWS, 2);
+    }
+
+    #[test]
+    fn test_stalled_absorbing_veto_gate() {
+        // 停滞域 absorbing 否决回落 relaxing；crisis/relaxing 照常推算；
+        // 停滞域不在相位 map 不虚造条目。
+        let mut phases = BTreeMap::new();
+        phases.insert("alpha".to_string(), "absorbing".to_string());
+        phases.insert("beta".to_string(), "crisis".to_string());
+        phases.insert("gamma".to_string(), "relaxing".to_string());
+        veto_stalled_absorbing(&mut phases, &["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(
+            phases.get("alpha").map(String::as_str),
+            Some("relaxing"),
+            "stalled 域 absorbing 判定被否决"
+        );
+        assert_eq!(
+            phases.get("beta").map(String::as_str),
+            Some("crisis"),
+            "crisis 照常推算"
+        );
+        assert_eq!(phases.get("gamma").map(String::as_str), Some("relaxing"));
+        veto_stalled_absorbing(&mut phases, &["never".to_string()]);
+        assert!(!phases.contains_key("never"), "不虚造相位条目");
+    }
+
+    #[test]
+    fn test_view_carries_phi_pending_stall() {
+        // 缺省视图：空 Φ / 零待裁 / 无停滞域。
+        let d = EquilibriumView::default();
+        assert!(d.phi_by_domain.is_empty());
+        assert_eq!(d.pending_readjudication, 0);
+        assert!(d.stall_domains.is_empty());
+        // 视图发布通道透传：新三字段经 publish_view/view() 往返。phase 保持
+        // 词表内、stable 保持 None：进程级共享态不扰动并行读取（同款口径）。
+        let mut phi = BTreeMap::new();
+        phi.insert("alpha".to_string(), 4_u64);
+        publish_view(EquilibriumView {
+            stable: None,
+            last_cause: None,
+            window_secs: 60,
+            in_rate: 0,
+            digest_rate: 0,
+            phase: "relaxing",
+            domain_phases: BTreeMap::new(),
+            phi_by_domain: phi,
+            pending_readjudication: 6,
+            stall_domains: vec!["alpha".to_string()],
+        });
+        let read = view();
+        assert_eq!(read.phi_by_domain.get("alpha"), Some(&4));
+        assert_eq!(read.pending_readjudication, 6);
+        assert_eq!(read.stall_domains, vec!["alpha".to_string()]);
+        // 既有字段零动（回归口径）。
+        assert_eq!(read.window_secs, 60);
+        assert_eq!(read.phase, "relaxing");
+        assert_eq!(read.stable, None);
     }
 }

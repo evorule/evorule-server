@@ -1171,6 +1171,11 @@ impl CompanionHub {
             // 域级相位（只加不改新键：域 id → crisis/relaxing/absorbing；
             // 空域账不出现；认证 streak 属集级全域共用，见视图字段注释）。
             "domain_phases": eq_view.domain_phases,
+            // Φ 位势与待裁观测（只加不改新键）：按域位势 / 全局待裁总数 /
+            // 停滞域集合（件④振荡报警面）。
+            "phi_by_domain": eq_view.phi_by_domain,
+            "pending_readjudication": eq_view.pending_readjudication,
+            "stall_domains": eq_view.stall_domains,
             "window_alert_tail": crate::equilibrium_obs::shared()
                 .window_alert_tail(crate::equilibrium_obs::WINDOW_ALERT_TAIL_CAP),
             "window_cert_tail": crate::equilibrium_obs::shared()

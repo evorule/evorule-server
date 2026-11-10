@@ -13993,11 +13993,20 @@ pub async fn invoke_service_handler(
         // （deterministic 档位等）+ contract_version=信封契约标识（消费方
         // 自检锚：未知版本须显式拒绝而非静默误读）；错误响应保持
         // error/error_kind 形态（成功/失败对称的双元数据面）
-        Ok(result) => Ok(Json(serde_json::json!({
-            "result": tcb_to_serde(&result),
-            "provenance": invoke_provenance(&api, &name),
-            "contract_version": SERVICE_INVOKE_CONTRACT_VERSION,
-        }))),
+        Ok(result) => {
+            // 待重裁位势入账（纯观测零拦截）：仅 graph_shock_propagate 结果
+            // 回包的 pending_readjudication[] 逐条经 law 注册面映射入账，
+            // 映射不到的条目跳过（不猜）；执行/响应语义零修改。
+            let result_value = tcb_to_serde(&result);
+            if name == "graph_shock_propagate" {
+                record_shock_pending_readjudication(&api, &result_value);
+            }
+            Ok(Json(serde_json::json!({
+                "result": result_value,
+                "provenance": invoke_provenance(&api, &name),
+                "contract_version": SERVICE_INVOKE_CONTRACT_VERSION,
+            })))
+        }
         Err(e) => {
             // 批次B（P1-11 错误脱敏）: 错误响应不再内嵌链路错误原文
             // （reqwest Display/上游响应片段可携带内网 URL/端口/报文细节）。
@@ -14082,6 +14091,57 @@ pub async fn invoke_service_handler(
             }
         }
     }
+}
+
+/// graph_shock_propagate 结果回包 → 待重裁位势入账（纯观测零拦截；
+/// [`invoke_service_handler`] 回包点消费，不改执行/响应语义）。
+///
+/// 结果形态（graph-dispatch 契约）：`pending_readjudication:
+/// [{instruction_type, depth, via}, ...]`。instruction_type 映射 law 注册
+/// 面（law_host 全集确定序扫描 id 命中，取该 law 的 domains[0] 与
+/// max_version_depth 作为 (归属域, 链高)；映射不到的条目跳过——不猜）。
+fn record_shock_pending_readjudication(api: &SessionApi, result: &serde_json::Value) {
+    let Some(entries) = result
+        .get("pending_readjudication")
+        .and_then(|v| v.as_array())
+    else {
+        return;
+    };
+    let Some(host) = api.law_host() else {
+        return;
+    };
+    let mut pending: Vec<crate::equilibrium_obs::PendingReadjudication> = Vec::new();
+    for entry in entries {
+        let Some(law_id) = entry.get("instruction_type").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        // law 注册面映射（跨库同 id 先到先得，dataset_ids 确定序；命中 law
+        // 缺 domains[0] → 继续找同 id 命中，全部落空 = 条目跳过）。
+        let mut mapped: Option<crate::equilibrium_obs::PendingReadjudication> = None;
+        for ds in host.dataset_ids() {
+            for law in host.laws_in(ds) {
+                if law.id != law_id {
+                    continue;
+                }
+                let Some(domain) = law.domains.first().cloned() else {
+                    continue;
+                };
+                mapped = Some(crate::equilibrium_obs::PendingReadjudication {
+                    law_id: law_id.to_string(),
+                    domain: Some(domain),
+                    chain_height: law.max_version_depth,
+                });
+                break;
+            }
+            if mapped.is_some() {
+                break;
+            }
+        }
+        if let Some(p) = mapped {
+            pending.push(p);
+        }
+    }
+    crate::equilibrium_obs::record_pending_readjudication(&pending);
 }
 
 // ===== 插件审批代理（external 插件管理面的 server 侧统一入口）=====
@@ -20171,6 +20231,72 @@ mod tests {
             "context": { "source": "bench recheck", "measured_at": "2026-11-07T00:00:00Z" }
         })
         .to_string()
+    }
+
+    /// graph_shock_propagate 结果回包 → 待重裁位势入账（纯观测映射面）：
+    /// instruction_type 命中 law 注册面（domains[0] + max_version_depth）→
+    /// 入账；未命中/缺 instruction_type → 跳过不猜；缺 law_host 装配同跳
+    /// （不 panic，零拦截）。
+    #[test]
+    fn test_shock_pending_readjudication_mapping() {
+        // 进程级共享态串行（与 equilibrium_obs 账面测试互斥防串账）+ 起点清账。
+        let _serial = crate::equilibrium_obs::PENDING_ALERTS_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::equilibrium_obs::reset_readjudication_state();
+        let tmp = tempfile::tempdir().unwrap();
+        let law_set = serde_json::json!({
+            "$schema": "https://evorule.org/schemas/law_set/v1.0.json",
+            "kind": "law_set",
+            "id": "law-obs",
+            "version": "1.0.0",
+            "laws": [{
+                "id": "newton_second",
+                "formula": "F = m * a",
+                "symbols": { "F": "合外力", "m": "质量", "a": "加速度" },
+                "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
+                "domains": ["physical"],
+                "max_version_depth": 2,
+                "monotone_form": true
+            }]
+        });
+        std::fs::write(
+            tmp.path().join("obs.law_set.json"),
+            serde_json::to_vec_pretty(&law_set).unwrap(),
+        )
+        .unwrap();
+        let (host, report) = crate::law_host::LawHost::load_dir(tmp.path());
+        assert_eq!(
+            report.loaded_count(),
+            1,
+            "夹具装配应全绿: {:?}",
+            report.rejected
+        );
+        let api = SessionApi::new(noop_core_eval(), 100).with_law_host(Some(Arc::new(host)));
+        let result = serde_json::json!({
+            "pending_readjudication": [
+                { "instruction_type": "newton_second", "depth": 2, "via": "G" },
+                { "instruction_type": "unknown_law", "depth": 1, "via": "?" },
+                { "depth": 3, "via": "?" }
+            ]
+        });
+        record_shock_pending_readjudication(&api, &result);
+        assert_eq!(
+            crate::equilibrium_obs::pending_readjudication_total(),
+            2,
+            "命中 law 入账 h=max_version_depth；未命中条目跳过"
+        );
+        assert_eq!(
+            crate::equilibrium_obs::phi_by_domain().get("physical"),
+            Some(&2),
+            "domain=law 的 domains[0]"
+        );
+        // 缺 law_host 装配同样跳过（不 panic，零拦截）。
+        let api_no_host = SessionApi::new(noop_core_eval(), 100);
+        record_shock_pending_readjudication(&api_no_host, &result);
+        assert_eq!(crate::equilibrium_obs::pending_readjudication_total(), 2);
+        // 收尾清账（不污染并行账面测试）。
+        crate::equilibrium_obs::reset_readjudication_state();
     }
 
     /// 未配置 law_host → 503 明示（不降级为空判定）
