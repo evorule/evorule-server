@@ -1176,6 +1176,18 @@ impl CompanionHub {
             "phi_by_domain": eq_view.phi_by_domain,
             "pending_readjudication": eq_view.pending_readjudication,
             "stall_domains": eq_view.stall_domains,
+            // 三层相位复合（只加不改）：capability/rules/data 三层各自独立
+            // 三态标签（键序 BTreeMap 确定性），与全局相位同窗快照。
+            "layer_phases": eq_view.layer_phases,
+            // 系统级相位（只加不改）：三层复合经规则层裁决读回的全局相位
+            // 标签；读回失败回落 relaxing（fail-visible 不猜）。
+            "system_phase": eq_view.system_phase,
+            // 系统级均衡布尔（只加不改）= 读回 system_phase 是否 absorbing
+            // （三层全吸收且零位势的裁决面）。
+            "system_balanced": eq_view.system_balanced,
+            // 三层位势总和（只加不改）：Σ域 Φ，与按域分账 phi_by_domain 同
+            // 账本两视图。
+            "phi_total": eq_view.phi_total,
             "window_alert_tail": crate::equilibrium_obs::shared()
                 .window_alert_tail(crate::equilibrium_obs::WINDOW_ALERT_TAIL_CAP),
             "window_cert_tail": crate::equilibrium_obs::shared()
