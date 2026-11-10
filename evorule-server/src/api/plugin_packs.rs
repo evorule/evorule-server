@@ -205,7 +205,10 @@ pub fn load_plugin_packs(
     let Some(p) = manifest_path else {
         return Ok(PluginPackRegistry::empty());
     };
-    let content = std::fs::read_to_string(p).map_err(|e| {
+    // 与 main.rs `load_plugin_mounts` 读同一份 `--plugins` 清单 ⇒ 必须用同一个
+    // BOM 容忍读取助手，否则同一文件在两条读取路径上行为不一致
+    // （进程内挂载认 BOM、pack 注册表不认 ⇒ 启动期行为随模块顺序漂移）。
+    let content = crate::read_runtime_json_text(p).map_err(|e| {
         format!(
             "读取插件清单失败 {}: {}（自诊断指引: ① 确认 --plugins 路径正确; \
              ② 确认进程对该文件有读权限）",
@@ -269,7 +272,10 @@ fn load_pack_with_ports(
     pack_json_path: &FsPath,
     allowed_ports: &[u16],
 ) -> Result<PluginPack, String> {
-    let raw = std::fs::read_to_string(pack_json_path).map_err(|e| {
+    // pack.json 是人工编辑的声明式包 SSOT ⇒ 与插件清单同属「易被 BOM 污染」的
+    // 运行时 JSON ⇒ 走同一个 BOM 容忍读取助手（字节上限按剥离后的长度判定，
+    // 比含 BOM 时更保守，不放宽防线）。
+    let raw = crate::read_runtime_json_text(pack_json_path).map_err(|e| {
         format!(
             "pack.json 读取失败 {}: {e}（自诊断指引: ① 路径相对插件清单所在目录; \
              ② pack.json 是声明式包 SSOT,不可读即拒绝装载）",
