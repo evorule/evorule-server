@@ -57,7 +57,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "用法: reconcile <events.ndjson> [era|density|sentinel|entropy:N|oos:SCOPE|BASE]"
+            "用法: reconcile <events.ndjson> [era|density|frame|fidelity GOAL|sentinel|entropy:N|oos:SCOPE|BASE]"
         );
         std::process::exit(2);
     }
@@ -119,6 +119,33 @@ fn main() {
             let input = JsonValue::object_from_pairs(&[("events", events_arg.clone())]);
             match svc.execute(&input) {
                 Ok(out) => println!("{}", envelope("trace_approval_density", out)),
+                Err(e) => println!("{{\"error\":\"{e}\"}}"),
+            }
+            ran = true;
+        } else if mode == "frame" {
+            let svc = evorule_trace_audit_services::services::mk_frame_pairing();
+            let input = JsonValue::object_from_pairs(&[("events", events_arg.clone())]);
+            match svc.execute(&input) {
+                Ok(out) => println!("{}", envelope("trace_frame_pairing", out)),
+                Err(e) => println!("{{\"error\":\"{e}\"}}"),
+            }
+            ran = true;
+        } else if mode == "fidelity" {
+            // goal = 本模式之后的全部参数以空格连接(与正本 CLI 传 goal 文本的
+            // 形态一致);无后续参数时 fail-visible 走服务缺参指引
+            let goal_start = args
+                .iter()
+                .position(|m| m == "fidelity")
+                .map(|i| i + 1)
+                .unwrap_or(args.len());
+            let goal = args[goal_start..].join(" ");
+            let svc = evorule_trace_audit_services::services::mk_target_fidelity();
+            let input = JsonValue::object_from_pairs(&[
+                ("events", events_arg.clone()),
+                ("goal", JsonValue::string(goal)),
+            ]);
+            match svc.execute(&input) {
+                Ok(out) => println!("{}", envelope("trace_target_fidelity", out)),
                 Err(e) => println!("{{\"error\":\"{e}\"}}"),
             }
             ran = true;

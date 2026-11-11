@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 事件流审计原生服务（行为熵/审批密度/分代切分/时代混杂哨兵）。
+//! 事件流审计原生服务（目标保真度/行为熵/审批密度/帧对账/分代切分/时代混杂哨兵/范围外写入）。
 //!
 //! # 定位
 //! - run 事件流（CLI `run --json` / WS 帧同构面 / journal NDJSON 行）的
-//!   确定性判据计算：行为熵序列与半程分布散度（M2 面）、审批密度与
-//!   帧对账未闭合清单（M3 面）、分代切分索引与时代混杂哨兵（混档
-//!   判读无效化门）。判据公式与离线分析器工具同源（同输入同输出
+//!   确定性判据计算：goal 关键词覆盖率（M1 面）、行为熵序列与半程分布散度
+//!   （M2 面）、审批密度（M3 面）、帧对账未闭合清单（M3 对账面）、分代
+//!   切分索引与时代混杂哨兵（混档判读无效化门）、写类路径范围外检出
+//!   （M4 面）。判据公式与离线分析器工具同源（同输入同输出
 //!   对账口径），服务面供治理侧规则与宿主工具直接调用；
 //! - 独立 crate，仅经 `IoDispatcher` 挂载；纯计算，无浮点出参
 //!   （小数一律 4 位定点字符串）、无时钟、无随机；同输入双跑位元一致。
@@ -18,7 +19,7 @@
 //!   - 未命中 → 回落 `ServiceRegistryHandler`（HTTP，兼容其他外部服务）
 //!
 //! # 统一信封 v1
-//! - 全部 5 服务成功出参含保留键 `status`（恒 `determined`）+
+//! - 全部 7 服务成功出参含保留键 `status`（恒 `determined`）+
 //!   `determinism`（恒 `bitwise_replayable`）；无 scale/rounding 入参——
 //!   舍入语义内建固定（4 位小数、与判据正本 round(x,4) 语义一致），
 //!   契约按适用条件诚实省略 scale 入参；error 走框架 `Err(String)`
@@ -38,10 +39,12 @@
 //!
 //! # 服务清单（SSOT = official_native_services.json，双侧守卫锁定）
 //! 1. `trace_behavior_entropy` — 行为熵窗口序列 + 前后半程 JS 散度
-//! 2. `trace_approval_density` — 审批密度/结论分布/流级错误/帧对账清单
+//! 2. `trace_approval_density` — 审批密度/结论分布/流级错误
 //! 3. `trace_era_split` — 分代切分索引（J1∨J2 边界，J3 旁证）
 //! 4. `trace_era_mixing_sentinel` — 时代混杂哨兵（ts 跨代 + 模型混桶）
 //! 5. `trace_out_of_scope_writes` — 写类工具路径集合 + 范围外写入检出（M4 面）
+//! 6. `trace_frame_pairing` — 帧对账未闭合四清单（M3 对账面）
+//! 7. `trace_target_fidelity` — goal 关键词覆盖率（M1 面）
 
 #![forbid(unsafe_code)]
 
@@ -59,7 +62,7 @@ pub mod services;
 
 use services::{
     mk_approval_density, mk_behavior_entropy, mk_era_mixing_sentinel, mk_era_split,
-    mk_out_of_scope_writes,
+    mk_frame_pairing, mk_out_of_scope_writes, mk_target_fidelity,
 };
 
 // ============================================================================
@@ -82,7 +85,7 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
     NativeServiceDef {
         name: "trace_approval_density",
         sensitive: false,
-        description: "run 事件流审批密度判据(ApprovalRequired/Result 密度与结论分布、auto_rejected 计数、流级 Error 计数与消息样本、帧对账未闭合清单,确定性)",
+        description: "run 事件流审批密度判据(ApprovalRequired/Result 密度与结论分布、auto_rejected 计数、流级 Error 计数与消息样本,确定性)",
         parameters: Some(
             r#"{"type":"object","properties":{"events":{"type":"array","items":{"type":"object"},"maxItems":200000,"description":"NDJSON 事件对象数组"}},"required":["events"]}"#,
         ),
@@ -114,6 +117,24 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
             r#"{"type":"object","properties":{"events":{"type":"array","items":{"type":"object"},"maxItems":200000,"description":"NDJSON 事件对象数组(CLI run --json / WS 帧同构面/journal 行皆可)"},"scope":{"type":"string","description":"可选任务范围根目录(绝对路径);缺省不检出只收集写路径"},"base_dir":{"type":"string","description":"可选相对写路径解析基准(绝对路径);缺省=scope 根"},"write_tools":{"type":"array","items":{"type":"string"},"description":"可选写型工具名值域扩展;缺省五件(写型工具名值域可按 agent 定义扩展)"}},"required":["events"]}"#,
         ),
         make: mk_out_of_scope_writes,
+    },
+    NativeServiceDef {
+        name: "trace_frame_pairing",
+        sensitive: false,
+        description: "run 事件流帧对账判据(ToolCall/ToolResult 与 ApprovalRequired/ApprovalResult 逐帧 FIFO 配对不校验 id 一致:ToolResult 出队否则 result_without_call,ApprovalResult 出队否则 result_without_request;审批帧标识取 proposal_id 真值字符串否则回落 tool_name 缺省 ?;出参未闭合四清单,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"events":{"type":"array","items":{"type":"object"},"maxItems":200000,"description":"NDJSON 事件对象数组"}},"required":["events"]}"#,
+        ),
+        make: mk_frame_pairing,
+    },
+    NativeServiceDef {
+        name: "trace_target_fidelity",
+        sensitive: false,
+        description: "run 事件流目标保真度判据(逐 LlmDone content 对 goal 关键词覆盖率:关键词集=goal 小写后连续字母/数字/下划线词块去 <=2 字符短词,覆盖率=命中词数/词总数 4 位舍入整值出整数带小数出字符串;空词集出 coverage 空数组与 note 提示,确定性)",
+        parameters: Some(
+            r#"{"type":"object","properties":{"events":{"type":"array","items":{"type":"object"},"maxItems":200000,"description":"NDJSON 事件对象数组"},"goal":{"type":"string","description":"任务目标文本(关键词集=连续字母/数字/下划线词块,去 <=2 字符短词)"}},"required":["events","goal"]}"#,
+        ),
+        make: mk_target_fidelity,
     },
 ];
 
@@ -168,7 +189,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
-        assert_eq!(total, 5, "本插件声明表应为 5 项");
+        assert_eq!(total, 7, "本插件声明表应为 7 项");
         for d in NATIVE_SERVICES {
             let _ = (d.make)();
         }

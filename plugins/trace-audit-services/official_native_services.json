@@ -10,7 +10,7 @@
         {
             "name": "trace_approval_density",
             "sensitive": false,
-            "description": "run 事件流审批密度判据(ApprovalRequired/Result 密度与结论分布、auto_rejected 计数、流级 Error 计数与消息样本、帧对账未闭合清单,确定性)"
+            "description": "run 事件流审批密度判据(ApprovalRequired/Result 密度与结论分布、auto_rejected 计数、流级 Error 计数与消息样本,确定性)"
         },
         {
             "name": "trace_era_split",
@@ -26,6 +26,16 @@
             "name": "trace_out_of_scope_writes",
             "sensitive": false,
             "description": "写类工具路径集合与范围外写入检出(ToolCall 写类工具的 path/file/target 三键按序取首个非空字符串;scope 根区间判定=词典法零 FS 零 CWD,相对路径经 base_dir 入参解析,缺省=scope 根;写型工具值域可经 write_tools 扩展;归一失败判范围外,确定性)"
+        },
+        {
+            "name": "trace_frame_pairing",
+            "sensitive": false,
+            "description": "run 事件流帧对账判据(ToolCall/ToolResult 与 ApprovalRequired/ApprovalResult 逐帧 FIFO 配对不校验 id 一致:ToolResult 出队否则 result_without_call,ApprovalResult 出队否则 result_without_request;审批帧标识取 proposal_id 真值字符串否则回落 tool_name 缺省 ?;出参未闭合四清单,确定性)"
+        },
+        {
+            "name": "trace_target_fidelity",
+            "sensitive": false,
+            "description": "run 事件流目标保真度判据(逐 LlmDone content 对 goal 关键词覆盖率:关键词集=goal 小写后连续字母/数字/下划线词块去 <=2 字符短词,覆盖率=命中词数/词总数 4 位舍入整值出整数带小数出字符串;空词集出 coverage 空数组与 note 提示,确定性)"
         }
     ]
 }
