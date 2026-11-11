@@ -1013,32 +1013,60 @@ mod tests {
 
     /// 远端源登记（rule serve）：按 dataset_id 拉取快照包组装部署件 → 与本地
     /// 同注册路径（valid + 未验证第三态同源透出 + blake3 锚 + 版本锚入 source）；
-    /// x-api-key 凭证随拉取面传递（缺凭证 = 快照包端点 401 → 隔离拒收）
+    /// x-api-key 凭证随拉取面传递（缺凭证 = 快照包端点 401 → 隔离拒收）。
+    /// mock 载荷 = evorule-bundle 内嵌分布面契约 golden（`CONTRACT_GOLDEN`）：
+    /// server 消费面对表的快照包 wire 形状与 rule serve 端点同源（bundle 侧
+    /// wire 形状演进时本测试即红，不再依赖人工回归）。
     #[tokio::test]
     async fn load_remote_registers_law_set_from_rule_serve() {
-        let payload = placeholder_law_set_doc("remote-slice")["laws"][0].clone();
+        // 契约对表前置断言：golden 本身满足 law_host 消费契约（版本锚指针 +
+        // 全条目 law_set 域件 URI + 零转译载荷在位），mock 因此可与真实
+        // rule serve 端点同构。
+        let golden: serde_json::Value =
+            serde_json::from_str(evorule_bundle::CONTRACT_GOLDEN).expect("contract golden parses");
+        assert_eq!(
+            golden
+                .pointer("/dataset/versioning/current")
+                .and_then(|v| v.as_str()),
+            Some("v2"),
+            "golden /dataset/versioning/current must anchor the dataset version"
+        );
+        let golden_entries = golden
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .expect("golden entries must be an array");
+        assert!(!golden_entries.is_empty(), "golden must carry entries");
+        for entry in golden_entries {
+            let entry_id = entry.get("entry_id").and_then(|v| v.as_str()).unwrap_or("");
+            assert!(!entry_id.is_empty(), "golden entry_id must be present");
+            assert!(
+                entry
+                    .get("schema_ref")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .starts_with("https://evorule.org/schemas/domain/law_set/"),
+                "golden entry {entry_id} schema_ref must be a law_set domain URI"
+            );
+            assert!(
+                entry
+                    .get("rule_body")
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false),
+                "golden entry {entry_id} must carry the zero-translation payload"
+            );
+        }
+
         let app = axum::Router::new().route(
             "/v1/datasets/{id}/bundle",
             axum::routing::get(move |headers: axum::http::HeaderMap| {
-                let payload = payload.clone();
+                let golden = golden.clone();
                 async move {
                     if headers.get("x-api-key").and_then(|v| v.to_str().ok())
                         != Some("evorule_e2e_key")
                     {
                         return Err(axum::http::StatusCode::UNAUTHORIZED);
                     }
-                    Ok(axum::Json(serde_json::json!({
-                        "dataset": {
-                            "dataset_id": "remote-slice",
-                            "versioning": { "current": "v2" }
-                        },
-                        "entries": [{
-                            "entry_id": "a",
-                            "schema_ref":
-                                "https://evorule.org/schemas/domain/law_set/law/v1.0.json",
-                            "rule_body": payload
-                        }]
-                    })))
+                    Ok(axum::Json(golden))
                 }
             }),
         );
@@ -1048,9 +1076,10 @@ mod tests {
 
         let http = reqwest::Client::new();
         let base = format!("http://{addr}");
+        let dataset_id = "lawset-demo".to_string();
         // 凭证缺失：快照包端点 401 → 该集隔离拒收（fail-visible）
         let (_host_no_key, report) =
-            LawHost::load_remote(&http, &base, None, &["remote-slice".to_string()]).await;
+            LawHost::load_remote(&http, &base, None, std::slice::from_ref(&dataset_id)).await;
         assert_eq!(
             report.loaded_count(),
             0,
@@ -1062,12 +1091,13 @@ mod tests {
             "报因应指明 401: {:?}",
             report.rejected[0].errors
         );
-        // 凭证在位：登记成功（与本地同校验路径）
+        // 凭证在位：登记成功（与本地同校验路径；golden law si_units 为不可解析
+        // 形态 → 未验证第三态同源透出）
         let (host, report) = LawHost::load_remote(
             &http,
             &base,
             Some("evorule_e2e_key"),
-            &["remote-slice".to_string()],
+            std::slice::from_ref(&dataset_id),
         )
         .await;
         assert_eq!(
@@ -1079,7 +1109,7 @@ mod tests {
         let st = &report.loaded[0];
         assert!(st.valid, "远端件应过同一校验路径: {:?}", st.errors);
         assert_eq!(st.unverified_count, 1, "远端件第三态同源透出");
-        assert_eq!(st.unverified_laws, vec!["test_law".to_string()]);
+        assert_eq!(st.unverified_laws, vec!["newtons_second_law".to_string()]);
         assert!(st.content_digest.is_some(), "组装文档应有 blake3 锚");
         assert!(
             st.source.contains("@ v2"),
@@ -1087,7 +1117,7 @@ mod tests {
             st.source
         );
         assert!(
-            host.lookup("remote-slice", "test_law").is_some(),
+            host.lookup("lawset-demo", "newtons_second_law").is_some(),
             "双键可查"
         );
     }

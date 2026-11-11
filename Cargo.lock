@@ -584,7 +584,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -895,7 +895,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -978,6 +978,19 @@ name = "evorule-bundle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0f8ac0c777ab39df03b06f3ccc414f66846e4d87e8ca13bc837b0215c013406"
+dependencies = [
+ "evorule-hash",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "evorule-bundle"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c809c0cee9a3ce71a2b66ad162c509de205798d492516f92722e8f114ec48428"
 dependencies = [
  "evorule-hash",
  "jsonschema",
@@ -1399,7 +1412,7 @@ dependencies = [
  "axum",
  "base64",
  "clap",
- "evorule-bundle",
+ "evorule-bundle 0.6.2",
  "evorule-hash",
  "http-body-util",
  "rand 0.8.7",
@@ -1472,7 +1485,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "evorule-browser-services",
- "evorule-bundle",
+ "evorule-bundle 0.7.0",
  "evorule-checksum-services",
  "evorule-cny-services",
  "evorule-criticality",
@@ -1603,7 +1616,7 @@ dependencies = [
  "axum",
  "chrono",
  "ed25519-dalek",
- "evorule-bundle",
+ "evorule-bundle 0.7.0",
  "evorule-hash",
  "evorule-rule-schema",
  "evorule-rule-tools",
@@ -2784,7 +2797,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3282,7 +3295,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3670,7 +3683,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4276,7 +4289,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5126,7 +5139,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
