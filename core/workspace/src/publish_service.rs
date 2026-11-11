@@ -1037,8 +1037,8 @@ fn build_publish_bundle(
     published_by: &str,
 ) -> evorule_bundle::DatasetBundle {
     use evorule_bundle::{
-        BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, Provenance, VersionSelection,
-        VersionSelectionMode, Versioning, BUNDLE_SCHEMA_VERSION,
+        BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetKind, Provenance,
+        VersionSelection, VersionSelectionMode, Versioning, BUNDLE_SCHEMA_VERSION,
     };
 
     let hash_prefix = item.ruleset_hash.get(..16).unwrap_or(&item.ruleset_hash);
@@ -1087,6 +1087,8 @@ fn build_publish_bundle(
                 .unwrap_or_else(|_| "unattributed".to_string()),
             instance_id: std::env::var("EVORULE_INSTANCE_ID")
                 .unwrap_or_else(|_| "unattributed".to_string()),
+            // 发布链产出为规则条目集 → 数据集类型如实标 rule_set（0.8.0 判别字段）
+            dataset_kind: DatasetKind::RuleSet,
             versioning: Versioning::default(),
             version_selection: Some(VersionSelection {
                 mode: VersionSelectionMode::Pinned,

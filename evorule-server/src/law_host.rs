@@ -305,10 +305,15 @@ impl LawHost {
     /// - 登记序 = 调用方 `dataset_ids` 给定序（可回放；排序责任在配置面）。
     /// - `api_key` 经 `x-api-key` 头传递；凭证由调用方从环境解析（禁命令行/
     ///   落盘），不写日志。
-    /// - law_set 归属判定（bundle 分布面口径）：全部条目 `schema_ref` 须指向
-    ///   law_set 域件 URI——rule_set/knowledge 条目（无 law_set schema_ref）
-    ///   即拒；条目为空或任一请求失败 → 该集隔离拒收（fail-visible 报因），
-    ///   不阻断他集；条目结构由装配注册路径的 `validate_law_set` 兜底强校验。
+    /// - law_set 归属判定（bundle 分布面口径，两级）：
+    ///   **主判定 = 数据集级 `dataset.dataset_kind` 判别字段**（bundle 0.8.0
+    ///   起随包携带）——`law_set` 放行，`knowledge`/`rule_set` 全集拒收
+    ///   （fail-visible 报因）；
+    ///   **兜底 = 条目级 `schema_ref` 域件 URI 前缀代理判定**（deprecated：
+    ///   旧格式 bundle 缺 dataset_kind 字段时的兼容路径，保留一个版本周期
+    ///   后摘除——rule_set/knowledge 条目无 law_set schema_ref 即拒）。
+    ///   条目为空或任一请求失败 → 该集隔离拒收（fail-visible 报因），不阻断
+    ///   他集；条目结构由装配注册路径的 `validate_law_set` 兜底强校验。
     /// - 组装文档 `version` = 装配格式版本（常量 `1.0.0`）；rule serve 侧
     ///   数据集真实版本锚入 `metadata.source`（`@ <current>`），内容锚 =
     ///   文档 blake3 digest。
@@ -367,7 +372,8 @@ impl LawHost {
             let source = format!("rule serve {base} dataset {dataset_id} @ {ds_version}");
 
             // ② law_set 归属判定 + 条目提取（快照包 entries：payload 零转译存于
-            // `rule_body`，law_set 归属由条目级 schema_ref 域件 URI 判定）
+            // `rule_body`；归属主判定 = 数据集级 dataset_kind 判别字段，
+            // 条目级 schema_ref 前缀仅为旧格式兜底，见 deprecated 注记）
             let entries = bundle
                 .get("entries")
                 .and_then(|v| v.as_array())
@@ -381,29 +387,50 @@ impl LawHost {
                 ));
                 continue;
             }
-            let mut payloads: Vec<(String, serde_json::Value)> = Vec::new();
             let mut kind_error: Option<String> = None;
-            for entry in &entries {
-                let entry_id = entry
-                    .get("entry_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let schema_ref = entry
-                    .get("schema_ref")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if !schema_ref.starts_with("https://evorule.org/schemas/domain/law_set/") {
+            match bundle
+                .pointer("/dataset/dataset_kind")
+                .and_then(|v| v.as_str())
+            {
+                // 主判定：真 kind 直读（bundle 0.8.0+）
+                Some(kind) if kind != "law_set" => {
                     kind_error = Some(format!(
-                        "条目 `{entry_id}` schema_ref 为 `{schema_ref}`，远端登记仅接受 law_set 数据集快照包"
+                        "快照包 dataset_kind 为 `{kind}`，远端登记仅接受 law_set 数据集快照包"
                     ));
-                    break;
                 }
-                let payload = entry
-                    .get("rule_body")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-                payloads.push((entry_id, payload));
+                Some(_) => {}
+                // 兜底（deprecated，保留一个版本周期后摘除）：旧格式 bundle 缺
+                // dataset_kind 字段 → 条目级 schema_ref 域件 URI 前缀代理判定
+                None => {
+                    for entry in &entries {
+                        let entry_id = entry.get("entry_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let schema_ref = entry
+                            .get("schema_ref")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if !schema_ref.starts_with("https://evorule.org/schemas/domain/law_set/") {
+                            kind_error = Some(format!(
+                                "条目 `{entry_id}` schema_ref 为 `{schema_ref}`，远端登记仅接受 law_set 数据集快照包"
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+            let mut payloads: Vec<(String, serde_json::Value)> = Vec::new();
+            if kind_error.is_none() {
+                for entry in &entries {
+                    let entry_id = entry
+                        .get("entry_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let payload = entry
+                        .get("rule_body")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    payloads.push((entry_id, payload));
+                }
             }
             if let Some(err) = kind_error {
                 report.rejected.push(LawSetStatus::invalid(
@@ -1031,6 +1058,13 @@ mod tests {
             Some("v2"),
             "golden /dataset/versioning/current must anchor the dataset version"
         );
+        assert_eq!(
+            golden
+                .pointer("/dataset/dataset_kind")
+                .and_then(|v| v.as_str()),
+            Some("law_set"),
+            "golden must carry the dataset_kind discriminator (real-kind primary detection)"
+        );
         let golden_entries = golden
             .get("entries")
             .and_then(|v| v.as_array())
@@ -1123,7 +1157,9 @@ mod tests {
     }
 
     /// 远端源登记拒收面：条目 schema_ref 非 law_set 域件（rule/knowledge 数据
-    /// 集快照包）或快照包不可达 → 逐集隔离拒收（fail-visible 报因），不阻断他集
+    /// 集快照包）或快照包不可达 → 逐集隔离拒收（fail-visible 报因），不阻断他集。
+    /// mock 快照包不带 dataset_kind 字段 = 旧格式 → 本测试同时锁 deprecated
+    /// 兜底路径（条目级 schema_ref 前缀代理判定）仍在位
     #[tokio::test]
     async fn load_remote_rejects_non_law_set_dataset() {
         let app = axum::Router::new().route(
@@ -1173,5 +1209,99 @@ mod tests {
             report.rejected[1].errors
         );
         assert!(host.lookup("not-law", "test_law").is_none());
+    }
+
+    /// 真 kind 主判定三态（bundle 0.8.0 起 dataset_kind 随包携带）：
+    /// law_set → 登记；knowledge/rule_set → 全集隔离拒收（fail-visible 报因
+    /// 指明 kind 值）。law_set 臂条目 schema_ref 故意缺席 law_set 域件前缀
+    /// （主判定不再依赖条目级代理，兜底仅服务旧格式）。
+    #[tokio::test]
+    async fn load_remote_real_kind_discriminator_three_states() {
+        let law_payload = serde_json::json!({
+            "id": "newtons_second_law",
+            "formula": "F = m * a",
+            "symbols": { "F": "force", "m": "mass", "a": "acceleration" },
+            "si_units": {},
+            "domains": ["physical"],
+            "max_version_depth": 1,
+            "monotone_form": true
+        });
+        let app = axum::Router::new().route(
+            "/v1/datasets/{id}/bundle",
+            axum::routing::get(
+                |axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    let (kind, entry_schema_ref): (&str, Option<&str>) = match id.as_str() {
+                        "kind-law" => ("law_set", None),
+                        "kind-know" => ("knowledge", None),
+                        "kind-rule" => ("rule_set", None),
+                        _ => return Err(axum::http::StatusCode::NOT_FOUND),
+                    };
+                    let mut entry = serde_json::json!({
+                        "entry_id": "e1",
+                        "rule_body": law_payload.clone()
+                    });
+                    if let Some(sr) = entry_schema_ref {
+                        entry["schema_ref"] = serde_json::Value::String(sr.into());
+                    }
+                    Ok(axum::Json(serde_json::json!({
+                        "dataset": {
+                            "dataset_id": id,
+                            "dataset_kind": kind,
+                            "versioning": { "current": "v1" }
+                        },
+                        "entries": [entry]
+                    })))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let (host, report) = LawHost::load_remote(
+            &http,
+            &base,
+            None,
+            &[
+                "kind-law".to_string(),
+                "kind-know".to_string(),
+                "kind-rule".to_string(),
+            ],
+        )
+        .await;
+        // ① law_set：真 kind 放行（条目结构由注册路径 validate_law_set 强校验）
+        assert_eq!(
+            report.loaded_count(),
+            1,
+            "law_set 臂应登记: rejected={:?}",
+            report.rejected
+        );
+        assert!(
+            report.loaded[0].valid,
+            "law_set 臂应过同一校验路径: {:?}",
+            report.loaded[0].errors
+        );
+        assert!(
+            host.lookup("kind-law", "newtons_second_law").is_some(),
+            "law_set 臂双键可查"
+        );
+        // ② knowledge：真 kind 拒收（报因携带 kind 值）
+        assert_eq!(report.rejected.len(), 2, "knowledge/rule_set 两臂均拒收");
+        assert!(
+            report.rejected[0].errors[0].contains("dataset_kind")
+                && report.rejected[0].errors[0].contains("knowledge"),
+            "knowledge 臂报因应指明 dataset_kind 值: {:?}",
+            report.rejected[0].errors
+        );
+        assert!(
+            report.rejected[1].errors[0].contains("dataset_kind")
+                && report.rejected[1].errors[0].contains("rule_set"),
+            "rule_set 臂报因应指明 dataset_kind 值: {:?}",
+            report.rejected[1].errors
+        );
+        assert!(host.lookup("kind-know", "newtons_second_law").is_none());
+        assert!(host.lookup("kind-rule", "newtons_second_law").is_none());
     }
 }

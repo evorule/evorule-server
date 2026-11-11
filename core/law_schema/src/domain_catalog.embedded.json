@@ -4,6 +4,8 @@
   "domains": [
     { "domain_id": "physical",   "name": "物理域",   "description": "物理定律与基本常数（CODATA 类）" },
     { "domain_id": "engineering", "name": "工程域",  "description": "工程判据与带限命题" },
-    { "domain_id": "economic",   "name": "经济域",   "description": "经济与货币量纲命题" }
+    { "domain_id": "economic",   "name": "经济域",   "description": "经济与货币量纲命题" },
+    { "domain_id": "math",       "name": "数学域",   "description": "数学恒等式与经典公式（代数/几何/概率统计等）" },
+    { "domain_id": "chemistry",  "name": "化学域",   "description": "化学定律与公式（气体定律/热化学/动力学等）" }
   ]
 }

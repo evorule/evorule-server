@@ -222,8 +222,8 @@ mod tests {
         scenario_id: &str,
     ) -> evorule_bundle::DatasetBundle {
         use evorule_bundle::{
-            BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetBundle, LawRef,
-            Provenance, TestVerdict, VersionSelection, VersionSelectionMode, Versioning,
+            BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetBundle, DatasetKind,
+            LawRef, Provenance, TestVerdict, VersionSelection, VersionSelectionMode, Versioning,
             BUNDLE_SCHEMA_VERSION,
         };
         let mut bundle = DatasetBundle {
@@ -234,6 +234,7 @@ mod tests {
                 name: "Q12 段2 数据面测试集".into(),
                 tenant_id: "org-evorule".into(),
                 instance_id: "org-evorule".into(),
+                dataset_kind: DatasetKind::Knowledge,
                 versioning: Versioning::default(),
                 version_selection: Some(VersionSelection {
                     mode: VersionSelectionMode::AutoByEffectiveDate,
