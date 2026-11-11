@@ -524,12 +524,21 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
             // 路由模式：清单=白名单 ∩ 已装载路由（视图过滤，正源仍是物料；
             // 未路由模型随 note 显式可见，不在可选清单里出现坏选项）
             Some(routes) => {
-                let models: Vec<&String> =
-                    set.iter().filter(|m| routes.resolve(m).is_some()).collect();
+                let routed: Vec<(&String, &str)> = set
+                    .iter()
+                    .filter_map(|m| routes.resolve(m).map(|r| (m, r.provider.as_str())))
+                    .collect();
+                let models: Vec<&String> = routed.iter().map(|(m, _)| *m).collect();
                 let unrouted: Vec<&str> = set
                     .iter()
                     .filter(|m| routes.resolve(m).is_none())
                     .map(String::as_str)
+                    .collect();
+                // 加法元数据:模型→provider 归属映射。models 字符串数组原样保留,
+                // 既有消费方(serve 三重校验/前端旧形态)零破坏。
+                let providers: serde_json::Map<String, Value> = routed
+                    .iter()
+                    .map(|(m, p)| ((*m).clone(), json!(*p)))
                     .collect();
                 if models.is_empty() {
                     Json(json!({
@@ -540,11 +549,13 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
                     }))
                     .into_response()
                 } else if unrouted.is_empty() {
-                    Json(json!({ "ready": true, "models": models })).into_response()
+                    Json(json!({ "ready": true, "models": models, "providers": providers }))
+                        .into_response()
                 } else {
                     Json(json!({
                         "ready": true,
                         "models": models,
+                        "providers": providers,
                         "note": format!(
                             "{} 个白名单模型未配置已就绪 provider 路由，暂不可选: {}",
                             unrouted.len(),
@@ -867,6 +878,11 @@ mod tests {
         let v = body_json(resp).await;
         assert_eq!(v["ready"], serde_json::json!(true));
         assert_eq!(v["models"], serde_json::json!(["m-a", "m-b"]));
+        assert_eq!(
+            v["providers"],
+            serde_json::json!({"m-a": "p1", "m-b": "p1"}),
+            "加法元数据:模型→provider 归属映射随视图下发"
+        );
         assert!(
             v["note"].as_str().unwrap().contains("m-c"),
             "未路由模型随 note 显式可见"

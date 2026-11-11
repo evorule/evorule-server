@@ -164,6 +164,7 @@ try {
     Assert-True ($models.ready -eq $true) "路由模式清单 ready=true"
     Assert-True (($models.models | Sort-Object) -join "," -eq "mock-a,mock-b") "清单=白名单∩已装载路由 (got: $($models.models -join ','))"
     Assert-True ($models.note -match "mock-c" -and $models.note -match "orphan-d") "未路由模型随 note 显式可见 (got: $($models.note))"
+    Assert-True ($models.providers.'mock-a' -eq "up1" -and $models.providers.'mock-b' -eq "up2") "providers 映射随视图下发 (got: $($models.providers | ConvertTo-Json -Compress))"
 
     $r = Invoke-RestMethod -Uri "$base/llm/execute" -Method Post -ContentType "application/json" `
         -Body '{"model":"mock-a","messages":[{"role":"user","content":"hi"}]}'
