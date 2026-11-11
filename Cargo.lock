@@ -975,20 +975,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-bundle"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c809c0cee9a3ce71a2b66ad162c509de205798d492516f92722e8f114ec48428"
-dependencies = [
- "evorule-hash",
- "jsonschema",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "evorule-bundle"
 version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "837cbbbf35f68f6d784b8e9a51c973be8ab3374011375a393cd505272f62e6c1"
 dependencies = [
  "evorule-hash",
  "jsonschema",
@@ -1404,13 +1393,13 @@ dependencies = [
 [[package]]
 name = "evorule-rule"
 version = "0.5.1"
-source = "git+https://github.com/evorule/evorule-rule.git?rev=de5efabe33c7e86b45af670f10bf6e76ead789d8#de5efabe33c7e86b45af670f10bf6e76ead789d8"
+source = "git+https://github.com/evorule/evorule-rule.git?rev=2081e15e71f2d68bb942db2a8eea15d6f490a547#2081e15e71f2d68bb942db2a8eea15d6f490a547"
 dependencies = [
  "argon2",
  "axum",
  "base64",
  "clap",
- "evorule-bundle 0.7.0",
+ "evorule-bundle 0.8.0",
  "evorule-hash",
  "governor",
  "http-body-util",
