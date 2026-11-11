@@ -489,6 +489,20 @@ async fn llm_execute_stream(
     }
 }
 
+/// 视图内描述子集：`model_descriptions` 过滤为本次下发的模型成员（未知键
+/// 与未路由模型不出现）。空 = 不携带键，响应形状与旧版完全一致。
+fn view_descriptions(cfg: &PluginConfig, models: &[&String]) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    if let Some(desc) = &cfg.model_descriptions {
+        for m in models {
+            if let Some(d) = desc.get(m.as_str()) {
+                out.insert((*m).clone(), json!(d));
+            }
+        }
+    }
+    out
+}
+
 /// 模型清单端点（S5 模型选择器配套）：白名单只读下发——正源即执法面同一
 /// BTreeSet，杜绝 serve 侧复制产生双真相。`{ready, models}`：未就绪
 /// ready=false+空表+自诊断语（fail-closed 姿态对消费方可见）；就绪出排序
@@ -519,7 +533,12 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
             // 未启用多 provider 路由：清单=白名单全量（既有行为零变化）
             None => {
                 let models: Vec<&String> = set.iter().collect();
-                Json(json!({ "ready": true, "models": models })).into_response()
+                let descriptions = view_descriptions(st.cfg.as_ref(), &models);
+                let mut body = json!({ "ready": true, "models": models });
+                if !descriptions.is_empty() {
+                    body["descriptions"] = Value::Object(descriptions);
+                }
+                Json(body).into_response()
             }
             // 路由模式：清单=白名单 ∩ 已装载路由（视图过滤，正源仍是物料；
             // 未路由模型随 note 显式可见，不在可选清单里出现坏选项）
@@ -549,10 +568,16 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
                     }))
                     .into_response()
                 } else if unrouted.is_empty() {
-                    Json(json!({ "ready": true, "models": models, "providers": providers }))
-                        .into_response()
+                    let descriptions = view_descriptions(st.cfg.as_ref(), &models);
+                    let mut body =
+                        json!({ "ready": true, "models": models, "providers": providers });
+                    if !descriptions.is_empty() {
+                        body["descriptions"] = Value::Object(descriptions);
+                    }
+                    Json(body).into_response()
                 } else {
-                    Json(json!({
+                    let descriptions = view_descriptions(st.cfg.as_ref(), &models);
+                    let mut body = json!({
                         "ready": true,
                         "models": models,
                         "providers": providers,
@@ -561,8 +586,12 @@ async fn llm_models(State(st): State<PluginState>, headers: axum::http::HeaderMa
                             unrouted.len(),
                             unrouted.join(", ")
                         ),
-                    }))
-                    .into_response()
+                    });
+                    body["providers"] = Value::Object(providers);
+                    if !descriptions.is_empty() {
+                        body["descriptions"] = Value::Object(descriptions);
+                    }
+                    Json(body).into_response()
                 }
             }
         },
@@ -763,6 +792,93 @@ mod tests {
         assert_eq!(
             v["models"],
             serde_json::json!(["MiniMax-M2.5", "MiniMax-M3"])
+        );
+        assert!(
+            v.get("descriptions").is_none(),
+            "未配置 model_descriptions 时响应不带 descriptions 键（旧版形状不变）"
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_models_descriptions_filtered_to_view_legacy_mode() {
+        let cfg = PluginConfig::from_value_with_env(
+            &json!({
+                "listen_addr": "127.0.0.1:0",
+                "server_base_url": "http://127.0.0.1:18080",
+                "llm_endpoint": "https://example.invalid/v1",
+                "llm_api_key": "unused",
+                "llm_model": "test-model",
+                "llm_execute_url": "http://127.0.0.1:1/v1",
+                "tools_enabled": [],
+                "model_descriptions": {
+                    "MiniMax-M3": "深度推理",
+                    "ghost-model": "不应出现"
+                }
+            }),
+            &|_: &str| None,
+        )
+        .expect("cfg");
+        let st = PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(reqwest::Client::new()),
+            allowlist: AllowlistHot::ready(
+                "t.json".to_string(),
+                BTreeSet::from(["MiniMax-M3".to_string(), "MiniMax-M2.5".to_string()]),
+            ),
+            routes: None,
+            caller_token: None,
+        };
+        let resp = llm_models(State(st), axum::http::HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(
+            v["descriptions"],
+            serde_json::json!({ "MiniMax-M3": "深度推理" }),
+            "描述过滤为清单内成员,未知键不出现"
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_models_descriptions_filtered_to_routed_view() {
+        let providers = json!([{
+            "name": "p1",
+            "execute_url": "http://127.0.0.1:1/v1",
+            "api_key_env": "K_ROUTE",
+            "models": ["m-b", "m-a"]
+        }]);
+        let cfg_json = json!({
+            "listen_addr": "127.0.0.1:0",
+            "server_base_url": "http://127.0.0.1:18080",
+            "llm_endpoint": "https://example.invalid/v1",
+            "llm_api_key": "unused",
+            "llm_model": "test-model",
+            "tools_enabled": [],
+            "llm_providers": providers,
+            "model_descriptions": {
+                "m-a": "路由内描述",
+                "m-c": "未路由模型描述不应出现"
+            }
+        });
+        let allowlist = BTreeSet::from(["m-a".to_string(), "m-b".to_string(), "m-c".to_string()]);
+        let keyfn = |k: &str| (k == "K_ROUTE").then(|| "routed-key".to_string());
+        let cfg = PluginConfig::from_value_with_env(&cfg_json, &keyfn).expect("cfg");
+        let (routes, _diags) = build_model_routes(&cfg, Some(&allowlist), &keyfn);
+        let st = PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(reqwest::Client::new()),
+            allowlist: AllowlistHot::ready("t.json".to_string(), allowlist),
+            routes: routes.map(Arc::new),
+            caller_token: None,
+        };
+        let resp = llm_models(State(st), axum::http::HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(
+            v["descriptions"],
+            serde_json::json!({ "m-a": "路由内描述" }),
+            "描述过滤为路由视图内成员"
         );
     }
 

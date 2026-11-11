@@ -194,6 +194,10 @@ pub struct PluginConfig {
     /// 请求 `model` 路由到对应 provider 的端点与凭据；各 provider 的 models
     /// 须 ⊆ 白名单物料（启动执法），同一模型只能归属一个 provider。
     pub llm_providers: Option<Vec<ProviderRouteConfig>>,
+    /// 每模型能力描述（可选 `model_descriptions` 配置节，纯展示元数据）。
+    /// 键=模型名，值=展示文本；/llm/models 视图下发时过滤为清单内成员
+    /// （未知键忽略）。不入白名单执法/路由判定；缺省 = 副标题不渲染。
+    pub model_descriptions: Option<BTreeMap<String, String>>,
     /// 调用方令牌（Some = /llm/execute 要求 Authorization: Bearer 匹配，
     /// 本机其他进程无令牌即 401；None = 不鉴权，dev 兼容形态）。
     /// 来源：env `EVORULE_AI_PLUGIN_CALLER_TOKEN` > 配置 `caller_token`。
@@ -216,6 +220,31 @@ pub struct PluginConfig {
     /// 显式 500 自诊断，fail-visible 不静默）。凭据纪律同 llm_api_key：
     /// 不进日志/错误消息。
     pub bocha_api_key: Option<String>,
+}
+
+/// `model_descriptions` 可选节解析（展示元数据）：缺键 = None；形状非法
+/// （非对象/值非非空字符串）→ 显式拒绝（fail-fast，与配置校验同姿态）。
+fn parse_model_descriptions(v: &Value) -> Result<Option<BTreeMap<String, String>>, PluginError> {
+    let Some(m) = v.get("model_descriptions") else {
+        return Ok(None);
+    };
+    let obj = m.as_object().ok_or_else(|| {
+        PluginError::Config(
+            "字段 'model_descriptions' 须为 {\"模型名\": \"描述文本\"} 对象".to_string(),
+        )
+    })?;
+    let mut out = BTreeMap::new();
+    for (k, val) in obj {
+        let s = val
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                PluginError::Config(format!("model_descriptions['{k}'] 须为非空字符串"))
+            })?;
+        out.insert(k.clone(), s.to_string());
+    }
+    Ok(Some(out))
 }
 
 /// 多 provider 路由的单条 provider 声明（`llm_providers` 配置节数组元素）。
@@ -291,6 +320,7 @@ impl std::fmt::Debug for PluginConfig {
                         .collect::<Vec<_>>()
                 }),
             )
+            .field("model_descriptions", &self.model_descriptions)
             .field(
                 "caller_token",
                 &self.caller_token.as_ref().map(|_| "[REDACTED]"),
@@ -449,6 +479,7 @@ impl PluginConfig {
         }
         let model_allowlist_path = optional_str(v, "model_allowlist_path");
         let llm_providers = parse_provider_route_configs(v)?;
+        let model_descriptions = parse_model_descriptions(v)?;
         // 调用方令牌:env 优先 > 配置文件;None = /llm/execute 不鉴权(dev 兼容)。
         let caller_token = std::env::var("EVORULE_AI_PLUGIN_CALLER_TOKEN")
             .ok()
@@ -498,6 +529,7 @@ impl PluginConfig {
             llm_execute_url,
             model_allowlist_path,
             llm_providers,
+            model_descriptions,
             caller_token,
             web_search_provider,
             brave_api_key,
