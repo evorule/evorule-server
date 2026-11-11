@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 服务壳层：统一信封 v1 + 参数解析守卫 + 4 个判据服务实现。
+//! 服务壳层：统一信封 v1 + 参数解析守卫 + 判据服务实现。
 
 use std::sync::Arc;
 
@@ -9,7 +9,10 @@ use evorule_plugin_kit::NativeService;
 use evorule_reactor::IoResult;
 use evorule_tcb::JsonValue;
 
-use crate::criteria::{approval_density_json, behavior_entropy_json, era_mixing_sentinel_json};
+use crate::criteria::{
+    approval_density_json, behavior_entropy_json, era_mixing_sentinel_json, frame_pairing_json,
+    target_fidelity_json,
+};
 use crate::era::split_era_json;
 use crate::scope::out_of_scope_writes_json;
 
@@ -93,6 +96,20 @@ fn parse_window(args: &JsonValue) -> Result<usize, String> {
     }
 }
 
+/// 解析必填 goal 入参（字符串；空串合法——走空词集 note 面）。
+fn parse_goal(args: &JsonValue) -> Result<String, String> {
+    match args.get("goal") {
+        Some(JsonValue::String(s)) => Ok(s.to_string()),
+        Some(_) => Err("goal 须为字符串(任务目标文本)。自诊断指引:入参形如 \
+             {\"events\": [...], \"goal\": \"任务目标文本\"}"
+            .to_string()),
+        None => Err("缺少参数 goal(任务目标文本)。自诊断指引:入参形如 \
+             {\"events\": [...], \"goal\": \"任务目标文本\"},M1 覆盖率按 \
+             goal 关键词集逐 LlmDone 文本命中计数"
+            .to_string()),
+    }
+}
+
 /// 泛型判据服务：入参解析 → 纯函数计算 → 信封组装。
 struct CriteriaService<F>
 where
@@ -127,11 +144,30 @@ pub fn mk_behavior_entropy() -> Arc<dyn NativeService> {
     })
 }
 
-/// M3 面:审批密度/结论分布/流级错误/帧对账未闭合清单。
+/// M3 面:审批密度/结论分布/流级错误。
 pub fn mk_approval_density() -> Arc<dyn NativeService> {
     Arc::new(CriteriaService {
         name: "trace_approval_density",
         compute: |events, _args| Ok(approval_density_json(events)),
+    })
+}
+
+/// M3 对账面:帧对账未闭合四清单(纯 FIFO 配对)。
+pub fn mk_frame_pairing() -> Arc<dyn NativeService> {
+    Arc::new(CriteriaService {
+        name: "trace_frame_pairing",
+        compute: |events, _args| Ok(frame_pairing_json(events)),
+    })
+}
+
+/// M1 面:逐 LlmDone 文本对 goal 关键词覆盖率。
+pub fn mk_target_fidelity() -> Arc<dyn NativeService> {
+    Arc::new(CriteriaService {
+        name: "trace_target_fidelity",
+        compute: |events, args| {
+            let goal = parse_goal(args)?;
+            Ok(target_fidelity_json(events, &goal))
+        },
     })
 }
 
@@ -400,7 +436,7 @@ mod tests {
     }
 
     /// 正本形态锚:M3 键集与 m3_constraint_adherence 输出逐键一致(六键,
-    /// 不掺帧对账面——frame_pairing 属正本独立函数,候后批范畴)
+    /// 不掺帧对账面——帧对账由独立服务 trace_frame_pairing 承载)
     #[test]
     fn test_m3_key_set_matches_reference() {
         let events = fixture_a();
@@ -425,6 +461,297 @@ mod tests {
                 "verdicts"
             ]
         );
+    }
+
+    // ---- 帧对账（M3 对账面） ----
+
+    /// 黄金向量(判据正本对账):FIFO 配对,孤儿 ToolResult 与孤儿 ApprovalResult
+    /// 各一;孤儿 ApprovalResult 会把在途审批帧 FIFO 出队(不校验 id 一致)
+    #[test]
+    fn test_frame_pairing_golden() {
+        let events = vec![
+            ev(&[
+                ("type", s("ApprovalResult")),
+                ("proposal_id", s("p0")),
+                ("approved", JsonValue::Bool(true)),
+            ]),
+            tc("read"),
+            tc("grep"),
+            ev(&[("type", s("ToolResult")), ("name", s("read"))]),
+            ev(&[
+                ("type", s("ApprovalRequired")),
+                ("proposal_id", s("p1")),
+                ("tool_name", s("shell_exec")),
+            ]),
+            ev(&[
+                ("type", s("ApprovalResult")),
+                ("proposal_id", s("p1")),
+                ("approved", JsonValue::Bool(true)),
+            ]),
+            ev(&[("type", s("ToolResult")), ("name", s("grep"))]),
+            ev(&[("type", s("ToolResult")), ("name", s("orphan"))]),
+            ev(&[
+                ("type", s("ApprovalRequired")),
+                ("proposal_id", s("p3")),
+                ("tool_name", s("file_write")),
+            ]),
+            tc("write"),
+            ev(&[("type", s("Error")), ("error", s("provider timeout"))]),
+            ev(&[
+                ("type", s("ApprovalResult")),
+                ("proposal_id", s("p9")),
+                ("approved", JsonValue::Bool(false)),
+            ]),
+        ];
+        let svc = mk_frame_pairing();
+        let out = svc
+            .execute(&ev(&[("events", JsonValue::array(events))]))
+            .unwrap();
+        let body = out.get("result").unwrap();
+        let calls = body
+            .get("unclosed_tool_calls")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["write"],
+            "read/grep 已被 ToolResult 出队,write 未闭合"
+        );
+        let tools = body
+            .get("unclosed_tool_results")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(
+            tools
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["result_without_call"]
+        );
+        assert!(
+            body.get("unclosed_approvals")
+                .and_then(JsonValue::as_array)
+                .unwrap()
+                .is_empty(),
+            "p3 被孤儿 ApprovalResult FIFO 出队(正本对账实证)"
+        );
+        let approval_results = body
+            .get("unclosed_approval_results")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(
+            approval_results
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["result_without_request"]
+        );
+        // 正本形态锚:键集与 frame_pairing 输出逐键一致
+        let mut keys = body
+            .as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "unclosed_approval_results",
+                "unclosed_approvals",
+                "unclosed_tool_calls",
+                "unclosed_tool_results"
+            ]
+        );
+    }
+
+    /// 黄金向量:审批帧标识回落链(proposal_id 空串→tool_name;皆缺失→"?")
+    #[test]
+    fn test_frame_pairing_id_fallback_golden() {
+        let events = vec![
+            ev(&[
+                ("type", s("ApprovalRequired")),
+                ("proposal_id", s("")),
+                ("tool_name", s("file_write")),
+            ]),
+            ev(&[("type", s("ApprovalRequired"))]),
+        ];
+        let svc = mk_frame_pairing();
+        let out = svc
+            .execute(&ev(&[("events", JsonValue::array(events))]))
+            .unwrap();
+        let body = out.get("result").unwrap();
+        let approvals = body
+            .get("unclosed_approvals")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(
+            approvals
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["file_write", "?"],
+            "proposal_id 空串回落 tool_name;两键皆缺计 ?"
+        );
+    }
+
+    /// 夹具 A 帧对账:12 次调用 + 1 孤儿 ToolResult → 11 个未闭合调用
+    #[test]
+    fn test_frame_pairing_on_fixture_a() {
+        let events = fixture_a();
+        let svc = mk_frame_pairing();
+        let out = svc
+            .execute(&ev(&[("events", JsonValue::array(events))]))
+            .unwrap();
+        let body = out.get("result").unwrap();
+        let calls = body
+            .get("unclosed_tool_calls")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(calls.len(), 11, "12 调用 − 1 ToolResult 出队");
+        assert!(
+            body.get("unclosed_approvals")
+                .and_then(JsonValue::as_array)
+                .unwrap()
+                .is_empty(),
+            "p1/p2 均已配对"
+        );
+    }
+
+    // ---- 目标保真度（M1 面） ----
+
+    /// LlmDone 夹具(与黄金向量生成器逐字段同构)
+    fn llm(content: &str) -> JsonValue {
+        ev(&[("type", s("LlmDone")), ("content", s(content))])
+    }
+
+    /// 黄金向量(判据正本对账):中英混排 goal 关键词集 + 逐条覆盖率
+    #[test]
+    fn test_m1_golden() {
+        let goal = "修复 登录 bug and add tests";
+        let events = vec![
+            llm("fix the bug and add unit tests"),
+            llm("add tests only"),
+            llm("nothing here"),
+            ev(&[("type", s("LlmDone"))]),
+            tc("read"),
+        ];
+        let svc = mk_target_fidelity();
+        let out = svc
+            .execute(&ev(&[
+                ("events", JsonValue::array(events)),
+                ("goal", s(goal)),
+            ]))
+            .unwrap();
+        let body = out.get("result").unwrap();
+        let kws = body
+            .get("goal_keywords")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(
+            kws.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["add", "and", "bug", "tests"],
+            "2 字符 CJK 短词(修复/登录)被去短词过滤,排序=码点序"
+        );
+        let coverage = body.get("coverage").and_then(JsonValue::as_array).unwrap();
+        assert_eq!(coverage.len(), 4, "4 条 LlmDone,ToolCall 不计");
+        assert_eq!(coverage[0], JsonValue::Integer(1), "全命中整值出 Integer");
+        assert_eq!(coverage[1], JsonValue::string("0.5"), "带小数出字符串");
+        assert_eq!(coverage[2], JsonValue::Integer(0));
+        assert_eq!(coverage[3], JsonValue::Integer(0), "content 缺失计空串");
+    }
+
+    /// 黄金向量:4 位舍入(2/3→0.6667,1/3→0.3333,与正本 round(x,4) 一致)
+    #[test]
+    fn test_m1_rounding_golden() {
+        let goal = "alpha beta gamma";
+        let events = vec![llm("alpha beta here"), llm("alpha only x")];
+        let svc = mk_target_fidelity();
+        let out = svc
+            .execute(&ev(&[
+                ("events", JsonValue::array(events)),
+                ("goal", s(goal)),
+            ]))
+            .unwrap();
+        let coverage = out
+            .get("result")
+            .unwrap()
+            .get("coverage")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(coverage[0], JsonValue::string("0.6667"));
+        assert_eq!(coverage[1], JsonValue::string("0.3333"));
+    }
+
+    /// 黄金向量:CJK 长词块切分与子串命中
+    #[test]
+    fn test_m1_cjk_keyword_substring_golden() {
+        let goal = "重构缓存层";
+        let events = vec![llm("重构缓存层的接口")];
+        let svc = mk_target_fidelity();
+        let out = svc
+            .execute(&ev(&[
+                ("events", JsonValue::array(events)),
+                ("goal", s(goal)),
+            ]))
+            .unwrap();
+        let body = out.get("result").unwrap();
+        let kws = body.get("goal_keywords").unwrap();
+        assert_eq!(
+            kws.as_array().unwrap()[0].as_str(),
+            Some("重构缓存层"),
+            "无分隔 CJK 文本成单词块,按字符数计长"
+        );
+        assert_eq!(
+            body.get("coverage").unwrap().as_array().unwrap()[0],
+            JsonValue::Integer(1),
+            "关键词为文本子串即命中"
+        );
+    }
+
+    /// 空词集面:coverage 空数组 + note,无 goal_keywords 键(与正本一致)
+    #[test]
+    fn test_m1_empty_keywords_note_golden() {
+        let events = vec![llm("anything")];
+        let svc = mk_target_fidelity();
+        let out = svc
+            .execute(&ev(&[
+                ("events", JsonValue::array(events)),
+                ("goal", s("ab cd")),
+            ]))
+            .unwrap();
+        let body = out.get("result").unwrap();
+        assert!(body
+            .get("coverage")
+            .and_then(JsonValue::as_array)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            body.get("note").and_then(JsonValue::as_str),
+            Some("goal 关键词集为空,M1 不可算")
+        );
+        assert!(
+            body.get("goal_keywords").is_none(),
+            "空词集形态无 goal_keywords 键(正本对账)"
+        );
+    }
+
+    /// 缺 goal 入参 fail-visible 带指引
+    #[test]
+    fn test_m1_missing_goal_fails_visible() {
+        let svc = mk_target_fidelity();
+        let err = svc
+            .execute(&ev(&[("events", JsonValue::array(vec![llm("x")]))]))
+            .expect_err("缺 goal 必须报错");
+        assert!(err.contains("goal"), "错误应含指引: {err}");
+        let err2 = svc
+            .execute(&ev(&[
+                ("events", JsonValue::array(Vec::new())),
+                ("goal", JsonValue::Integer(1)),
+            ]))
+            .expect_err("非字符串 goal 必须报错");
+        assert!(err2.contains("goal"), "错误应含指引: {err2}");
     }
 
     // ---- 哨兵 ----

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 事件流判据实现：行为熵（M2 面）、审批密度与帧对账（M3 面）、时代混杂哨兵。
+//! 事件流判据实现：目标保真度（M1 面）、行为熵（M2 面）、审批密度（M3 面）、
+//! 帧对账（M3 对账面）、时代混杂哨兵。
 //!
 //! 判据公式与离线分析器工具同源（同输入同输出对账口径）；求和序与键序
 //! 全部确定性（首现序），小数出参走 4 位定点字符串。
@@ -9,7 +10,7 @@
 use evorule_tcb::JsonValue;
 
 use crate::era::ERA_GAP_MS;
-use crate::services::fmt_num;
+use crate::services::{fmt_num, num_json};
 
 // ============================================================================
 // 通用读取与数值口径
@@ -198,8 +199,8 @@ pub fn behavior_entropy_json(events: &[JsonValue], window: usize) -> JsonValue {
 // ============================================================================
 
 /// M3 输出：审批密度/结论分布/auto_rejected/流级 Error/错误消息样本。
-/// 键集 = 正本 m3_constraint_adherence 六键，不掺帧对账面（frame_pairing
-/// 是正本独立函数，属候后批范畴，避免输出掺键破坏同输入同输出对账）。
+/// 键集 = 正本 m3_constraint_adherence 六键，不掺帧对账面（帧对账由
+/// 独立服务 trace_frame_pairing 承载，避免输出掺键破坏同输入同输出对账）。
 pub fn approval_density_json(events: &[JsonValue]) -> JsonValue {
     let mut approvals = 0usize;
     let mut results = 0usize;
@@ -309,6 +310,136 @@ pub fn era_mixing_sentinel_json(events: &[JsonValue]) -> JsonValue {
                     .map(|s| JsonValue::string(s.clone()))
                     .collect(),
             ),
+        ),
+    ])
+}
+
+// ============================================================================
+// M3 对账面：帧对账（ToolCall/ToolResult 与审批帧逐帧 FIFO 配对，未闭合四清单）
+// ============================================================================
+
+/// 帧对账输出：未闭合四清单（键集与判据正本 frame_pairing 输出逐键一致）。
+/// 配对口径 = 纯 FIFO：ToolResult/ApprovalResult 按到达序出队，不校验标识
+/// 一致（与正本一致）；审批帧标识取 proposal_id 真值字符串，否则回落
+/// tool_name，皆缺失计 "?"；非字符串 name/tool_name 按家族缺省口径计 "?"。
+pub fn frame_pairing_json(events: &[JsonValue]) -> JsonValue {
+    // 真值字符串：非空字符串才参与取值（与正本 `x or y` 的 Python truthy 一致，
+    // 并按家族字段口径限字符串类型）。
+    fn truthy_str<'a>(ev: &'a JsonValue, key: &str) -> Option<&'a str> {
+        match ev.get(key) {
+            Some(JsonValue::String(s)) if !s.is_empty() => Some(s.as_ref()),
+            _ => None,
+        }
+    }
+    let mut call_ids: Vec<String> = Vec::new();
+    let mut approval_ids: Vec<String> = Vec::new();
+    let mut unclosed_tools: Vec<JsonValue> = Vec::new();
+    let mut unclosed_approval_results: Vec<JsonValue> = Vec::new();
+    for ev in events {
+        match ev.get("type").and_then(JsonValue::as_str) {
+            Some("ToolCall") => {
+                let name = match ev.get("name") {
+                    Some(JsonValue::String(s)) => s.as_ref(),
+                    _ => "?",
+                };
+                call_ids.push(name.to_string());
+            }
+            Some("ToolResult") => {
+                if call_ids.is_empty() {
+                    unclosed_tools.push(JsonValue::string("result_without_call"));
+                } else {
+                    call_ids.remove(0);
+                }
+            }
+            Some("ApprovalRequired") => {
+                let pid = truthy_str(ev, "proposal_id")
+                    .or_else(|| truthy_str(ev, "tool_name"))
+                    .unwrap_or("?")
+                    .to_string();
+                approval_ids.push(pid);
+            }
+            Some("ApprovalResult") => {
+                if approval_ids.is_empty() {
+                    unclosed_approval_results.push(JsonValue::string("result_without_request"));
+                } else {
+                    approval_ids.remove(0);
+                }
+            }
+            _ => {}
+        }
+    }
+    let strs = |xs: &[String]| xs.iter().map(|s| JsonValue::string(s.clone())).collect();
+    JsonValue::object_from_pairs(&[
+        ("unclosed_tool_calls", JsonValue::array(strs(&call_ids))),
+        ("unclosed_tool_results", JsonValue::array(unclosed_tools)),
+        ("unclosed_approvals", JsonValue::array(strs(&approval_ids))),
+        (
+            "unclosed_approval_results",
+            JsonValue::array(unclosed_approval_results),
+        ),
+    ])
+}
+
+// ============================================================================
+// M1 面：目标保真度（逐 LlmDone 文本对 goal 关键词覆盖率）
+// ============================================================================
+
+/// goal 关键词集：goal 小写后按连续字母/数字/下划线词块切分，去 <=2 字符
+/// 短词（与判据正本 goal_keywords 口径一致：`[\w\u4e00-\u9fff]+` 中 Python
+/// \w 已含 unicode 字母/数字/下划线，CJK 词块按字符数计长）；返回排序去重
+/// 词表（排序 = 码点序，与正本 sorted(set) 一致）。
+pub fn goal_keywords(goal: &str) -> Vec<String> {
+    let lowered = goal.to_lowercase();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for c in lowered.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            tokens.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    tokens.retain(|t| t.chars().count() > 2);
+    tokens.sort();
+    tokens.dedup();
+    tokens
+}
+
+/// M1 输出：逐 LlmDone 覆盖率（命中词数/词总数，4 位舍入后整值出 Integer、
+/// 带小数出字符串，值形态与正本 JSON 浮点一致）；空词集出 coverage 空数组
+/// 与 note 提示（与正本一致，此时无 goal_keywords 键）。content 读顶层键，
+/// 缺失/非字符串计空串（家族字段口径）。
+pub fn target_fidelity_json(events: &[JsonValue], goal: &str) -> JsonValue {
+    let kws = goal_keywords(goal);
+    if kws.is_empty() {
+        return JsonValue::object_from_pairs(&[
+            ("coverage", JsonValue::array(Vec::new())),
+            ("note", JsonValue::string("goal 关键词集为空,M1 不可算")),
+        ]);
+    }
+    let mut coverage: Vec<JsonValue> = Vec::new();
+    for ev in events {
+        if ev.get("type").and_then(JsonValue::as_str) != Some("LlmDone") {
+            continue;
+        }
+        let text = match ev.get("content") {
+            Some(JsonValue::String(s)) => s.to_lowercase(),
+            _ => String::new(),
+        };
+        let hit = kws.iter().filter(|k| text.contains(k.as_str())).count();
+        let ratio = hit as f64 / kws.len() as f64;
+        // 4 位舍入（fmt4 与正本 round(x,4) 语义一致）后走 num_json 形态
+        let rounded: f64 = fmt4(ratio).parse().unwrap_or(ratio);
+        coverage.push(num_json(rounded));
+    }
+    JsonValue::object_from_pairs(&[
+        ("coverage", JsonValue::array(coverage)),
+        (
+            "goal_keywords",
+            JsonValue::array(kws.iter().map(|s| JsonValue::string(s.clone())).collect()),
         ),
     ])
 }
