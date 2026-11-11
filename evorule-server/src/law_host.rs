@@ -296,15 +296,19 @@ impl LawHost {
         );
     }
 
-    /// 远端源登记（rule serve）：按 dataset_id 逐个拉取 law_set 数据集条目，
+    /// 远端源登记（rule serve）：按 dataset_id 逐个拉取 law_set 快照包，
     /// 组装独立部署件文档后走与本地装载完全相同的注册路径
     /// （[`Self::register_doc`]，校验/隔离/双键语义零分叉）。
     ///
+    /// - 拉取面 = `GET /v1/datasets/{id}/bundle`（快照包分布端点，x-api-key
+    ///   scope=pull 双认证先例；数据集元信息与条目全集单请求取回）。
     /// - 登记序 = 调用方 `dataset_ids` 给定序（可回放；排序责任在配置面）。
-    /// - `api_key` 经 `x-api-key` 头传递（rule serve 鉴权面）；凭证由调用方
-    ///   从环境解析（禁命令行/落盘），不写日志。
-    /// - 数据集 kind 非 `law_set`、条目为空或任一请求失败 → 该集隔离拒收
-    ///   （fail-visible 报因），不阻断他集。
+    /// - `api_key` 经 `x-api-key` 头传递；凭证由调用方从环境解析（禁命令行/
+    ///   落盘），不写日志。
+    /// - law_set 归属判定（bundle 分布面口径）：全部条目 `schema_ref` 须指向
+    ///   law_set 域件 URI——rule_set/knowledge 条目（无 law_set schema_ref）
+    ///   即拒；条目为空或任一请求失败 → 该集隔离拒收（fail-visible 报因），
+    ///   不阻断他集；条目结构由装配注册路径的 `validate_law_set` 兜底强校验。
     /// - 组装文档 `version` = 装配格式版本（常量 `1.0.0`）；rule serve 侧
     ///   数据集真实版本锚入 `metadata.source`（`@ <current>`），内容锚 =
     ///   文档 blake3 digest。
@@ -319,17 +323,17 @@ impl LawHost {
         let mut report = LawHostLoadReport::default();
 
         for dataset_id in dataset_ids {
-            // ① 数据集元信息：kind 必须 = law_set（否则隔离拒收）
-            let mut req = http.get(format!("{base}/v1/datasets/{dataset_id}"));
+            // ① 快照包拉取（单请求取回数据集元信息 + 条目全集）
+            let mut req = http.get(format!("{base}/v1/datasets/{dataset_id}/bundle"));
             if let Some(key) = api_key {
                 req = req.header("x-api-key", key);
             }
-            let ds: serde_json::Value = match req.send().await {
+            let bundle: serde_json::Value = match req.send().await {
                 Err(e) => {
                     report.rejected.push(LawSetStatus::invalid(
                         dataset_id.clone(),
                         format!("rule serve {base} dataset {dataset_id}"),
-                        vec![format!("数据集元信息请求失败: {e}")],
+                        vec![format!("快照包请求失败: {e}")],
                     ));
                     continue;
                 }
@@ -337,7 +341,7 @@ impl LawHost {
                     report.rejected.push(LawSetStatus::invalid(
                         dataset_id.clone(),
                         format!("rule serve {base} dataset {dataset_id}"),
-                        vec![format!("数据集元信息请求失败: HTTP {}", resp.status())],
+                        vec![format!("快照包请求失败: HTTP {}", resp.status())],
                     ));
                     continue;
                 }
@@ -347,28 +351,14 @@ impl LawHost {
                         report.rejected.push(LawSetStatus::invalid(
                             dataset_id.clone(),
                             format!("rule serve {base} dataset {dataset_id}"),
-                            vec![format!("数据集元信息解析失败: {e}")],
+                            vec![format!("快照包解析失败: {e}")],
                         ));
                         continue;
                     }
                 },
             };
-            let ds_kind = ds
-                .get("dataset_kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if ds_kind != "law_set" {
-                report.rejected.push(LawSetStatus::invalid(
-                    dataset_id.clone(),
-                    format!("rule serve {base} dataset {dataset_id}"),
-                    vec![format!(
-                        "数据集 kind 为 `{ds_kind}`，远端登记仅接受 law_set 数据集"
-                    )],
-                ));
-                continue;
-            }
-            let ds_version = ds
-                .pointer("/versioning/current")
+            let ds_version = bundle
+                .pointer("/dataset/versioning/current")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
@@ -376,75 +366,50 @@ impl LawHost {
             // 锚入（`@ <current>`）
             let source = format!("rule serve {base} dataset {dataset_id} @ {ds_version}");
 
-            // ② 条目拉取（翻页跟随 next_cursor；law_set ≤128 条，页数留裕度）
-            let mut payloads: Vec<(String, serde_json::Value)> = Vec::new();
-            let mut cursor: Option<String> = None;
-            let mut fetch_error: Option<String> = None;
-            for _ in 0..16 {
-                let mut path = format!("/v1/datasets/{dataset_id}/entries?limit=100");
-                if let Some(c) = &cursor {
-                    path.push_str(&format!("&offset={c}"));
-                }
-                let mut req = http.get(format!("{base}{path}"));
-                if let Some(key) = api_key {
-                    req = req.header("x-api-key", key);
-                }
-                match req.send().await {
-                    Err(e) => {
-                        fetch_error = Some(format!("条目请求失败: {e}"));
-                        break;
-                    }
-                    Ok(resp) if !resp.status().is_success() => {
-                        fetch_error = Some(format!("条目请求失败: HTTP {}", resp.status()));
-                        break;
-                    }
-                    Ok(resp) => match resp.json::<serde_json::Value>().await {
-                        Err(e) => {
-                            fetch_error = Some(format!("条目响应解析失败: {e}"));
-                            break;
-                        }
-                        Ok(page) => {
-                            let items = page
-                                .get("items")
-                                .and_then(|v| v.as_array())
-                                .cloned()
-                                .unwrap_or_default();
-                            for item in &items {
-                                let entry_id = item
-                                    .get("entry_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let payload = item
-                                    .get("payload")
-                                    .cloned()
-                                    .unwrap_or(serde_json::Value::Null);
-                                payloads.push((entry_id, payload));
-                            }
-                            cursor = page
-                                .get("next_cursor")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            if cursor.is_none() {
-                                break;
-                            }
-                        }
-                    },
-                }
+            // ② law_set 归属判定 + 条目提取（快照包 entries：payload 零转译存于
+            // `rule_body`，law_set 归属由条目级 schema_ref 域件 URI 判定）
+            let entries = bundle
+                .get("entries")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if entries.is_empty() {
+                report.rejected.push(LawSetStatus::invalid(
+                    dataset_id.clone(),
+                    source.clone(),
+                    vec!["快照包无条目（拒绝装配空集）".to_string()],
+                ));
+                continue;
             }
-            if let Some(err) = fetch_error {
+            let mut payloads: Vec<(String, serde_json::Value)> = Vec::new();
+            let mut kind_error: Option<String> = None;
+            for entry in &entries {
+                let entry_id = entry
+                    .get("entry_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let schema_ref = entry
+                    .get("schema_ref")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if !schema_ref.starts_with("https://evorule.org/schemas/domain/law_set/") {
+                    kind_error = Some(format!(
+                        "条目 `{entry_id}` schema_ref 为 `{schema_ref}`，远端登记仅接受 law_set 数据集快照包"
+                    ));
+                    break;
+                }
+                let payload = entry
+                    .get("rule_body")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                payloads.push((entry_id, payload));
+            }
+            if let Some(err) = kind_error {
                 report.rejected.push(LawSetStatus::invalid(
                     dataset_id.clone(),
                     source.clone(),
                     vec![err],
-                ));
-                continue;
-            }
-            if payloads.is_empty() {
-                report.rejected.push(LawSetStatus::invalid(
-                    dataset_id.clone(),
-                    source.clone(),
-                    vec!["远端数据集无 law 条目（拒绝装配空集）".to_string()],
                 ));
                 continue;
             }
@@ -1046,41 +1011,65 @@ mod tests {
         assert!(host.lookup("slice-test", "test_law").is_some());
     }
 
-    /// 远端源登记（rule serve）：按 dataset_id 拉取条目组装部署件 → 与本地
-    /// 同注册路径（valid + 未验证第三态同源透出 + blake3 锚 + 版本锚入 source）
+    /// 远端源登记（rule serve）：按 dataset_id 拉取快照包组装部署件 → 与本地
+    /// 同注册路径（valid + 未验证第三态同源透出 + blake3 锚 + 版本锚入 source）；
+    /// x-api-key 凭证随拉取面传递（缺凭证 = 快照包端点 401 → 隔离拒收）
     #[tokio::test]
     async fn load_remote_registers_law_set_from_rule_serve() {
         let payload = placeholder_law_set_doc("remote-slice")["laws"][0].clone();
-        let app = axum::Router::new()
-            .route(
-                "/v1/datasets/{id}",
-                axum::routing::get(|| async {
-                    axum::Json(serde_json::json!({
-                        "dataset_id": "remote-slice",
-                        "dataset_kind": "law_set",
-                        "versioning": { "current": "v2" }
-                    }))
-                }),
-            )
-            .route(
-                "/v1/datasets/{id}/entries",
-                axum::routing::get(move || {
-                    let payload = payload.clone();
-                    async move {
-                        axum::Json(serde_json::json!({
-                            "items": [{ "entry_id": "a", "payload": payload }]
-                        }))
+        let app = axum::Router::new().route(
+            "/v1/datasets/{id}/bundle",
+            axum::routing::get(move |headers: axum::http::HeaderMap| {
+                let payload = payload.clone();
+                async move {
+                    if headers.get("x-api-key").and_then(|v| v.to_str().ok())
+                        != Some("evorule_e2e_key")
+                    {
+                        return Err(axum::http::StatusCode::UNAUTHORIZED);
                     }
-                }),
-            );
+                    Ok(axum::Json(serde_json::json!({
+                        "dataset": {
+                            "dataset_id": "remote-slice",
+                            "versioning": { "current": "v2" }
+                        },
+                        "entries": [{
+                            "entry_id": "a",
+                            "schema_ref":
+                                "https://evorule.org/schemas/domain/law_set/law/v1.0.json",
+                            "rule_body": payload
+                        }]
+                    })))
+                }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let http = reqwest::Client::new();
         let base = format!("http://{addr}");
-        let (host, report) =
+        // 凭证缺失：快照包端点 401 → 该集隔离拒收（fail-visible）
+        let (_host_no_key, report) =
             LawHost::load_remote(&http, &base, None, &["remote-slice".to_string()]).await;
+        assert_eq!(
+            report.loaded_count(),
+            0,
+            "无凭证应拒收: {:?}",
+            report.rejected
+        );
+        assert!(
+            report.rejected[0].errors[0].contains("HTTP 401"),
+            "报因应指明 401: {:?}",
+            report.rejected[0].errors
+        );
+        // 凭证在位：登记成功（与本地同校验路径）
+        let (host, report) = LawHost::load_remote(
+            &http,
+            &base,
+            Some("evorule_e2e_key"),
+            &["remote-slice".to_string()],
+        )
+        .await;
         assert_eq!(
             report.loaded_count(),
             1,
@@ -1103,19 +1092,30 @@ mod tests {
         );
     }
 
-    /// 远端源登记拒收面：kind 非 law_set → 逐集隔离拒收（fail-visible 报因），
-    /// 不阻断他集
+    /// 远端源登记拒收面：条目 schema_ref 非 law_set 域件（rule/knowledge 数据
+    /// 集快照包）或快照包不可达 → 逐集隔离拒收（fail-visible 报因），不阻断他集
     #[tokio::test]
     async fn load_remote_rejects_non_law_set_dataset() {
         let app = axum::Router::new().route(
-            "/v1/datasets/{id}",
-            axum::routing::get(|| async {
-                axum::Json(serde_json::json!({
-                    "dataset_id": "not-law",
-                    "dataset_kind": "knowledge",
-                    "versioning": { "current": "v1" }
-                }))
-            }),
+            "/v1/datasets/{id}/bundle",
+            axum::routing::get(
+                |axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    match id.as_str() {
+                        "not-law" => Ok(axum::Json(serde_json::json!({
+                            "dataset": {
+                                "dataset_id": "not-law",
+                                "versioning": { "current": "v1" }
+                            },
+                            "entries": [{
+                                "entry_id": "k1",
+                                "schema_ref": "builtin:knowledge/fact",
+                                "rule_body": { "text": "not a law" }
+                            }]
+                        }))),
+                        _ => Err(axum::http::StatusCode::NOT_FOUND),
+                    }
+                },
+            ),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1133,9 +1133,14 @@ mod tests {
         assert_eq!(report.loaded_count(), 0);
         assert_eq!(report.rejected.len(), 2, "两集均应隔离拒收");
         assert!(
-            report.rejected[0].errors[0].contains("knowledge"),
-            "报因应指明 kind: {:?}",
+            report.rejected[0].errors[0].contains("law_set"),
+            "报因应指明 law_set 归属: {:?}",
             report.rejected[0].errors
+        );
+        assert!(
+            report.rejected[1].errors[0].contains("HTTP 404"),
+            "不可达报因应指明 HTTP 404: {:?}",
+            report.rejected[1].errors
         );
         assert!(host.lookup("not-law", "test_law").is_none());
     }
