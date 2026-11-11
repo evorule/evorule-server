@@ -21387,8 +21387,8 @@ mod tests {
     #[tokio::test]
     async fn test_bundles_import_tampered_bundle_400_oneshot() {
         use evorule_bundle::{
-            BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetBundle, Provenance,
-            TestVerdict, BUNDLE_SCHEMA_VERSION,
+            BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetBundle, DatasetKind,
+            Provenance, TestVerdict, BUNDLE_SCHEMA_VERSION,
         };
 
         let (state, _) = make_test_state();
@@ -21401,6 +21401,7 @@ mod tests {
                 name: "itest-400".into(),
                 tenant_id: "org-evorule".into(),
                 instance_id: "org-evorule".into(),
+                dataset_kind: DatasetKind::RuleSet,
                 versioning: evorule_bundle::Versioning::default(),
                 version_selection: None,
                 law_ref: None,
@@ -21510,8 +21511,8 @@ mod tests {
         schema_ref: &str,
     ) -> evorule_bundle::DatasetBundle {
         use evorule_bundle::{
-            BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetBundle, LawRef,
-            Provenance, TestVerdict, VersionSelection, VersionSelectionMode, Versioning,
+            BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DatasetBundle, DatasetKind,
+            LawRef, Provenance, TestVerdict, VersionSelection, VersionSelectionMode, Versioning,
             BUNDLE_SCHEMA_VERSION,
         };
         let mut bundle = DatasetBundle {
@@ -21522,6 +21523,7 @@ mod tests {
                 name: "Q12 数据资产演示集".into(),
                 tenant_id: "org-evorule".into(),
                 instance_id: "org-evorule".into(),
+                dataset_kind: DatasetKind::Knowledge,
                 versioning: Versioning::default(),
                 version_selection: Some(VersionSelection {
                     mode: VersionSelectionMode::AutoByEffectiveDate,

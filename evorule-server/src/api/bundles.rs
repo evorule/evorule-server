@@ -342,7 +342,7 @@ pub fn export_workspace_bundle(
     exported_at: &str,
 ) -> Result<evorule_bundle::DatasetBundle, String> {
     use evorule_bundle::{
-        BundleAudit, BundleDatasetMeta, BundleEntry, Provenance, VersionSelection,
+        BundleAudit, BundleDatasetMeta, BundleEntry, DatasetKind, Provenance, VersionSelection,
         VersionSelectionMode, Versioning, BUNDLE_SCHEMA_VERSION,
     };
 
@@ -403,6 +403,8 @@ pub fn export_workspace_bundle(
                 .unwrap_or_else(|_| "unattributed".to_string()),
             instance_id: std::env::var("EVORULE_INSTANCE_ID")
                 .unwrap_or_else(|_| "unattributed".to_string()),
+            // workspace 导出面产出为规则条目集 → 数据集类型如实标 rule_set
+            dataset_kind: DatasetKind::RuleSet,
             versioning: Versioning::default(),
             version_selection: Some(VersionSelection {
                 mode: VersionSelectionMode::Pinned,
@@ -771,8 +773,8 @@ mod tests {
 
     use evorule_bundle::{
         BundleAudit, BundleDatasetMeta, BundleEntry, BundleTests, DataDependencies, DatasetBundle,
-        EntryKind, LawRef, Provenance, ServiceDecl, SourceBinding, TestVerdict, VersionSelection,
-        VersionSelectionMode, Versioning,
+        DatasetKind, EntryKind, LawRef, Provenance, ServiceDecl, SourceBinding, TestVerdict,
+        VersionSelection, VersionSelectionMode, Versioning,
     };
 
     use super::*;
@@ -787,6 +789,7 @@ mod tests {
                 name: "2024 企业所得税合规规则集".into(),
                 tenant_id: "org-evorule".into(),
                 instance_id: "org-evorule".into(),
+                dataset_kind: DatasetKind::RuleSet,
                 versioning: Versioning::default(),
                 version_selection: Some(VersionSelection {
                     mode: VersionSelectionMode::AutoByEffectiveDate,
@@ -2024,6 +2027,7 @@ mod tests {
                 name: "entry-sandbox consistency protocol regression".into(),
                 tenant_id: "org-evorule".into(),
                 instance_id: "org-evorule".into(),
+                dataset_kind: DatasetKind::Knowledge,
                 versioning: Versioning::default(),
                 version_selection: Some(VersionSelection {
                     mode: VersionSelectionMode::AutoByEffectiveDate,
