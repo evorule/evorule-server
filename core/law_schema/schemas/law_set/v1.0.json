@@ -1,7 +1,9 @@
 {
-  "$schema": "https://evorule.org/schemas/law_set/v1.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://evorule.org/schemas/law_set/v1.0.json",
-  "title": "Evorule Law Set",
+  "title": "evorule law_set v1.0（固化版）",
+  "description": "定律集合（law_set）数据集契约：恒真式定律条目数组（id/formula/symbols/si_units/max_version_depth/monotone_form 必填；tier=light|full；domains 多域向量与 cross_refs 跨域显式声明边；条目级 additionalProperties=false 严格形态，单文件自洽无跨文件 $ref）。2026-11-12 自 evorule-server core/law_schema 嵌入版归位本仓 SSOT（治理归位：实例校验语义与 server 嵌入版逐字段一致，仅补宪法头字段）；server 侧仍以嵌入副本执行运行时校验，副本一致性由 server check_schema_sync.py 对清单守卫。",
+  "x_legal_authority_notice": "本 schema 由 EvoRule 团队维护,以 CC0 1.0 公共领域奉献(见 schemas/LICENSE-SCHEMAS.md);通过本 schema 校验或创作的 system JSON 内容 IP 归作者所有,evorule 不主张。详见 ../../LEGAL_NOTES.md 与 ../../docs/adr/scope-split-ip-model.md",
   "type": "object",
   "required": ["$schema", "kind", "id", "version", "laws"],
   "properties": {
