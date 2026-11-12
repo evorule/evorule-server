@@ -52,6 +52,7 @@ PAIRS = [
     ("schemas/rule_set/v1.1.json", "core/rule_schema/schemas/rule_set/v1.1.json"),
     ("schemas/_shared/v1.0.json", "core/rule_schema/schemas/_shared/v1.0.json"),
     ("schemas/_meta/v1.0.json", "core/rule_schema/schemas/_meta/v1.0.json"),
+    ("schemas/law_set/v1.0.json", "core/law_schema/schemas/law_set/v1.0.json"),
 ]
 
 
