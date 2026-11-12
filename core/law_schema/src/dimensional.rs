@@ -177,11 +177,26 @@ const MAX_PAREN_DEPTH: usize = 64;
 /// 与「不可解析跳过」分野）
 const ADDITIVE_MISMATCH_PREFIX: &str = "加减两侧操作分量纲不一致";
 
+/// 函数自变量量纲违例报因前缀（严口径：白名单函数自变量须量纲一；
+/// check_law 据此前缀把该类失败归入 [`DimensionalVerdict::Mismatch`]
+/// 硬拒收，与「不可解析跳过」分野；law 级豁免键
+/// `metadata.fn_arg_dimless_exempt` 置真时按量纲一处理，见 eval_side）
+const FUNC_ARG_MISMATCH_PREFIX: &str = "函数自变量量纲违例";
+
+/// 函数调用白名单（池实况扫定 2026-11-13：log 43 / sin 44 / cos 31 /
+/// exp 13 / sqrt 11 / tan 4 / log2 2 / ln 1 / sum 1；未知函数名 fail-fast）。
+/// 量纲规则见 `apply_fn`：除 `sum`（结果维 = 自变量维）外结果均为量纲一。
+const FUNC_WHITELIST: [&str; 9] = [
+    "log", "log2", "ln", "exp", "sin", "cos", "tan", "sqrt", "sum",
+];
+
 struct ExprParser<'a> {
     src: &'a str,
     pos: usize,
     /// 当前括号嵌套深度（parse_base 括号分支递归计数）
     depth: usize,
+    /// 函数自变量量纲一豁免（law.metadata.fn_arg_dimless_exempt，缺省 false）
+    fn_arg_exempt: bool,
 }
 
 impl<'a> ExprParser<'a> {
@@ -190,6 +205,7 @@ impl<'a> ExprParser<'a> {
             src,
             pos: 0,
             depth: 0,
+            fn_arg_exempt: false,
         }
     }
 
@@ -271,12 +287,118 @@ impl<'a> ExprParser<'a> {
         self.skip_ws();
         if self.peek() == Some(b'^') {
             self.pos += 1;
+            self.skip_ws();
+            if self.peek() == Some(b'(') {
+                // 记法扩展：量纲一底（如自然常数 e）的括号指数——指数须量纲
+                // 一（严口径同函数自变量），结果量纲一。底非量纲一 = 符号指
+                // 数（M1c 定性：量纲取决于指数运行时值，机验非确定性，文法
+                // 不收，按不可解析跳过照录）。
+                if base != DimensionVector::DIMENSIONLESS {
+                    return Err(format!(
+                        "非常数指数：底 `{}` 非量纲一，符号指数文法不支持",
+                        base.render()
+                    ));
+                }
+                let exp_dims = self.parse_paren_subexpr(leaf)?;
+                if exp_dims != DimensionVector::DIMENSIONLESS {
+                    return Err(format!(
+                        "{FUNC_ARG_MISMATCH_PREFIX}: 括号指数展开为 {}，严口径要求量纲一",
+                        exp_dims.render()
+                    ));
+                }
+                return Ok(DimensionVector::DIMENSIONLESS);
+            }
             let exp = self.parse_exponent()?;
             return base
                 .checked_pow(exp)
                 .ok_or_else(|| format!("幂次 {exp} 分量溢出（|exp| ≤ 127）"));
         }
         Ok(base)
+    }
+
+    /// 函数调用：`ident '(' expr (',' expr)* ')'`（白名单见
+    /// [`FUNC_WHITELIST`]，实参数量按函数语义收紧）。实参括号纳入嵌套深度
+    /// 计数，fail-fast 未知函数名。
+    fn parse_fn_call(
+        &mut self,
+        name: &str,
+        leaf: LeafResolver<'_>,
+    ) -> Result<DimensionVector, String> {
+        self.pos += 1; // 消费 '('
+        self.depth += 1;
+        if self.depth > MAX_PAREN_DEPTH {
+            return Err(format!("括号嵌套过深（上限 {MAX_PAREN_DEPTH} 层）"));
+        }
+        let mut args: Vec<DimensionVector> = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b')') {
+            return Err(format!("函数 `{name}` 实参列表为空"));
+        }
+        loop {
+            args.push(self.parse_expr(leaf)?);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                }
+                Some(b')') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => return Err(format!("函数 `{name}` 实参列表缺右括号 `)`")),
+            }
+        }
+        self.depth -= 1;
+        if args.len() != 1 {
+            return Err(format!(
+                "函数 `{name}` 实参数量 {} 不合规（白名单函数均为单参）",
+                args.len()
+            ));
+        }
+        self.apply_fn(name, &args)
+    }
+
+    /// 函数量纲规则（严口径）：
+    /// - `log`/`log2`/`ln`/`exp`/`sin`/`cos`/`tan`：自变量须量纲一，结果量纲
+    ///   一（物理惯例 [pX] = 1；违例经 law 级豁免键
+    ///   `metadata.fn_arg_dimless_exempt` 置真时按量纲一处理）；
+    /// - `sqrt`：自变量各分量须为偶数，结果 = 各分量半幂；
+    /// - `sum`：Σ 结果维 = 自变量维（逐项同维性由单项求值代表，恒等返回）。
+    fn apply_fn(
+        &mut self,
+        name: &str,
+        args: &[DimensionVector],
+    ) -> Result<DimensionVector, String> {
+        let d = *args
+            .first()
+            .ok_or_else(|| format!("函数 `{name}` 缺实参"))?;
+        match name {
+            "sum" => Ok(d),
+            "sqrt" => {
+                let mut out = d.0;
+                for slot in out.iter_mut() {
+                    if *slot % 2 != 0 {
+                        return Err(format!(
+                            "{FUNC_ARG_MISMATCH_PREFIX}: 函数 `sqrt` 自变量展开为 {}，\
+                             含奇幂分量无法取半幂",
+                            d.render()
+                        ));
+                    }
+                    *slot /= 2;
+                }
+                Ok(DimensionVector(out))
+            }
+            _ => {
+                if !self.fn_arg_exempt && d != DimensionVector::DIMENSIONLESS {
+                    return Err(format!(
+                        "{FUNC_ARG_MISMATCH_PREFIX}: 函数 `{name}` 自变量展开为 {}，\
+                         严口径要求量纲一",
+                        d.render()
+                    ));
+                }
+                Ok(DimensionVector::DIMENSIONLESS)
+            }
+        }
     }
 
     /// `base := 数值常量（量纲一）| 标识符（叶子解析）| '(' expr ')'（括号子表达式）`
@@ -293,7 +415,12 @@ impl<'a> ExprParser<'a> {
                 while matches!(self.peek(), Some(b) if b.is_ascii_alphanumeric() || b == b'_') {
                     self.pos += 1;
                 }
-                leaf(&self.src[start..self.pos])
+                let name = self.src[start..self.pos].to_string();
+                self.skip_ws();
+                if self.peek() == Some(b'(') && FUNC_WHITELIST.contains(&name.as_str()) {
+                    return self.parse_fn_call(&name, leaf);
+                }
+                leaf(&name)
             }
             Some(b'(') => self.parse_paren_subexpr(leaf),
             Some(b) if b.is_ascii() => Err(format!("非法记号 `{}`", b as char)),
@@ -383,11 +510,13 @@ pub fn parse_unit_expr(expr: &str) -> Result<DimensionVector, String> {
     Ok(dims)
 }
 
-/// 求值 formula 单侧表达式：符号量纲经 si_units 解析（带缓存，重复符号只解析一次）
+/// 求值 formula 单侧表达式：符号量纲经 si_units 解析（带缓存，重复符号只解析一次）；
+/// `fn_arg_exempt` = law 级函数自变量量纲一豁免（metadata.fn_arg_dimless_exempt）
 fn eval_side(
     side: &str,
     si_units: &BTreeMap<String, String>,
     cache: &mut BTreeMap<String, DimensionVector>,
+    fn_arg_exempt: bool,
 ) -> Result<DimensionVector, String> {
     let mut resolve = |name: &str| -> Result<DimensionVector, String> {
         if let Some(dims) = cache.get(name) {
@@ -402,6 +531,7 @@ fn eval_side(
         Ok(dims)
     };
     let mut parser = ExprParser::new(side);
+    parser.fn_arg_exempt = fn_arg_exempt;
     let dims = parser.parse_expr(&mut resolve)?;
     parser.skip_ws();
     if parser.pos != side.len() {
@@ -454,18 +584,35 @@ pub fn check_law(law: &Law) -> DimensionalVerdict {
         ));
     }
 
+    let fn_arg_exempt = law
+        .metadata
+        .as_ref()
+        .and_then(|m| m.fn_arg_dimless_exempt)
+        .unwrap_or(false);
     let mut cache = BTreeMap::new();
-    let lhs = match eval_side(lhs_raw, &law.si_units, &mut cache) {
+    let lhs = match eval_side(lhs_raw, &law.si_units, &mut cache, fn_arg_exempt) {
         Ok(dims) => dims,
         Err(reason) if reason.starts_with(ADDITIVE_MISMATCH_PREFIX) => {
             return DimensionalVerdict::AdditiveMismatch { report: reason };
         }
+        Err(reason) if reason.starts_with(FUNC_ARG_MISMATCH_PREFIX) => {
+            return DimensionalVerdict::Mismatch {
+                lhs: reason,
+                rhs: "量纲一（函数自变量严口径）".to_string(),
+            };
+        }
         Err(reason) => return DimensionalVerdict::Skipped(reason),
     };
-    let rhs = match eval_side(rhs_raw, &law.si_units, &mut cache) {
+    let rhs = match eval_side(rhs_raw, &law.si_units, &mut cache, fn_arg_exempt) {
         Ok(dims) => dims,
         Err(reason) if reason.starts_with(ADDITIVE_MISMATCH_PREFIX) => {
             return DimensionalVerdict::AdditiveMismatch { report: reason };
+        }
+        Err(reason) if reason.starts_with(FUNC_ARG_MISMATCH_PREFIX) => {
+            return DimensionalVerdict::Mismatch {
+                lhs: reason,
+                rhs: "量纲一（函数自变量严口径）".to_string(),
+            };
         }
         Err(reason) => return DimensionalVerdict::Skipped(reason),
     };
@@ -875,5 +1022,119 @@ mod tests {
             DimensionalVerdict::Mismatch { .. } => {}
             other => panic!("应为 Mismatch: {other:?}"),
         }
+    }
+
+    #[test]
+    fn function_call_whitelist_and_strict_dimensionless_args() {
+        // 白名单函数严口径：自变量量纲一 → 结果量纲一
+        let law = law_from_json(json!({
+            "id": "fn-ok",
+            "formula": "pH = -log(H)",
+            "symbols": { "pH": "", "H": "" },
+            "si_units": { "pH": "1", "H": "1", "log": "1" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        assert_eq!(check_law(&law), DimensionalVerdict::Consistent);
+
+        // 严口径：自变量非量纲一 = Mismatch 硬校验（不再尾随报错跳过）
+        let law = law_from_json(json!({
+            "id": "fn-strict",
+            "formula": "y = log(x)",
+            "symbols": { "y": "", "x": "" },
+            "si_units": { "y": "1", "x": "kg", "log": "1" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        match check_law(&law) {
+            DimensionalVerdict::Mismatch { lhs, rhs } => {
+                assert!(lhs.contains("函数自变量量纲违例"));
+                assert!(rhs.contains("严口径"));
+            }
+            other => panic!("应为 Mismatch: {other:?}"),
+        }
+
+        // 未知函数名 fail-fast（不可解析 → 跳过照录）
+        let law = law_from_json(json!({
+            "id": "fn-unknown",
+            "formula": "y = gamma_fn(x)",
+            "symbols": { "y": "", "x": "" },
+            "si_units": { "y": "1", "x": "1" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        assert!(matches!(check_law(&law), DimensionalVerdict::Skipped(_)));
+    }
+
+    #[test]
+    fn fn_arg_dimless_exempt_key_overrides_strict_check() {
+        // 豁免键显式声明：自变量非量纲一按量纲一处理（缺省不变式，引擎零硬编码）
+        let law = law_from_json(json!({
+            "id": "fn-exempt",
+            "formula": "pH = -log(H)",
+            "symbols": { "pH": "", "H": "" },
+            "si_units": { "pH": "1", "H": "mol*m^-3", "log": "1" },
+            "max_version_depth": 1, "monotone_form": true,
+            "metadata": { "source": "test", "fn_arg_dimless_exempt": true }
+        }));
+        assert_eq!(check_law(&law), DimensionalVerdict::Consistent);
+    }
+
+    #[test]
+    fn sqrt_even_power_and_sum_identity() {
+        // sqrt 偶幂半幂：sqrt(kg^2*m^4) = kg*m^2
+        let law = law_from_json(json!({
+            "id": "sqrt-even",
+            "formula": "s = sqrt(A)",
+            "symbols": { "s": "", "A": "" },
+            "si_units": { "s": "kg*m^2", "A": "kg^2*m^4", "sqrt": "1" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        assert_eq!(check_law(&law), DimensionalVerdict::Consistent);
+
+        // sqrt 奇幂分量：硬校验 Mismatch
+        let law = law_from_json(json!({
+            "id": "sqrt-odd",
+            "formula": "s = sqrt(A)",
+            "symbols": { "s": "", "A": "" },
+            "si_units": { "s": "kg", "A": "kg^3", "sqrt": "1" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        match check_law(&law) {
+            DimensionalVerdict::Mismatch { lhs, .. } => {
+                assert!(lhs.contains("奇幂分量"));
+            }
+            other => panic!("应为 Mismatch: {other:?}"),
+        }
+
+        // sum 恒等：Σ 结果维 = 自变量维
+        let law = law_from_json(json!({
+            "id": "sum-identity",
+            "formula": "H = sum(p)",
+            "symbols": { "H": "", "p": "" },
+            "si_units": { "H": "1", "p": "1", "sum": "1" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        assert_eq!(check_law(&law), DimensionalVerdict::Consistent);
+    }
+
+    #[test]
+    fn parenthesized_exponent_for_dimensionless_base() {
+        // e^ 记法：量纲一底 + 括号指数（指数须量纲一，结果量纲一）
+        let law = law_from_json(json!({
+            "id": "exp-notation",
+            "formula": "N = N0 * e^(-lambda * t)",
+            "symbols": { "N": "", "N0": "", "e": "", "lambda": "", "t": "" },
+            "si_units": { "N": "1", "N0": "1", "e": "1", "lambda": "s^-1", "t": "s" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        assert_eq!(check_law(&law), DimensionalVerdict::Consistent);
+
+        // 底非量纲一 = 符号指数（M1c 定性）：不可解析跳过照录
+        let law = law_from_json(json!({
+            "id": "symbolic-exponent",
+            "formula": "y = m ^ (k * t)",
+            "symbols": { "y": "", "m": "", "k": "", "t": "" },
+            "si_units": { "y": "1", "m": "kg", "k": "1", "t": "s" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        assert!(matches!(check_law(&law), DimensionalVerdict::Skipped(_)));
     }
 }

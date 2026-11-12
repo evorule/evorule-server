@@ -82,6 +82,10 @@ pub struct LawMetadata {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified: Option<String>,
+    /// 函数自变量量纲一豁免（严口径例外声明；缺省 false = 严口径硬校验）。
+    /// 仅经 law 面显式声明激活，引擎零硬编码行 id（缺省不变式口径）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fn_arg_dimless_exempt: Option<bool>,
 }
 
 /// 跨域引用边（D2=A：注册时显式声明，禁自动发现）
