@@ -24,7 +24,7 @@
 //! ```text
 //! expr   := term (('+' | '-') term)*      ← 加减要求两侧操作分量纲一致
 //! term   := factor (('*' | '/') factor)*
-//! factor := base ('^' ['-'] digits)?
+//! factor := ('-')* base ('^' ['-'] digits)?   ← 一元负号为纯记号面（[-v] = v）
 //! base   := identifier | number | '(' expr ')'
 //! ```
 //! 括号子表达式按同一文法递归求值（可嵌套，深度上限 [`MAX_PAREN_DEPTH`]）；
@@ -259,9 +259,14 @@ impl<'a> ExprParser<'a> {
         }
     }
 
-    /// `factor := base ('^' exponent)?`
+    /// `factor := ('-')* base ('^' exponent)?`——一元负号：纯记号面，量纲
+    /// 向量关于取负对称（[-v] = v），消费记号不改维；连写负号（`--x`）同法。
     fn parse_factor(&mut self, leaf: LeafResolver<'_>) -> Result<DimensionVector, String> {
         self.skip_ws();
+        while self.peek() == Some(b'-') {
+            self.pos += 1;
+            self.skip_ws();
+        }
         let base = self.parse_base(leaf)?;
         self.skip_ws();
         if self.peek() == Some(b'^') {
@@ -822,6 +827,53 @@ mod tests {
                 assert!(report.contains("length"), "report = {report}");
             }
             other => panic!("应为 AdditiveMismatch: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unary_minus_is_pure_notation() {
+        // 一元负号为纯记号面：[-v] = v，首位/连写/乘除链中均不改维
+        assert!(parse_unit_expr("-kg*m*s^-2").is_ok());
+        assert_eq!(
+            parse_unit_expr("-kg*m*s^-2").unwrap(),
+            parse_unit_expr("kg*m*s^-2").unwrap()
+        );
+        assert_eq!(
+            parse_unit_expr("--kg*m*s^-2").unwrap(),
+            parse_unit_expr("kg*m*s^-2").unwrap()
+        );
+        // 乘除链中部负号（此前在 parse_base 报「非法记号 -」）
+        assert_eq!(
+            parse_unit_expr("kg*-m*s^-2").unwrap(),
+            parse_unit_expr("kg*m*s^-2").unwrap()
+        );
+        // 幂次负号共存不回归
+        assert!(parse_unit_expr("-m*s^-2").is_ok());
+    }
+
+    #[test]
+    fn check_law_negative_constant_side() {
+        // 嵌负常数行解锁：负号不再阻塞求值，等式按量纲正常判定
+        let law = law_from_json(json!({
+            "id": "neg-const",
+            "formula": "m = -2 * m0",
+            "symbols": { "m": "", "m0": "" },
+            "si_units": { "m": "kg", "m0": "kg" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        assert_eq!(check_law(&law), DimensionalVerdict::Consistent);
+
+        // 负号不掩盖量纲矛盾：两侧不同维仍 Mismatch
+        let law = law_from_json(json!({
+            "id": "neg-const-mismatch",
+            "formula": "E = -13.6 / n ^ 2",
+            "symbols": { "E": "", "n": "" },
+            "si_units": { "E": "eV", "n": "1" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        match check_law(&law) {
+            DimensionalVerdict::Mismatch { .. } => {}
+            other => panic!("应为 Mismatch: {other:?}"),
         }
     }
 }
