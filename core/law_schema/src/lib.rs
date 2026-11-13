@@ -86,6 +86,13 @@ pub struct LawMetadata {
     /// 仅经 law 面显式声明激活，引擎零硬编码行 id（缺省不变式口径）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fn_arg_dimless_exempt: Option<bool>,
+    /// 同维零特例声明（零右端平衡态判据：`F = 0` 等行 rhs 字面零量纲不设限，
+    /// 与 lhs 同纲；缺省 false = 现行双 eval 比对路径零变化，缺省不变式口径）。
+    /// 仅经 law 面显式声明激活，引擎零硬编码行 id；声明后仅 rhs 侧严格字面
+    /// 单数字 `0` 生效（`0.0`/`-0`/表达式均不激活），命中即 lhs 解析成功判
+    /// Consistent 纯态。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same_dim_zero: Option<bool>,
 }
 
 /// 跨域引用边（D2=A：注册时显式声明，禁自动发现）
