@@ -562,6 +562,9 @@ pub enum DimensionalVerdict {
 ///
 /// 启用条件 = formula 引用符号全部有 si_units（缺者整体跳过并给出原因，
 /// 兼容 G 类纯数学定律）；两侧求值均成功才比较，任一侧不可解析即跳过。
+/// 同维零特例：`metadata.same_dim_zero` 显式声明且 rhs 为严格字面单数字
+/// `0` 时，零值量纲不设限（与 lhs 同纲），lhs 解析成功即 Consistent 纯态
+/// （缺省 false = 现行双 eval 比对路径零变化）。
 pub fn check_law(law: &Law) -> DimensionalVerdict {
     // 等式形态防御性重查（结构层已保证；不满足时结构层已报因，此处跳过）
     let Some((lhs_raw, rhs_raw)) = law.formula.split_once('=') else {
@@ -590,6 +593,33 @@ pub fn check_law(law: &Law) -> DimensionalVerdict {
         .and_then(|m| m.fn_arg_dimless_exempt)
         .unwrap_or(false);
     let mut cache = BTreeMap::new();
+
+    // 同维零特例（law.metadata.same_dim_zero 显式声明激活；缺省 false = 现行
+    // 路径零改动）：rhs 侧严格字面单数字 `0` 时零值量纲不设限（物理上零与
+    // lhs 同纲），lhs 解析成功即 Consistent 纯态，Err 走现行报因分派。
+    // `0.0`/`-0`/常量求值零/零表达式均不激活（保守最小面）；rhs 非 `0` 时
+    // 特例不生效，照现行双 eval 比对路径。
+    let same_dim_zero = law
+        .metadata
+        .as_ref()
+        .and_then(|m| m.same_dim_zero)
+        .unwrap_or(false);
+    if same_dim_zero && rhs_raw.trim() == "0" {
+        return match eval_side(lhs_raw, &law.si_units, &mut cache, fn_arg_exempt) {
+            Ok(_) => DimensionalVerdict::Consistent,
+            Err(reason) if reason.starts_with(ADDITIVE_MISMATCH_PREFIX) => {
+                DimensionalVerdict::AdditiveMismatch { report: reason }
+            }
+            Err(reason) if reason.starts_with(FUNC_ARG_MISMATCH_PREFIX) => {
+                DimensionalVerdict::Mismatch {
+                    lhs: reason,
+                    rhs: "量纲一（函数自变量严口径）".to_string(),
+                }
+            }
+            Err(reason) => DimensionalVerdict::Skipped(reason),
+        };
+    }
+
     let lhs = match eval_side(lhs_raw, &law.si_units, &mut cache, fn_arg_exempt) {
         Ok(dims) => dims,
         Err(reason) if reason.starts_with(ADDITIVE_MISMATCH_PREFIX) => {
@@ -1136,5 +1166,121 @@ mod tests {
             "max_version_depth": 1, "monotone_form": true
         }));
         assert!(matches!(check_law(&law), DimensionalVerdict::Skipped(_)));
+    }
+
+    // ── 同维零特例（metadata.same_dim_zero 显式声明激活；缺省不变式三组）──
+
+    #[test]
+    fn same_dim_zero_declared_literal_zero_rhs_consistent() {
+        // 声明 + rhs 严格字面 `0`：零值量纲不设限，lhs 解析成功即 Consistent 纯态
+        for (id, sym, unit) in [
+            ("eq-pressure", "dP", "pascal"),
+            ("eq-angular", "dL", "kg*m^2*s^-1"),
+            ("eq-force", "F", "newton"),
+            ("eq-entropy", "deltaS", "joule*K^-1"),
+        ] {
+            let law = law_from_json(json!({
+                "id": id, "formula": format!("{sym} = 0"),
+                "symbols": { sym: "" },
+                "si_units": { sym: unit },
+                "max_version_depth": 1, "monotone_form": true,
+                "metadata": { "source": "test", "same_dim_zero": true }
+            }));
+            assert_eq!(
+                check_law(&law),
+                DimensionalVerdict::Consistent,
+                "声明+字面零 `{sym} = 0` 应判 Consistent"
+            );
+        }
+
+        // 声明 + 字面零 + lhs 不可解析（si 拼写错）→ 现行报因路径照旧 Skipped
+        let law = law_from_json(json!({
+            "id": "eq-bad-unit", "formula": "F = 0",
+            "symbols": { "F": "" },
+            "si_units": { "F": "newtn" },
+            "max_version_depth": 1, "monotone_form": true,
+            "metadata": { "source": "test", "same_dim_zero": true }
+        }));
+        match check_law(&law) {
+            DimensionalVerdict::Skipped(reason) => {
+                assert!(reason.contains("未知单位"), "reason = {reason}");
+            }
+            other => panic!("lhs 不可解析应走现行 Skipped 路径: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn same_dim_zero_declared_nonzero_rhs_current_path_unchanged() {
+        // 声明在场但 rhs 非严格字面单数字 `0`：特例不生效，现行比对路径
+        // （`0.0` 解析为量纲一 vs lhs 物理量纲 → Mismatch；零表达式同法）
+        let law = law_from_json(json!({
+            "id": "near-zero-literal", "formula": "F = 0.0",
+            "symbols": { "F": "" },
+            "si_units": { "F": "newton" },
+            "max_version_depth": 1, "monotone_form": true,
+            "metadata": { "source": "test", "same_dim_zero": true }
+        }));
+        match check_law(&law) {
+            DimensionalVerdict::Mismatch { lhs, rhs } => {
+                assert!(lhs.contains("kg*m*s^-2"), "lhs = {lhs}");
+                assert!(rhs.contains("1"), "rhs = {rhs}");
+            }
+            other => panic!("`F = 0.0` 特例不激活应现行 Mismatch: {other:?}"),
+        }
+
+        let law = law_from_json(json!({
+            "id": "zero-expr", "formula": "F = 0 * a",
+            "symbols": { "F": "", "a": "" },
+            "si_units": { "F": "newton", "a": "m*s^-2" },
+            "max_version_depth": 1, "monotone_form": true,
+            "metadata": { "source": "test", "same_dim_zero": true }
+        }));
+        match check_law(&law) {
+            DimensionalVerdict::Mismatch { lhs, rhs } => {
+                assert!(lhs.contains("kg*m*s^-2"), "lhs = {lhs}");
+                assert!(rhs.contains("m*s^-2"), "rhs = {rhs}");
+            }
+            other => panic!("零表达式特例不激活应现行 Mismatch: {other:?}"),
+        }
+
+        // 声明在场 + rhs 非零 + 两侧同维：现行比对路径照常判 Consistent
+        let law = law_from_json(json!({
+            "id": "normal-ok", "formula": "F = m * a",
+            "symbols": { "F": "", "m": "", "a": "" },
+            "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
+            "max_version_depth": 1, "monotone_form": true,
+            "metadata": { "source": "test", "same_dim_zero": true }
+        }));
+        assert_eq!(check_law(&law), DimensionalVerdict::Consistent);
+    }
+
+    #[test]
+    fn same_dim_zero_undeclared_zero_rhs_current_mismatch_unchanged() {
+        // 未声明（缺省 false = 缺省不变式锚）：`X = 0` 照现行判定 Mismatch
+        let law = law_from_json(json!({
+            "id": "default-zero", "formula": "F = 0",
+            "symbols": { "F": "" },
+            "si_units": { "F": "newton" },
+            "max_version_depth": 1, "monotone_form": true
+        }));
+        match check_law(&law) {
+            DimensionalVerdict::Mismatch { lhs, rhs } => {
+                assert!(lhs.contains("kg*m*s^-2"), "lhs = {lhs}");
+                assert!(rhs.contains("1"), "rhs = {rhs}");
+            }
+            other => panic!("未声明应现行 Mismatch: {other:?}"),
+        }
+
+        // 旧 law_set 文档（metadata 无该键）反序列化兼容：same_dim_zero = None
+        let law: Law = serde_json::from_value(json!({
+            "id": "legacy", "formula": "F = m * a",
+            "symbols": { "F": "", "m": "", "a": "" },
+            "si_units": { "F": "newton", "m": "kilogram", "a": "m*s^-2" },
+            "max_version_depth": 1, "monotone_form": true,
+            "metadata": { "source": "legacy-doc" }
+        }))
+        .unwrap();
+        assert_eq!(law.metadata.as_ref().and_then(|m| m.same_dim_zero), None);
+        assert_eq!(check_law(&law), DimensionalVerdict::Consistent);
     }
 }
