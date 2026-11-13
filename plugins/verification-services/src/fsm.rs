@@ -209,8 +209,8 @@ pub fn deadlock_states(fsm: &Fsm, initials: &[usize]) -> DeadlockResult {
     let (fwd_dist, fwd_pred) = bfs_reach(fsm, initials, None);
     // 反向边邻接:rev_edges[t] = [(p, s), ...] 表示 p --s--> t
     let mut rev_edges: Vec<Vec<(usize, usize)>> = vec![Vec::new(); fsm.state_count];
-    for q in 0..fsm.state_count {
-        for (s, &t) in fsm.transitions[q].iter().enumerate() {
+    for (q, row) in fsm.transitions.iter().enumerate() {
+        for (s, &t) in row.iter().enumerate() {
             rev_edges[t].push((q, s));
         }
     }
