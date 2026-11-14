@@ -69,6 +69,11 @@
       "name": "video_clipping_eval",
       "sensitive": false,
       "description": "削波检测判定核(过阈掩码 RLE 证据→连续段长/总占比双面判定,min_run 采样过滤+1e6 定点交叉相乘精确比较,证据一致性守卫;阈值扫描留引擎侧显式喂入;确定性)"
+    },
+    {
+      "name": "video_loudness_eval",
+      "sensitive": false,
+      "description": "响度达标判定核(测量 LUFS 字符串有理数证据→目标值±容差带区间判定,1e6 定点交叉比较,原文回显审计面;响度测量 ebur128 留引擎侧显式喂入;确定性)"
     }
   ]
 }
