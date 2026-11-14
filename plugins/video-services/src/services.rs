@@ -4074,3 +4074,310 @@ mod anatomy_fk_tests {
         assert!(run(&pts, vec![seg(&p2)]).is_err());
     }
 }
+
+// ============================================================================
+// 黄金三秒起播判定（video_opening_energy_eval）— i104 判定核
+// ============================================================================
+
+/// dB 定点标度（1e6）
+const DB_SCALE: i128 = 1_000_000;
+
+/// 有符号十进制定点解析（dBFS 值以负实数为主）：形如 "-34.87"，
+/// DB_SCALE 定点。与 parse_trk_rational 同构但带符号；运行时零浮点，
+/// 同串解析同值（判定面逐位可复算）。
+fn parse_db_rational(raw: &str, ctx: &str) -> Result<i128, String> {
+    let s = raw.trim();
+    let (neg, body) = match s.strip_prefix('-') {
+        Some(b) => (true, b),
+        None => (false, s),
+    };
+    let (ip, fp) = match body.split_once('.') {
+        None => (body, ""),
+        Some((a, b)) => (a, b),
+    };
+    if body.is_empty()
+        || (ip.is_empty() && fp.is_empty())
+        || ip.len() > 7
+        || fp.len() > 6
+        || !ip.bytes().all(|b| b.is_ascii_digit())
+        || !fp.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(format!(
+            "{ctx} 非法数值 {raw:?} — 自诊断指引: 有符号十进制形如 \"-34.87\"（整数 <=7 位 + 小数 <=6 位纯数字）"
+        ));
+    }
+    let mut v: i128 = 0;
+    for b in ip.bytes() {
+        v = v * 10 + (b - b'0') as i128;
+    }
+    let mut scale: i128 = 1;
+    for b in fp.bytes() {
+        v = v * 10 + (b - b'0') as i128;
+        scale *= 10;
+    }
+    let scaled = v * (DB_SCALE / scale);
+    Ok(if neg { -scaled } else { scaled })
+}
+
+/// 顶层整数入参（Integer/U64 双形；缺失或 <min fail-fast 带自诊断指引）
+fn req_top_i64(args: &JsonValue, key: &str, min: i64) -> Result<i64, String> {
+    let n = match args.get(key) {
+        Some(JsonValue::Integer(n)) => Some(*n),
+        Some(JsonValue::U64(u)) => i64::try_from(*u).ok(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        format!("缺少必填参数 {key} — 自诊断指引: 整数（>= {min}）")
+    })?;
+    if n < min {
+        return Err(format!("{key}={n} 须 >= {min} — 自诊断指引: 整数（>= {min}）"));
+    }
+    Ok(n)
+}
+
+/// 黄金三秒起播判定核：逐帧 dBFS 有符号字符串有理数序列（引擎/宿主侧
+/// 响度测量的显式喂入证据）→ 阈值有理数比较定位首个语音帧 → 首响毫秒
+/// 是否 ≤ 显式上限。Python 参照 vqc_m1.opening_energy_ok 判定语义
+/// （voice = dbfs >= threshold；first_ms = index * frame_ms；ok = first_ms
+/// <= limit）——测量留引擎侧，判定核进服务（执行器零 float）。
+/// 确定性: 解析/比较全定点整数（1e6 标度），同输入双跑位元一致。
+struct VideoOpeningEnergyEval;
+
+impl NativeService for VideoOpeningEnergyEval {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let arr = args
+            .get("frame_dbfs")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                "缺少必填参数 frame_dbfs — 自诊断指引: 数组,每项字符串有理数(逐帧 dBFS, 如 \"-34.87\")".to_string()
+            })?;
+        if arr.is_empty() {
+            return Err(
+                "frame_dbfs 须为非空数组 — 自诊断指引: 空证据无法判定起播（响度测量留引擎侧）".to_string(),
+            );
+        }
+        let mut frames = Vec::with_capacity(arr.len());
+        for (i, v) in arr.iter().enumerate() {
+            let s = v.as_str().ok_or_else(|| {
+                format!("frame_dbfs[{i}] 须为字符串有理数 — 自诊断指引: 如 \"-34.87\"")
+            })?;
+            frames.push(parse_db_rational(s, &format!("frame_dbfs[{i}]"))?);
+        }
+        let frame_ms = req_top_i64(args, "frame_ms", 1)?;
+        let max_start_delay_ms = req_top_i64(args, "max_start_delay_ms", 0)?;
+        let threshold_raw = args
+            .get("threshold_db")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "缺少必填参数 threshold_db — 自诊断指引: 有符号十进制串(如 \"-35.0\")".to_string()
+            })?;
+        let threshold = parse_db_rational(threshold_raw, "threshold_db")?;
+        let window_frames = match args.get("window_frames") {
+            None | Some(JsonValue::Null) => None,
+            Some(v) => {
+                let n = match v {
+                    JsonValue::Integer(n) => Some(*n),
+                    JsonValue::U64(u) => i64::try_from(*u).ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    "window_frames 须为正整数 — 自诊断指引: 截取前 N 帧为判定窗口".to_string()
+                })?;
+                if n < 1 {
+                    return Err(format!(
+                        "window_frames={n} 须 >= 1 — 自诊断指引: 截取前 N 帧为判定窗口"
+                    ));
+                }
+                Some(n)
+            }
+        };
+
+        // 窗口截取（Python 参照: win = x[:window]——超长截断, 不足全取）
+        let take = match window_frames {
+            Some(w) => (w as usize).min(frames.len()),
+            None => frames.len(),
+        };
+        let window = &frames[..take];
+        let first_idx = window.iter().position(|&d| d >= threshold);
+        let (ok, first_idx_out, first_ms_out, reason) = match first_idx {
+            None => (false, None, None, "no_voice_in_window"),
+            Some(i) => {
+                let idx = i64::try_from(i)
+                    .map_err(|_| "frame_dbfs 长度越界（>i64）— 输入规模异常".to_string())?;
+                let ms = idx * frame_ms;
+                if ms <= max_start_delay_ms {
+                    (true, Some(idx), Some(ms), "ok")
+                } else {
+                    (false, Some(idx), Some(ms), "start_delay_exceeded")
+                }
+            }
+        };
+
+        Ok(envelope(&[
+            ("service", JsonValue::string("video_opening_energy_eval")),
+            ("ok", JsonValue::Bool(ok)),
+            ("first_voice_index", match first_idx_out {
+                Some(i) => JsonValue::Integer(i),
+                None => JsonValue::Null,
+            }),
+            ("first_voice_ms", match first_ms_out {
+                Some(ms) => JsonValue::Integer(ms),
+                None => JsonValue::Null,
+            }),
+            ("limit_ms", JsonValue::Integer(max_start_delay_ms)),
+            ("frame_ms", JsonValue::Integer(frame_ms)),
+            ("window_frames_judged", JsonValue::Integer(take as i64)),
+            ("reason", JsonValue::string(reason)),
+        ]))
+    }
+}
+
+/// 声明表构造子：黄金三秒起播判定
+pub fn mk_video_opening_energy_eval() -> Arc<dyn NativeService> {
+    Arc::new(VideoOpeningEnergyEval)
+}
+
+#[cfg(test)]
+mod opening_energy_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    const SILENCE: &str = "-100.00";
+    const VOICE: &str = "-23.01";
+
+    fn dbfs_list(spec: &[(usize, &str)]) -> JsonValue {
+        let mut items = Vec::new();
+        for (count, s) in spec {
+            for _ in 0..*count {
+                items.push(JsonValue::string(*s));
+            }
+        }
+        JsonValue::Array(items)
+    }
+
+    fn args(spec: &[(usize, &str)], frame_ms: i64, threshold: &str,
+            limit: i64, window: Option<i64>) -> JsonValue {
+        let mut pairs = vec![
+            ("frame_dbfs", dbfs_list(spec)),
+            ("frame_ms", JsonValue::Integer(frame_ms)),
+            ("threshold_db", JsonValue::string(threshold)),
+            ("max_start_delay_ms", JsonValue::Integer(limit)),
+        ];
+        if let Some(w) = window {
+            pairs.push(("window_frames", JsonValue::Integer(w)));
+        }
+        JsonValue::object_from_pairs(&pairs)
+    }
+
+    fn run(a: &JsonValue) -> JsonValue {
+        VideoOpeningEnergyEval.execute(a).expect("判定须成功")
+    }
+
+    fn i64_field(out: &JsonValue, key: &str) -> Option<i64> {
+        match out.as_object().and_then(|o| o.get(key)) {
+            Some(JsonValue::Integer(n)) => Some(*n),
+            Some(JsonValue::U64(u)) => i64::try_from(*u).ok(),
+            _ => None,
+        }
+    }
+
+    fn bool_field(out: &JsonValue, key: &str) -> Option<bool> {
+        out.as_object().and_then(|o| o.get(key)).and_then(JsonValue::as_bool)
+    }
+
+    fn str_field<'a>(out: &'a JsonValue, key: &str) -> Option<&'a str> {
+        out.as_object().and_then(|o| o.get(key)).and_then(JsonValue::as_str)
+    }
+
+    #[test]
+    fn golden_pass_first_voice_within_limit() {
+        // 黄金向量: 15 帧静音 + 10 帧语音(20ms/帧) → 首响 idx 15, ms 300 ≤ 500
+        let out = run(&args(&[(15, SILENCE), (10, VOICE)], 20, "-35.0", 500, None));
+        assert_eq!(bool_field(&out, "ok"), Some(true));
+        assert_eq!(i64_field(&out, "first_voice_index"), Some(15));
+        assert_eq!(i64_field(&out, "first_voice_ms"), Some(300));
+        assert_eq!(i64_field(&out, "limit_ms"), Some(500));
+        assert_eq!(i64_field(&out, "window_frames_judged"), Some(25));
+        assert_eq!(str_field(&out, "reason"), Some("ok"));
+    }
+
+    #[test]
+    fn golden_fail_start_delay_exceeded() {
+        // 30 帧静音 + 语音 → 首响 ms 600 > 500 判负
+        let out = run(&args(&[(30, SILENCE), (5, VOICE)], 20, "-35.0", 500, None));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(i64_field(&out, "first_voice_ms"), Some(600));
+        assert_eq!(str_field(&out, "reason"), Some("start_delay_exceeded"));
+    }
+
+    #[test]
+    fn boundary_equality_is_pass() {
+        // 25 帧 → 首响恰 500ms == 上限（>= 阈值 / <= 上限 双闭语义）
+        let out = run(&args(&[(25, SILENCE), (5, VOICE)], 20, "-35.0", 500, None));
+        assert_eq!(bool_field(&out, "ok"), Some(true));
+        assert_eq!(i64_field(&out, "first_voice_ms"), Some(500));
+        assert_eq!(str_field(&out, "reason"), Some("ok"));
+    }
+
+    #[test]
+    fn no_voice_in_window() {
+        let out = run(&args(&[(20, SILENCE)], 20, "-35.0", 500, None));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(i64_field(&out, "first_voice_ms"), None);
+        assert_eq!(str_field(&out, "reason"), Some("no_voice_in_window"));
+    }
+
+    #[test]
+    fn window_truncation_bounds_judgment() {
+        // 同 pass 证据但 window_frames=10 → 窗内全静音判负（截窗语义）
+        let out = run(&args(&[(15, SILENCE), (10, VOICE)], 20, "-35.0", 500, Some(10)));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(i64_field(&out, "window_frames_judged"), Some(10));
+        assert_eq!(str_field(&out, "reason"), Some("no_voice_in_window"));
+    }
+
+    #[test]
+    fn window_over_length_takes_all() {
+        // window_frames 超长 → 全列截取（Python: x[:window] 不足全取）
+        let out = run(&args(&[(15, SILENCE), (10, VOICE)], 20, "-35.0", 500, Some(99)));
+        assert_eq!(i64_field(&out, "window_frames_judged"), Some(25));
+        assert_eq!(bool_field(&out, "ok"), Some(true));
+    }
+
+    #[test]
+    fn threshold_sensitivity_stricter_threshold_can_fail() {
+        // 阈值收紧到 -20.0 → 语音帧(-23.01) 低于阈值 → 窗内无语音
+        let out = run(&args(&[(15, SILENCE), (10, VOICE)], 20, "-20.0", 500, None));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(str_field(&out, "reason"), Some("no_voice_in_window"));
+    }
+
+    #[test]
+    fn same_input_bitwise_replay() {
+        let a = args(&[(15, SILENCE), (10, VOICE)], 20, "-35.0", 500, None);
+        let x = VideoOpeningEnergyEval.execute(&a).expect("须成功");
+        let y = VideoOpeningEnergyEval.execute(&a).expect("须成功");
+        assert_eq!(x, y, "同参双跑须位元一致");
+    }
+
+    #[test]
+    fn malformed_inputs_fail_fast() {
+        let empty = args(&[], 20, "-35.0", 500, None);
+        assert!(VideoOpeningEnergyEval.execute(&empty).is_err());
+        let bad_val = JsonValue::object_from_pairs(&[
+            ("frame_dbfs", JsonValue::Array(vec![JsonValue::string("abc")])),
+            ("frame_ms", JsonValue::Integer(20)),
+            ("threshold_db", JsonValue::string("-35.0")),
+            ("max_start_delay_ms", JsonValue::Integer(500)),
+        ]);
+        assert!(VideoOpeningEnergyEval.execute(&bad_val).is_err());
+        let zero_frame_ms = args(&[(5, VOICE)], 0, "-35.0", 500, None);
+        assert!(VideoOpeningEnergyEval.execute(&zero_frame_ms).is_err());
+        let missing = JsonValue::object_from_pairs(&[
+            ("frame_dbfs", dbfs_list(&[(5, VOICE)])),
+        ]);
+        assert!(VideoOpeningEnergyEval.execute(&missing).is_err());
+        let zero_window = args(&[(5, VOICE)], 20, "-35.0", 500, Some(0));
+        assert!(VideoOpeningEnergyEval.execute(&zero_window).is_err());
+    }
+}

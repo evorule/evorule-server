@@ -59,6 +59,11 @@
       "name": "anatomy_fk_replay_eval",
       "sensitive": false,
       "description": "FK 正解复算核(链段角以 (cos,sin) 十进制有理数对入参 1e6 定点判定面,tip 整数乘加递推零超越函数,检出 b 点不污染正解链=残差二次判别面,锚帧角核对 expect 成对校验,违例出残差/角不符逐轴定点证据;角度→三角换算留引擎提取侧;机械域 FK 复算面;规则表参数化;确定性)"
+    },
+    {
+      "name": "video_opening_energy_eval",
+      "sensitive": false,
+      "description": "黄金三秒起播判定核(逐帧 dBFS 字符串有理数序列→首个语音帧定位,首响毫秒≤显式上限判定,1e6 定点精确;window_frames 显式截窗;响度测量留引擎侧显式喂入;确定性)"
     }
   ]
 }
