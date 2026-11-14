@@ -38,6 +38,7 @@
 //! 12. `anatomy_fk_replay_eval` — FK 正解复算（有理角合成+残差闭区间，机械域扩展）
 //! 13. `video_opening_energy_eval` — 黄金三秒起播判定（逐帧 dBFS 证据→首响定位）
 //! 14. `video_clipping_eval` — 削波检测判定（过阈掩码 RLE 证据→段长/占比双面判定）
+//! 15. `video_loudness_eval` — 响度达标判定（测量 LUFS 证据→目标带区间判定）
 
 #![forbid(unsafe_code)]
 
@@ -54,8 +55,8 @@ use services::{
     mk_anatomy_fk_replay_eval, mk_anatomy_hand_orientation_eval, mk_anatomy_ik_reachability_eval,
     mk_anatomy_joint_angle_eval, mk_color_contrast_ratio_eval, mk_qc_count_check,
     mk_qc_domain_check, mk_qc_temporal_check, mk_skeleton_probe, mk_timeline_consistency_check,
-    mk_video_clipping_eval, mk_video_frame_sequence_eval, mk_video_opening_energy_eval,
-    mk_video_track_consistency_eval,
+    mk_video_clipping_eval, mk_video_frame_sequence_eval, mk_video_loudness_eval,
+    mk_video_opening_energy_eval, mk_video_track_consistency_eval,
 };
 
 // ============================================================================
@@ -177,6 +178,14 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[NativeServiceDef {
         r#"{"type":"object","properties":{"runs_samples":{"type":"array","items":{"type":"integer"},"description":"连续过阈段采样数表(全部段不预滤,阈值扫描留引擎侧)"},"total_samples":{"type":"integer","description":"总采样数,>=1"},"total_over":{"type":"integer","description":"过阈采样总数,>=0,须等于段长和"},"sr":{"type":"integer","description":"采样率,>=1"},"min_consecutive_ms":{"type":"integer","description":"最短连续削波段毫秒,>=1"},"max_ratio":{"type":"string","description":"占比上限,非负十进制串 (如 \"0.001\")"}},"required":["runs_samples","total_samples","total_over","sr","min_consecutive_ms","max_ratio"]}"#,
     ),
     make: mk_video_clipping_eval,
+}, NativeServiceDef {
+    name: "video_loudness_eval",
+    sensitive: false,
+    description: "响度达标判定核(测量 LUFS 字符串有理数证据→目标值±容差带区间判定,1e6 定点交叉比较,原文回显审计面;响度测量 ebur128 留引擎侧显式喂入;确定性)",
+    parameters: Some(
+        r#"{"type":"object","properties":{"loudness_lufs":{"type":"string","description":"测量响度,有符号十进制串 (如 \"-22.4\"),ebur128 测量留引擎侧"},"target_lufs":{"type":"string","description":"目标响度,有符号十进制串 (如 \"-23.0\",EBU R128 广播=-23)"},"tolerance_lufs":{"type":"string","description":"容差带,非负十进制串 (如 \"2.0\")"}},"required":["loudness_lufs","target_lufs","tolerance_lufs"]}"#,
+    ),
+    make: mk_video_loudness_eval,
 }];
 
 /// 复合 IoHandler：`service_name` 命中原生服务名 → 原生执行；否则回落 HTTP。
@@ -231,8 +240,8 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total, "声明表服务名必须唯一");
         assert_eq!(
-            total, 14,
-            "声明表应为 14 项(探针+时间轴校验+对比度+帧序列+轨迹守恒+守恒三原语+anatomy 两核+机械域两核+黄金三秒起播+削波检测)"
+            total, 15,
+            "声明表应为 15 项(探针+时间轴校验+对比度+帧序列+轨迹守恒+守恒三原语+anatomy 两核+机械域两核+黄金三秒起播+削波检测+响度达标)"
         );
         for d in NATIVE_SERVICES {
             let _ = (d.make)();

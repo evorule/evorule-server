@@ -4680,3 +4680,154 @@ mod clipping_tests {
         assert!(VideoClippingEval.execute(&neg_ratio).is_err());
     }
 }
+
+// ============================================================================
+// 响度达标判定（video_loudness_eval）— i110 判定核
+// ============================================================================
+
+/// 响度达标判定核：测量 LUFS（ffmpeg ebur128 综合响度, 测量留引擎/宿主侧显式
+/// 喂入）与目标值 ± 容差带的有理数区间判定。镜像 vqc_m1.loudness_target_ok
+/// 判定语义：deviation = |loudness - target|; ok = deviation <= tolerance。
+/// 出参定点串半进（对齐 Python round）；运行时零 float；同输入双跑位元一致。
+struct VideoLoudnessEval;
+
+impl NativeService for VideoLoudnessEval {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let loud_raw = args
+            .get("loudness_lufs")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "缺少必填参数 loudness_lufs — 自诊断指引: 有符号十进制串(如 \"-22.4\")".to_string()
+            })?;
+        let loudness = parse_db_rational(loud_raw, "loudness_lufs")?;
+        let target_raw = args
+            .get("target_lufs")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "缺少必填参数 target_lufs — 自诊断指引: 有符号十进制串(如 \"-23.0\", EBU R128 广播=-23)".to_string()
+            })?;
+        let target = parse_db_rational(target_raw, "target_lufs")?;
+        let tol_raw = args
+            .get("tolerance_lufs")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "缺少必填参数 tolerance_lufs — 自诊断指引: 非负十进制串(如 \"2.0\")".to_string()
+            })?;
+        let tolerance = parse_db_rational(tol_raw, "tolerance_lufs")?;
+        if tolerance < 0 {
+            return Err(format!("tolerance_lufs={tol_raw} 须非负"));
+        }
+
+        let deviation = (loudness - target).abs();
+        let ok = deviation <= tolerance;
+        let reason = if ok { "ok" } else { "out_of_band" };
+
+        Ok(envelope(&[
+            ("service", JsonValue::string("video_loudness_eval")),
+            ("ok", JsonValue::Bool(ok)),
+            ("loudness_lufs", JsonValue::string(loud_raw)),
+            ("target_lufs", JsonValue::string(target_raw)),
+            (
+                "deviation_lufs",
+                JsonValue::string(fixed_str(deviation, DB_SCALE, 2)),
+            ),
+            ("tolerance_lufs", JsonValue::string(tol_raw)),
+            ("reason", JsonValue::string(reason)),
+        ]))
+    }
+}
+
+/// 声明表构造子：响度达标判定
+pub fn mk_video_loudness_eval() -> Arc<dyn NativeService> {
+    Arc::new(VideoLoudnessEval)
+}
+
+#[cfg(test)]
+mod loudness_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn args(loud: &str, target: &str, tol: &str) -> JsonValue {
+        JsonValue::object_from_pairs(&[
+            ("loudness_lufs", JsonValue::string(loud)),
+            ("target_lufs", JsonValue::string(target)),
+            ("tolerance_lufs", JsonValue::string(tol)),
+        ])
+    }
+
+    fn run(a: &JsonValue) -> JsonValue {
+        VideoLoudnessEval.execute(a).expect("判定须成功")
+    }
+
+    fn bool_field(out: &JsonValue, key: &str) -> Option<bool> {
+        out.as_object()
+            .and_then(|o| o.get(key))
+            .and_then(JsonValue::as_bool)
+    }
+
+    fn str_field<'a>(out: &'a JsonValue, key: &str) -> Option<&'a str> {
+        out.as_object()
+            .and_then(|o| o.get(key))
+            .and_then(JsonValue::as_str)
+    }
+
+    #[test]
+    fn golden_pass_within_band() {
+        // 黄金向量: -22.4 对目标 -23.0 容差 2.0 → 偏差 0.60 ≤ 2.0
+        let out = run(&args("-22.4", "-23.0", "2.0"));
+        assert_eq!(bool_field(&out, "ok"), Some(true));
+        assert_eq!(str_field(&out, "deviation_lufs"), Some("0.60"));
+        assert_eq!(str_field(&out, "reason"), Some("ok"));
+    }
+
+    #[test]
+    fn golden_fail_out_of_band() {
+        // -30.0 → 偏差 7.00 > 2.0 判负
+        let out = run(&args("-30.0", "-23.0", "2.0"));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(str_field(&out, "deviation_lufs"), Some("7.00"));
+        assert_eq!(str_field(&out, "reason"), Some("out_of_band"));
+    }
+
+    #[test]
+    fn boundary_equality_is_pass() {
+        // 偏差恰 2.0 == 容差（<= 双闭）
+        let out = run(&args("-21.0", "-23.0", "2.0"));
+        assert_eq!(bool_field(&out, "ok"), Some(true));
+        assert_eq!(str_field(&out, "deviation_lufs"), Some("2.00"));
+    }
+
+    #[test]
+    fn loud_above_target_also_judged() {
+        // 响度高于目标同判: -20.5 → 偏差 2.50 > 2.0
+        let out = run(&args("-20.5", "-23.0", "2.0"));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(str_field(&out, "deviation_lufs"), Some("2.50"));
+    }
+
+    #[test]
+    fn loudness_echo_is_verbatim() {
+        // 原文回显（provenance 忠实, 负号保留）
+        let out = run(&args("-22.4", "-23.0", "2.0"));
+        assert_eq!(str_field(&out, "loudness_lufs"), Some("-22.4"));
+    }
+
+    #[test]
+    fn same_input_bitwise_replay() {
+        let a = args("-22.4", "-23.0", "2.0");
+        let x = VideoLoudnessEval.execute(&a).expect("须成功");
+        let y = VideoLoudnessEval.execute(&a).expect("须成功");
+        assert_eq!(x, y, "同参双跑须位元一致");
+    }
+
+    #[test]
+    fn malformed_inputs_fail_fast() {
+        let missing =
+            JsonValue::object_from_pairs(&[("loudness_lufs", JsonValue::string("-22.4"))]);
+        assert!(VideoLoudnessEval.execute(&missing).is_err());
+        let bad = args("abc", "-23.0", "2.0");
+        assert!(VideoLoudnessEval.execute(&bad).is_err());
+        let neg_tol = args("-22.4", "-23.0", "-1.0");
+        assert!(VideoLoudnessEval.execute(&neg_tol).is_err());
+    }
+}
