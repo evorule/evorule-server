@@ -53,8 +53,7 @@ use services::{
     mk_anatomy_fk_replay_eval, mk_anatomy_hand_orientation_eval, mk_anatomy_ik_reachability_eval,
     mk_anatomy_joint_angle_eval, mk_color_contrast_ratio_eval, mk_qc_count_check,
     mk_qc_domain_check, mk_qc_temporal_check, mk_skeleton_probe, mk_timeline_consistency_check,
-    mk_video_frame_sequence_eval, mk_video_opening_energy_eval,
-    mk_video_track_consistency_eval,
+    mk_video_frame_sequence_eval, mk_video_opening_energy_eval, mk_video_track_consistency_eval,
 };
 
 // ============================================================================
