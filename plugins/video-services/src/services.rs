@@ -4410,3 +4410,273 @@ mod opening_energy_tests {
         assert!(VideoOpeningEnergyEval.execute(&zero_window).is_err());
     }
 }
+
+// ============================================================================
+// 削波检测判定（video_clipping_eval）— i105 判定核
+// ============================================================================
+
+/// 占比定点标度（1e6）
+const RATIO_SCALE: i128 = 1_000_000;
+
+/// 非负定点定点串：round_half_up(num/den, dp) 位小数（den>0, num>=0）。
+fn fixed_str(num: i128, den: i128, dp: u32) -> String {
+    let scaled = num * 10i128.pow(dp);
+    let mut q = scaled / den;
+    let r = scaled % den;
+    if r * 2 >= den {
+        q += 1;
+    }
+    let s = q.to_string();
+    if dp == 0 {
+        return s;
+    }
+    let width = dp as usize + 1;
+    let padded = format!("{:0>width$}", s, width = width);
+    let cut = padded.len() - dp as usize;
+    format!("{}.{}", &padded[..cut], &padded[cut..])
+}
+
+/// 削波检测判定核：引擎/宿主侧完成阈值扫描（int16 域 |s|>=ceil(ceiling*32768)
+/// 整数精确等价, 采样细节不入服务），喂入过阈掩码 RLE 证据——连续过阈段长表
+/// （采样数, 全部段不预滤）+过阈采样总数+总采样数。判定核镜像
+/// vqc_m1.clipping_stats 判定语义：
+///   min_run_samples = max(1, sr*min_consecutive_ms/1000);
+///   qualifying = 段长 >= min_run_samples 的段;
+///   ok = qualifying 为空 且 total_over/total_samples <= max_ratio（交叉相乘精确比较）。
+/// 一致性守卫：Σ段长 == total_over（证据完整性, 违例 Err）。
+/// 出参定点串半进（对齐 Python round 语义）；运行时零 float；同输入双跑位元一致。
+struct VideoClippingEval;
+
+impl NativeService for VideoClippingEval {
+    fn execute(&self, args: &JsonValue) -> IoResult {
+        let arr = args
+            .get("runs_samples")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| {
+                "缺少必填参数 runs_samples — 自诊断指引: 数组,每项非负整数(连续过阈段采样数,阈值扫描留引擎侧)".to_string()
+            })?;
+        let mut runs: Vec<i64> = Vec::with_capacity(arr.len());
+        for (i, v) in arr.iter().enumerate() {
+            let n = match v {
+                JsonValue::Integer(n) => Some(*n),
+                JsonValue::U64(u) => i64::try_from(*u).ok(),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                format!("runs_samples[{i}] 须为非负整数 — 自诊断指引: 过阈段长(采样数)")
+            })?;
+            if n < 0 {
+                return Err(format!("runs_samples[{i}]={n} 须非负"));
+            }
+            runs.push(n);
+        }
+        let total_samples = req_top_i64(args, "total_samples", 1)?;
+        let total_over = req_top_i64(args, "total_over", 0)?;
+        let sr = req_top_i64(args, "sr", 1)?;
+        let min_consecutive_ms = req_top_i64(args, "min_consecutive_ms", 1)?;
+        let max_ratio_raw = args
+            .get("max_ratio")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "缺少必填参数 max_ratio — 自诊断指引: 非负十进制串(如 \"0.001\")".to_string()
+            })?;
+        let max_ratio = parse_db_rational(max_ratio_raw, "max_ratio")?;
+        if max_ratio < 0 {
+            return Err(format!("max_ratio={max_ratio_raw} 须非负"));
+        }
+
+        // 证据一致性：Σ段长 == 过阈采样总数
+        let sum_runs: i128 = runs.iter().map(|r| *r as i128).sum();
+        if sum_runs != total_over as i128 {
+            return Err(format!(
+                "证据不一致: Σ段长={sum_runs} != total_over={total_over} — 自诊断指引: runs_samples 须为过阈掩码全量 RLE"
+            ));
+        }
+
+        // 判定面（镜像 Python 参照）
+        let min_run_samples = std::cmp::max(1, sr * min_consecutive_ms / 1000);
+        let qualifying = runs.iter().copied().filter(|r| *r >= min_run_samples);
+        let runs_over_min = qualifying.clone().count() as i64;
+        let longest_run = qualifying.max();
+        let ratio_ok = (total_over as i128) * RATIO_SCALE <= max_ratio * (total_samples as i128);
+        let ok = runs_over_min == 0 && ratio_ok;
+        let reason = match (runs_over_min == 0, ratio_ok) {
+            (true, true) => "ok",
+            (false, true) => "runs_over_min",
+            (true, false) => "ratio_exceeded",
+            (false, false) => "runs_and_ratio_exceeded",
+        };
+
+        Ok(envelope(&[
+            ("service", JsonValue::string("video_clipping_eval")),
+            ("ok", JsonValue::Bool(ok)),
+            (
+                "clipped_ratio",
+                JsonValue::string(fixed_str(total_over as i128, total_samples as i128, 6)),
+            ),
+            ("runs_over_min_ms", JsonValue::Integer(runs_over_min)),
+            (
+                "longest_run_ms",
+                JsonValue::string(match longest_run {
+                    Some(r) => fixed_str(r as i128 * 1000, sr as i128, 2),
+                    None => "0.00".to_string(),
+                }),
+            ),
+            ("min_run_samples", JsonValue::Integer(min_run_samples)),
+            ("sr", JsonValue::Integer(sr)),
+            ("total_samples", JsonValue::Integer(total_samples)),
+            ("total_over", JsonValue::Integer(total_over)),
+            ("reason", JsonValue::string(reason)),
+        ]))
+    }
+}
+
+/// 声明表构造子：削波检测判定
+pub fn mk_video_clipping_eval() -> Arc<dyn NativeService> {
+    Arc::new(VideoClippingEval)
+}
+
+#[cfg(test)]
+mod clipping_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn args(
+        runs: &[i64],
+        total_over: i64,
+        total_samples: i64,
+        sr: i64,
+        min_ms: i64,
+        max_ratio: &str,
+    ) -> JsonValue {
+        let items: Vec<JsonValue> = runs.iter().map(|r| JsonValue::Integer(*r)).collect();
+        JsonValue::object_from_pairs(&[
+            ("runs_samples", JsonValue::Array(items)),
+            ("total_samples", JsonValue::Integer(total_samples)),
+            ("total_over", JsonValue::Integer(total_over)),
+            ("sr", JsonValue::Integer(sr)),
+            ("min_consecutive_ms", JsonValue::Integer(min_ms)),
+            ("max_ratio", JsonValue::string(max_ratio)),
+        ])
+    }
+
+    fn run(a: &JsonValue) -> JsonValue {
+        VideoClippingEval.execute(a).expect("判定须成功")
+    }
+
+    fn i64_field(out: &JsonValue, key: &str) -> Option<i64> {
+        match out.as_object().and_then(|o| o.get(key)) {
+            Some(JsonValue::Integer(n)) => Some(*n),
+            Some(JsonValue::U64(u)) => i64::try_from(*u).ok(),
+            _ => None,
+        }
+    }
+
+    fn bool_field(out: &JsonValue, key: &str) -> Option<bool> {
+        out.as_object()
+            .and_then(|o| o.get(key))
+            .and_then(JsonValue::as_bool)
+    }
+
+    fn str_field<'a>(out: &'a JsonValue, key: &str) -> Option<&'a str> {
+        out.as_object()
+            .and_then(|o| o.get(key))
+            .and_then(JsonValue::as_str)
+    }
+
+    #[test]
+    fn golden_pass_short_runs_only() {
+        // 黄金向量: 全部段短于 min_run(72 采样@24kHz/3ms), 占比 80/240000=0.000333<=0.001
+        let out = run(&args(&[50, 30], 80, 240000, 24000, 3, "0.001"));
+        assert_eq!(bool_field(&out, "ok"), Some(true));
+        assert_eq!(str_field(&out, "clipped_ratio"), Some("0.000333"));
+        assert_eq!(i64_field(&out, "runs_over_min_ms"), Some(0));
+        assert_eq!(str_field(&out, "longest_run_ms"), Some("0.00"));
+        assert_eq!(i64_field(&out, "min_run_samples"), Some(72));
+        assert_eq!(str_field(&out, "reason"), Some("ok"));
+    }
+
+    #[test]
+    fn golden_fail_run_over_min() {
+        // 段 100>=72 判负; Python round(100/24000*1000,2)=4.17
+        let out = run(&args(&[100, 40], 140, 240000, 24000, 3, "0.001"));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(i64_field(&out, "runs_over_min_ms"), Some(1));
+        assert_eq!(str_field(&out, "longest_run_ms"), Some("4.17"));
+        assert_eq!(str_field(&out, "reason"), Some("runs_over_min"));
+    }
+
+    #[test]
+    fn golden_fail_ratio_only() {
+        // 50 段×10 采样全短, 占比 500/480000=0.001042>0.001 判负
+        let runs = [10i64; 50];
+        let out = run(&args(&runs, 500, 480000, 24000, 3, "0.001"));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(i64_field(&out, "runs_over_min_ms"), Some(0));
+        assert_eq!(str_field(&out, "clipped_ratio"), Some("0.001042"));
+        assert_eq!(str_field(&out, "reason"), Some("ratio_exceeded"));
+    }
+
+    #[test]
+    fn both_faces_fail() {
+        let out = run(&args(&[200, 800], 1000, 48000, 24000, 3, "0.001"));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(i64_field(&out, "runs_over_min_ms"), Some(2));
+        assert_eq!(str_field(&out, "reason"), Some("runs_and_ratio_exceeded"));
+    }
+
+    #[test]
+    fn boundary_min_run_equality_qualifies() {
+        // 段恰 72 == min_run → 计入(>= 语义); 72/24000*1000=3.00ms
+        let out = run(&args(&[72], 72, 96000, 24000, 3, "0.001"));
+        assert_eq!(bool_field(&out, "ok"), Some(false));
+        assert_eq!(i64_field(&out, "runs_over_min_ms"), Some(1));
+        assert_eq!(str_field(&out, "longest_run_ms"), Some("3.00"));
+        assert_eq!(str_field(&out, "clipped_ratio"), Some("0.000750"));
+    }
+
+    #[test]
+    fn boundary_ratio_equality_is_pass() {
+        // 1000/1000000 == 0.001 恰等（<= 双闭）→ 占比面不判负
+        let runs = [10i64; 100];
+        let out = run(&args(&runs, 1000, 1000000, 24000, 3, "0.001"));
+        assert_eq!(bool_field(&out, "ok"), Some(true));
+        assert_eq!(str_field(&out, "clipped_ratio"), Some("0.001000"));
+        assert_eq!(str_field(&out, "reason"), Some("ok"));
+    }
+
+    #[test]
+    fn same_input_bitwise_replay() {
+        let a = args(&[100, 40], 140, 240000, 24000, 3, "0.001");
+        let x = VideoClippingEval.execute(&a).expect("须成功");
+        let y = VideoClippingEval.execute(&a).expect("须成功");
+        assert_eq!(x, y, "同参双跑须位元一致");
+    }
+
+    #[test]
+    fn evidence_inconsistency_fails() {
+        // Σ段长=150 != total_over=100 → 证据完整性 Err
+        let a = args(&[100, 50], 100, 240000, 24000, 3, "0.001");
+        assert!(VideoClippingEval.execute(&a).is_err());
+    }
+
+    #[test]
+    fn malformed_inputs_fail_fast() {
+        let missing = JsonValue::object_from_pairs(&[
+            ("total_samples", JsonValue::Integer(1000)),
+            ("total_over", JsonValue::Integer(0)),
+            ("sr", JsonValue::Integer(24000)),
+            ("min_consecutive_ms", JsonValue::Integer(3)),
+            ("max_ratio", JsonValue::string("0.001")),
+        ]);
+        assert!(VideoClippingEval.execute(&missing).is_err());
+        let neg = args(&[-5], 0, 1000, 24000, 3, "0.001");
+        assert!(VideoClippingEval.execute(&neg).is_err());
+        let zero_total = args(&[], 0, 0, 24000, 3, "0.001");
+        assert!(VideoClippingEval.execute(&zero_total).is_err());
+        let bad_ratio = args(&[], 0, 1000, 24000, 3, "abc");
+        assert!(VideoClippingEval.execute(&bad_ratio).is_err());
+        let neg_ratio = args(&[], 0, 1000, 24000, 3, "-0.5");
+        assert!(VideoClippingEval.execute(&neg_ratio).is_err());
+    }
+}

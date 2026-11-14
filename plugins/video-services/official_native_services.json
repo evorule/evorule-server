@@ -64,6 +64,11 @@
       "name": "video_opening_energy_eval",
       "sensitive": false,
       "description": "黄金三秒起播判定核(逐帧 dBFS 字符串有理数序列→首个语音帧定位,首响毫秒≤显式上限判定,1e6 定点精确;window_frames 显式截窗;响度测量留引擎侧显式喂入;确定性)"
+    },
+    {
+      "name": "video_clipping_eval",
+      "sensitive": false,
+      "description": "削波检测判定核(过阈掩码 RLE 证据→连续段长/总占比双面判定,min_run 采样过滤+1e6 定点交叉相乘精确比较,证据一致性守卫;阈值扫描留引擎侧显式喂入;确定性)"
     }
   ]
 }
