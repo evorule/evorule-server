@@ -4126,11 +4126,11 @@ fn req_top_i64(args: &JsonValue, key: &str, min: i64) -> Result<i64, String> {
         Some(JsonValue::U64(u)) => i64::try_from(*u).ok(),
         _ => None,
     }
-    .ok_or_else(|| {
-        format!("缺少必填参数 {key} — 自诊断指引: 整数（>= {min}）")
-    })?;
+    .ok_or_else(|| format!("缺少必填参数 {key} — 自诊断指引: 整数（>= {min}）"))?;
     if n < min {
-        return Err(format!("{key}={n} 须 >= {min} — 自诊断指引: 整数（>= {min}）"));
+        return Err(format!(
+            "{key}={n} 须 >= {min} — 自诊断指引: 整数（>= {min}）"
+        ));
     }
     Ok(n)
 }
@@ -4153,7 +4153,8 @@ impl NativeService for VideoOpeningEnergyEval {
             })?;
         if arr.is_empty() {
             return Err(
-                "frame_dbfs 须为非空数组 — 自诊断指引: 空证据无法判定起播（响度测量留引擎侧）".to_string(),
+                "frame_dbfs 须为非空数组 — 自诊断指引: 空证据无法判定起播（响度测量留引擎侧）"
+                    .to_string(),
             );
         }
         let mut frames = Vec::with_capacity(arr.len());
@@ -4216,14 +4217,20 @@ impl NativeService for VideoOpeningEnergyEval {
         Ok(envelope(&[
             ("service", JsonValue::string("video_opening_energy_eval")),
             ("ok", JsonValue::Bool(ok)),
-            ("first_voice_index", match first_idx_out {
-                Some(i) => JsonValue::Integer(i),
-                None => JsonValue::Null,
-            }),
-            ("first_voice_ms", match first_ms_out {
-                Some(ms) => JsonValue::Integer(ms),
-                None => JsonValue::Null,
-            }),
+            (
+                "first_voice_index",
+                match first_idx_out {
+                    Some(i) => JsonValue::Integer(i),
+                    None => JsonValue::Null,
+                },
+            ),
+            (
+                "first_voice_ms",
+                match first_ms_out {
+                    Some(ms) => JsonValue::Integer(ms),
+                    None => JsonValue::Null,
+                },
+            ),
             ("limit_ms", JsonValue::Integer(max_start_delay_ms)),
             ("frame_ms", JsonValue::Integer(frame_ms)),
             ("window_frames_judged", JsonValue::Integer(take as i64)),
@@ -4255,8 +4262,13 @@ mod opening_energy_tests {
         JsonValue::Array(items)
     }
 
-    fn args(spec: &[(usize, &str)], frame_ms: i64, threshold: &str,
-            limit: i64, window: Option<i64>) -> JsonValue {
+    fn args(
+        spec: &[(usize, &str)],
+        frame_ms: i64,
+        threshold: &str,
+        limit: i64,
+        window: Option<i64>,
+    ) -> JsonValue {
         let mut pairs = vec![
             ("frame_dbfs", dbfs_list(spec)),
             ("frame_ms", JsonValue::Integer(frame_ms)),
@@ -4282,11 +4294,15 @@ mod opening_energy_tests {
     }
 
     fn bool_field(out: &JsonValue, key: &str) -> Option<bool> {
-        out.as_object().and_then(|o| o.get(key)).and_then(JsonValue::as_bool)
+        out.as_object()
+            .and_then(|o| o.get(key))
+            .and_then(JsonValue::as_bool)
     }
 
     fn str_field<'a>(out: &'a JsonValue, key: &str) -> Option<&'a str> {
-        out.as_object().and_then(|o| o.get(key)).and_then(JsonValue::as_str)
+        out.as_object()
+            .and_then(|o| o.get(key))
+            .and_then(JsonValue::as_str)
     }
 
     #[test]
@@ -4330,7 +4346,13 @@ mod opening_energy_tests {
     #[test]
     fn window_truncation_bounds_judgment() {
         // 同 pass 证据但 window_frames=10 → 窗内全静音判负（截窗语义）
-        let out = run(&args(&[(15, SILENCE), (10, VOICE)], 20, "-35.0", 500, Some(10)));
+        let out = run(&args(
+            &[(15, SILENCE), (10, VOICE)],
+            20,
+            "-35.0",
+            500,
+            Some(10),
+        ));
         assert_eq!(bool_field(&out, "ok"), Some(false));
         assert_eq!(i64_field(&out, "window_frames_judged"), Some(10));
         assert_eq!(str_field(&out, "reason"), Some("no_voice_in_window"));
@@ -4339,7 +4361,13 @@ mod opening_energy_tests {
     #[test]
     fn window_over_length_takes_all() {
         // window_frames 超长 → 全列截取（Python: x[:window] 不足全取）
-        let out = run(&args(&[(15, SILENCE), (10, VOICE)], 20, "-35.0", 500, Some(99)));
+        let out = run(&args(
+            &[(15, SILENCE), (10, VOICE)],
+            20,
+            "-35.0",
+            500,
+            Some(99),
+        ));
         assert_eq!(i64_field(&out, "window_frames_judged"), Some(25));
         assert_eq!(bool_field(&out, "ok"), Some(true));
     }
@@ -4365,7 +4393,10 @@ mod opening_energy_tests {
         let empty = args(&[], 20, "-35.0", 500, None);
         assert!(VideoOpeningEnergyEval.execute(&empty).is_err());
         let bad_val = JsonValue::object_from_pairs(&[
-            ("frame_dbfs", JsonValue::Array(vec![JsonValue::string("abc")])),
+            (
+                "frame_dbfs",
+                JsonValue::Array(vec![JsonValue::string("abc")]),
+            ),
             ("frame_ms", JsonValue::Integer(20)),
             ("threshold_db", JsonValue::string("-35.0")),
             ("max_start_delay_ms", JsonValue::Integer(500)),
@@ -4373,9 +4404,7 @@ mod opening_energy_tests {
         assert!(VideoOpeningEnergyEval.execute(&bad_val).is_err());
         let zero_frame_ms = args(&[(5, VOICE)], 0, "-35.0", 500, None);
         assert!(VideoOpeningEnergyEval.execute(&zero_frame_ms).is_err());
-        let missing = JsonValue::object_from_pairs(&[
-            ("frame_dbfs", dbfs_list(&[(5, VOICE)])),
-        ]);
+        let missing = JsonValue::object_from_pairs(&[("frame_dbfs", dbfs_list(&[(5, VOICE)]))]);
         assert!(VideoOpeningEnergyEval.execute(&missing).is_err());
         let zero_window = args(&[(5, VOICE)], 20, "-35.0", 500, Some(0));
         assert!(VideoOpeningEnergyEval.execute(&zero_window).is_err());
