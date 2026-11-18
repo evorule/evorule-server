@@ -67,6 +67,16 @@ yanked = "warn"
 # 升级路径；抽取 API 未在服务面使用，待上游跟进后随版解除，豁免。
 # RUSTSEC-2026-0429（2026-11-02 treadmill 追加）：zip 抽取符号链接入口同族漏洞
 # （修复版同 >=9.0.0，依赖方钉死同上）；同前豁免理由，随上游升级一并解除。
+# RUSTSEC-2026-0545/0546/0547/0548（2026-11-18 treadmill 追加）：zip 同族漏洞
+# 四件（0545 AES HMAC / 0546 symlink 越界 / 0547 legacy 解码器预分配 /
+# 0548 local-header 名解析差分；修复版 >=9.0.0~9.0.5 属大版本）；树内命中
+# zip@2.4.2（rust_xlsxwriter/zendriver）/zip@3.0.0（utoipa-swagger-ui build-dep）/
+# zip@8.6.0（docx-rs）全为外部 crate 钉死，本地无升级路径；抽取 API 未在
+# 服务面使用，同前豁免理由，随上游升级 9.x 一并解除。
+# RUSTSEC-2026-0543（2026-11-18 treadmill 追加）：chrono unmaintained（全版本
+# 命中，无补丁版本）；命中 chrono@0.4.45 直依赖（evorule-auth / evorule-server /
+# evorule-workspace）——迁移到替代库属代码改造（去向 jiff 或 time，独立迁移批
+# 承接），先 dated 豁免；迁移批落地时同 commit 摘除本条。
 # RUSTSEC-2026-0459（2026-11-09 treadmill 追加）：libsqlite3-sys 捆绑 SQLite
 # CVE-2026-119375（vulnerability）；修复版 >=0.39.0 属大版本且要求 rusqlite
 # 0.41，依赖方 rusqlite 0.32.1 / sqlx-sqlite 0.8.6（evorule-rule dev 面 /
@@ -79,6 +89,11 @@ ignore = [
     "RUSTSEC-2026-0369",
     "RUSTSEC-2026-0429",
     "RUSTSEC-2026-0459",
+    "RUSTSEC-2026-0543",
+    "RUSTSEC-2026-0545",
+    "RUSTSEC-2026-0546",
+    "RUSTSEC-2026-0547",
+    "RUSTSEC-2026-0548",
 ]
 
 # ---------------------------------------------------------------------------
