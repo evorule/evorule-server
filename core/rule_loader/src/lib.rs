@@ -41,10 +41,12 @@ use serde::Serialize;
 use serde_json::Value;
 
 pub mod dep_graph;
+pub mod precheck;
 pub use dep_graph::{
     build_dependency_graph, ConstantNode, CouplingEdge, CrossDomainEdge, DependencyGraph,
     DependencyGraphError, InstructionNode, ReferenceEdge,
 };
+pub use precheck::{build_precheck, PrecheckReport, WARN_THRESHOLD_PERMILLE};
 
 /// 宪法 schema 版本（与本 crate 依赖的 rule_schema 副本一致，provenance 用）
 pub const CONSTITUTION_SCHEMA_VERSION: &str = "rule_set/v1.0";
@@ -236,6 +238,9 @@ pub struct LoadedRuleset {
     /// （附 blake3 内容哈希，digest 锚定图内容），供常数修订冲击传播等
     /// 下游确定性分析消费；零登记规则集 = 空图（非强制全员登记）。
     pub dependency_graph: DependencyGraph,
+    /// 装载预检报告（观测面 additive 字段）：规则数/上限比、io_request 计数、
+    /// 全树 `type` 分布静态出账；只外显不执法，未消费时行为逐字节不变。
+    pub precheck: PrecheckReport,
 }
 
 /// 溯源指纹（[CON-S-003]）
@@ -356,6 +361,9 @@ pub struct MergedLoaded {
     pub engine_rules: Vec<JsonValue>,
     /// 逐部件结果（与传入 parts 同序同长）
     pub parts: Vec<PartOutcome>,
+    /// 装载预检报告（观测面 additive 字段）：对**拼合后**全集统计
+    /// （合并规则集是引擎实际消费面，包络判定以合并口径为准）。
+    pub precheck: PrecheckReport,
 }
 
 /// 合并装载入口（[CON-S-005] 定稿：两层分工之「装载门合并」层）。
@@ -395,6 +403,7 @@ pub fn load_rule_set_merged(parts: &[MergedPart]) -> Result<MergedLoaded, Consti
         // 依赖图在此仅保留门禁校验效果（构建失败=整体拒载），不随合并结果下发。
     }
     Ok(MergedLoaded {
+        precheck: build_precheck(&engine_rules),
         engine_rules,
         parts: outcomes,
     })
@@ -561,6 +570,7 @@ fn load_one(
         loaded_at_unix: now_unix(),
     };
     Ok(LoadedRuleset {
+        precheck: build_precheck(&engine_rules),
         engine_rules,
         provenance,
         dependency_graph,

@@ -2139,6 +2139,16 @@ impl SessionApi {
                 e
             )
         })?;
+        // 装载预检外显（观测面）：规则数/上限比、io_request 计数、全树 type 分布
+        // 静态出账；≥800‰ WARN 只提示立法面规划扩容，不执法——内核
+        // TooManyTransformRules fail-closed 兜底。
+        tracing::info!(
+            report = %serde_json::to_string(&merged.precheck).unwrap_or_default(),
+            "ruleset precheck report"
+        );
+        if let Some(warning) = &merged.precheck.precheck_warning {
+            tracing::warn!("{warning}");
+        }
         let constitution_len = merged.parts[0].rule_count;
         let constitution = &merged.engine_rules[..constitution_len];
 
