@@ -16,10 +16,10 @@
 // C5 (unwrap/expect/panic = deny) 仅约束生产代码;测试代码保留 unwrap 惯例
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use subtle::ConstantTimeEq;
+use time::OffsetDateTime;
 use tracing::info;
 
 /// Token 掩码前缀保留长度
@@ -30,8 +30,10 @@ const MASK_SUFFIX_LEN: usize = 4;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenInfo {
     pub token: String,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
     pub description: String,
 }
 
@@ -50,8 +52,10 @@ pub struct AuthResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenInfoMasked {
     pub token: String,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
     pub description: String,
 }
 
@@ -105,7 +109,7 @@ impl AuthService {
             let eq = token.as_bytes().ct_eq(token_info.token.as_bytes());
             if bool::from(eq) {
                 if let Some(expires_at) = token_info.expires_at {
-                    if expires_at < Utc::now() {
+                    if expires_at < OffsetDateTime::now_utc() {
                         return AuthResponse {
                             valid: false,
                             message: "Token 已过期".to_string(),
@@ -179,8 +183,8 @@ impl AuthService {
 
     pub fn generate_token(description: &str, expires_hours: Option<u64>) -> TokenInfo {
         let token = Self::random_token();
-        let created_at = Utc::now();
-        let expires_at = expires_hours.map(|h| created_at + chrono::Duration::hours(h as i64));
+        let created_at = OffsetDateTime::now_utc();
+        let expires_at = expires_hours.map(|h| created_at + time::Duration::hours(h as i64));
 
         TokenInfo {
             token,
@@ -201,14 +205,14 @@ impl AuthService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use std::sync::Arc;
     use std::thread;
+    use time::OffsetDateTime;
 
-    fn make_token(token: &str, expires_at: Option<chrono::DateTime<Utc>>) -> TokenInfo {
+    fn make_token(token: &str, expires_at: Option<OffsetDateTime>) -> TokenInfo {
         TokenInfo {
             token: token.to_string(),
-            created_at: Utc::now(),
+            created_at: OffsetDateTime::now_utc(),
             expires_at,
             description: "test token".to_string(),
         }
@@ -227,7 +231,7 @@ mod tests {
 
     #[test]
     fn validate_expired_token_fails() {
-        let past = Utc::now() - chrono::Duration::hours(1);
+        let past = OffsetDateTime::now_utc() - time::Duration::hours(1);
         let svc = AuthService::new(vec![make_token("expired-token", Some(past))]);
         let resp = svc.validate_token("expired-token");
         assert!(!resp.valid);
@@ -253,7 +257,7 @@ mod tests {
 
     #[test]
     fn validate_non_expired_token_with_future_expiry_succeeds() {
-        let future = Utc::now() + chrono::Duration::hours(1);
+        let future = OffsetDateTime::now_utc() + time::Duration::hours(1);
         let svc = AuthService::new(vec![make_token("future-token", Some(future))]);
         let resp = svc.validate_token("future-token");
         assert!(resp.valid);
@@ -350,7 +354,7 @@ mod tests {
 
     #[test]
     fn list_tokens_preserves_metadata() {
-        let future = Utc::now() + chrono::Duration::hours(2);
+        let future = OffsetDateTime::now_utc() + time::Duration::hours(2);
         let svc = AuthService::new(vec![make_token(
             "aaaaaaaa1111bbbb2222cccc3333dddd",
             Some(future),
@@ -375,10 +379,11 @@ mod tests {
     fn generate_token_with_expiry_sets_future() {
         let t = AuthService::generate_token("desc", Some(24));
         let expiry = t.expires_at.expect("expiry should be set");
-        assert!(expiry > Utc::now());
+        assert!(expiry > OffsetDateTime::now_utc());
         // 大约 24 小时后(允许 1 分钟误差)
-        let diff = expiry - Utc::now();
-        assert!(diff.num_minutes() >= 1439 && diff.num_minutes() <= 1441);
+        let diff = expiry - OffsetDateTime::now_utc();
+        let diff_minutes = diff.whole_minutes();
+        assert!(diff_minutes >= 1439 && diff_minutes <= 1441);
     }
 
     #[test]

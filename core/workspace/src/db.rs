@@ -16,8 +16,9 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::models::{
@@ -167,7 +168,9 @@ fn current_schema_version(conn: &Connection) -> WorkspaceResult<u32> {
 
 /// 记录已应用的迁移版本
 fn record_migration(conn: &Connection, version: u32) -> WorkspaceResult<()> {
-    let now = Utc::now().to_rfc3339();
+    let now = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default();
     conn.execute(
         "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
         params![version, now],
@@ -533,9 +536,10 @@ impl WorkspaceDb {
                 ws.id,
                 ws.name,
                 ws.owner_id,
-                ws.created_at.to_rfc3339(),
-                ws.updated_at.to_rfc3339(),
-                ws.archived_at.map(|t| t.to_rfc3339()),
+                ws.created_at.format(&Rfc3339).unwrap_or_default(),
+                ws.updated_at.format(&Rfc3339).unwrap_or_default(),
+                ws.archived_at
+                    .map(|t| t.format(&Rfc3339).unwrap_or_default()),
                 ws.state.as_str(),
                 ws.description,
             ],
@@ -588,7 +592,9 @@ impl WorkspaceDb {
     ) -> WorkspaceResult<WorkspaceRecord> {
         {
             let conn = self.lock()?;
-            let now = Utc::now().to_rfc3339();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default();
             // 动态构建 UPDATE (仅更新非 None 字段)
             if name.is_some() || description.is_some() {
                 let mut sets: Vec<&str> = Vec::new();
@@ -621,7 +627,9 @@ impl WorkspaceDb {
     pub fn archive_workspace(&self, id: &str) -> WorkspaceResult<WorkspaceRecord> {
         {
             let conn = self.lock()?;
-            let now = Utc::now().to_rfc3339();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default();
             let affected = conn
                 .execute(
                     "UPDATE workspaces
@@ -683,13 +691,18 @@ impl WorkspaceDb {
                 "invalid role: {role}"
             )));
         }
-        let joined_at = Utc::now();
+        let joined_at = OffsetDateTime::now_utc();
         {
             let conn = self.lock()?;
             conn.execute(
                 "INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![workspace_id, user_id, role, joined_at.to_rfc3339()],
+                params![
+                    workspace_id,
+                    user_id,
+                    role,
+                    joined_at.format(&Rfc3339).unwrap_or_default()
+                ],
             )
             .map_err(WorkspaceError::from)?;
         }
@@ -806,9 +819,10 @@ impl WorkspaceDb {
                 rule.name,
                 rule.current_version_id,
                 rule.state.as_str(),
-                rule.created_at.to_rfc3339(),
-                rule.updated_at.to_rfc3339(),
-                rule.archived_at.map(|t| t.to_rfc3339()),
+                rule.created_at.format(&Rfc3339).unwrap_or_default(),
+                rule.updated_at.format(&Rfc3339).unwrap_or_default(),
+                rule.archived_at
+                    .map(|t| t.format(&Rfc3339).unwrap_or_default()),
                 rule.description,
                 rule.created_by,
                 rule.metadata,
@@ -881,7 +895,9 @@ impl WorkspaceDb {
     pub fn update_rule_state(&self, id: &str, new_state: RuleState) -> WorkspaceResult<RuleRecord> {
         {
             let conn = self.lock()?;
-            let now = Utc::now().to_rfc3339();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default();
             let affected = conn
                 .execute(
                     "UPDATE rules SET state = ?1, updated_at = ?2 WHERE id = ?3",
@@ -901,7 +917,9 @@ impl WorkspaceDb {
         version_id: &str,
     ) -> WorkspaceResult<()> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         let affected = conn
             .execute(
                 "UPDATE rules SET current_version_id = ?1, updated_at = ?2 WHERE id = ?3",
@@ -917,7 +935,9 @@ impl WorkspaceDb {
     pub fn archive_rule(&self, id: &str) -> WorkspaceResult<RuleRecord> {
         {
             let conn = self.lock()?;
-            let now = Utc::now().to_rfc3339();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default();
             let affected = conn
                 .execute(
                     "UPDATE rules
@@ -1014,7 +1034,7 @@ impl WorkspaceDb {
                 rv.version as i64,
                 rv.content_hash,
                 rv.content,
-                rv.created_at.to_rfc3339(),
+                rv.created_at.format(&Rfc3339).unwrap_or_default(),
                 rv.state.as_str(),
                 rv.created_by,
             ],
@@ -1036,7 +1056,9 @@ impl WorkspaceDb {
             "INSERT INTO rejection_log (logged_at, source, level, violation_summary, message_id)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
-                Utc::now().to_rfc3339(),
+                OffsetDateTime::now_utc()
+                    .format(&Rfc3339)
+                    .unwrap_or_default(),
                 source,
                 level,
                 violation_summary,
@@ -1173,8 +1195,10 @@ impl WorkspaceDb {
                 session.workspace_id,
                 session.rule_id,
                 session.rule_version_id,
-                session.created_at.to_rfc3339(),
-                session.closed_at.map(|t| t.to_rfc3339()),
+                session.created_at.format(&Rfc3339).unwrap_or_default(),
+                session
+                    .closed_at
+                    .map(|t| t.format(&Rfc3339).unwrap_or_default()),
                 session.created_by,
             ],
         )
@@ -1248,7 +1272,9 @@ impl WorkspaceDb {
     pub fn close_session(&self, id: u64) -> WorkspaceResult<SessionRecord> {
         {
             let conn = self.lock()?;
-            let now = Utc::now().to_rfc3339();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default();
             let affected = conn
                 .execute(
                     "UPDATE sessions SET closed_at = ?1 WHERE id = ?2 AND closed_at IS NULL",
@@ -1294,8 +1320,10 @@ impl WorkspaceDb {
                 binding.rule_version_id,
                 binding.session_id as i64,
                 binding.workspace_id,
-                binding.bound_at.to_rfc3339(),
-                binding.unbound_at.map(|t| t.to_rfc3339()),
+                binding.bound_at.format(&Rfc3339).unwrap_or_default(),
+                binding
+                    .unbound_at
+                    .map(|t| t.format(&Rfc3339).unwrap_or_default()),
                 binding.state.as_str(),
             ],
         )
@@ -1374,7 +1402,9 @@ impl WorkspaceDb {
             });
         }
         // 2. 更新状态为 closed,设置 unbound_at
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         {
             let conn = self.lock()?;
             conn.execute(
@@ -1491,7 +1521,9 @@ impl WorkspaceDb {
     ) -> WorkspaceResult<RuleRecord> {
         {
             let conn = self.lock()?;
-            let now = Utc::now().to_rfc3339();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default();
             let affected = conn
                 .execute(
                     "UPDATE rules SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
@@ -1528,7 +1560,9 @@ impl WorkspaceDb {
         started_by: &str,
     ) -> WorkspaceResult<i64> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         conn.execute(
             "INSERT INTO sandbox_sessions
                 (workspace_id, tcb_session_id, parent_session_id, draft_ruleset_hash,
@@ -1595,7 +1629,9 @@ impl WorkspaceDb {
     /// 关闭沙盒会话 (status → closed, 填充 closed_at + export_path)
     pub fn close_sandbox_session(&self, id: i64, export_path: &str) -> WorkspaceResult<()> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         let affected = conn
             .execute(
                 "UPDATE sandbox_sessions
@@ -1632,7 +1668,9 @@ impl WorkspaceDb {
         description: Option<&str>,
     ) -> WorkspaceResult<i64> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         conn.execute(
             "INSERT INTO test_datasets
                 (name, workspace_id, cases_json, case_count, created_at, created_by, description)
@@ -1729,7 +1767,9 @@ impl WorkspaceDb {
         operated_by: &str,
     ) -> WorkspaceResult<()> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         conn.execute(
             "UPDATE production_state
              SET current_session_id = ?1,
@@ -1774,7 +1814,9 @@ impl WorkspaceDb {
         ruleset_snapshot: Option<&str>,
     ) -> WorkspaceResult<()> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         conn.execute(
             "INSERT INTO production_audit
                 (event_type, ruleset_version, previous_version, ruleset_hash,
@@ -1822,7 +1864,9 @@ impl WorkspaceDb {
     /// 写审批模式开关 (幂等 upsert; 切换审计由调用方落 production_audit)
     pub fn set_approve_mode(&self, enabled: bool, updated_by: &str) -> WorkspaceResult<()> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         conn.execute(
             "INSERT INTO publish_settings (key, value, updated_by, updated_at)
              VALUES ('approve_mode', ?1, ?2, ?3)
@@ -1906,7 +1950,9 @@ impl WorkspaceDb {
         imported_by: &str,
     ) -> WorkspaceResult<i64> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         conn.execute(
             "INSERT INTO bundle_imports
                 (bundle_id, dataset_id, source_version, selection_mode, resolved_version,
@@ -1985,7 +2031,9 @@ impl WorkspaceDb {
         rule_version_ids: Option<&str>,
     ) -> WorkspaceResult<i64> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         conn.execute(
             "INSERT INTO publish_queue
                 (workspace_id, final_candidate_rules, ruleset_hash, test_report_sandbox_id,
@@ -2071,7 +2119,9 @@ impl WorkspaceDb {
         comment: Option<&str>,
     ) -> WorkspaceResult<()> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         let affected = conn
             .execute(
                 "UPDATE publish_queue
@@ -2099,7 +2149,9 @@ impl WorkspaceDb {
         review_comment: Option<&str>,
     ) -> WorkspaceResult<()> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
         let affected = conn
             .execute(
                 "UPDATE publish_queue
@@ -2137,7 +2189,9 @@ impl WorkspaceDb {
         created_by: &str,
     ) -> WorkspaceResult<VerdictContractRecord> {
         let conn = self.lock()?;
-        let now = Utc::now().to_rfc3339();
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
 
         // 校验 rules_json 是合法 JSON
         serde_json::from_str::<serde_json::Value>(rules_json)
@@ -2261,7 +2315,9 @@ impl WorkspaceDb {
         let existing = self.get_verdict_contract(id)?;
         {
             let conn = self.lock()?;
-            let now = Utc::now().to_rfc3339();
+            let now = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default();
 
             if let Some(default) = is_default {
                 if default {
@@ -2389,10 +2445,8 @@ impl WorkspaceDb {
 // =============================================================================
 
 /// 解析 RFC3339 时间字符串
-fn parse_dt(s: String) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(&s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now())
+fn parse_dt(s: String) -> OffsetDateTime {
+    OffsetDateTime::parse(&s, &Rfc3339).unwrap_or_else(|_| OffsetDateTime::now_utc())
 }
 
 /// workspaces 表行映射
@@ -2599,7 +2653,7 @@ mod tests {
     }
 
     fn make_workspace(db: &WorkspaceDb, name: &str, owner: &str) -> WorkspaceRecord {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let ws = WorkspaceRecord {
             id: ulid::Ulid::new().to_string(),
             name: name.to_string(),
@@ -2758,7 +2812,7 @@ mod tests {
         let db = make_db();
         let ws = make_workspace(&db, "team", "owner-1");
 
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let rule = RuleRecord {
             id: ulid::Ulid::new().to_string(),
             workspace_id: ws.id.clone(),
@@ -2804,7 +2858,7 @@ mod tests {
     fn test_rule_unique_name_per_workspace() {
         let db = make_db();
         let ws = make_workspace(&db, "team", "owner-1");
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         let rule1 = RuleRecord {
             id: ulid::Ulid::new().to_string(),
@@ -2848,7 +2902,7 @@ mod tests {
     fn test_insert_rule_version_persistence_gate() {
         let db = make_db();
         let ws = make_workspace(&db, "team", "owner-1");
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         let rule = RuleRecord {
             id: ulid::Ulid::new().to_string(),
@@ -2915,7 +2969,7 @@ mod tests {
     fn test_persistence_gate_writes_rejection_log() {
         let db = make_db();
         let ws = make_workspace(&db, "team", "owner-1");
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         let rule = RuleRecord {
             id: ulid::Ulid::new().to_string(),
@@ -2962,7 +3016,7 @@ mod tests {
     fn test_rule_version_crud() {
         let db = make_db();
         let ws = make_workspace(&db, "team", "owner-1");
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         let rule = RuleRecord {
             id: ulid::Ulid::new().to_string(),
@@ -3018,7 +3072,7 @@ mod tests {
     fn test_session_crud() {
         let db = make_db();
         let ws = make_workspace(&db, "team", "owner-1");
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         let session = SessionRecord {
             id: 100,
@@ -3048,7 +3102,7 @@ mod tests {
     fn test_binding_crud() {
         let db = make_db();
         let ws = make_workspace(&db, "team", "owner-1");
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         // 先创建 rule + version + session
         let rule = RuleRecord {
@@ -3121,7 +3175,7 @@ mod tests {
         let db = make_db();
         let ws1 = make_workspace(&db, "team-1", "owner-1");
         let ws2 = make_workspace(&db, "team-2", "owner-1");
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         // ws1 创建 rule
         let rule1 = RuleRecord {

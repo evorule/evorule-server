@@ -20,8 +20,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use serde_json::Value;
+use time::OffsetDateTime;
 use tracing::{info, warn};
 
 use crate::db::WorkspaceDb;
@@ -107,7 +107,7 @@ fn write_audit_chain_to_disk(session_id: u64, audit_json: &str) -> Option<String
         return None;
     }
 
-    let timestamp = Utc::now().timestamp();
+    let timestamp = OffsetDateTime::now_utc().unix_timestamp();
     let path = dir.join(format!("session_{session_id}_{timestamp}.json"));
 
     match std::fs::write(&path, audit_json) {

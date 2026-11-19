@@ -115,8 +115,12 @@ fn now_iso() -> String {
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
-        .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    time::OffsetDateTime::from_unix_timestamp(d.as_secs() as i64)
+        .ok()
+        .map(|t| {
+            t.format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default()
+        })
         .unwrap_or_default()
 }
 
