@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use time::OffsetDateTime;
 
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -500,7 +501,7 @@ impl SandboxService {
         let export_path = dir.join(format!(
             "sandbox_{}_{}.json",
             sandbox_id,
-            chrono::Utc::now().timestamp()
+            OffsetDateTime::now_utc().unix_timestamp()
         ));
         let audit_data = self.session_ops.get_audit_export(tcb_session_id).await?;
         std::fs::create_dir_all(&dir).map_err(|e| {
@@ -1144,7 +1145,7 @@ mod tests {
 
     #[test]
     fn test_compute_ruleset_hash_deterministic() {
-        let now = chrono::Utc::now();
+        let now = OffsetDateTime::now_utc();
         let rv1 = RuleVersionRecord {
             id: "rv-1".to_string(),
             rule_id: "r-1".to_string(),

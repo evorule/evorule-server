@@ -21,6 +21,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -784,7 +786,11 @@ impl PublishService {
                 );
                 md_obj.insert(
                     "promoted_at".to_string(),
-                    Value::String(chrono::Utc::now().to_rfc3339()),
+                    Value::String(
+                        OffsetDateTime::now_utc()
+                            .format(&Rfc3339)
+                            .unwrap_or_default(),
+                    ),
                 );
                 md_obj.insert(
                     "zero_alarm_window".to_string(),
@@ -1126,7 +1132,9 @@ fn build_publish_bundle(
         audit: BundleAudit {
             // exported_at 为管理元数据 (墙钟旁路): 参与 bundle 自身防篡改哈希,
             // 但不渗入 fact / 审计验证链 (与 bundle_imports 溯源同口径)
-            exported_at: chrono::Utc::now().to_rfc3339(),
+            exported_at: OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default(),
             exported_by: published_by.to_string(),
             source_version: format!("v{new_version}"),
             content_hash: String::new(),
@@ -2142,7 +2150,7 @@ mod tests {
             ruleset_hash: "hash".to_string(),
             test_report_sandbox_id: sandbox_id,
             submitted_by: "head-1".to_string(),
-            submitted_at: chrono::Utc::now(),
+            submitted_at: OffsetDateTime::now_utc(),
             reviewed_by: None,
             reviewed_at: None,
             review_comment: None,
@@ -2531,7 +2539,7 @@ mod tests {
         // D3: list_publish_queue 支持 workspace_id 过滤; None 保留旧行为 (全量)
         let db = WorkspaceDb::in_memory().unwrap();
         for (ws, hash) in [("ws-a", "hash-a"), ("ws-b", "hash-b")] {
-            let now = chrono::Utc::now();
+            let now = OffsetDateTime::now_utc();
             db.insert_workspace(&crate::models::WorkspaceRecord {
                 id: ws.to_string(),
                 name: format!("ws-{ws}"),
@@ -2671,10 +2679,10 @@ mod tests {
         let promoted_at = landed
             .pointer("/metadata/promoted_at")
             .and_then(|v| v.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok())
             .expect("promoted_at 须为服务端权威填充的合法 RFC3339 时间");
         assert_eq!(
-            promoted_at.offset().local_minus_utc(),
+            promoted_at.offset().whole_seconds(),
             0,
             "promoted_at 须为 UTC"
         );

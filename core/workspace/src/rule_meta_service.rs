@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use time::OffsetDateTime;
 
 use crate::db::WorkspaceDb;
 use crate::error::{WorkspaceError, WorkspaceResult};
@@ -112,7 +112,7 @@ impl RuleMetaService {
         let content_hash = Self::compute_content_hash(&req.content);
 
         // 4. 插入 rule
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let rule_id = ulid::Ulid::new().to_string();
         let rule = RuleRecord {
             id: rule_id.clone(),
@@ -211,7 +211,7 @@ impl RuleMetaService {
 
         // 5. 插入新版本
         let next_version = self.db.get_next_version_number(rule_id)?;
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let new_version_id = ulid::Ulid::new().to_string();
         let new_rv = RuleVersionRecord {
             id: new_version_id.clone(),

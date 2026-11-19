@@ -62,7 +62,7 @@ async fn main() -> Result<(), String> {
     for (i, token) in args.token.iter().enumerate() {
         tokens.push(TokenInfo {
             token: token.clone(),
-            created_at: chrono::Utc::now(),
+            created_at: time::OffsetDateTime::now_utc(),
             expires_at: None,
             description: format!("命令行配置 token {}", i + 1),
         });

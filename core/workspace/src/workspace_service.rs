@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use time::OffsetDateTime;
 
 use crate::db::WorkspaceDb;
 use crate::error::{WorkspaceError, WorkspaceResult};
@@ -69,7 +69,7 @@ impl WorkspaceService {
             return Err(WorkspaceError::invalid_input("owner_id must not be empty"));
         }
 
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let ws = WorkspaceRecord {
             id: ulid::Ulid::new().to_string(),
             name: req.name,
@@ -105,7 +105,7 @@ impl WorkspaceService {
         if !existing.is_empty() {
             return Ok(None);
         }
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let ws = WorkspaceRecord {
             id: ulid::Ulid::new().to_string(),
             name: "execution".to_string(),
@@ -334,7 +334,7 @@ impl WorkspaceService {
         }
 
         // 4. 记录到 db
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let session = SessionRecord {
             id: session_id,
             workspace_id: workspace_id.to_string(),

@@ -73,10 +73,9 @@ yanked = "warn"
 # zip@2.4.2（rust_xlsxwriter/zendriver）/zip@3.0.0（utoipa-swagger-ui build-dep）/
 # zip@8.6.0（docx-rs）全为外部 crate 钉死，本地无升级路径；抽取 API 未在
 # 服务面使用，同前豁免理由，随上游升级 9.x 一并解除。
-# RUSTSEC-2026-0543（2026-11-18 treadmill 追加）：chrono unmaintained（全版本
-# 命中，无补丁版本）；命中 chrono@0.4.45 直依赖（evorule-auth / evorule-server /
-# evorule-workspace）——迁移到替代库属代码改造（去向 jiff 或 time，独立迁移批
-# 承接），先 dated 豁免；迁移批落地时同 commit 摘除本条。
+# RUSTSEC-2026-0543（2026-11-18 treadmill 追加）：chrono unmaintained——
+# （2026-11-19 摘除：三 crate 时钟面已整体迁 time 0.3（rfc3339 serde 注解
+# +utoipa time feature），修复即摘。）
 # RUSTSEC-2026-0459（2026-11-09 treadmill 追加）：libsqlite3-sys 捆绑 SQLite
 # CVE-2026-119375（vulnerability）；修复版 >=0.39.0 属大版本且要求 rusqlite
 # 0.41，依赖方 rusqlite 0.32.1 / sqlx-sqlite 0.8.6（evorule-rule dev 面 /
@@ -89,7 +88,6 @@ ignore = [
     "RUSTSEC-2026-0369",
     "RUSTSEC-2026-0429",
     "RUSTSEC-2026-0459",
-    "RUSTSEC-2026-0543",
     "RUSTSEC-2026-0545",
     "RUSTSEC-2026-0546",
     "RUSTSEC-2026-0547",

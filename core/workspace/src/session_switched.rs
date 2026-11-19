@@ -21,6 +21,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info};
@@ -91,7 +93,9 @@ impl SessionSwitchedBroadcaster {
             new_session_id,
             new_ruleset_version,
             new_ruleset_hash: new_ruleset_hash.to_string(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default(),
         };
 
         let channels = self.channels.lock().await;

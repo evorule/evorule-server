@@ -156,7 +156,7 @@ fn is_l2_meta_file_name(name: &str) -> bool {
 /// 兜底确定性仍依赖字典序）。存量 promoted 产物缺失该字段时自然落入兜底类。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct RulesDirLoadOrderKey {
-    promoted_at_desc: std::cmp::Reverse<Option<chrono::DateTime<chrono::FixedOffset>>>,
+    promoted_at_desc: std::cmp::Reverse<Option<time::OffsetDateTime>>,
     path: std::path::PathBuf,
 }
 
@@ -177,7 +177,13 @@ fn rules_dir_load_order_key(p: &std::path::Path) -> RulesDirLoadOrderKey {
             .and_then(|v| {
                 v.pointer("/metadata/promoted_at")
                     .and_then(|x| x.as_str())
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .and_then(|s| {
+                        time::OffsetDateTime::parse(
+                            s,
+                            &time::format_description::well_known::Rfc3339,
+                        )
+                        .ok()
+                    })
             });
         if parsed.is_none() {
             tracing::warn!(
@@ -8775,8 +8781,13 @@ async fn session_heartbeat(
     let session = sessions
         .get_session(session_id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let ts = chrono::Utc::now().to_rfc3339();
-    let path = format!("system.heartbeat.{}", chrono::Utc::now().timestamp_millis());
+    let ts = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let path = format!(
+        "system.heartbeat.{}",
+        time::OffsetDateTime::now_utc().unix_timestamp_nanos() as i64 / 1_000_000
+    );
     let id = api.next_id();
     session
         .command_tx

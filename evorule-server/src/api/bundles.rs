@@ -747,7 +747,9 @@ pub async fn export_bundle_handler(
         });
     }
     // ⑤ 构造自洽 bundle（确定性 bundle_id；全包哈希含策略快照）
-    let exported_at = chrono::Utc::now().to_rfc3339();
+    let exported_at = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
     let bundle = export_workspace_bundle(
         &req.dataset_id,
         &inputs,
@@ -1141,7 +1143,11 @@ mod tests {
         // 溯源主体沿用治理侧导出者 exported_by（发布链发布者）
         assert_eq!(rec.imported_by, "publisher-01");
         // imported_at 为墙钟管理元数据（rfc3339 非空）
-        assert!(!rec.imported_at.to_rfc3339().is_empty());
+        assert!(!rec
+            .imported_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default()
+            .is_empty());
     }
 
     #[tokio::test]

@@ -11,6 +11,8 @@
 //! - BLAKE3 签名防篡改 (与审计链同源哈希算法)
 
 use serde::{Deserialize, Serialize};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 /// 测试报告
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -371,7 +373,9 @@ impl TestReportBuilder {
                 audit_export_path: None,
             },
             report_hash: String::new(),
-            generated_at: chrono::Utc::now().to_rfc3339(),
+            generated_at: OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default(),
         };
 
         // BLAKE3 签名 (防篡改) — 审计⑥ C3: 哈希实现统一走 evorule-hash (输入字节不变)

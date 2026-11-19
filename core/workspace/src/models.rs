@@ -28,8 +28,8 @@
 //! 故豁免 `clippy::should_implement_trait`（避免为规避 lint 而改名 30+ 调用点）。
 #![allow(clippy::should_implement_trait)]
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 // =============================================================================
 // 状态机枚举
@@ -219,11 +219,14 @@ pub struct WorkspaceRecord {
     /// 所有者用户 ID
     pub owner_id: String,
     /// 创建时间 (UTC)
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// 最后更新时间
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
     /// 归档时间 (未归档时为 None)
-    pub archived_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<OffsetDateTime>,
     /// 当前状态
     pub state: WorkspaceState,
     /// 描述 (可选)
@@ -240,7 +243,8 @@ pub struct WorkspaceMemberRecord {
     /// 成员角色 (owner/admin/editor/viewer)
     pub role: String,
     /// 加入时间
-    pub joined_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub joined_at: OffsetDateTime,
 }
 
 /// 成员角色枚举
@@ -298,11 +302,14 @@ pub struct RuleRecord {
     /// 当前状态
     pub state: RuleState,
     /// 创建时间
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// 最后更新时间
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
     /// 归档时间
-    pub archived_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<OffsetDateTime>,
     /// 规则描述
     pub description: Option<String>,
     /// 创建者用户 ID
@@ -327,7 +334,8 @@ pub struct RuleVersionRecord {
     /// 规则内容 (JSON 字符串, 存储原始规则 JSON)
     pub content: String,
     /// 创建时间
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// 版本状态
     pub state: RuleVersionState,
     /// 创建者用户 ID
@@ -346,9 +354,11 @@ pub struct SessionRecord {
     /// 绑定的规则版本 ID
     pub rule_version_id: Option<String>,
     /// 创建时间
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// 关闭时间
-    pub closed_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub closed_at: Option<OffsetDateTime>,
     /// 创建者用户 ID
     pub created_by: String,
 }
@@ -365,9 +375,11 @@ pub struct RuleSessionBinding {
     /// 工作空间 ID (冗余, 便于查询)
     pub workspace_id: String,
     /// 绑定时间
-    pub bound_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub bound_at: OffsetDateTime,
     /// 解绑时间
-    pub unbound_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub unbound_at: Option<OffsetDateTime>,
     /// 绑定状态
     pub state: SessionBindingState,
 }
@@ -434,9 +446,11 @@ pub struct SandboxSession {
     /// 沙盒状态
     pub status: SandboxStatus,
     /// 启动时间
-    pub started_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub started_at: OffsetDateTime,
     /// 关闭时间
-    pub closed_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub closed_at: Option<OffsetDateTime>,
     /// 启动者用户 ID
     pub started_by: String,
     /// 测试 Fact 导出路径 (关闭时填充)
@@ -469,7 +483,8 @@ pub struct TestDatasetRecord {
     /// case 数量 (冗余,便于查询)
     pub case_count: i64,
     /// 创建时间
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// 创建者
     pub created_by: String,
     /// 描述
@@ -639,17 +654,20 @@ pub struct PublishQueueItem {
     /// 提交者用户 ID (科室主任)
     pub submitted_by: String,
     /// 提交时间
-    pub submitted_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub submitted_at: OffsetDateTime,
     /// 审批者用户 ID (信息科/院领导)
     pub reviewed_by: Option<String>,
     /// 审批时间
-    pub reviewed_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub reviewed_at: Option<OffsetDateTime>,
     /// 审批意见
     pub review_comment: Option<String>,
     /// 发布版本号 (Published 后填充)
     pub published_version: Option<i64>,
     /// 发布时间
-    pub published_at: Option<DateTime<Utc>>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub published_at: Option<OffsetDateTime>,
     /// 当前状态
     pub status: PublishStatus,
     /// 发布说明
@@ -690,7 +708,8 @@ pub struct ProductionStateRecord {
     /// 最后操作者
     pub last_operated_by: Option<String>,
     /// 最后更新时间
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
 }
 
 // =============================================================================
@@ -721,7 +740,8 @@ pub struct ProductionAuditRecord {
     /// 操作者
     pub operated_by: String,
     /// 操作时间
-    pub operated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub operated_at: OffsetDateTime,
     /// 回滚原因 (仅 event_type=ruleset_rollback 时填充)
     pub reason: Option<String>,
     /// 附带的测试报告路径列表 (JSON 数组字符串)
@@ -759,7 +779,8 @@ pub struct BundleImportRecord {
     /// 条目数
     pub entry_count: i64,
     /// 导入时间 (管理元数据, 墙钟旁路)
-    pub imported_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub imported_at: OffsetDateTime,
     /// 溯源主体: 治理侧导出者 exported_by (发布链发布者), fallback "system"
     pub imported_by: String,
 }
@@ -791,9 +812,11 @@ pub struct VerdictContractRecord {
     /// 创建者
     pub created_by: String,
     /// 创建时间
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// 最后更新时间
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
 }
 
 // =============================================================================
@@ -814,7 +837,8 @@ pub struct VersionClockMapRecord {
     /// 逻辑版本号
     pub version: i64,
     /// 版本对应的墙钟时间 (RFC3339)
-    pub wall_clock: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub wall_clock: OffsetDateTime,
     /// 来源标记 (默认 'ttd_sidecar')
     pub source: String,
 }
