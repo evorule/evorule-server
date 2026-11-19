@@ -383,7 +383,7 @@ mod tests {
         // 大约 24 小时后(允许 1 分钟误差)
         let diff = expiry - OffsetDateTime::now_utc();
         let diff_minutes = diff.whole_minutes();
-        assert!(diff_minutes >= 1439 && diff_minutes <= 1441);
+        assert!((1439..=1441).contains(&diff_minutes));
     }
 
     #[test]
