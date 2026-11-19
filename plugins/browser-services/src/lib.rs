@@ -1229,7 +1229,11 @@ pub const NATIVE_SERVICES: &[NativeServiceDef] = &[
         name: "browser_navigate",
         sensitive: false,
         description: "跳转 URL，等 load",
-        parameters: None,
+        // 契约补齐：实现侧只认 url（execute 处必填），签名必须同名单同必填，
+        // 否则调用方看不到 url 契约、丢参即整工具不可用
+        parameters: Some(
+            r#"{"type":"object","properties":{"url":{"type":"string","description":"要跳转的目标 URL（http/https），等页面 load 后返回 url 与 title"}},"required":["url"]}"#,
+        ),
         make: || Arc::new(BrowserNavigate),
     },
     NativeServiceDef {
@@ -1619,6 +1623,37 @@ mod tests {
             .ok_or("缺 required")?;
         if !required.iter().any(|v| v == "expression") {
             return Err("required 未含 expression".to_string());
+        }
+        Ok(())
+    }
+
+    /// browser_navigate 同型契约锁：实现侧只认 url（execute 处 `args.get("url")`
+    /// 必填），签名必须同名同必填——缺 parameters 声明时调用方看不到 url
+    /// 契约，丢参即「需要 url 参数」整工具不可用。
+    #[test]
+    fn test_browser_navigate_contract_matches_impl() -> Result<(), String> {
+        let def = NATIVE_SERVICES
+            .iter()
+            .find(|d| d.name == "browser_navigate")
+            .ok_or("browser_navigate 不在服务表")?;
+        let raw = def
+            .parameters
+            .ok_or("browser_navigate 缺 parameters 契约")?;
+        let schema: serde_json::Value =
+            serde_json::from_str(raw).map_err(|e| format!("parameters 非法 JSON: {e}"))?;
+        if schema
+            .get("properties")
+            .and_then(|p| p.get("url"))
+            .is_none()
+        {
+            return Err("契约缺 url 参数（实现侧只认 url）".to_string());
+        }
+        let required = schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .ok_or("缺 required")?;
+        if !required.iter().any(|v| v == "url") {
+            return Err("required 未含 url".to_string());
         }
         Ok(())
     }
