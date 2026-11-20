@@ -109,7 +109,7 @@ pub enum L2Class {
 /// discipline 门 enforce 位的 env 值判定（单一事实源，server 测试桥同调本函数）。
 /// R7/[CON-L2-004] fail-closed 收口：合法值域 = {缺省/空串, "warn", "enforce"}
 /// （大小写不敏感）——**缺省/空串/"enforce" = `true`**（违规拒载；W1 观测期豁免
-/// 已于 2026-10-14 收口：复审观测数据干净，统帅裁定提前切 enforce 缺省，见
+/// 已于 2026-10-14 收口：复审观测数据干净，项目方裁定提前切 enforce 缺省，见
 /// [CON-L2-004] W1 收口注记与 SR-16）；显式 `"warn"` = `false`
 /// （观测期回退口保留：一键降级 env 切 warn，无需发版）；**非法值 = panic 拒载**：
 /// 门禁配置错误属部署事故，fail-closed 快速失败优于静默降级为观测态，
@@ -716,11 +716,11 @@ fn discipline_gate(transform_arr: &[Value], ctx: &LoadContext) -> Result<(), Con
 /// domain on_missing 门：**eq/lt/in 域**三道子门 + in 域第 4 道 values 门（对齐生产实码 server.rs domain_gate_violations）
 ///
 /// 仅对字面 eq/lt/in 域对象生效（对齐 2026-10-01 静默 false 根修方案 2' v4；
-/// in 域为 design-19 vendored 增补）：
+/// in 域为 vendored 增补）：
 /// ① missing_declaration：缺 on_missing 显式声明
 /// ② invalid_declaration：on_missing 非 error/unsat
 /// ③ value_literal_ambiguous：value（eq/lt）或 values 字符串元素（in）像根段点路径
-/// ④ values_declaration（仅 in）：values 缺失/非数组/空数组（design-19 R-3 fail-fast）
+/// ④ values_declaration（仅 in）：values 缺失/非数组/空数组（in 域第 4 道 values 门 fail-fast）
 ///
 /// 动态域（`__` 字符串引用）静态不可判定，天然不命中；all/has_fields 等非 eq/lt/in
 /// 域无 on_missing 语义，不检查——**不是**「全部 domain 都要 on_missing」。
@@ -1266,7 +1266,7 @@ mod tests {
         assert_eq!(loaded.engine_rules.len(), 1);
     }
 
-    // ===== design-19：in 域声明门禁（第 4 道 values 门 + 元素歧义）=====
+    // ===== in 域声明门禁（第 4 道 values 门 + 元素歧义）=====
 
     #[test]
     fn in_domain_legal_form_passes() {

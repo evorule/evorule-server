@@ -2905,7 +2905,7 @@ mod tests {
     #[test]
     fn test_tau_recover_features_registered_and_computed() {
         // τ_recover 三特征注册钉：同型三件（id/formula_ref/regime/锚）在
-        // 册 + 值域计算钉（复用同型纯函数，B-218 实测序列 [25,6,5] 形态）。
+        // 册 + 值域计算钉（复用同型纯函数，实测序列 [25,6,5] 形态）。
         for id in [
             "tau_recover_first_difference",
             "tau_recover_sliding_variance",

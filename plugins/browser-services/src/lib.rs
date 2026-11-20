@@ -3,7 +3,7 @@
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
 //! browser-service：zendriver-rs 驱动的浏览器操作 NativeService 插件。
 //!
-//! # 定位（design-13/14/15）
+//! # 定位
 //! - evo-agent P0.5 操作能力域：浏览网页、填表单、抓数据、下载上传。
 //! - 形态：evorule-server 进程内 NativeService 插件（非 MCP、非 HTTP sidecar）。
 //! - 底层：zendriver-rs（纯 Rust async CDP）；同步 trait × async 经 `bridge` 桥接。

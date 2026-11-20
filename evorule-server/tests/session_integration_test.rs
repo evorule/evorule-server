@@ -1461,11 +1461,11 @@ async fn test_rehydrate_disabled_keeps_404() {
     );
 }
 
-// ===== o31 读侧惰性复活回归（23 只读路由 + 零记录回落 + G6 哨兵锚）=====
+// ===== 读侧惰性复活回归（23 只读路由 + 零记录回落 + G6 哨兵锚）=====
 
-/// 重启后只读路由必须经惰性复活返回 200（o31 主回归）。
+/// 重启后只读路由必须经惰性复活返回 200（主回归）。
 ///
-/// o31 缺陷：只读路由原走 `get_session` 内存表直查，引擎重启后历史会话
+/// 缺陷背景：只读路由原走 `get_session` 内存表直查，引擎重启后历史会话
 /// MemoryTab facts/state/history 全线 404（前端报「历史恢复失败」）。
 /// 修复后统一走 `session_or_rehydrate`——本用例锁 facts/state/history
 /// 三条代表路由在重启（内存表清零）后仍可读，历史不丢。
@@ -1475,7 +1475,7 @@ async fn test_read_routes_rehydrate_after_restart() {
     let sid = fx.session_id;
     let state2 = boot_second_state(&fx, None);
 
-    // facts（o31 原发点，MemoryTab 共享事实查询）
+    // facts（MemoryTab 共享事实查询原发点）
     let (st, resp) = send(&state2, "GET", &format!("/api/sessions/{sid}/facts"), None).await;
     assert_eq!(
         st,

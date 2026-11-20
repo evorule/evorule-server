@@ -2421,7 +2421,7 @@ impl SessionApi {
     /// 域对象的门违规。eq/lt/in 类型键仅域对象持有（transform_rule 5 元指令与
     /// 指令层类型均不含 eq/lt/in），对象形态判定无误伤面。
     /// 三道门（missing_declaration/invalid_declaration/value_literal_ambiguous）
-    /// 为 eq/lt/in 共用；in 域另有第 4 道 values_declaration 门（design-19 R-3）。
+    /// 为 eq/lt/in 共用；in 域另有第 4 道 values_declaration 门（fail-fast）。
     fn domain_gate_violations(rule: &JsonValue) -> Vec<DomainViolation> {
         const ON_MISSING_VALUES: [&str; 2] = ["error", "unsat"];
 
@@ -2471,7 +2471,7 @@ impl SessionApi {
                             }
                         }
                         if ty == "in" {
-                            // 第 4 道 values_declaration 门（design-19 R-3）：
+                            // 第 4 道 values_declaration 门（fail-fast）：
                             // values 缺失/非数组/空数组 → 拒载（fail-fast，空集大概率写作错误）
                             let values_arr = map.get("values").and_then(|v| v.as_array());
                             if map.get("values").is_none() {
@@ -4493,7 +4493,7 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         session_id: u64,
     ) -> evorule_workspace::WorkspaceResult<serde_json::Value> {
-        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        // 读侧惰性复活（复活机制同族）：桥接消费面同样不直取内存表 404
         let session = self
             .session_or_rehydrate(session_id)
             .await
@@ -4539,7 +4539,7 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         session_id: u64,
     ) -> evorule_workspace::WorkspaceResult<String> {
-        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        // 读侧惰性复活（复活机制同族）：桥接消费面同样不直取内存表 404
         let session = self
             .session_or_rehydrate(session_id)
             .await
@@ -4578,7 +4578,7 @@ impl evorule_workspace::SessionOps for SessionApi {
 
         session_id: u64,
     ) -> evorule_workspace::WorkspaceResult<Vec<serde_json::Value>> {
-        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        // 读侧惰性复活（复活机制同族）：桥接消费面同样不直取内存表 404
         let session = self
             .session_or_rehydrate(session_id)
             .await
@@ -4611,7 +4611,7 @@ impl evorule_workspace::SessionOps for SessionApi {
     ) -> evorule_workspace::WorkspaceResult<serde_json::Value> {
         use evorule_reactor::FactId;
 
-        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        // 读侧惰性复活（复活机制同族）：桥接消费面同样不直取内存表 404
         let session = self
             .session_or_rehydrate(session_id)
             .await
@@ -4681,7 +4681,7 @@ impl evorule_workspace::SessionOps for SessionApi {
     /// 将 FactsLog 中尚未审计的 Fact 刷入 BLAKE3 哈希链, 返回本次新增条目数。
     /// send_command 后应调用此方法确保审计链实时性。
     async fn flush_audit(&self, session_id: u64) -> evorule_workspace::WorkspaceResult<usize> {
-        // 读侧惰性复活（o31 同族）：桥接消费面同样不直取内存表 404
+        // 读侧惰性复活（复活机制同族）：桥接消费面同样不直取内存表 404
         let session = self
             .session_or_rehydrate(session_id)
             .await
@@ -7201,7 +7201,7 @@ async fn session_metadata(
 
     Path(session_id): Path<u64>,
 ) -> Result<Json<SessionMetadataResponse>, StatusCode> {
-    // 读侧惰性复活（o31 同族）：内存未命中且归档在即按原 sid 复活，不直取 404
+    // 读侧惰性复活（复活机制同族）：内存未命中且归档在即按原 sid 复活，不直取 404
     let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
         tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
         rej.to_status()
@@ -11199,7 +11199,7 @@ async fn session_facts_by_prefix(
 
     Query(params): Query<FactsByPrefixParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // o31 原发点：MemoryTab 共享事实查询——内存未命中时必须走惰性复活，
+    // MemoryTab 共享事实查询原发点：内存未命中时必须走惰性复活，
     // 引擎重启后历史会话的 facts 索引才不至于直取 404
     let session = api.session_or_rehydrate(session_id).await.map_err(|rej| {
         tracing::warn!(session_id, rejection = %rej, "会话读侧获取失败（含复活尝试）");
@@ -15042,7 +15042,7 @@ mod tests {
 
     // ===== caller_role 注入单元测试 =====
 
-    mod o179 {
+    mod caller_role_tests {
         use super::*;
 
         /// 空白 SessionApi（纯内存，无 dispatcher）
@@ -15051,7 +15051,7 @@ mod tests {
         }
 
         #[test]
-        fn o179_inject_declared_session_adds_meta_and_keeps_body() {
+        fn inject_declared_session_adds_meta_and_keeps_body() {
             let api = blank_api();
             api.caller_roles
                 .lock()
@@ -15071,7 +15071,7 @@ mod tests {
         }
 
         #[test]
-        fn o179_inject_undeclared_or_closed_session_is_noop() {
+        fn inject_undeclared_or_closed_session_is_noop() {
             let api = blank_api();
             let mut instr = serde_json::json!({"type": "set", "params": {"attr": "x", "operation": "set", "value": 1}});
             api.inject_caller_role(42, &mut instr); // 未登记的会话
@@ -15087,7 +15087,7 @@ mod tests {
         }
 
         #[test]
-        fn o179_inject_into_existing_meta_object_merges() {
+        fn inject_into_existing_meta_object_merges() {
             let api = blank_api();
             api.caller_roles
                 .lock()
@@ -15103,7 +15103,7 @@ mod tests {
         /// 同一指令带/不带根部 `__meta__` 进 TCB execute_transition，
         /// 规则命中与转换结果完全一致 —— 根部额外键与 TCB 兼容，退路不触发。
         #[test]
-        fn o179_tcb_differential_meta_key_has_no_rule_effect() {
+        fn tcb_differential_meta_key_has_no_rule_effect() {
             // 宪法同构最小片段（与装载防线宪法测试同源结构）：
             // L1 直接规则（set counter）+ 桥接 branch（call_service → io_request）
             let core_eval = o135_tcb(O135_CONSTITUTION);
@@ -15158,7 +15158,7 @@ mod tests {
         /// 元指令（transform_rule 白名单 additionalProperties=false）原文不含
         /// __meta__ 可过门禁 —— 若未来有人把注入挪到门禁前，此测试立即红。
         #[test]
-        fn o179_meta_key_would_break_meta_instruction_gate_guard() {
+        fn meta_key_would_break_meta_instruction_gate_guard() {
             let meta_instr = serde_json::json!({
                 "type": "io_request",
                 "params": {"io_type": "call_service"},
@@ -15173,7 +15173,7 @@ mod tests {
 
     // ===== fork/from IoSubscriber + 声明继承（io 应答缺口合并修复）=====
 
-    mod o185 {
+    mod io_fork_inherit_tests {
         use super::*;
 
         /// EchoHandler：call_service 应答回显参数（结果注入 __io_results__）
@@ -15222,7 +15222,7 @@ mod tests {
         /// 发射 call_service io 时可被应答分发——io 应答缺口（60s 超时无人应答）
         /// 修复后的正向探针。
         #[tokio::test]
-        async fn o185_fork_child_session_io_dispatches_with_inherited_role() {
+        async fn fork_child_session_io_dispatches_with_inherited_role() {
             let metrics: SharedMetrics = shared_prometheus_metrics().unwrap();
 
             let dispatcher = IoDispatcher::builder()
@@ -15314,7 +15314,7 @@ mod tests {
 
         /// fork 子会话声明继承：llm 父 → from / fork 两端点子会话均继承 llm
         #[tokio::test]
-        async fn o185_fork_inherits_parent_declaration_from_and_fork() {
+        async fn fork_inherits_parent_declaration_from_and_fork() {
             let (state, _) = make_test_state();
             let router = make_test_router(&state);
 
@@ -15364,7 +15364,7 @@ mod tests {
 
         /// 父未声明 → 子不登记（fail-closed：Unknown → Deny 与今日一致）
         #[tokio::test]
-        async fn o185_fork_without_parent_declaration_child_stays_undeclared() {
+        async fn fork_without_parent_declaration_child_stays_undeclared() {
             let (state, _) = make_test_state();
             let router = make_test_router(&state);
 
@@ -15945,7 +15945,7 @@ mod tests {
         assert_eq!(kept2.len(), 1);
     }
 
-    /// in 域门（design-19）：三道共用门覆盖 in + 第 4 道 values_declaration 门 +
+    /// in 域门：三道共用门覆盖 in + 第 4 道 values_declaration 门 +
     /// values 元素字面量歧义 + 合法形态（含带点字面量元素）零误伤。
     #[test]
     fn t4b_domain_gate_in_domain_values_door_and_ambiguity() {
