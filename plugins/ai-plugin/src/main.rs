@@ -48,7 +48,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use evorule_ai_plugin::{
     build_http_client, build_llm_execute_client, build_model_routes, call_llm_ext,
-    call_llm_ext_stream, load_model_allowlist_file, run_audited_chat, web_search_relay,
+    call_llm_ext_stream, load_model_allowlist_file, run_audited_chat_routed, web_search_relay,
     ChatRequest, ModelRoutes, PluginConfig, PluginError, WebSearchError, WEB_SEARCH_DEFAULT_COUNT,
     WEB_SEARCH_MAX_COUNT,
 };
@@ -703,7 +703,15 @@ async fn ai_plugin_chat(
         .unwrap_or_else(|| "chat".to_string());
     // 合并缝合：AllowlistHot(热更槽) → 调用期快照；热重载只影响后续请求，执法语义 fail-closed 不变
     let allowlist_snapshot = st.allowlist.get().map(|arc| (*arc).clone());
-    match run_audited_chat(&st.cfg, &st.http, &req, &allowlist_snapshot).await {
+    match run_audited_chat_routed(
+        &st.cfg,
+        &st.http,
+        &req,
+        &allowlist_snapshot,
+        st.routes.as_deref(),
+    )
+    .await
+    {
         Ok(outcome) => {
             tracing::info!(
                 "ai_plugin_chat 完成: session={} purpose={purpose} reply_chars={}",

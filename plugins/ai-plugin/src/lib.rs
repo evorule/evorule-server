@@ -24,8 +24,10 @@
 //!     `usage_total`），非阻塞可见性（回归验证 报警面哲学）。
 //!
 //! 红线（插件红线清单条款，立项 05 文档 §2.1 + 07 文档 §三）：
-//!   - 本 crate 内 `call_llm` 是唯一 LLM 路径，且只允许在 sidecar 循环的
-//!     IoRequest 处理分支内被调用（防 回归验证 同型影子调用）；
+//!   - 本 crate 内 LLM 出站路径仅两条：`call_llm`（legacy 单端点）与
+//!     `call_llm_ext`（多 provider 路由模式）——均只允许在 sidecar 循环的
+//!     IoRequest 处理分支内被调用（防 回归验证 同型影子调用）；审计回路
+//!     按装载形态择一：路由表在役走 `call_llm_ext`，否则 legacy。
 //!   - 工具执行只经 `call_service` 事实对（`execute_tool` 仅在工具
 //!     IoRequest 分支内被调用）——插件进程内禁止回路外任何 server API
 //!     工具调用（影子扫描纪律扩展到工具面）；
@@ -2664,6 +2666,19 @@ pub async fn run_audited_chat(
     req: &ChatRequest,
     allowlist: &Option<BTreeSet<String>>,
 ) -> Result<AuditedChatOutcome, PluginError> {
+    run_audited_chat_routed(cfg, http, req, allowlist, None).await
+}
+
+/// 路由感知形态：routes = 启动装配的按模型路由表（Some = 多 provider 路由模式，
+/// 审计回路 LLM 轮按模型解析 provider，未命中显式拒 fail-visible；
+/// None = 单端点模式，行为与既有完全一致，存量调用零迁移）。
+pub async fn run_audited_chat_routed(
+    cfg: &PluginConfig,
+    http: &reqwest::Client,
+    req: &ChatRequest,
+    allowlist: &Option<BTreeSet<String>>,
+    routes: Option<&ModelRoutes>,
+) -> Result<AuditedChatOutcome, PluginError> {
     let base = cfg.server_base_url.trim_end_matches('/').to_string();
     let headers = auth_headers(cfg)?;
 
@@ -2690,7 +2705,17 @@ pub async fn run_audited_chat(
     let sid = session_id.to_string();
 
     // 2. 先订阅再提交命令（broadcast 通道不重放历史）
-    let outcome = run_loop(cfg, http, req, &base, &sid, headers.clone(), allowlist).await;
+    let outcome = run_loop(
+        cfg,
+        http,
+        req,
+        &base,
+        &sid,
+        headers.clone(),
+        allowlist,
+        routes,
+    )
+    .await;
 
     // 3. 尽力关闭 sidecar 会话（防会话数耗尽；失败不掩盖主流程）
     let _ = fetch_step(
@@ -2706,6 +2731,9 @@ pub async fn run_audited_chat(
     outcome.map(|reply| AuditedChatOutcome { reply, session_id })
 }
 
+// clippy 1.99 too_many_arguments 豁免：路由表入参致 8 参（7+1，语义彼此独立，
+// 强组结构体反而破坏调用点可读性——同款豁免见 submit_llm_command）
+#[allow(clippy::too_many_arguments)]
 async fn run_loop(
     cfg: &PluginConfig,
     http: &reqwest::Client,
@@ -2714,6 +2742,7 @@ async fn run_loop(
     sid: &str,
     headers: reqwest::header::HeaderMap,
     allowlist: &Option<BTreeSet<String>>,
+    routes: Option<&ModelRoutes>,
 ) -> Result<String, PluginError> {
     let stream_resp = fetch_step(
         http,
@@ -2834,8 +2863,34 @@ async fn run_loop(
                                  见 00_constraint_model_allowlist）"
                             )));
                         }
-                        // LLM 执行；失败也要把错误写进 io_response 再抛（不留悬空 IoRequest）
-                        let call = call_llm(cfg, http, &messages, &model, temperature).await;
+                        // LLM 执行；失败也要把错误写进 io_response 再抛（不留悬空 IoRequest）。
+                        // 路由模式：按装载路由表解析 provider（未命中显式拒，fail-visible），
+                        // 四键归一取 content/token_usage；reasoning 面仅 legacy 通道携带，
+                        // 路由通道审计链以 content 为准（如实分层，不冒充思维链）。
+                        let call = if let Some(rts) = routes {
+                            let mut body = json!({
+                                "model": model,
+                                "messages": messages,
+                                "temperature": temperature
+                            });
+                            if let Some(mt) = cfg.llm_max_tokens {
+                                body["max_tokens"] = json!(mt);
+                            }
+                            call_llm_ext(cfg, http, allowlist, Some(rts), &body)
+                                .await
+                                .map(|v| {
+                                    let content = v
+                                        .get("content")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let usage =
+                                        v.get("token_usage").cloned().filter(|u| !u.is_null());
+                                    (content, String::new(), usage)
+                                })
+                        } else {
+                            call_llm(cfg, http, &messages, &model, temperature).await
+                        };
                         let text = match call {
                             Ok((t, reasoning, usage)) => {
                                 if reasoning.is_empty() {
@@ -5340,6 +5395,57 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
             "messages": [{"role":"user","content":"写一条阈值规则"}]
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn audited_chat_routed_mode_uses_model_routes_not_legacy_endpoint() {
+        // 路由模式接线锚：审计回路 LLM 轮经 ModelRoutes 按 model 解析 provider——
+        // legacy llm_endpoint 指向不可达端口，若误走 legacy 必失败，路由命中即成功。
+        let st = MockState::new(true, vec!["routed-ok".to_string()]);
+        let base = spawn_mock(st.clone()).await;
+        let cfg = PluginConfig::from_json_str(&format!(
+            r#"{{"server_base_url":"{base}","llm_endpoint":"http://127.0.0.1:9/unbound",
+                "llm_api_key":"sk-mock","llm_model":"m1","tools":{{"enabled":[]}}}}"#
+        ))
+        .unwrap();
+        let mut routes = ModelRoutes::default();
+        routes.by_model.insert(
+            "m1".to_string(),
+            ProviderRoute {
+                provider: "mock".to_string(),
+                execute_url: format!("{base}/llm/chat/completions"),
+                api_key: "sk-mock".to_string(),
+                default_params: serde_json::Map::new(),
+            },
+        );
+        let http = build_http_client().unwrap();
+        let outcome =
+            run_audited_chat_routed(&cfg, &http, &test_request(), &allow_m1(), Some(&routes))
+                .await
+                .unwrap();
+        assert_eq!(outcome.reply, "routed-ok");
+    }
+
+    #[tokio::test]
+    async fn audited_chat_routed_mode_unknown_model_fails_visible() {
+        // 路由模式未命中显式拒（fail-visible）：模型不在路由表→显式错误，
+        // 不静默回落 legacy 单端点（防「配置了路由却偷偷走默认端点」的假成功）。
+        let st = MockState::new(false, vec!["should-not-happen".to_string()]);
+        let base = spawn_mock(st.clone()).await;
+        let cfg = PluginConfig::from_json_str(&format!(
+            r#"{{"server_base_url":"{base}","llm_endpoint":"{base}/llm",
+                "llm_api_key":"sk-mock","llm_model":"m1","tools":{{"enabled":[]}}}}"#
+        ))
+        .unwrap();
+        let routes = ModelRoutes::default(); // 空表：m1 未命中
+        let http = build_http_client().unwrap();
+        let err = run_audited_chat_routed(&cfg, &http, &test_request(), &allow_m1(), Some(&routes))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("m1"),
+            "错误应指名未命中模型: {err}"
+        );
     }
 
     #[tokio::test]
