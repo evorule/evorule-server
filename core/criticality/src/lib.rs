@@ -19,8 +19,9 @@
 //!    拒判（报两侧量纲向量，fail-fast，不猜语义）。
 //! 2. **定律代入**：定位涉及定律（claims 符号 ∩ law.symbols），目标量
 //!    单符号裸形态时把已知值（主张优先、常量兜底）代入另一侧求计算值，
-//!    与主张比较（容差 = 声明不确定度 × k·σ 因子）。MVP 不做符号重排
-//!    （目标侧非裸形态跳过并报因）。
+//!    与主张比较。容差 = 声明不确定度 × k·σ 因子；context.propagation =
+//!    `gum_monomial` 时改用 GUM 单项式精确闭式传播 σ_F（不可传播回落声明值
+//!    并记因 sigma_basis）。MVP 不做符号重排（目标侧非裸形态跳过并报因）。
 //! 3. **常量对照**：主张符号命中唯一常量时做 k·σ 区间比较
 //!    （σ = max(常量声明不确定度, 主张不确定度)；越界 = alert）。
 //! 4. **三态聚合**（D4 词汇立法）：`stable`（全部相容）/ `alert`
@@ -86,6 +87,16 @@ pub struct ClaimEntry {
     pub uncertainty: Option<f64>,
 }
 
+/// 误差传播模式（步② 容差语义开关；additive D2/D5：缺省 none = 现行为）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PropagationMode {
+    /// 缺省：容差 = k × 目标主张声明不确定度（现行为逐字节不变）
+    None,
+    /// GUM 单项式精确闭式传播：容差 = k × σ_F（不可传播回落声明值并记因）
+    GumMonomial,
+}
+
 /// 测量上下文（溯源必填：铁律 2 无出处拒收）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VerifyContext {
@@ -95,6 +106,9 @@ pub struct VerifyContext {
     pub method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub k_sigma: Option<f64>,
+    /// 步② 误差传播开关（缺省 none = 现行为；显式声明才激活——缺省不变式）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub propagation: Option<PropagationMode>,
 }
 
 /// 验证命题（请求体强类型镜像）
@@ -272,6 +286,272 @@ pub fn parse_uncertainty(text: &str) -> Option<f64> {
 }
 
 // ============================================================================
+// 误差传播（GUM 单项式精确闭式；独立于数学地基的纯函数面）
+// ============================================================================
+
+/// 单项式净指数收集（与 eval 文法逐字一致的第二遍扫描：`expr := factor
+/// (('*'|'/') factor)*`、`factor := base ('^' ['-'] digits)?`、
+/// `base := ident | number | '(' expr ')'`）。
+///
+/// 乘法累加指数、除法取负累加、幂次按标量放大（含括号整体幂）；
+/// 同符号多次出现按净指数合并（`m*m` → a_m=2，非两次独立贡献）。
+/// 数值字面量为常数因子（相对形式下 |F| 处抵消，不入指数表）。
+/// 溢出用 checked 运算显式报错（深嵌套大幂次可超 i64）。
+struct MonomialScan<'a> {
+    src: &'a str,
+    pos: usize,
+    depth: usize,
+}
+
+impl<'a> MonomialScan<'a> {
+    fn peek(&self) -> Option<u8> {
+        self.src.as_bytes().get(self.pos).copied()
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            self.pos += 1;
+        }
+    }
+
+    fn merge(
+        acc: &mut BTreeMap<String, i64>,
+        from: BTreeMap<String, i64>,
+        sign: i64,
+    ) -> Result<(), String> {
+        for (k, v) in from {
+            let scaled = v.checked_mul(sign).ok_or("指数合并溢出")?;
+            let cur = acc.entry(k).or_insert(0i64);
+            *cur = cur.checked_add(scaled).ok_or("指数合并溢出")?;
+        }
+        Ok(())
+    }
+
+    /// `expr := factor (('*' | '/') factor)*`
+    fn expr(&mut self, acc: &mut BTreeMap<String, i64>) -> Result<(), String> {
+        self.factor(acc)?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'*') => {
+                    self.pos += 1;
+                    let mut rhs = BTreeMap::new();
+                    self.factor(&mut rhs)?;
+                    Self::merge(acc, rhs, 1)?;
+                }
+                Some(b'/') => {
+                    self.pos += 1;
+                    let mut rhs = BTreeMap::new();
+                    self.factor(&mut rhs)?;
+                    Self::merge(acc, rhs, -1)?;
+                }
+                _ => return Ok(()),
+            }
+        }
+    }
+
+    /// `factor := base ('^' ['-'] digits)?`
+    fn factor(&mut self, acc: &mut BTreeMap<String, i64>) -> Result<(), String> {
+        self.skip_ws();
+        let mut base_map = BTreeMap::new();
+        self.base(&mut base_map)?;
+        self.skip_ws();
+        if self.peek() == Some(b'^') {
+            self.pos += 1;
+            let exp = self.exponent()? as i64;
+            for v in base_map.values_mut() {
+                *v = v.checked_mul(exp).ok_or("指数放大溢出")?;
+            }
+        }
+        Self::merge(acc, base_map, 1)
+    }
+
+    /// `base := 标识符（净指数 +1）| 数值字面量（常数因子，不入表）| '(' expr ')'`
+    fn base(&mut self, acc: &mut BTreeMap<String, i64>) -> Result<(), String> {
+        self.skip_ws();
+        match self.peek() {
+            Some(b) if b.is_ascii_alphabetic() || b == b'_' => {
+                let start = self.pos;
+                self.pos += 1;
+                while matches!(self.peek(), Some(b) if b.is_ascii_alphanumeric() || b == b'_') {
+                    self.pos += 1;
+                }
+                acc.insert(self.src[start..self.pos].to_string(), 1);
+                Ok(())
+            }
+            Some(b) if b.is_ascii_digit() => self.number(),
+            Some(b'(') => {
+                self.depth += 1;
+                if self.depth > eval::MAX_PAREN_DEPTH {
+                    return Err(format!("括号嵌套过深（上限 {} 层）", eval::MAX_PAREN_DEPTH));
+                }
+                self.pos += 1;
+                self.expr(acc)?;
+                self.skip_ws();
+                if self.peek() != Some(b')') {
+                    return Err("括号子表达式缺右括号 `)`".to_string());
+                }
+                self.pos += 1;
+                self.depth -= 1;
+                Ok(())
+            }
+            Some(b) if b.is_ascii() => Err(format!("非法记号 `{}`", b as char)),
+            Some(_) => Err("非 ASCII 记号".to_string()),
+            None => Err("表达式意外结束".to_string()),
+        }
+    }
+
+    /// `number := digits ('.' digits)?`（形态与 eval 逐字一致，值不取）
+    fn number(&mut self) -> Result<(), String> {
+        while matches!(self.peek(), Some(b) if b.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            if !matches!(self.peek(), Some(b) if b.is_ascii_digit()) {
+                return Err("数值小数点后缺数字".to_string());
+            }
+            while matches!(self.peek(), Some(b) if b.is_ascii_digit()) {
+                self.pos += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// `exponent := ['-'] digits`（|exp| ≤ 127，与 eval 同律）
+    fn exponent(&mut self) -> Result<i32, String> {
+        self.skip_ws();
+        let negative = if self.peek() == Some(b'-') {
+            self.pos += 1;
+            true
+        } else {
+            false
+        };
+        let start = self.pos;
+        while matches!(self.peek(), Some(b) if b.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        if start == self.pos {
+            return Err("`^` 后缺整数幂次".to_string());
+        }
+        let digits = &self.src[start..self.pos];
+        let magnitude: i32 = digits
+            .parse()
+            .map_err(|_| format!("幂次 `{digits}` 越界"))?;
+        if magnitude > 127 {
+            return Err(format!("幂次 `{digits}` 越界（|exp| ≤ 127）"));
+        }
+        Ok(if negative { -magnitude } else { magnitude })
+    }
+}
+
+/// 单项式净指数表（ident → aᵢ；出错原因随 Err 返回）
+fn monomial_exponents(expr: &str) -> Result<BTreeMap<String, i64>, String> {
+    if expr.len() > eval::MAX_EXPR_LEN {
+        return Err(format!("表达式长度超上限 {}", eval::MAX_EXPR_LEN));
+    }
+    let mut scanner = MonomialScan {
+        src: expr,
+        pos: 0,
+        depth: 0,
+    };
+    let mut acc = BTreeMap::new();
+    scanner.expr(&mut acc)?;
+    scanner.skip_ws();
+    if scanner.pos != expr.len() {
+        return Err(format!("表达式尾随未解析内容 `{}`", &expr[scanner.pos..]));
+    }
+    Ok(acc)
+}
+
+/// 传播回落/失败原因（fail-visible 记因面；不可传播回落声明值，判定能力只升不降）
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropagationFailure {
+    /// 表达式侧符号缺标准不确定度声明（附符号名）
+    MissingSigma(String),
+    /// 零值奇异：某符号值为 0 或计算值 |F|=0，相对形式除零（附符号名，`<F>` 表计算值）
+    ZeroValueSingularity(String),
+    /// 常数因子仅存：无带非零指数符号（σ_F 相对形式无输入）
+    ConstantOnly,
+    /// 非有限输入/合成（附符号名）
+    NonFiniteInput(String),
+    /// 文法或指数溢出失败（eval 已先验文法，此为独立直调防御面；附原因文本）
+    Malformed(String),
+}
+
+impl PropagationFailure {
+    /// sigma_basis 记因码（机器可读；`fallback:<码>[:<符号>]` 形态）
+    pub fn code(&self) -> String {
+        match self {
+            PropagationFailure::MissingSigma(s) => format!("fallback:missing_sigma:{s}"),
+            PropagationFailure::ZeroValueSingularity(s) => {
+                format!("fallback:zero_value_singularity:{s}")
+            }
+            PropagationFailure::ConstantOnly => "fallback:constant_only".to_string(),
+            PropagationFailure::NonFiniteInput(s) => format!("fallback:non_finite_input:{s}"),
+            PropagationFailure::Malformed(t) => format!("fallback:malformed:{t}"),
+        }
+    }
+}
+
+/// GUM 单项式精确闭式传播（D1 推荐案）：现行代入文法下目标形态为
+/// 单项式 `F = C·∏|xᵢ|^{aᵢ}`，相对合成无需 CAS、无需数值差分，是精确闭式：
+///
+/// ```text
+/// (σ_F / |F|)² = Σ (aᵢ·σᵢ / |xᵢ|)²
+/// ```
+///
+/// 独立性假设（不计协方差，设计底稿诚实边界）；σ 语义 = 标准不确定度。
+///
+/// 返回 `Ok(σ_F)` 或 `Err(PropagationFailure)`（调用方一律回落声明值并
+/// 记因 `sigma_basis`，fail-visible 不静默）。
+pub fn propagate_sigma(
+    expr: &str,
+    f_value: f64,
+    values: &BTreeMap<String, f64>,
+    sigmas: &BTreeMap<String, f64>,
+) -> Result<f64, PropagationFailure> {
+    let exponents = monomial_exponents(expr).map_err(PropagationFailure::Malformed)?;
+    let active: Vec<(&String, &i64)> = exponents.iter().filter(|(_, a)| **a != 0).collect();
+    if active.is_empty() {
+        return Err(PropagationFailure::ConstantOnly); // 常数因子仅存：无传播输入
+    }
+    if !f_value.is_finite() {
+        return Err(PropagationFailure::NonFiniteInput("<F>".to_string()));
+    }
+    if f_value == 0.0 {
+        return Err(PropagationFailure::ZeroValueSingularity("<F>".to_string()));
+    }
+    let mut rel_var = 0.0f64;
+    for (ident, a) in active {
+        let Some(x) = values.get(ident) else {
+            return Err(PropagationFailure::Malformed(format!(
+                "符号 `{ident}` 无代入值"
+            )));
+        };
+        let Some(s) = sigmas.get(ident) else {
+            return Err(PropagationFailure::MissingSigma(ident.clone()));
+        };
+        if !x.is_finite() || !s.is_finite() {
+            return Err(PropagationFailure::NonFiniteInput(ident.clone()));
+        }
+        if *x == 0.0 {
+            return Err(PropagationFailure::ZeroValueSingularity(ident.clone()));
+        }
+        let term = (*a as f64) * s / x.abs();
+        rel_var += term * term;
+    }
+    if !rel_var.is_finite() {
+        return Err(PropagationFailure::NonFiniteInput("<rel_var>".to_string()));
+    }
+    let sigma_f = f_value.abs() * rel_var.sqrt();
+    if !sigma_f.is_finite() {
+        return Err(PropagationFailure::NonFiniteInput("<sigma_f>".to_string()));
+    }
+    Ok(sigma_f)
+}
+
+// ============================================================================
 // 公共校验 API
 // ============================================================================
 
@@ -419,6 +699,20 @@ pub struct VerifyStep {
     pub target: String,
     pub outcome: StepOutcome,
     pub detail: String,
+    /// 步② 诊断三字段（additive D4，law_substitution 判定步专有；审计并列面）：
+    /// GUM 传播所得 σ_F（未传播/回落时缺省省略）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sigma_propagated: Option<f64>,
+    /// 目标主张声明不确定度（无声明时省略）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sigma_declared: Option<f64>,
+    /// 实际用于容差的 σ 来源：
+    /// `propagated_gum_monomial` / `declared`（含传播未请求）/ `fallback:<码>`，
+    /// 码 = missing_sigma / zero_value_singularity / constant_only /
+    /// non_finite_input / malformed（`:<符号或文本>` 后缀，见
+    /// [`PropagationFailure::code`]）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sigma_basis: Option<String>,
 }
 
 /// 提案物料包（alert/contradiction 态附出；人工经治理链入闸，无自动回写）
@@ -710,6 +1004,9 @@ fn dimensional_gate(
                 } else {
                     "无可对表的定律/常量单位声明（跳过）".to_string()
                 },
+                sigma_propagated: None,
+                sigma_declared: None,
+                sigma_basis: None,
             }),
         }
     }
@@ -795,7 +1092,7 @@ fn law_substitution(
             ));
             continue;
         }
-        let Some(sub) = build_substitution(&idents, target, claims, const_index) else {
+        let Some((sub, sigmas)) = build_substitution(&idents, target, claims, const_index) else {
             steps.push(skip_step(
                 "law_substitution",
                 &law.id,
@@ -821,8 +1118,11 @@ fn law_substitution(
             }
         };
 
-        // 容差 = 声明不确定度 × k（无不确定度 → 跳过，不判定）
-        let Some(sigma) = view.uncertainty else {
+        // 容差 = 声明不确定度 × k（无不确定度 → 跳过，不判定）。
+        // context.propagation = `gum_monomial` 时容差改用 GUM 传播 σ_F；
+        // 不可传播一律回落声明值并记因 sigma_basis（fail-visible，判定能力
+        // 只升不降，D3）。缺省 none 时下列各值与现行为逐字节一致（D2）。
+        let Some(sigma_declared) = view.uncertainty else {
             steps.push(skip_step(
                 "law_substitution",
                 &law.id,
@@ -830,7 +1130,15 @@ fn law_substitution(
             ));
             continue;
         };
-        let tol = k * sigma;
+        let propagation = req.context.propagation.unwrap_or(PropagationMode::None);
+        let (sigma_used, sigma_propagated, sigma_basis) = match propagation {
+            PropagationMode::None => (sigma_declared, None, "declared".to_string()),
+            PropagationMode::GumMonomial => match propagate_sigma(expr, computed, &sub, &sigmas) {
+                Ok(sp) => (sp, Some(sp), "propagated_gum_monomial".to_string()),
+                Err(f) => (sigma_declared, None, f.code()),
+            },
+        };
+        let tol = k * sigma_used;
         let delta = (computed - view.value).abs();
         let side = if flipped { "左" } else { "右" };
         let outcome = if delta <= tol {
@@ -855,6 +1163,9 @@ fn law_substitution(
                     ""
                 }
             ),
+            sigma_propagated,
+            sigma_declared: Some(sigma_declared),
+            sigma_basis: Some(sigma_basis),
         });
         if outcome == StepOutcome::Violated {
             proposals.push(ProposalPackage {
@@ -878,30 +1189,44 @@ fn law_substitution(
     Ok(any_violated)
 }
 
-/// 代入表构建：主张优先、常量唯一命中兜底；缺值/歧义返回 None（调用方跳过记因）
+/// 代入表构建：主张优先、常量唯一命中兜底；缺值/歧义返回 None（调用方跳过记因）。
+/// 同时收集各符号标准不确定度（主张 `uncertainty` / 常量 `metadata.uncertainty`
+/// 数字字面量解析），供 GUM 传播使用——无声明者不入 σ 表（传播按缺 σ 回落）。
 fn build_substitution(
     idents: &[String],
     target: &str,
     claims: &BTreeMap<&str, ClaimView>,
     const_index: &BTreeMap<&str, Vec<&ConstantRef<'_>>>,
-) -> Option<BTreeMap<String, f64>> {
+) -> Option<(BTreeMap<String, f64>, BTreeMap<String, f64>)> {
     let mut sub: BTreeMap<String, f64> = BTreeMap::new();
+    let mut sigmas: BTreeMap<String, f64> = BTreeMap::new();
     for ident in idents {
         if ident == target {
             return None; // 目标量出现于表达式侧（需自洽核验形态，MVP 跳过）
         }
         if let Some(v) = claims.get(ident.as_str()) {
             sub.insert(ident.clone(), v.value);
+            if let Some(s) = v.uncertainty {
+                sigmas.insert(ident.clone(), s);
+            }
             continue;
         }
         match resolve_constant(const_index, ident) {
             ConstantMatch::Unique(_, c) => {
                 sub.insert(ident.clone(), c.value);
+                if let Some(u) = c
+                    .metadata
+                    .uncertainty
+                    .as_deref()
+                    .and_then(parse_uncertainty)
+                {
+                    sigmas.insert(ident.clone(), u);
+                }
             }
             ConstantMatch::Ambiguous(_) | ConstantMatch::NotFound => return None,
         }
     }
-    Some(sub)
+    Some((sub, sigmas))
 }
 
 /// 步③ 常量对照：主张符号唯一命中常量时做 k·σ 区间比较
@@ -976,6 +1301,9 @@ fn constant_comparison(
                     ""
                 }
             ),
+            sigma_propagated: None,
+            sigma_declared: None,
+            sigma_basis: None,
         });
         if outcome == StepOutcome::OutOfBounds {
             proposals.push(ProposalPackage {
@@ -1018,6 +1346,9 @@ fn skip_step(kind: &'static str, target: &str, reason: &str) -> VerifyStep {
         target: target.to_string(),
         outcome: StepOutcome::Skipped,
         detail: reason.to_string(),
+        sigma_propagated: None,
+        sigma_declared: None,
+        sigma_basis: None,
     }
 }
 
@@ -1590,5 +1921,380 @@ mod tests {
             serde_json::to_value(StepOutcome::OutOfBounds).unwrap(),
             json!("out_of_bounds")
         );
+    }
+
+    // ══ 误差传播（GUM 单项式闭式）golden ═══════════════════════════════════
+
+    /// 传播 golden 请求构造（context.propagation 显式声明；None = 不写键）
+    fn request_prop(claims: Value, propagation: Option<&str>) -> VerifyRequest {
+        let mut ctx = json!({
+            "source": "bench propagation recheck 2026-11-20",
+            "measured_at": "2026-11-20T00:00:00Z"
+        });
+        if let Some(p) = propagation {
+            ctx["propagation"] = json!(p);
+        }
+        serde_json::from_value(json!({
+            "$schema": VERIFY_REQUEST_ID,
+            "subject": "propagation golden proposition",
+            "claims": claims,
+            "context": ctx
+        }))
+        .unwrap()
+    }
+
+    fn centripetal_law() -> Law {
+        serde_json::from_value(json!({
+            "id": "centripetal_acceleration",
+            "formula": "a = v^2 / r",
+            "symbols": { "a": "向心加速度", "v": "线速度", "r": "半径" },
+            "si_units": { "a": "m*s^-2", "v": "m*s^-1", "r": "m" },
+            "max_version_depth": 4,
+            "monotone_form": true
+        }))
+        .unwrap()
+    }
+
+    fn area_law() -> Law {
+        serde_json::from_value(json!({
+            "id": "square_area",
+            "formula": "A = m * m",
+            "symbols": { "A": "面积", "m": "边长" },
+            "si_units": { "A": "m^2", "m": "m" },
+            "max_version_depth": 4,
+            "monotone_form": true
+        }))
+        .unwrap()
+    }
+
+    fn constant_only_law() -> Law {
+        serde_json::from_value(json!({
+            "id": "scaled_reference",
+            "formula": "F = 2.5 * 10^-1",
+            "symbols": { "F": "参考力" },
+            "si_units": { "F": "newton" },
+            "max_version_depth": 4,
+            "monotone_form": true
+        }))
+        .unwrap()
+    }
+
+    fn substitution_step(report: &VerifyReport) -> &VerifyStep {
+        report
+            .steps
+            .iter()
+            .find(|s| s.kind == "law_substitution" && s.outcome != StepOutcome::Skipped)
+            .unwrap()
+    }
+
+    // ── 传播 golden 一：整数幂链（F=ma 手算对照 + 灵敏度压制翻转）──
+    // σ_F = √((a·σ_m)² + (m·σ_a)²) = √(0.25 + 0.16) = √0.41 ≈ 0.64031
+
+    #[test]
+    fn propagation_integer_power_chain_f_ma() {
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &newton_law(),
+        }];
+        let claims = json!([
+            { "symbol": "F", "value": 11.0, "si_unit": "newton", "uncertainty": 0.1 },
+            { "symbol": "m", "value": 2.0, "si_unit": "kilogram", "uncertainty": 0.1 },
+            { "symbol": "a", "value": 5.0, "si_unit": "m*s^-2", "uncertainty": 0.2 }
+        ]);
+        // none（缺省）：tol = 2×0.1 = 0.2，|Δ|=1 > 0.2 → contradiction
+        let report = verify(&request_prop(claims.clone(), None), &laws, &[]).unwrap();
+        assert_eq!(report.verdict, Verdict::Contradiction, "{:?}", report.steps);
+        let step = substitution_step(&report);
+        assert_eq!(step.outcome, StepOutcome::Violated);
+        assert_eq!(step.sigma_basis.as_deref(), Some("declared"));
+        assert_eq!(step.sigma_propagated, None);
+        assert_eq!(step.sigma_declared, Some(0.1));
+        // gum_monomial：tol = 2×√0.41 ≈ 1.2806，|Δ|=1 ≤ tol → stable（翻转压制）
+        let report = verify(&request_prop(claims, Some("gum_monomial")), &laws, &[]).unwrap();
+        assert_eq!(report.verdict, Verdict::Stable, "{:?}", report.steps);
+        let step = substitution_step(&report);
+        assert_eq!(step.outcome, StepOutcome::Consistent);
+        assert_eq!(step.sigma_basis.as_deref(), Some("propagated_gum_monomial"));
+        let sp = step.sigma_propagated.unwrap();
+        let expected = 0.41f64.sqrt();
+        assert!(
+            ((sp - expected) / expected).abs() < 1e-12,
+            "σ_F 应为 √0.41: {sp} vs {expected}"
+        );
+        assert_eq!(step.sigma_declared, Some(0.1), "声明值应并列留存");
+        // detail 格式与 none 模式逐字节同构（仅数值随 σ_F 变化）
+        assert!(step.detail.contains("≤ k·σ"), "detail = {}", step.detail);
+    }
+
+    // ── 传播 golden 二：同符号幂累加（A = m·m：a_m=2 而非两次独立贡献）──
+    // σ_A = |A|·(2·σ_m/m) = 4×0.1 = 0.4（错误独立合成会得 0.2828）
+
+    #[test]
+    fn propagation_repeated_ident_exponent_accumulation() {
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &area_law(),
+        }];
+        let claims = json!([
+            { "symbol": "A", "value": 4.5, "si_unit": "m^2", "uncertainty": 0.1 },
+            { "symbol": "m", "value": 2.0, "si_unit": "m", "uncertainty": 0.1 }
+        ]);
+        let report = verify(&request_prop(claims, Some("gum_monomial")), &laws, &[]).unwrap();
+        let step = substitution_step(&report);
+        assert_eq!(step.sigma_basis.as_deref(), Some("propagated_gum_monomial"));
+        let sp = step.sigma_propagated.unwrap();
+        assert!((sp - 0.4).abs() < 1e-12, "σ_A 应为 0.4（幂累加）: {sp}");
+        assert_eq!(report.verdict, Verdict::Stable, "{:?}", report.steps);
+    }
+
+    // ── 传播 golden 三：负幂与商（v²/r 类 + 灵敏度提升翻转反例）──
+    // σ_a = 6·√((2·σ_v/v)² + (σ_r/r)²) = 6·√0.005556 ≈ 0.44721 < σ_claim=0.5
+    // |Δ|=0.95：none 入容差（0.95 ≤ 1.0）stable；传播后 0.95 > 0.89443 → contradiction
+
+    #[test]
+    fn propagation_negative_power_quotient_sensitivity_flip() {
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &centripetal_law(),
+        }];
+        let claims = json!([
+            { "symbol": "a", "value": 6.95, "si_unit": "m*s^-2", "uncertainty": 0.5 },
+            { "symbol": "v", "value": 3.0, "si_unit": "m*s^-1", "uncertainty": 0.1 },
+            { "symbol": "r", "value": 1.5, "si_unit": "m", "uncertainty": 0.05 }
+        ]);
+        let report = verify(&request_prop(claims.clone(), None), &laws, &[]).unwrap();
+        assert_eq!(report.verdict, Verdict::Stable, "{:?}", report.steps);
+        // 传播后 σ 更小、容差收紧：原 stable 翻转为 contradiction（灵敏度提升反例）
+        let report = verify(&request_prop(claims, Some("gum_monomial")), &laws, &[]).unwrap();
+        assert_eq!(report.verdict, Verdict::Contradiction, "{:?}", report.steps);
+        let step = substitution_step(&report);
+        assert_eq!(step.outcome, StepOutcome::Violated);
+        let sp = step.sigma_propagated.unwrap();
+        let expected = 6.0 * (0.004_444_444_444_444_444f64 + 0.001_111_111_111_111_111_1f64).sqrt();
+        assert!(
+            ((sp - expected) / expected).abs() < 1e-12,
+            "σ_a 应为 ≈0.44721: {sp} vs {expected}"
+        );
+        assert_eq!(report.proposals.len(), 1);
+        assert_eq!(report.proposals[0].kind, "law_review");
+        let payload_tol = report.proposals[0].payload["tolerance"].as_f64().unwrap();
+        assert!(
+            (payload_tol - 2.0 * expected).abs() < 1e-12,
+            "提案容差应随 σ_F"
+        );
+    }
+
+    // ── 传播 golden 四：常量 σ 并入传播（万有引力：G 的不确定度参与合成）──
+
+    #[test]
+    fn propagation_ingests_constant_sigma() {
+        let g = big_g_constant(6.674e-11, "0.0003e-11");
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &gravity_law(),
+        }];
+        let constants = [ConstantRef {
+            dataset_id: "const-fundamental",
+            constant: &g,
+        }];
+        // m1=m2=1±0.01, r=1±0.005, G=6.674e-11±0.0003e-11
+        // σ_F = |F|·√((σ_G/G)² + (σ_m1/m1)² + (σ_m2/m2)² + (2σ_r/r)²) ≈ 1.156e-12
+        let req = request_prop(
+            json!([
+                { "symbol": "F", "value": 6.674e-11, "si_unit": "newton", "uncertainty": 1e-13 },
+                { "symbol": "m1", "value": 1.0, "si_unit": "kilogram", "uncertainty": 0.01 },
+                { "symbol": "m2", "value": 1.0, "si_unit": "kilogram", "uncertainty": 0.01 },
+                { "symbol": "r", "value": 1.0, "si_unit": "m", "uncertainty": 0.005 }
+            ]),
+            Some("gum_monomial"),
+        );
+        let report = verify(&req, &laws, &constants).unwrap();
+        assert_eq!(report.verdict, Verdict::Stable, "{:?}", report.steps);
+        let step = substitution_step(&report);
+        assert_eq!(step.sigma_basis.as_deref(), Some("propagated_gum_monomial"));
+        let sp = step.sigma_propagated.unwrap();
+        let rel = (0.0003e-11f64 / 6.674e-11).powi(2) + 3.0 * 0.01 * 0.01;
+        let expected = 6.674e-11 * rel.sqrt();
+        assert!(
+            ((sp - expected) / expected).abs() < 1e-9,
+            "σ_F 应并入常量 σ: {sp} vs {expected}"
+        );
+    }
+
+    // ── 传播 golden 五：回落三类（缺 σ / 零值奇异 / 常数因子仅存）──
+
+    #[test]
+    fn propagation_fallback_missing_sigma() {
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &newton_law(),
+        }];
+        let claims = json!([
+            { "symbol": "F", "value": 11.0, "si_unit": "newton", "uncertainty": 0.1 },
+            { "symbol": "m", "value": 2.0, "si_unit": "kilogram" },
+            { "symbol": "a", "value": 5.0, "si_unit": "m*s^-2", "uncertainty": 0.2 }
+        ]);
+        // 表达式侧 `m` 缺 σ → 回落声明值，判定结论与 none 模式一致（只升不降）
+        let none = verify(&request_prop(claims.clone(), None), &laws, &[]).unwrap();
+        let report = verify(&request_prop(claims, Some("gum_monomial")), &laws, &[]).unwrap();
+        let step = substitution_step(&report);
+        assert_eq!(
+            step.sigma_basis.as_deref(),
+            Some("fallback:missing_sigma:m"),
+            "回落应记因到符号"
+        );
+        assert_eq!(step.sigma_propagated, None);
+        assert_eq!(step.outcome, substitution_step(&none).outcome);
+        assert_eq!(
+            step.detail,
+            substitution_step(&none).detail,
+            "回落判定应逐字节一致"
+        );
+        assert_eq!(report.verdict, Verdict::Contradiction);
+    }
+
+    #[test]
+    fn propagation_fallback_zero_value_singularity() {
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &newton_law(),
+        }];
+        // a=0 → 计算值 F=0，相对形式奇异 → 回落
+        let claims = json!([
+            { "symbol": "F", "value": 0.5, "si_unit": "newton", "uncertainty": 0.1 },
+            { "symbol": "m", "value": 2.0, "si_unit": "kilogram", "uncertainty": 0.1 },
+            { "symbol": "a", "value": 0.0, "si_unit": "m*s^-2", "uncertainty": 0.01 }
+        ]);
+        let report = verify(&request_prop(claims, Some("gum_monomial")), &laws, &[]).unwrap();
+        let step = substitution_step(&report);
+        assert_eq!(
+            step.sigma_basis.as_deref(),
+            Some("fallback:zero_value_singularity:<F>")
+        );
+        assert_eq!(step.sigma_propagated, None);
+        assert_eq!(step.sigma_declared, Some(0.1));
+        assert_eq!(report.verdict, Verdict::Contradiction, "{:?}", report.steps);
+    }
+
+    #[test]
+    fn propagation_fallback_constant_only_expression() {
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &constant_only_law(),
+        }];
+        let claims = json!([
+            { "symbol": "F", "value": 0.25, "si_unit": "newton", "uncertainty": 0.1 }
+        ]);
+        let report = verify(&request_prop(claims, Some("gum_monomial")), &laws, &[]).unwrap();
+        let step = substitution_step(&report);
+        assert_eq!(step.sigma_basis.as_deref(), Some("fallback:constant_only"));
+        assert_eq!(step.sigma_propagated, None);
+        assert_eq!(step.outcome, StepOutcome::Consistent, "{:?}", report.steps);
+    }
+
+    #[test]
+    fn propagation_fallback_exponent_overflow_is_malformed() {
+        // 深嵌套大幂次：净指数 i64 溢出（127^10 超 i64::MAX）→ 防御面回落记因
+        let mut formula_rhs = "m^127".to_string();
+        for _ in 0..11 {
+            formula_rhs = format!("({formula_rhs})^127");
+        }
+        let law: Law = serde_json::from_value(json!({
+            "id": "overflow_probe",
+            "formula": format!("F = {formula_rhs}"),
+            "symbols": { "F": "探针", "m": "符号" },
+            "si_units": { "F": "m", "m": "m" },
+            "max_version_depth": 4,
+            "monotone_form": true
+        }))
+        .unwrap();
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &law,
+        }];
+        let claims = json!([
+            { "symbol": "F", "value": 1.0, "si_unit": "m", "uncertainty": 0.5 },
+            { "symbol": "m", "value": 1.0, "si_unit": "m", "uncertainty": 0.1 }
+        ]);
+        let report = verify(&request_prop(claims, Some("gum_monomial")), &laws, &[]).unwrap();
+        let step = substitution_step(&report);
+        let basis = step.sigma_basis.as_deref().unwrap();
+        assert!(
+            basis.starts_with("fallback:malformed:"),
+            "溢出应记防御面回落因: {basis}"
+        );
+        assert_eq!(step.sigma_propagated, None);
+        assert_eq!(
+            step.outcome,
+            StepOutcome::Consistent,
+            "回落容差下应照常判定"
+        );
+    }
+
+    // ── 传播开关面：缺省 none 与显式 "none" 逐字节一致（D2 缺省不变式）──
+
+    #[test]
+    fn propagation_disabled_by_default_is_byte_identical() {
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &newton_law(),
+        }];
+        let claims = json!([
+            { "symbol": "F", "value": 11.0, "si_unit": "newton", "uncertainty": 0.1 },
+            { "symbol": "m", "value": 2.0, "si_unit": "kilogram", "uncertainty": 0.1 },
+            { "symbol": "a", "value": 5.0, "si_unit": "m*s^-2", "uncertainty": 0.2 }
+        ]);
+        let absent = verify(&request_prop(claims.clone(), None), &laws, &[]).unwrap();
+        let explicit = verify(&request_prop(claims, Some("none")), &laws, &[]).unwrap();
+        assert_eq!(
+            serde_json::to_string(&absent).unwrap(),
+            serde_json::to_string(&explicit).unwrap(),
+            "缺省与显式 none 报告应逐字节一致"
+        );
+    }
+
+    // ── schema/serde 面：propagation 枚举 fail-fast + 缺省缺省 ──
+
+    #[test]
+    fn propagation_context_serde_and_schema() {
+        // 缺省 → None
+        let ctx: VerifyContext =
+            serde_json::from_value(json!({ "source": "s", "measured_at": "t" })).unwrap();
+        assert_eq!(ctx.propagation, None);
+        // 枚举两值可反序列化 + 序列化形态立法
+        let ctx: VerifyContext = serde_json::from_value(json!({
+            "source": "s", "measured_at": "t", "propagation": "gum_monomial"
+        }))
+        .unwrap();
+        assert_eq!(ctx.propagation, Some(PropagationMode::GumMonomial));
+        assert_eq!(
+            serde_json::to_value(PropagationMode::GumMonomial).unwrap(),
+            json!("gum_monomial")
+        );
+        assert_eq!(
+            serde_json::to_value(PropagationMode::None).unwrap(),
+            json!("none")
+        );
+        // 未知枚举值 schema 拒收（fail-fast）
+        let doc = json!({
+            "$schema": VERIFY_REQUEST_ID,
+            "subject": "s",
+            "claims": [{ "symbol": "x", "value": 1.0, "si_unit": "m" }],
+            "context": { "source": "src", "measured_at": "t", "propagation": "bogus" }
+        });
+        assert!(!validate_verify_request(&doc).valid, "未知传播模式应拒收");
+        // 合法两值过 schema
+        for p in ["none", "gum_monomial"] {
+            let doc = json!({
+                "$schema": VERIFY_REQUEST_ID,
+                "subject": "s",
+                "claims": [{ "symbol": "x", "value": 1.0, "si_unit": "m" }],
+                "context": { "source": "src", "measured_at": "t", "propagation": p }
+            });
+            assert!(
+                validate_verify_request(&doc).valid,
+                "propagation={p} 应过 schema"
+            );
+        }
     }
 }

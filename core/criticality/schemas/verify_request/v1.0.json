@@ -49,6 +49,11 @@
           "exclusiveMinimum": 0,
           "maximum": 100,
           "description": "Interval width factor for constant comparison; default 2"
+        },
+        "propagation": {
+          "type": "string",
+          "enum": ["none", "gum_monomial"],
+          "description": "Uncertainty propagation mode for law substitution tolerance. 'none' (default) uses the target claim's declared uncertainty as-is; 'gum_monomial' applies the exact GUM closed-form relative-variance composition for monomial expression forms and falls back to the declared uncertainty (recorded via sigma_basis) when any premise is missing."
         }
       },
       "additionalProperties": false
