@@ -1,6 +1,7 @@
 {
   "listen_addr": "127.0.0.1:9130",
   "server_base_url": "http://127.0.0.1:18080",
+  "web_search_provider": "tavily",
   "server_auth_token": "",
   "llm_endpoint": "https://api.minimaxi.com/v1",
   "llm_model": "MiniMax-M3",
