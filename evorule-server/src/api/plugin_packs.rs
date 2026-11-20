@@ -1832,7 +1832,7 @@ pub async fn generate_template_handler(
 /// collect/merge 已退役（规则清理方案 2026-09-14），enforce 由 tier 门禁管控不入选）
 const R2_TRANSFORM_TYPES: &[&str] = &["branch", "set", "push", "io_request"];
 
-/// 内核域函数词表（对齐 evorule-tcb domain 8 域类型；in 为 design-19 vendored 增补）
+/// 内核域函数词表（对齐 evorule-tcb domain 8 域类型；in 为 vendored 增补）
 const R2_DOMAIN_TYPES: &[&str] = &[
     "eq",
     "lt",

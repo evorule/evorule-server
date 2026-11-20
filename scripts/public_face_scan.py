@@ -43,9 +43,14 @@ TEXT_EXT = {
 # (pattern_id, regex) — keep in sync with the rules master (knowledge, 03).
 DENY = [
     ("internal-obs-id", re.compile(r"\bO-\d{2,3}\b")),
+    ("internal-obs-id-lower", re.compile(r"\bo\d{2,3}\b")),
+    ("internal-reg-id", re.compile(r"\bN-\d{1,3}\b")),
+    ("internal-batch-id", re.compile(r"\bB-\d{2,3}\b")),
     ("internal-lm-id", re.compile(r"\bLM-\d{1,3}\b")),
     ("internal-design-id", re.compile(r"\bdesign-\d{1,3}\b")),
     ("internal-doc-id", re.compile(r"\d{1,3}\s*号档")),
+    ("internal-pilot-codename", re.compile(r"\bi10\b")),
+    ("internal-gov-term", re.compile(r"试点|统帅|治理线")),
     ("private-repo-path", re.compile(r"(?i)D:[\\/]+knowledge")),
     ("secret-like-key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
 ]
@@ -72,6 +77,37 @@ def scan_text(text):
 
 
 def iter_files():
+    """v2:文件源 = git ls-files(跟踪面=公开面语义)。
+
+    gitignored 本地协调区(plan/ 登记册台账、.trae/ 等)不属公开面,
+    不再过扫——v1 全走曾把数百行本地债误计入基线(当日实测 825→253,
+    与 ratchet「572 entries no longer present」提示互证)。git 不可得
+    时回退全走(与钩子降级同策略)。
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=REPO_ROOT, capture_output=True
+        ).stdout
+    except OSError:
+        out = b""
+    names = [f.decode("utf-8", "replace") for f in out.split(b"\0") if f]
+    if not names:
+        yield from iter_files_walk()
+        return
+    for f in names:
+        norm = f.replace(os.sep, "/")
+        parts = norm.split("/")
+        if any(p in SKIP_DIRS for p in parts[:-1]):
+            continue
+        if any(parts[0].startswith(pfx) for pfx in SKIP_DIR_PREFIXES):
+            continue
+        full = os.path.join(REPO_ROOT, f)
+        if norm in SELF_EXEMPT or not is_text(full):
+            continue
+        yield norm, full
+
+
+def iter_files_walk():
     for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
         dirnames[:] = [
             d for d in dirnames

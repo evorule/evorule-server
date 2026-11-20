@@ -293,7 +293,7 @@ async fn golden_vector_domain_inside_revision_no_propagation() {
 
 // ── ②b 小数域界（TCB 域小数字符串惯例 = 真机 REST 通道形态）──
 //
-// 真机实验（B-211/D5 首轮 18180 实例）抓得的集成缺口：serde_to_tcb 将小数
+// 真机实验（首轮 18180 实例）抓得的集成缺口：serde_to_tcb 将小数
 // 转为字符串承载（引擎惯例），旧 optional_domain 仅认 serde Number——整数域界
 // （黄金向量 0/1）可过、小数域界真机必炸。修复后本节锁死真机形态回归。
 

@@ -1641,7 +1641,7 @@ async fn counterfactual_sweep_e2e_missing_param_path_fails_fast() {
     assert!(r.is_err(), "缺 param_path 必须 fail-fast");
 }
 
-// ===== o15：五项服务补同输入逐位一致断言 =====
+// ===== 五项服务补同输入逐位一致断言 =====
 //
 // 背景：对外「bitwise 可重放」主张要求每项服务都有显式的同输入双跑断言。
 // 下列五项此前只有功能 e2e（单跑），无逐位断言 ⇒ 对外只能按 9/14 口径说。

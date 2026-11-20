@@ -57,7 +57,7 @@ pub const LLM_TIMEOUT_DEFAULT_MS: u64 = 60_000;
 
 /// 扩展执行体（/llm/execute）出站请求总超时（秒）。
 ///
-/// 对齐 server io 1800/3600s 体系（交接档 SG-1 件1；2026-10-14 统帅裁决
+/// 对齐 server io 1800/3600s 体系（交接档 SG-1 件1；2026-10-14 项目方裁决
 /// 「对齐 1800s」，原在途值 300s 系与 agent 侧 G3 同窗的保守取值）。
 ///
 /// 已知缝隙留痕（登记不就地修）：agent 侧中继段 request_timeout 仍为
@@ -716,7 +716,7 @@ pub struct SseEvent {
 
 /// 从缓冲提取下一个完整 SSE 事件（`data:` 行 JSON）；注释/心跳块内部跳过；
 /// 事件不完整返回 None 留待续读；data JSON 非法 = 协议错误。
-/// A4 修复（2026-11-06 统帅批件）：原版单块只解析第一条 data 行即返回——SSE
+/// A4 修复（2026-11-06 项目方批件）：原版单块只解析第一条 data 行即返回——SSE
 /// 规范允许块内多 data 行（拼接语义），server 侧批量下发/代理合并帧时会静默
 /// 丢事件（IoRequest 丢失=审计回路悬空 90s 超时）。现版：块内多条 data 行
 /// 逐条解析，首条合法事件立即返回，其余排队；后续调用从队头零成本取出。
@@ -954,7 +954,7 @@ fn as_tool_call(v: &Value) -> Option<(String, Value)> {
 
 /// 解析 LLM 回复中的**全部**工具请求（按出现序收集；A6 队列化修复锚）。
 ///
-/// A6 修复（2026-11-06 统帅批件「遗留三项」）：原版单工具 last-wins——单轮
+/// A6 修复（2026-11-06 项目方批件「遗留三项」）：原版单工具 last-wins——单轮
 /// 回复含多个 tool_call JSON 时仅最后一个生效，其余静默丢弃（多工具丢失=
 /// 模型意图被截断）。现版全量收集（整条 JSON 形态取单元素；散文形态按序
 /// 扫描全部平衡花括号候选，字符串感知），调用方（run_loop Decide 相位）
@@ -1616,7 +1616,7 @@ pub async fn call_llm(
 /// 判定：收集物料中所有 `{"type":"eq","path":"instruction.params.model",
 /// "value":"<model>"}` 节点的 value（与 server 侧引擎同构的约束表达），以及
 /// `{"type":"in","path":"instruction.params.model","values":[...]}` 节点的
-/// values 字符串元素（design-19 集合形态；eq/in 双形态并存过渡）。
+/// values 字符串元素（in 集合形态；eq/in 双形态并存过渡）。
 /// in 节点 values 缺失/非数组/含非字符串元素 → Err（fail-closed：物料形状错，
 /// 绝不静默跳过）。物料可读但推不出任何条目 → Err（fail-closed：宁可显式
 /// 拒绝服务，绝不静默空集放行）。
@@ -2323,7 +2323,7 @@ async fn execute_stream_aggregate(resp: reqwest::Response) -> Result<Value, Plug
         }
     };
     // 流完整性单闸（判例：evo-agent llm_direct commit 0418159 同款 finish_reason
-    // 判据；2026-11-06 统帅批件 A1/A3 修复）：有 data 帧但无 finish_reason =
+    // 判据；2026-11-06 项目方批件 A1/A3 修复）：有 data 帧但无 finish_reason =
     // 连接提前关闭，增量可能不完整 —— fail-visible，禁止吞成假成功（截断流的
     // 残缺 arguments 曾被 unwrap_or(json!({})) 吞成空参 → 下游假成功）。
     // 语义依据：provider 流自然收尾必带 finish_reason（文本=stop/工具=tool_calls），
@@ -2908,7 +2908,7 @@ async fn run_loop(
                         // 回喂 LLM——可审计的显式拒绝，无静默。
                         let outcome = execute_tool(cfg, http, base, &headers, &name, &args).await;
                         // 注入防御：工具结果进下一轮 prompt 前剥离（07 §2.1 纪律 3）。
-                        // A5 修复（2026-11-06 统帅批件）：io_response 回写同步改用
+                        // A5 修复（2026-11-06 项目方批件）：io_response 回写同步改用
                         // 净化后文本 + findings 计数入链——原版回写原始文本，审计链
                         // 与「模型实际所见」不一致，对账时无法解释模型行为。
                         match outcome {
@@ -4197,7 +4197,7 @@ mod tests {
 
     #[test]
     fn model_allowlist_parses_in_set_form_and_mixed_forms() {
-        // in 集合形态（design-19 改写后物料形状）
+        // in 集合形态（改写后物料形状）
         let in_material = json!({
             "kind": "rule_set",
             "transform": [{
@@ -5248,7 +5248,7 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
         {
             out["usage"] = u;
         }
-        // A7 修复（2026-11-06 统帅批件）：mock 补齐 finish_reason——流完整性
+        // A7 修复（2026-11-06 项目方批件）：mock 补齐 finish_reason——流完整性
         // 单闸（A1）后 call_llm 侧非流式聚合亦以 finish_reason 在场为正路信号，
         // 测试桩须复刻 provider 真形态（自然收尾恒带 finish_reason）
         out["choices"][0]["finish_reason"] = json!("stop");

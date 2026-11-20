@@ -4,7 +4,7 @@
 //! 4 个确定性指标服务实现。
 //!
 //! 语义基准 = `规则引擎+数据处理器/indicator_calculator.py`(pandas 3.0.5):
-//! - SMA:`rolling(N).mean` — 前 N-1 位 warmup → [`JsonValue::Null`];
+//! - SMA:`rolling(N).mean` — 前 位 warmup → [`JsonValue::Null`];
 //! - EMA:`ewm(span=N, adjust=False)` — 递推 `y = (1-α)·y + α·x`,α = 2/(N+1),
 //!   经实算验证与 pandas 内部实现**逐位一致**(`y += α(x-y)` 形态不匹配,勿改);
 //! - MACD:EMA(fast) − EMA(slow),Signal = EMA(signal_period)(对 MACD 序列),
@@ -130,7 +130,7 @@ fn envelope_prefix(values: &[Option<f64>]) -> Vec<(&'static str, JsonValue)> {
 // 指标核心(纯函数,与 IoResult 解耦,便于直接单测逐位黄金值)
 // ============================================================================
 
-/// SMA(窗口 N):前 N-1 位 None。
+/// SMA(窗口 N):前 位 None。
 ///
 /// 求和算法与 pandas `rolling(N).mean` 逐位对齐(3000 组随机序列实证一致):
 /// - 滚动窗口 Kahan 补偿求和,add/remove 各持独立持久补偿,先删后加;
