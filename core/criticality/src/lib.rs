@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 EvoRule Project
 // This file is part of EvoRule, licensed under GNU Affero General Public License v3 or later.
-//! 验证注入面纯函数管线 —— 命题验证的四步判定（量纲对表/定律代入/常量对照/三态聚合）
+//! 验证注入面纯函数管线 —— 命题验证的四步判定（量纲对表/定律代入/常量对照/四态聚合）
 //!
 //! # 定位（与 core/law_schema 同构）
 //! - law_schema 守 law_set 部署件的等式恒真语义；本 crate 承载验证注入：
 //!   接收测量命题（主张值+SI 单位+不确定度），对已装配的定律与常量做
-//!   确定性验证，产出三态判定与逐步证据。
+//!   确定性验证，产出四态判定与逐步证据。
 //! - **纯函数管线**：不触文件/网络/进程，输入全部经参数注入（LawRef /
 //!   ConstantRef 均为借用视图，由 server 侧装配面提供）——可回放、可审计、
 //!   单请求内零状态（铁律 3：判定只读，只提案不改写）。
@@ -17,16 +17,19 @@
 //! 1. **量纲对表**：命题主张的 `(value, si_unit)` 与涉及定律符号/常量的
 //!    si_units 跑同一量纲代数（复用 law_schema dimensional）——不一致即
 //!    拒判（报两侧量纲向量，fail-fast，不猜语义）。
-//! 2. **定律代入**：定位涉及定律（claims 符号 ∩ law.symbols），目标量
-//!    单符号裸形态时把已知值（主张优先、常量兜底）代入另一侧求计算值，
-//!    与主张比较。容差 = 声明不确定度 × k·σ 因子；context.propagation =
+//! 2. **定律代入**：定位涉及定律（claims 符号 ∩ law.symbols），相交符号
+//!    逐个尝试：单符号裸形态时把已知值（主张优先、常量兜底）代入另一侧
+//!    求计算值，与主张比较。容差 = 声明不确定度 × k·σ 因子；context.propagation =
 //!    `gum_monomial` 时改用 GUM 单项式精确闭式传播 σ_F（不可传播回落声明值
-//!    并记因 sigma_basis）。MVP 不做符号重排（目标侧非裸形态跳过并报因）。
+//!    并记因 sigma_basis）。MVP 不做符号重排（目标侧非裸形态逐符号跳过并报因，
+//!    不再吞没同律其余符号）。
 //! 3. **常量对照**：主张符号命中唯一常量时做 k·σ 区间比较
 //!    （σ = max(常量声明不确定度, 主张不确定度)；越界 = alert）。
-//! 4. **三态聚合**（D4 词汇立法）：`stable`（全部相容）/ `alert`
-//!    （常量越界但未矛盾）/ `contradiction`（定律链内互斥）。alert 态
-//!    响应附结构化提案物料包（人工经治理链入闸，无自动回写通道，D5）。
+//! 4. **四态聚合**（D4 词汇立法 + F3 第四态）：`contradiction`（定律链内
+//!    互斥）/ `alert`（常量越界但未矛盾）/ `stable`（至少一次实际评估执行
+//!    且全部相容）/ `unverifiable`（零次实际评估——无法验证，不与 stable
+//!    「已验证」混同）。alert 态响应附结构化提案物料包（人工经治理链入闸，
+//!    无自动回写通道，D5）。
 //!
 //! # DoS 面（对外端点，fail-fast 硬上限）
 //! 表达式长度/括号深度/标识符数/数值幅值/主张条数/定律扫描集全部有上限
@@ -659,19 +662,21 @@ pub struct ConstantRef<'a> {
 }
 
 // ============================================================================
-// 判定输出（D4 词汇立法：stable / alert / contradiction）
+// 判定输出（D4 词汇立法：stable / alert / contradiction / unverifiable）
 // ============================================================================
 
-/// 三态判定词汇（criticality 域立法词汇表）
+/// 四态判定词汇（criticality 域立法词汇表）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
-    /// 全部相容
+    /// 全部相容（至少一次实际评估执行且全部通过）
     Stable,
     /// 常量越界但未矛盾（附提案物料包）
     Alert,
     /// 定律链内互斥
     Contradiction,
+    /// 无法验证（零次实际评估：全部跳过或无候选——不与 stable「已验证」混同）
+    Unverifiable,
 }
 
 /// 逐步结论
@@ -800,7 +805,8 @@ enum ConstantMatch<'a> {
 /// 执行验证管线（纯函数；`laws`/`constants` 由调用方按确定性序注入）。
 ///
 /// 步序：量纲对表 → 定律代入 → 常量对照 → 聚合。任何量纲不一致即拒判
-/// （Err）；定律违背 → contradiction；常量越界 → alert；其余 → stable。
+/// （Err）；定律违背 → contradiction；常量越界 → alert；有实际评估且相容
+/// → stable；零次实际评估 → unverifiable。
 pub fn verify(
     req: &VerifyRequest,
     laws: &[LawRef<'_>],
@@ -817,8 +823,8 @@ pub fn verify(
     // ── 步① 量纲对表（不一致即拒判；一致记步）──
     dimensional_gate(req, &claims, laws, &const_index, &mut steps)?;
 
-    // ── 步② 定律代入（目标量单符号裸形态；主张优先、常量兜底）──
-    let any_violated = law_substitution(
+    // ── 步② 定律代入（逐相交符号全目标扫描；主张优先、常量兜底）──
+    let (any_violated, laws_evaluated) = law_substitution(
         req,
         k,
         &claims,
@@ -829,10 +835,11 @@ pub fn verify(
     )?;
 
     // ── 步③ 常量对照（唯一命中才对照；σ_eff = max(常量σ, 主张σ)）──
-    let any_out_of_bounds =
+    let (any_out_of_bounds, consts_evaluated) =
         constant_comparison(req, k, &claims, &const_index, &mut steps, &mut proposals);
 
-    // ── 步④ 三态聚合（矛盾 > 告警 > 稳定；跳过不构成越界或矛盾）──
+    // ── 步④ 四态聚合（矛盾 > 告警 > 稳定 > 无法验证；跳过不构成越界或矛盾，
+    //     但零次实际评估不再混同 stable——stable 立法语义=「已验证」）──
     for (i, s) in steps.iter_mut().enumerate() {
         s.step = i + 1;
     }
@@ -840,8 +847,10 @@ pub fn verify(
         Verdict::Contradiction
     } else if any_out_of_bounds {
         Verdict::Alert
-    } else {
+    } else if laws_evaluated || consts_evaluated {
         Verdict::Stable
+    } else {
+        Verdict::Unverifiable
     };
     Ok(VerifyReport {
         verdict,
@@ -1014,8 +1023,10 @@ fn dimensional_gate(
 }
 
 /// 步② 定律代入：涉及定律按 (dataset_id, law_id) 确定序扫描（上限内），
-/// 目标量单符号裸形态时代入求值与主张容差比较。
-/// 返回是否出现定律违背（contradiction 证据）。
+/// 定律符号与主张的**全部**相交符号（BTreeMap 键序，确定性）逐个尝试
+/// 单符号裸形态代入求值与主张容差比较——首个相交符号非裸形态不再
+/// 吞没同律其余符号的评估机会（掺错于非首符号照常检出）。
+/// 返回 (是否出现定律违背, 是否发生实际评估)。
 fn law_substitution(
     req: &VerifyRequest,
     k: f64,
@@ -1024,7 +1035,7 @@ fn law_substitution(
     const_index: &BTreeMap<&str, Vec<&ConstantRef<'_>>>,
     steps: &mut Vec<VerifyStep>,
     proposals: &mut Vec<ProposalPackage>,
-) -> Result<bool, VerifyError> {
+) -> Result<(bool, bool), VerifyError> {
     // 候选 = symbols 与主张相交的定律；序 = (dataset_id, law_id) 确定
     let mut candidates: Vec<&LawRef<'_>> = laws
         .iter()
@@ -1044,6 +1055,7 @@ fn law_substitution(
     }
 
     let mut any_violated = false;
+    let mut any_evaluated = false;
     for lr in &candidates {
         let law = lr.law;
         let Some((lhs_raw, rhs_raw)) = law.formula.split_once('=') else {
@@ -1054,139 +1066,222 @@ fn law_substitution(
             ));
             continue;
         };
-        // 目标量 = 定律符号与主张相交集中键序最小者（确定性）
-        let Some(target) = law.symbols.keys().find(|s| claims.contains_key(s.as_str())) else {
-            continue;
-        };
-        let target: &str = target.as_str();
-        let view = &claims[target];
-
-        // 裸形态判定（MVP 无符号重排）：目标量独占一侧
-        let (expr, flipped) = if eval::is_bare_identifier(lhs_raw) && lhs_raw.trim() == target {
-            (rhs_raw, false)
-        } else if eval::is_bare_identifier(rhs_raw) && rhs_raw.trim() == target {
-            (lhs_raw, true)
-        } else {
-            steps.push(skip_step(
-                "law_substitution",
-                &law.id,
-                &format!("目标量 `{target}` 非单符号裸形态（MVP 不做符号重排，跳过）"),
-            ));
-            continue;
-        };
-
-        // 表达式标识符预检 + 代入表（主张优先，常量唯一命中兜底）
-        let Ok(idents) = eval::expression_identifiers(expr) else {
-            steps.push(skip_step(
-                "law_substitution",
-                &law.id,
-                "表达式标识符数超上限",
-            ));
-            continue;
-        };
-        if idents.iter().any(|s| s == target) {
-            steps.push(skip_step(
-                "law_substitution",
-                &law.id,
-                &format!("目标量 `{target}` 出现于表达式侧（需自洽核验形态，MVP 跳过）"),
-            ));
-            continue;
-        }
-        let Some((sub, sigmas)) = build_substitution(&idents, target, claims, const_index) else {
-            steps.push(skip_step(
-                "law_substitution",
-                &law.id,
-                "表达式符号缺已知值（无主张值且无常量命中，或跨库同 id 歧义）",
-            ));
-            continue;
-        };
-
-        let mut resolve = |name: &str| -> Result<f64, String> {
-            sub.get(name)
-                .copied()
-                .ok_or_else(|| format!("符号 `{name}` 无已知值"))
-        };
-        let computed = match eval::eval_numeric(expr, &mut resolve) {
-            Ok(v) => v,
-            Err(e) => {
-                steps.push(skip_step(
-                    "law_substitution",
-                    &law.id,
-                    &format!("代入求值失败: {e}"),
-                ));
-                continue;
+        // 目标量集 = 定律符号与主张相交的全部符号（键序确定性），逐个尝试
+        let targets: Vec<&str> = law
+            .symbols
+            .keys()
+            .filter(|s| claims.contains_key(s.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        for target in targets {
+            match evaluate_substitution_target(
+                req,
+                k,
+                claims,
+                const_index,
+                law,
+                lr.dataset_id,
+                target,
+                &claims[target],
+                lhs_raw,
+                rhs_raw,
+                steps,
+                proposals,
+            ) {
+                TargetEval::Violated => any_violated = true,
+                TargetEval::Evaluated => any_evaluated = true,
+                TargetEval::NotEvaluated => {}
             }
-        };
-
-        // 容差 = 声明不确定度 × k（无不确定度 → 跳过，不判定）。
-        // context.propagation = `gum_monomial` 时容差改用 GUM 传播 σ_F；
-        // 不可传播一律回落声明值并记因 sigma_basis（fail-visible，判定能力
-        // 只升不降，D3）。缺省 none 时下列各值与现行为逐字节一致（D2）。
-        let Some(sigma_declared) = view.uncertainty else {
-            steps.push(skip_step(
-                "law_substitution",
-                &law.id,
-                &format!("主张 `{target}` 无不确定度声明，无法容差判定"),
-            ));
-            continue;
-        };
-        let propagation = req.context.propagation.unwrap_or(PropagationMode::None);
-        let (sigma_used, sigma_propagated, sigma_basis) = match propagation {
-            PropagationMode::None => (sigma_declared, None, "declared".to_string()),
-            PropagationMode::GumMonomial => match propagate_sigma(expr, computed, &sub, &sigmas) {
-                Ok(sp) => (sp, Some(sp), "propagated_gum_monomial".to_string()),
-                Err(f) => (sigma_declared, None, f.code()),
-            },
-        };
-        let tol = k * sigma_used;
-        let delta = (computed - view.value).abs();
-        let side = if flipped { "左" } else { "右" };
-        let outcome = if delta <= tol {
-            StepOutcome::Consistent
-        } else {
-            any_violated = true;
-            StepOutcome::Violated
-        };
-        let comparison = if delta <= tol { "≤" } else { ">" };
-        steps.push(VerifyStep {
-            step: steps.len() + 1,
-            kind: "law_substitution",
-            target: format!("{}@{}", law.id, target),
-            outcome,
-            detail: format!(
-                "代入{side}侧 `{}` 得 {computed:e}，主张 {value:e}，|Δ|={delta:e} {comparison} k·σ={tol:e}{suffix}",
-                expr.trim(),
-                value = view.value,
-                suffix = if outcome == StepOutcome::Violated {
-                    "（定律链内互斥）"
-                } else {
-                    ""
-                }
-            ),
-            sigma_propagated,
-            sigma_declared: Some(sigma_declared),
-            sigma_basis: Some(sigma_basis),
-        });
-        if outcome == StepOutcome::Violated {
-            proposals.push(ProposalPackage {
-                kind: "law_review",
-                dataset_id: lr.dataset_id.to_string(),
-                entry_id: law.id.clone(),
-                subject: req.subject.clone(),
-                payload: serde_json::json!({
-                    "formula": law.formula,
-                    "target": target,
-                    "claimed": view.value,
-                    "computed": computed,
-                    "tolerance": tol,
-                    "substitution": sub,
-                }),
-                reason: "定律代入结果与主张超出容差（判定只提案：人工经治理链入闸核议）"
-                    .to_string(),
-            });
         }
     }
-    Ok(any_violated)
+    Ok((any_violated, any_evaluated))
+}
+
+/// 单相交符号的评估结论（law_substitution 聚合用）
+enum TargetEval {
+    /// 容差判定执行且越限（contradiction 证据）
+    Violated,
+    /// 容差判定执行且相容
+    Evaluated,
+    /// 未评估（各型跳过，记因不判定）
+    NotEvaluated,
+}
+
+/// σ 使用值解析（步②容差面）：缺省 `none` 用声明值；`gum_monomial` 时
+/// 容差改用 GUM 传播 σ_F，不可传播一律回落声明值并记因 sigma_basis
+/// （fail-visible，判定能力只升不降，D3）。
+fn resolve_sigma_used(
+    propagation: PropagationMode,
+    expr: &str,
+    computed: f64,
+    sub: &BTreeMap<String, f64>,
+    sigmas: &BTreeMap<String, f64>,
+    sigma_declared: f64,
+) -> (f64, Option<f64>, String) {
+    match propagation {
+        PropagationMode::None => (sigma_declared, None, "declared".to_string()),
+        PropagationMode::GumMonomial => match propagate_sigma(expr, computed, sub, sigmas) {
+            Ok(sp) => (sp, Some(sp), "propagated_gum_monomial".to_string()),
+            Err(f) => (sigma_declared, None, f.code()),
+        },
+    }
+}
+
+/// 定律违背提案物料包（判定只提案：人工经治理链入闸核议）
+#[allow(clippy::too_many_arguments)]
+fn law_review_proposal(
+    dataset_id: &str,
+    law: &Law,
+    target: &str,
+    claimed: f64,
+    computed: f64,
+    tolerance: f64,
+    substitution: BTreeMap<String, f64>,
+    subject: &str,
+) -> ProposalPackage {
+    ProposalPackage {
+        kind: "law_review",
+        dataset_id: dataset_id.to_string(),
+        entry_id: law.id.clone(),
+        subject: subject.to_string(),
+        payload: serde_json::json!({
+            "formula": law.formula,
+            "target": target,
+            "claimed": claimed,
+            "computed": computed,
+            "tolerance": tolerance,
+            "substitution": substitution,
+        }),
+        reason: "定律代入结果与主张超出容差（判定只提案：人工经治理链入闸核议）".to_string(),
+    }
+}
+
+/// 步② 内层：单相交符号的裸形态尝试评估（各型跳过记因）。
+#[allow(clippy::too_many_arguments)]
+fn evaluate_substitution_target(
+    req: &VerifyRequest,
+    k: f64,
+    claims: &BTreeMap<&str, ClaimView>,
+    const_index: &BTreeMap<&str, Vec<&ConstantRef<'_>>>,
+    law: &Law,
+    dataset_id: &str,
+    target: &str,
+    view: &ClaimView,
+    lhs_raw: &str,
+    rhs_raw: &str,
+    steps: &mut Vec<VerifyStep>,
+    proposals: &mut Vec<ProposalPackage>,
+) -> TargetEval {
+    // 裸形态判定（MVP 无符号重排）：目标量独占一侧
+    let (expr, flipped) = if eval::is_bare_identifier(lhs_raw) && lhs_raw.trim() == target {
+        (rhs_raw, false)
+    } else if eval::is_bare_identifier(rhs_raw) && rhs_raw.trim() == target {
+        (lhs_raw, true)
+    } else {
+        steps.push(skip_step(
+            "law_substitution",
+            &law.id,
+            &format!("目标量 `{target}` 非单符号裸形态（MVP 不做符号重排，跳过）"),
+        ));
+        return TargetEval::NotEvaluated;
+    };
+
+    // 表达式标识符预检 + 代入表（主张优先，常量唯一命中兜底）
+    let Ok(idents) = eval::expression_identifiers(expr) else {
+        steps.push(skip_step(
+            "law_substitution",
+            &law.id,
+            "表达式标识符数超上限",
+        ));
+        return TargetEval::NotEvaluated;
+    };
+    if idents.iter().any(|s| s == target) {
+        steps.push(skip_step(
+            "law_substitution",
+            &law.id,
+            &format!("目标量 `{target}` 出现于表达式侧（需自洽核验形态，MVP 跳过）"),
+        ));
+        return TargetEval::NotEvaluated;
+    }
+    let Some((sub, sigmas)) = build_substitution(&idents, target, claims, const_index) else {
+        steps.push(skip_step(
+            "law_substitution",
+            &law.id,
+            "表达式符号缺已知值（无主张值且无常量命中，或跨库同 id 歧义）",
+        ));
+        return TargetEval::NotEvaluated;
+    };
+
+    let mut resolve = |name: &str| -> Result<f64, String> {
+        sub.get(name)
+            .copied()
+            .ok_or_else(|| format!("符号 `{name}` 无已知值"))
+    };
+    let computed = match eval::eval_numeric(expr, &mut resolve) {
+        Ok(v) => v,
+        Err(e) => {
+            steps.push(skip_step(
+                "law_substitution",
+                &law.id,
+                &format!("代入求值失败: {e}"),
+            ));
+            return TargetEval::NotEvaluated;
+        }
+    };
+
+    // 容差 = 声明不确定度 × k（无不确定度 → 跳过，不判定）
+    let Some(sigma_declared) = view.uncertainty else {
+        steps.push(skip_step(
+            "law_substitution",
+            &law.id,
+            &format!("主张 `{target}` 无不确定度声明，无法容差判定"),
+        ));
+        return TargetEval::NotEvaluated;
+    };
+    let propagation = req.context.propagation.unwrap_or(PropagationMode::None);
+    let (sigma_used, sigma_propagated, sigma_basis) =
+        resolve_sigma_used(propagation, expr, computed, &sub, &sigmas, sigma_declared);
+    let tol = k * sigma_used;
+    let delta = (computed - view.value).abs();
+    let side = if flipped { "左" } else { "右" };
+    let (outcome, eval_result) = if delta <= tol {
+        (StepOutcome::Consistent, TargetEval::Evaluated)
+    } else {
+        (StepOutcome::Violated, TargetEval::Violated)
+    };
+    let comparison = if delta <= tol { "≤" } else { ">" };
+    steps.push(VerifyStep {
+        step: steps.len() + 1,
+        kind: "law_substitution",
+        target: format!("{}@{}", law.id, target),
+        outcome,
+        detail: format!(
+            "代入{side}侧 `{}` 得 {computed:e}，主张 {value:e}，|Δ|={delta:e} {comparison} k·σ={tol:e}{suffix}",
+            expr.trim(),
+            value = view.value,
+            suffix = if outcome == StepOutcome::Violated {
+                "（定律链内互斥）"
+            } else {
+                ""
+            }
+        ),
+        sigma_propagated,
+        sigma_declared: Some(sigma_declared),
+        sigma_basis: Some(sigma_basis),
+    });
+    if outcome == StepOutcome::Violated {
+        proposals.push(law_review_proposal(
+            dataset_id,
+            law,
+            target,
+            view.value,
+            computed,
+            tol,
+            sub,
+            &req.subject,
+        ));
+    }
+    eval_result
 }
 
 /// 代入表构建：主张优先、常量唯一命中兜底；缺值/歧义返回 None（调用方跳过记因）。
@@ -1231,7 +1326,7 @@ fn build_substitution(
 
 /// 步③ 常量对照：主张符号唯一命中常量时做 k·σ 区间比较
 /// （σ_eff = max(常量σ, 主张σ)）；越界记 alert 证据并附提案物料包。
-/// 返回是否出现区间越界（alert 证据）。
+/// 返回 (是否出现区间越界, 是否发生实际评估)。
 fn constant_comparison(
     req: &VerifyRequest,
     k: f64,
@@ -1239,8 +1334,9 @@ fn constant_comparison(
     const_index: &BTreeMap<&str, Vec<&ConstantRef<'_>>>,
     steps: &mut Vec<VerifyStep>,
     proposals: &mut Vec<ProposalPackage>,
-) -> bool {
+) -> (bool, bool) {
     let mut any_out_of_bounds = false;
+    let mut any_evaluated = false;
     for (symbol, view) in claims {
         let (ds, c) = match resolve_constant(const_index, symbol) {
             ConstantMatch::Unique(ds, c) => (ds, c),
@@ -1280,6 +1376,7 @@ fn constant_comparison(
         let tol = k * sigma;
         let delta = (view.value - c.value).abs();
         let outcome = if delta <= tol {
+            any_evaluated = true;
             StepOutcome::Consistent
         } else {
             any_out_of_bounds = true;
@@ -1336,7 +1433,7 @@ fn constant_comparison(
             });
         }
     }
-    any_out_of_bounds
+    (any_out_of_bounds, any_evaluated)
 }
 
 fn skip_step(kind: &'static str, target: &str, reason: &str) -> VerifyStep {
@@ -1353,7 +1450,7 @@ fn skip_step(kind: &'static str, target: &str, reason: &str) -> VerifyStep {
 }
 
 // ============================================================================
-// 测试（golden 三态 + 量纲拒判 + 结构反例 + schema 自洽 + serde 确定性）
+// 测试（golden 四态 + 量纲拒判 + 结构反例 + schema 自洽 + serde 确定性）
 // ============================================================================
 
 #[cfg(test)]
@@ -1714,7 +1811,7 @@ mod tests {
             None,
         );
         let report = verify(&req, &laws, &[]).unwrap();
-        assert_eq!(report.verdict, Verdict::Stable, "跳过不构成矛盾");
+        assert_eq!(report.verdict, Verdict::Unverifiable, "跳过不构成矛盾");
         let step = report
             .steps
             .iter()
@@ -1746,7 +1843,7 @@ mod tests {
             None,
         );
         let report = verify(&req, &[], &constants).unwrap();
-        assert_eq!(report.verdict, Verdict::Stable, "歧义跳过不判越界");
+        assert_eq!(report.verdict, Verdict::Unverifiable, "歧义跳过不判越界");
         let step = report
             .steps
             .iter()
@@ -1754,6 +1851,138 @@ mod tests {
             .unwrap();
         assert_eq!(step.outcome, StepOutcome::Skipped);
         assert!(step.detail.contains("歧义"), "{}", step.detail);
+    }
+
+    // ── 全目标扫描 golden：首符号非裸形态不再吞没同律其余符号的评估机会 ──
+
+    /// 全目标扫描物料：牛顿流体剪切律 tau = eta * gamma_dot
+    /// （tau Pa；eta Pa*s 动力黏度；gamma_dot s^-1 剪切速率）。
+    /// 相交键序 eta < gamma_dot < tau：eta/gamma_dot 均在复合表达式侧
+    /// （非裸形态），tau 独占等号左侧（裸形态）——旧逻辑取首符号 eta
+    /// 非裸即整律跳过，tau 掺错永不检出。
+    fn shear_law() -> Law {
+        serde_json::from_value(json!({
+            "id": "newtonian_shear",
+            "formula": "tau = eta * gamma_dot",
+            "symbols": {
+                "tau": "剪切应力", "eta": "动力黏度", "gamma_dot": "剪切速率"
+            },
+            "si_units": {
+                "tau": "pascal", "eta": "pascal*second", "gamma_dot": "second^-1"
+            },
+            "max_version_depth": 4,
+            "monotone_form": true
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn full_target_scan_detects_error_in_later_bare_symbol() {
+        let laws = [LawRef {
+            dataset_id: "law-fluid",
+            law: &shear_law(),
+        }];
+        // tau 主张掺错：computed = 1000 * 0.5 = 500，主张 498，|Δ|=2 > k·σ=1.0
+        let req = request(
+            json!([
+                { "symbol": "eta", "value": 1000.0, "si_unit": "pascal*second",
+                  "uncertainty": 1.0 },
+                { "symbol": "gamma_dot", "value": 0.5, "si_unit": "second^-1",
+                  "uncertainty": 0.01 },
+                { "symbol": "tau", "value": 498.0, "si_unit": "pascal",
+                  "uncertainty": 0.5 }
+            ]),
+            None,
+        );
+        let report = verify(&req, &laws, &[]).unwrap();
+        assert_eq!(report.verdict, Verdict::Contradiction, "{:?}", report.steps);
+        // 裸形态符号 tau 照常评估出 Violated（旧行为：整律跳过零评估）
+        let tau_step = report
+            .steps
+            .iter()
+            .find(|s| s.target == "newtonian_shear@tau")
+            .expect("tau 评估步应在");
+        assert_eq!(tau_step.outcome, StepOutcome::Violated);
+        // 非裸形态符号逐符号跳过记因（eta / gamma_dot；skip 步 target=律 id，
+        // 符号粒度在 detail 记因中）
+        let eta_step = report
+            .steps
+            .iter()
+            .find(|s| {
+                s.kind == "law_substitution"
+                    && s.outcome == StepOutcome::Skipped
+                    && s.detail.contains("`eta`")
+            })
+            .expect("eta 跳过步应在");
+        assert_eq!(eta_step.outcome, StepOutcome::Skipped);
+        assert!(
+            eta_step.detail.contains("不做符号重排"),
+            "{}",
+            eta_step.detail
+        );
+        // contradiction 态附 law_review 提案物料包
+        assert!(report
+            .proposals
+            .iter()
+            .any(|p| p.kind == "law_review" && p.entry_id == "newtonian_shear"));
+    }
+
+    #[test]
+    fn full_target_scan_positive_control_still_stable() {
+        let laws = [LawRef {
+            dataset_id: "law-fluid",
+            law: &shear_law(),
+        }];
+        // 正确值对照：主张与 computed 一致 → stable（不被第四态误伤）
+        let req = request(
+            json!([
+                { "symbol": "eta", "value": 1000.0, "si_unit": "pascal*second",
+                  "uncertainty": 1.0 },
+                { "symbol": "gamma_dot", "value": 0.5, "si_unit": "second^-1",
+                  "uncertainty": 0.01 },
+                { "symbol": "tau", "value": 500.0, "si_unit": "pascal",
+                  "uncertainty": 0.5 }
+            ]),
+            None,
+        );
+        let report = verify(&req, &laws, &[]).unwrap();
+        assert_eq!(report.verdict, Verdict::Stable, "{:?}", report.steps);
+        let tau_step = report
+            .steps
+            .iter()
+            .find(|s| s.target == "newtonian_shear@tau")
+            .expect("tau 评估步应在");
+        assert_eq!(tau_step.outcome, StepOutcome::Consistent);
+    }
+
+    #[test]
+    fn zero_evaluation_yields_unverifiable() {
+        // F=ma 且主张全无不确定度声明：目标量 F 裸形态但因无 σ 跳过、
+        // m/a 非裸形态逐符号跳过——零次实际评估 → unverifiable（旧行为
+        // 混同 stable「已验证」，语义修复锚）
+        let laws = [LawRef {
+            dataset_id: "law-mechanics",
+            law: &newton_law(),
+        }];
+        let req = request(
+            json!([
+                { "symbol": "F", "value": 10.0, "si_unit": "newton" },
+                { "symbol": "m", "value": 2.0, "si_unit": "kilogram" },
+                { "symbol": "a", "value": 5.0, "si_unit": "m*s^-2" }
+            ]),
+            None,
+        );
+        let report = verify(&req, &laws, &[]).unwrap();
+        assert_eq!(report.verdict, Verdict::Unverifiable, "{:?}", report.steps);
+        assert!(report.proposals.is_empty());
+        // 全部步②③均为 Skipped（无一次容差/区间判定执行）
+        let evaluated = report.steps.iter().any(|s| {
+            s.kind != "dimensional"
+                && (s.outcome == StepOutcome::Consistent
+                    || s.outcome == StepOutcome::Violated
+                    || s.outcome == StepOutcome::OutOfBounds)
+        });
+        assert!(!evaluated, "零评估时不得出现非 skip 判定步");
     }
 
     // ── constant_set 校验（无出处拒收=铁律 2；不确定度非数字拒收）──
@@ -1904,7 +2133,8 @@ mod tests {
 
     #[test]
     fn report_serde_shape_stable() {
-        // 判定词汇序列化形态立法锚：stable/alert/contradiction 小写下划线
+        // 判定词汇序列化形态立法锚：stable/alert/contradiction/unverifiable
+        // 小写下划线
         assert_eq!(
             serde_json::to_value(Verdict::Contradiction).unwrap(),
             json!("contradiction")
@@ -1916,6 +2146,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Verdict::Stable).unwrap(),
             json!("stable")
+        );
+        assert_eq!(
+            serde_json::to_value(Verdict::Unverifiable).unwrap(),
+            json!("unverifiable")
         );
         assert_eq!(
             serde_json::to_value(StepOutcome::OutOfBounds).unwrap(),
