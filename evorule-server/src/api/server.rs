@@ -20626,7 +20626,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|e| e.as_str().unwrap().contains("幅值越界")),
+                .any(|e| e.as_str().unwrap().contains("magnitude out of range")),
             "{body}"
         );
 

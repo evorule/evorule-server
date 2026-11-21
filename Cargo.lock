@@ -998,7 +998,8 @@ dependencies = [
 [[package]]
 name = "evorule-criticality"
 version = "0.1.0"
-source = "git+https://github.com/evorule/evorule-criticality?rev=6f545e2c75d36365a28ea4af781431c1c4f652d0#6f545e2c75d36365a28ea4af781431c1c4f652d0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d5a5b44ec9adae625f7082e68704005344fbaa983d3cf9638ac4412b6e74ad"
 dependencies = [
  "evorule-law-schema",
  "jsonschema",
@@ -1245,7 +1246,8 @@ dependencies = [
 [[package]]
 name = "evorule-law-schema"
 version = "0.1.0"
-source = "git+https://github.com/evorule/evorule-criticality?rev=6f545e2c75d36365a28ea4af781431c1c4f652d0#6f545e2c75d36365a28ea4af781431c1c4f652d0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389af4564c5584f45e303f9490f3f34cd43a60cf9fd6fe335ad7536e065a181b"
 dependencies = [
  "jsonschema",
  "once_cell",

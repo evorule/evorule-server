@@ -24,7 +24,7 @@ clap = { version = "4", features = ["derive"] }
 evorule-rule-schema = { path = "../rule_schema" }
 # law_set 部署件校验（CLI validate 按 kind 自动分流；权威契约自独立仓
 # evorule-criticality 受控消费，git + rev 钉版，演进 SOP = 先推独立仓再升 rev）
-evorule-law-schema = { git = "https://github.com/evorule/evorule-criticality", rev = "6f545e2c75d36365a28ea4af781431c1c4f652d0" }
+evorule-law-schema = "0.1.0"
 
 [dev-dependencies]
 # handler 层 oneshot 测试

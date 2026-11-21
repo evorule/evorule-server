@@ -736,13 +736,13 @@ mod tests {
             .iter()
             .find(|s| s.dataset_id == "bad-structure")
             .unwrap();
-        assert!(structure.errors.iter().any(|e| e.contains("未声明符号")));
+        assert!(structure.errors.iter().any(|e| e.contains("undeclared symbols")));
         let dim = report
             .rejected
             .iter()
             .find(|s| s.dataset_id == "bad-dimensional")
             .unwrap();
-        assert!(dim.errors.iter().any(|e| e.contains("量纲不一致")));
+        assert!(dim.errors.iter().any(|e| e.contains("dimensional mismatch")));
         let schema = report
             .rejected
             .iter()
