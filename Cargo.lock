@@ -997,7 +997,8 @@ dependencies = [
 
 [[package]]
 name = "evorule-criticality"
-version = "0.11.0"
+version = "0.1.0"
+source = "git+https://github.com/evorule/evorule-criticality?rev=6f545e2c75d36365a28ea4af781431c1c4f652d0#6f545e2c75d36365a28ea4af781431c1c4f652d0"
 dependencies = [
  "evorule-law-schema",
  "jsonschema",
@@ -1243,7 +1244,8 @@ dependencies = [
 
 [[package]]
 name = "evorule-law-schema"
-version = "0.11.0"
+version = "0.1.0"
+source = "git+https://github.com/evorule/evorule-criticality?rev=6f545e2c75d36365a28ea4af781431c1c4f652d0#6f545e2c75d36365a28ea4af781431c1c4f652d0"
 dependencies = [
  "jsonschema",
  "once_cell",

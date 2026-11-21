@@ -20,8 +20,9 @@ evorule-reactor = { version = "0.13" }
 # 插件机制公共件(trait/声明项/过滤路由器上提,插件仅自持声明表+薄壳具名路由器)
 evorule-plugin-kit = { path = "../../core/plugin-kit" }
 # 量纲代数单源复用（parse_unit_expr/DimensionVector,插件不复制量纲代数,
-# 与 law_schema 校验钩子同一 SSOT——门禁口径与测量口径永不漂移）
-evorule-law-schema = { path = "../../core/law_schema" }
+# 与 law_schema 校验钩子同一 SSOT——门禁口径与测量口径永不漂移;
+# law_schema 自独立仓 evorule-criticality 受控消费,git + rev 钉版）
+evorule-law-schema = { git = "https://github.com/evorule/evorule-criticality", rev = "6f545e2c75d36365a28ea4af781431c1c4f652d0" }
 
 # IoHandler trait object-safety
 async-trait = "0.1"
