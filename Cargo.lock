@@ -997,9 +997,9 @@ dependencies = [
 
 [[package]]
 name = "evorule-criticality"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f04235eca09fcdefffd8225ab4494c924d00cdf8fa778e960795937f045b5148"
+checksum = "ae74bdabbd9ea438ca7a63ae5203cc132db63a28b2f0fef71b68b09c6e57dbd7"
 dependencies = [
  "evorule-law-schema",
  "jsonschema",
