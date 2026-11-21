@@ -4,8 +4,13 @@
 #   pwsh 进程恒 rc=0，漂移守卫失败被静默放行。
 # 域目录声明同步脚本
 #
+# 【2026-11-21 状态】执行侧嵌入副本已随 criticality/law_schema 域迁出 server
+#   （独立仓 evorule-criticality 承接 domain_catalog.embedded.json），本仓
+#   CI 的 domain-catalog-sync job 已摘除；守卫重接独立仓（SSOT=rule 仓 ↔
+#   独立仓直接对拍）由镜像链重接批落。重接前本脚本不再被 CI 调用。
+#
 # SSOT : evorule-rule/src/model/domain_catalog.v1.json（治理侧域目录）
-# 目的 : core/law_schema/src/domain_catalog.embedded.json
+# 目的 : core/law_schema/src/domain_catalog.embedded.json（已迁出本仓）
 #        （include_str! 构建期嵌入；criticality 经 law_schema 公开面单源复用，
 #        不持第二副本）
 #
