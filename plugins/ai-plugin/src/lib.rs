@@ -196,6 +196,11 @@ pub struct PluginConfig {
     /// 请求 `model` 路由到对应 provider 的端点与凭据；各 provider 的 models
     /// 须 ⊆ 白名单物料（启动执法），同一模型只能归属一个 provider。
     pub llm_providers: Option<Vec<ProviderRouteConfig>>,
+    /// 单端点透传逃生口（语义化 A1/P-1）：true = llm_providers 缺失时不合成
+    /// 路由，/llm/execute 原样转发 llm_execute_url（任意模型名放行，存量行
+    /// 为保留）；false（缺省）= 合成单 provider 路由（model=llm_model），其余
+    /// 模型显式拒并指名已配置模型（替换静默误转失败类）。
+    pub llm_single_endpoint_passthrough: bool,
     /// 每模型能力描述（可选 `model_descriptions` 配置节，纯展示元数据）。
     /// 键=模型名，值=展示文本；/llm/models 视图下发时过滤为清单内成员
     /// （未知键忽略）。不入白名单执法/路由判定；缺省 = 副标题不渲染。
@@ -481,6 +486,10 @@ impl PluginConfig {
         }
         let model_allowlist_path = optional_str(v, "model_allowlist_path");
         let llm_providers = parse_provider_route_configs(v)?;
+        let llm_single_endpoint_passthrough = v
+            .get("llm_single_endpoint_passthrough")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let model_descriptions = parse_model_descriptions(v)?;
         // 调用方令牌:env 优先 > 配置文件;None = /llm/execute 不鉴权(dev 兼容)。
         let caller_token = std::env::var("EVORULE_AI_PLUGIN_CALLER_TOKEN")
@@ -531,6 +540,7 @@ impl PluginConfig {
             llm_execute_url,
             model_allowlist_path,
             llm_providers,
+            llm_single_endpoint_passthrough,
             model_descriptions,
             caller_token,
             web_search_provider,
@@ -1773,6 +1783,15 @@ impl ModelRoutes {
         self.by_model.keys()
     }
 
+    /// 按 provider 分组：（provider 名, 排序模型列表）——/llm/providers 视图消费。
+    pub fn provider_summary(&self) -> Vec<(String, Vec<String>)> {
+        let mut acc: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for (m, r) in &self.by_model {
+            acc.entry(r.provider.clone()).or_default().push(m.clone());
+        }
+        acc.into_iter().collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.by_model.is_empty()
     }
@@ -1787,19 +1806,23 @@ impl ModelRoutes {
 ///   拒绝——单一配置失误不应导致全局 LLM 不可用）；
 /// - 某 provider 的 models ⊄ 白名单物料 → 该 provider 拒绝装载；
 /// - 某 provider 凭据环境变量缺失/空白 → 该 provider 拒绝装载。
+/// - 单端点配置（llm_providers 缺失）且未显式透传 → 合成单 provider 路由
+///   （model=llm_model），一切部署皆路由模式（语义化 A1：默认模型行为不变，
+///   其余模型显式拒并指名已配置模型）。
 ///
-/// 返回 `(路由表, 自诊断消息列表)`。路由表 `None` = 配置未启用多 provider
-/// 路由（/llm/execute 走单一 `llm_execute_url` 既有路径）；`Some(空表)` =
+/// 返回 `(路由表, 自诊断消息列表)`。路由表 `None` = 单端点透传模式显式启用
+/// （或缺 llm_execute_url 无法合成）——/llm/execute 走单一 `llm_execute_url`
+/// 既有路径；`Some(空表)` =
 /// 已启用但无一 provider 就绪（/llm/execute 全拒，**绝不回落**单端点路径）。
 pub fn build_model_routes(
     cfg: &PluginConfig,
     allowlist: Option<&BTreeSet<String>>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> (Option<ModelRoutes>, Vec<String>) {
-    let Some(providers) = cfg.llm_providers.as_ref().filter(|p| !p.is_empty()) else {
-        return (None, Vec::new());
-    };
     let mut diags = Vec::new();
+    let Some(providers) = cfg.llm_providers.as_ref().filter(|p| !p.is_empty()) else {
+        return synthesize_single_endpoint_routes(cfg, allowlist, &mut diags);
+    };
     let Some(allowlist) = allowlist else {
         diags.push(
             "多 provider 路由未装载: 白名单物料未就绪（model_allowlist_path 缺失或装载失败）"
@@ -2033,9 +2056,14 @@ fn llm_ext_entry_checks(
                      （多 provider 路由已启用）; 常见根因: provider 未就绪\
                      （凭据缺失/白名单越界/声明冲突被隔离），装载诊断见插件启动日志"
                 );
+                let known = routes
+                    .routed_models()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return Err(PluginError::Llm(format!(
                     "模型 '{model}' 在白名单内但未配置任何已就绪 provider 路由\
-                     （llm_providers 装载诊断见插件启动日志）"
+                     （llm_providers 装载诊断见插件启动日志）。已配置可路由模型: [{known}]"
                 )));
             }
         };
@@ -2059,6 +2087,63 @@ fn llm_ext_entry_checks(
     })
 }
 
+/// 语义化 A1：为单端点配置合成路由——单 provider（model=llm_model →
+/// llm_execute_url），一切部署皆路由模式：默认模型行为不变，其余模型显式
+/// 拒（指名已配置模型，替换「静默转发到可能错误端点」失败类）。逃生口：
+/// `llm_single_endpoint_passthrough=true` 保留旧透传行为（opt-in 显式启用）。
+fn synthesize_single_endpoint_routes(
+    cfg: &PluginConfig,
+    allowlist: Option<&BTreeSet<String>>,
+    diags: &mut Vec<String>,
+) -> (Option<ModelRoutes>, Vec<String>) {
+    if cfg.llm_single_endpoint_passthrough {
+        diags.push(
+            "单端点透传模式（llm_single_endpoint_passthrough=true 显式启用）：\
+             不合成路由表，任意模型名原样转发 llm_execute_url"
+                .to_string(),
+        );
+        return (None, std::mem::take(diags));
+    }
+    let Some(url) = cfg
+        .llm_execute_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+    else {
+        diags.push(
+            "单端点配置缺 'llm_execute_url'：无法合成路由，/llm/execute 将显式拒".to_string(),
+        );
+        return (None, std::mem::take(diags));
+    };
+    let Some(allowlist) = allowlist else {
+        diags.push(
+            "单端点路由合成跳过：白名单物料未就绪（fail-closed，/llm/execute 显式拒）".to_string(),
+        );
+        return (Some(ModelRoutes::default()), std::mem::take(diags));
+    };
+    let mut routes = ModelRoutes::default();
+    if !allowlist.contains(cfg.llm_model.as_str()) {
+        diags.push(format!(
+            "单端点路由合成跳过：配置模型 '{}' 不在白名单物料内（路由表保持为空，/llm/execute 显式拒）",
+            cfg.llm_model
+        ));
+        return (Some(routes), std::mem::take(diags));
+    }
+    routes.by_model.insert(
+        cfg.llm_model.clone(),
+        ProviderRoute {
+            provider: "legacy".to_string(),
+            execute_url: url.to_string(),
+            api_key: cfg.llm_api_key.clone(),
+            default_params: serde_json::Map::new(),
+        },
+    );
+    diags.push(format!(
+        "单端点配置已合成路由：model '{}' → llm_execute_url（其余模型显式拒，语义化 A1）",
+        cfg.llm_model
+    ));
+    (Some(routes), std::mem::take(diags))
+}
 /// provider 响应状态门（共用）：非 2xx 显式转错（含 401/429 分类）。
 async fn check_llm_ext_response(resp: reqwest::Response) -> Result<reqwest::Response, PluginError> {
     let status = resp.status();
@@ -4052,11 +4137,37 @@ mod tests {
 
     #[test]
     fn routes_absent_when_not_configured() {
-        let cfg = ext_cfg("http://127.0.0.1:1/x");
+        // 语义化 A1 后的透传契约：显式启用 llm_single_endpoint_passthrough 的
+        // 存量单端点部署不合成路由（/llm/execute 原样转发 llm_execute_url，
+        // 存量行为零迁移），诊断留痕。
+        let mut cfg = ext_cfg("http://127.0.0.1:1/x");
+        cfg.llm_single_endpoint_passthrough = true;
         let set = allowlist_one("m-a");
         let (routes, diags) = build_model_routes(&cfg, Some(&set), &|_| None::<String>);
         assert!(routes.is_none());
-        assert!(diags.is_empty());
+        assert!(
+            diags.iter().any(|d| d.contains("透传模式")),
+            "应记录透传模式: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn routes_synthesized_for_single_endpoint_by_default() {
+        // 语义化 A1 缺省契约：无 llm_providers 且未显式透传 → 合成单 provider
+        // 路由（model=llm_model → llm_execute_url），一切部署皆路由模式；
+        // 默认模型行为不变，其余模型显式拒。
+        let cfg = ext_cfg("http://127.0.0.1:1/x");
+        let set = allowlist_one("m");
+        let (routes, diags) = build_model_routes(&cfg, Some(&set), &|_| None::<String>);
+        let r = routes.expect("单端点缺省应合成路由");
+        assert_eq!(
+            r.resolve("m").map(|x| x.execute_url.as_str()),
+            Some("http://127.0.0.1:1/x")
+        );
+        assert!(
+            diags.iter().any(|d| d.contains("合成路由")),
+            "应记录合成: {diags:?}"
+        );
     }
 
     #[test]
@@ -5446,6 +5557,65 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
             err.to_string().contains("m1"),
             "错误应指名未命中模型: {err}"
         );
+    }
+
+    #[test]
+    fn synthesize_single_endpoint_routes_basic_unknown_hint_and_escape() {
+        // 语义化 A1 锚：单端点配置合成路由——默认模型行为不变，其余模型显式拒
+        // 并指名已配置模型；透传逃生口 opt-in；缺 llm_execute_url/越白名单 fail-closed。
+        let cfg = PluginConfig::from_json_str(
+            r#"{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "llm_execute_url":"https://legacy.invalid/chatcompletion_v2","tools_enabled":[]}"#,
+        )
+        .unwrap();
+        let allow = BTreeSet::from(["m1".to_string(), "other".to_string()]);
+        // helper 返回其内部累积的诊断（第二元素）——传入的 vec 会被 mem::take 取空
+        let (routes, d) = synthesize_single_endpoint_routes(&cfg, Some(&allow), &mut Vec::new());
+        let r = routes.expect("合成应产出路由表");
+        assert_eq!(r.resolve("m1").map(|x| x.provider.as_str()), Some("legacy"));
+        assert!(r.resolve("other").is_none(), "非默认模型不得合成路由");
+        assert!(
+            d.iter().any(|x| x.contains("合成路由")),
+            "诊断应记录合成: {d:?}"
+        );
+        let err = match llm_ext_entry_checks(
+            &cfg,
+            &allow,
+            Some(&r),
+            &json!({"model":"other","messages":[]}),
+        ) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("未在路由表的模型应被显式拒"),
+        };
+        assert!(err.contains("m1"), "错误应指名已配置模型: {err}");
+        let cfg_pt = PluginConfig::from_json_str(
+            r#"{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "llm_execute_url":"https://legacy.invalid/chatcompletion_v2",
+                "llm_single_endpoint_passthrough":true,"tools_enabled":[]}"#,
+        )
+        .unwrap();
+        let (routes_pt, d2) =
+            synthesize_single_endpoint_routes(&cfg_pt, Some(&allow), &mut Vec::new());
+        assert!(routes_pt.is_none(), "透传模式不合成路由");
+        assert!(d2.iter().any(|d| d.contains("透传")));
+        let cfg_nourl = PluginConfig::from_json_str(
+            r#"{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "tools_enabled":[]}"#,
+        )
+        .unwrap();
+        let (routes_nourl, d3) =
+            synthesize_single_endpoint_routes(&cfg_nourl, Some(&allow), &mut Vec::new());
+        assert!(routes_nourl.is_none(), "缺 llm_execute_url 无法合成");
+        assert!(d3.iter().any(|d| d.contains("llm_execute_url")));
+        let allow_narrow = BTreeSet::from(["other".to_string()]);
+        let (routes_narrow, d4) =
+            synthesize_single_endpoint_routes(&cfg, Some(&allow_narrow), &mut Vec::new());
+        let r_n = routes_narrow.expect("越白名单仍返回路由表（空，fail-closed）");
+        assert!(r_n.resolve("m1").is_none());
+        assert!(d4.iter().any(|d| d.contains("不在白名单")));
     }
 
     #[tokio::test]
