@@ -1,0 +1,45 @@
+{
+  "$id": "https://evorule.org/governance/deps-graph/v1.0.json",
+  "version": "1.2",
+  "owner": "evorule project governance",
+  "authority": "evorule project governance knowledge base (human-readable twin: the dependency-graph design doc; this file is the enforcement source of truth)",
+  "layers": ["constitution", "canonical", "domain", "host", "knowledge"],
+  "repos": {
+    "evorule-system-rules": {"layer": "constitution", "note": "local checkout roots for full-scan mode live in the knowledge-local local-roots.json next to this file; CI copies never carry local paths"},
+    "evorule": {"layer": "canonical"},
+    "evorule-criticality": {"layer": "domain", "note": "established (2026-11-21); workspace skeleton with criticality+law_schema placeholder crates, zero evorule-* deps"},
+    "evorule-services": {"layer": "domain", "note": "planned (services migration batch); not yet existing"},
+    "evorule-rule": {"layer": "domain"},
+    "evorule-hash": {"layer": "domain"},
+    "evorule-server": {"layer": "host"},
+    "evo-agent": {"layer": "host"},
+    "knowledge": {"layer": "knowledge", "note": "non-code governance repo, no Cargo face"}
+  },
+  "allowed_edges": [
+    {"from": "evorule-server", "to": ["evorule-criticality", "evorule-services", "evorule-rule", "evorule-hash", "evorule-system-rules"]},
+    {"from": "evo-agent", "to": ["evorule-system-rules", "evorule-hash"], "note": "evo-agent consumes server via HTTP (runtime), compile deps restricted to this list"},
+    {"from": "evorule-criticality", "to": ["evorule-hash", "evorule-system-rules"]},
+    {"from": "evorule-services", "to": ["evorule-hash"]},
+    {"from": "evorule-rule", "to": ["evorule-hash", "evorule-system-rules"]},
+    {"from": "evorule", "to": ["evorule-hash"], "note": "canonical repo discipline crate consumes hash; NO numeric-compute deps from domain repos into canonical (ownership rule)"}
+  ],
+  "forbidden_edges": [
+    {"from": ["evorule-criticality", "evorule-services", "evorule-rule", "evorule-hash"], "to": ["evorule-server", "evo-agent"], "rule": "unidirectional: domain repos must never depend on hosts"},
+    {"from": ["evorule-hash"], "to": ["evorule-*"], "rule": "base primitive depends on nothing evorule-*"},
+    {"from": ["evorule-criticality", "evorule-services", "evorule-rule"], "to": ["evorule"], "rule": "arithmetic-ownership: numeric compute never touches canonical repo"},
+    {"from": ["*except:evorule(自身内部件)"], "to": ["evorule-tcb", "evorule-reactor", "evorule-governance", "evorule-cli"], "rule": "IRON RULE (2026-11-21 project mandate): canonical repo is consumed ONLY via evorule-server as the service entry - any other ecosystem block directly depending on canonical repo artifacts (tcb/reactor/governance/cli crates) is forbidden; evorule-server exemption covers main+core members only, NOT plugins/*; existing violations listed in baseline-scan-20261121.txt await the N1 fix design"}
+  ],
+  "server_locked_members": {
+    "core_allowed": ["auth", "governance-host", "io_handlers", "workspace"],
+    "core_forbidden_return": ["criticality", "law_schema"],
+    "note": "plugins/* members must migrate to evorule-services (N1); after N2 the entire plugins directory is forbidden as server workspace members"
+  },
+  "migration_exemptions": {
+    "note": "MIGRATION-PERIOD ONLY; each exemption must be removed at its batch closure - an active exemption past its batch = rework risk made visible",
+    "items": [
+      {"id": "EX-N2-plugins", "scope": "evorule-server workspace members plugins/*", "expires_with": "N2 (services migration)"},
+      {"id": "EX-S2-rule-domain", "scope": "evorule-server workspace members core/rule_schema + core/rule_loader + core/rule_tools", "expires_with": "N3 (rule-domain migration)"},
+      {"id": "EX-IRON-PLUGINS-N1", "scope": "evorule-server plugins/* direct deps on evorule-tcb/evorule-reactor (48 edges, 24 families)", "expires_with": "N1 fix design (plugins migration to evorule-services with plugin-kit trait injection)", "match": {"repo": "evorule-server", "path_prefix": "plugins/", "deps": ["evorule-tcb", "evorule-reactor"]}}
+    ]
+  }
+}
