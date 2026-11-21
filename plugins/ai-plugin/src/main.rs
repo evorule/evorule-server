@@ -316,6 +316,7 @@ fn main() {
                 post(llm_execute_stream).layer(DefaultBodyLimit::max(LLM_BODY_LIMIT_BYTES)),
             )
             .route("/llm/models", get(llm_models))
+            .route("/llm/providers", get(llm_providers))
             .route("/tools/web_search", post(web_search))
             .route("/health", get(health))
             .with_state(state);
@@ -666,6 +667,43 @@ async fn web_search(
     }
 }
 
+/// Provider 路由视图（语义化 A2）：路由表与默认模型一览——serve preflight 与
+/// 桌面 UI 消费。caller-token 纪律与 /llm/models 同面（配置后启用）。本端点
+/// 不携带任何凭据物料。
+async fn llm_providers(State(st): State<PluginState>, headers: axum::http::HeaderMap) -> Response {
+    if let Some(expected) = st.caller_token.as_deref() {
+        let present = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        if present != Some(&format!("Bearer {expected}")) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "caller token missing or mismatched" })),
+            )
+                .into_response();
+        }
+    }
+    let single = !st.cfg.llm_providers.as_ref().is_some_and(|p| !p.is_empty());
+    let providers: Vec<serde_json::Value> = match st.routes.as_ref() {
+        Some(r) => r
+            .provider_summary()
+            .into_iter()
+            .map(|(name, models)| json!({ "name": name, "models": models }))
+            .collect(),
+        None => vec![json!({
+            "name": "legacy-single",
+            "models": [st.cfg.llm_model],
+            "note": "透传模式：任意模型名原样转发 llm_execute_url"
+        })],
+    };
+    Json(json!({
+        "single_endpoint_mode": single,
+        "default_model": st.cfg.llm_model,
+        "providers": providers,
+    }))
+    .into_response()
+}
+
 async fn ai_plugin_chat(
     State(st): State<PluginState>,
     headers: axum::http::HeaderMap,
@@ -782,6 +820,142 @@ mod tests {
     async fn body_json(resp: Response) -> Value {
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
         serde_json::from_slice(&bytes).expect("json body")
+    }
+
+    fn test_state_single_endpoint() -> PluginState {
+        // 语义化 A1 形态：单端点配置（无 llm_providers）→ 合成路由 legacy/test-model
+        let cfg = PluginConfig::from_json_str(
+            r#"{
+                "listen_addr": "127.0.0.1:0",
+                "server_base_url": "http://127.0.0.1:18080",
+                "llm_endpoint": "https://example.invalid/v1",
+                "llm_api_key": "unused-in-test",
+                "llm_model": "test-model",
+                "llm_temperature": 0.2,
+                "llm_timeout_ms": 1000,
+                "llm_execute_url": "https://legacy.invalid/v1/text/chatcompletion_v2",
+                "tools_enabled": []
+            }"#,
+        )
+        .expect("test config must parse");
+        let allow = BTreeSet::from(["test-model".to_string(), "other-model".to_string()]);
+        let (routes, diags) = build_model_routes(&cfg, Some(&allow), &|_| None);
+        assert!(routes.is_some(), "单端点应合成路由, diags={diags:?}");
+        PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(reqwest::Client::new()),
+            allowlist: AllowlistHot::ready("test-material.json".to_string(), allow),
+            routes: routes.map(Arc::new),
+            caller_token: None,
+        }
+    }
+
+    fn test_state_routing() -> PluginState {
+        // 路由形态：llm_providers 声明 zhipu（glm-5.3-flash，内嵌 api_key 兜底）
+        let cfg = PluginConfig::from_json_str(
+            r#"{
+                "listen_addr": "127.0.0.1:0",
+                "server_base_url": "http://127.0.0.1:18080",
+                "llm_endpoint": "https://example.invalid/v1",
+                "llm_api_key": "unused-in-test",
+                "llm_model": "glm-5.3-flash",
+                "llm_temperature": 0.2,
+                "llm_timeout_ms": 1000,
+                "tools_enabled": [],
+                "llm_providers": [
+                    {"name": "zhipu", "execute_url": "https://open.bigmodel.invalid/api/coding/paas/v4/chat/completions",
+                     "api_key_env": "Z_TEST_KEY", "api_key": "inline-k",
+                     "models": ["glm-5.3-flash"]}
+                ]
+            }"#,
+        )
+        .expect("test config must parse");
+        let allow = BTreeSet::from(["glm-5.3-flash".to_string()]);
+        let (routes, diags) = build_model_routes(&cfg, Some(&allow), &|_| None);
+        assert!(routes.is_some(), "路由模式应产出路由表, diags={diags:?}");
+        PluginState {
+            cfg: Arc::new(cfg),
+            http: Arc::new(reqwest::Client::new()),
+            execute_http: Arc::new(reqwest::Client::new()),
+            allowlist: AllowlistHot::ready("test-material.json".to_string(), allow),
+            routes: routes.map(Arc::new),
+            caller_token: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_providers_single_endpoint_view_lists_legacy() {
+        use tower::ServiceExt;
+        let st = test_state_single_endpoint();
+        let app = Router::new()
+            .route("/llm/providers", get(llm_providers))
+            .with_state(st);
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/llm/providers")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["single_endpoint_mode"], json!(true));
+        assert_eq!(v["default_model"], json!("test-model"));
+        assert_eq!(v["providers"][0]["name"], json!("legacy"));
+        assert_eq!(v["providers"][0]["models"][0], json!("test-model"));
+    }
+
+    #[tokio::test]
+    async fn llm_providers_routing_mode_view_lists_providers() {
+        use tower::ServiceExt;
+        let st = test_state_routing();
+        let app = Router::new()
+            .route("/llm/providers", get(llm_providers))
+            .with_state(st);
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/llm/providers")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["single_endpoint_mode"], json!(false));
+        assert_eq!(v["providers"][0]["name"], json!("zhipu"));
+        assert_eq!(v["providers"][0]["models"][0], json!("glm-5.3-flash"));
+    }
+
+    #[tokio::test]
+    async fn llm_execute_synthetic_unknown_model_names_configured_model() {
+        use tower::ServiceExt;
+        // 语义化 A1 执行面锚：合成路由下未配置模型显式拒，错误指名已配置模型
+        // （替换「静默转发上游→unknown model」失败类；本批为消息级，J-B1 起带 code）。
+        let st = test_state_single_endpoint();
+        let app = Router::new()
+            .route(
+                "/llm/execute",
+                post(llm_execute).layer(DefaultBodyLimit::max(LLM_BODY_LIMIT_BYTES)),
+            )
+            .with_state(st);
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/llm/execute")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({"model":"other-model","messages":[{"role":"user","content":"hi"}]})
+                    .to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let v = body_json(resp).await;
+        let msg = v["error"].as_str().unwrap_or_default();
+        assert!(msg.contains("test-model"), "错误应指名已配置模型: {msg}");
     }
 
     #[tokio::test]
