@@ -502,6 +502,9 @@ pub struct ProviderRouteConfig {
     /// 上游错误分类族（可选 `family` 显式声明；缺省按 provider 名推断，
     /// 不做 URL 猜测）
     pub family: Option<ProviderFamily>,
+    /// 可选回退模型清单（`fallback_models`；装载期校验 ∈ 白名单 ∩ 路由表，
+    /// 未收录逐项剔除留诊断，不拒载——单一配置失误不放大成全局不可用）
+    pub fallback_models: Vec<String>,
 }
 
 fn require_str(v: &Value, key: &str) -> Result<String, PluginError> {
@@ -878,6 +881,25 @@ fn parse_provider_route_configs(
             Some(Value::String(s)) => Some(ProviderFamily::parse(s).map_err(at)?),
             Some(_) => return Err(at("'family' 须为字符串（minimax/zhipu/openai）".to_string())),
         };
+        let fallback_models = match obj.get("fallback_models") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(arr)) => {
+                let mut list = Vec::new();
+                for item in arr {
+                    let fb = item
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| at("'fallback_models' 须为非空字符串数组".to_string()))?;
+                    if list.iter().any(|e: &String| e == fb) {
+                        return Err(at(format!("'fallback_models' 内模型重复: '{fb}'")));
+                    }
+                    list.push(fb.to_string());
+                }
+                list
+            }
+            Some(_) => return Err(at("'fallback_models' 须为字符串数组".to_string())),
+        };
         out.push(ProviderRouteConfig {
             name: name.to_string(),
             execute_url: execute_url.to_string(),
@@ -886,6 +908,7 @@ fn parse_provider_route_configs(
             models,
             default_params,
             family,
+            fallback_models,
         });
     }
     let mut names = std::collections::BTreeSet::new();
@@ -1987,6 +2010,8 @@ pub struct ProviderRoute {
     pub default_params: serde_json::Map<String, Value>,
     /// 上游错误分类族（业务码分类面）
     pub family: ProviderFamily,
+    /// 可选回退模型（装配期已校验 ∈ 白名单 ∩ 路由表；空 = 无回退，行为零变化）
+    pub fallback_models: Vec<String>,
 }
 
 impl std::fmt::Debug for ProviderRoute {
@@ -1999,6 +2024,7 @@ impl std::fmt::Debug for ProviderRoute {
                 "default_params_keys",
                 &self.default_params.keys().collect::<Vec<_>>(),
             )
+            .field("fallback_models", &self.fallback_models)
             .finish()
     }
 }
@@ -2152,9 +2178,27 @@ pub fn build_model_routes(
                     api_key: key.clone(),
                     default_params: p.default_params.clone(),
                     family: p.family.unwrap_or_else(|| ProviderFamily::infer(&p.name)),
+                    fallback_models: p.fallback_models.clone(),
                 },
             );
         }
+    }
+    // 回退模型装载期校验：∈ 白名单 ∩ 路由表，未收录逐项剔除留诊断
+    //（不拒载——单一配置失误不放大成全局 LLM 不可用）
+    let routed_keys: std::collections::BTreeSet<String> = routes.by_model.keys().cloned().collect();
+    for (m, route) in routes.by_model.iter_mut() {
+        let provider = route.provider.clone();
+        let model = m.clone();
+        route.fallback_models.retain(|fb| {
+            let keep = allowlist.contains(fb) && routed_keys.contains(fb);
+            if !keep {
+                diags.push(format!(
+                    "provider '{provider}' 模型 '{model}' 的 fallback '{fb}' 未收录\
+                     （不在白名单或路由表），已剔除"
+                ));
+            }
+            keep
+        });
     }
     (Some(routes), diags)
 }
@@ -2184,6 +2228,54 @@ struct LlmUpstream {
     provider: String,
     /// 上游错误分类族（业务码分类面）
     family: ProviderFamily,
+    /// 可选回退模型（单端点=空，行为零变化）
+    fallback_models: Vec<String>,
+}
+
+/// 非流式单次出站（send → 状态门 → 四键归一）；tier 逻辑在 call_llm_ext。
+async fn llm_ext_dispatch_once(
+    http: &reqwest::Client,
+    execute_url: &str,
+    api_key: &str,
+    family: ProviderFamily,
+    provider: &str,
+    merged: &Value,
+) -> Result<Value, PluginError> {
+    let resp = http
+        .post(execute_url)
+        .bearer_auth(api_key)
+        .json(merged)
+        .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| {
+            let code = if e.is_timeout() {
+                LlmErrorCode::Timeout
+            } else {
+                LlmErrorCode::Network
+            };
+            PluginError::LlmClassified(LlmFailure::from_error(
+                code,
+                Some(provider),
+                format!("LLM 请求失败({execute_url}): {e}"),
+                &hint_for(code),
+            ))
+        })?;
+    let resp = check_llm_ext_response(resp, family, provider).await?;
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| PluginError::Llm(format!("LLM 响应 JSON 解析失败: {e}")))?;
+    completion_four_keys(&v, family, provider)
+}
+
+/// 溯源三键（回退配置在役时下发；缺省零变化）。
+fn stamp_provenance(v: &mut Value, requested: &str, served: &str, failover: bool) {
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("model_requested".to_string(), json!(requested));
+        obj.insert("model_served".to_string(), json!(served));
+        obj.insert("failover".to_string(), json!(failover));
+    }
 }
 
 /// 扩展执行体 LLM 调用 —— /llm/execute 端点的唯一出站路径。
@@ -2208,69 +2300,154 @@ pub async fn call_llm_ext(
     body: &Value,
 ) -> Result<Value, PluginError> {
     let upstream = llm_ext_entry_checks(cfg, allowlist, routes, body)?;
+    let model_requested = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let merged = merge_default_params(body, &upstream.default_params);
     let is_stream = merged
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let mut attempt = 0usize;
-    loop {
-        attempt += 1;
-        let result = async {
-            let resp = http
-                .post(&upstream.execute_url)
-                .bearer_auth(&upstream.api_key)
-                .json(&merged)
-                .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
-                .send()
-                .await
-                .map_err(|e| {
-                    let code = if e.is_timeout() {
-                        LlmErrorCode::Timeout
-                    } else {
-                        LlmErrorCode::Network
-                    };
-                    PluginError::LlmClassified(LlmFailure::from_error(
-                        code,
-                        Some(&upstream.provider),
-                        format!("LLM 请求失败({}): {e}", upstream.execute_url),
-                        &hint_for(code),
-                    ))
-                })?;
-            let resp = check_llm_ext_response(resp, upstream.family, &upstream.provider).await?;
-            if is_stream {
+
+    // 流式：既有单模型路径（流断裂恰好一次重试；回退不覆盖流式——流一旦
+    // 开帧下行，换模型重放需上层重发请求，本层不做半流切换）
+    if is_stream {
+        let mut attempt = 0usize;
+        loop {
+            attempt += 1;
+            let result = async {
+                let resp = http
+                    .post(&upstream.execute_url)
+                    .bearer_auth(&upstream.api_key)
+                    .json(&merged)
+                    .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        let code = if e.is_timeout() {
+                            LlmErrorCode::Timeout
+                        } else {
+                            LlmErrorCode::Network
+                        };
+                        PluginError::LlmClassified(LlmFailure::from_error(
+                            code,
+                            Some(&upstream.provider),
+                            format!("LLM 请求失败({}): {e}", upstream.execute_url),
+                            &hint_for(code),
+                        ))
+                    })?;
+                let resp =
+                    check_llm_ext_response(resp, upstream.family, &upstream.provider).await?;
                 let resp =
                     check_sse_content_type(resp, upstream.family, &upstream.provider).await?;
                 execute_stream_aggregate(resp, upstream.family, &upstream.provider).await
-            } else {
-                let v: Value = resp
-                    .json()
-                    .await
-                    .map_err(|e| PluginError::Llm(format!("LLM 响应 JSON 解析失败: {e}")))?;
-                completion_four_keys(&v, upstream.family, &upstream.provider)
             }
-        }
-        .await;
-        match result {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                // 有界重试：provider 流完整性闸两态判死（提前关闭/零 data 帧）
-                // = 传输类瞬断，聚合路径下行前可安全重放（单 Result，重放对
-                // 调用方无重复）；业务类错误重试不会成功，不触发。恰好一次
-                // 重试（两次出站封顶），终态保持 fail-visible。
-                if attempt == 1 && is_premature_close_error(&e) {
-                    tracing::warn!(
-                        error = %e,
-                        "provider 流提前关闭,聚合路径出站重试一次"
-                    );
-                    continue;
+            .await;
+            match result {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    // 有界重试：provider 流完整性闸两态判死（提前关闭/零 data 帧）
+                    // = 传输类瞬断，聚合路径下行前可安全重放（单 Result，重放对
+                    // 调用方无重复）；业务类错误重试不会成功，不触发。恰好一次
+                    // 重试（两次出站封顶），终态保持 fail-visible。
+                    if attempt == 1 && is_premature_close_error(&e) {
+                        tracing::warn!(
+                            error = %e,
+                            "provider 流提前关闭,聚合路径出站重试一次"
+                        );
+                        continue;
+                    }
+                    return Err(e);
                 }
-                return Err(e);
             }
         }
     }
-}
 
+    // 非流式：tier-1（同模型一次 retryable 退避重试）→ tier-2（fallback 序贯
+    // 各一次）。auth/model_unknown/context_length/config 类不重试不回退
+    //（fail-visible）；回退未配置 = 行为零变化（响应不带溯源键）。
+    let fallbacks = upstream.fallback_models.clone();
+    let has_fallback = !fallbacks.is_empty();
+    let stamp = |v: &mut Value, served: &str, failover: bool| {
+        if has_fallback {
+            stamp_provenance(v, &model_requested, served, failover);
+        }
+    };
+
+    let mut err = match llm_ext_dispatch_once(
+        http,
+        &upstream.execute_url,
+        &upstream.api_key,
+        upstream.family,
+        &upstream.provider,
+        &merged,
+    )
+    .await
+    {
+        Ok(mut v) => {
+            stamp(&mut v, &model_requested, false);
+            return Ok(v);
+        }
+        Err(e) => e,
+    };
+    let retryable_failure = matches!(&err, PluginError::LlmClassified(f) if f.retryable);
+    if retryable_failure {
+        tracing::warn!(
+            provider = %upstream.provider,
+            error = %err,
+            "tier-1 retryable failure, backing off once"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        err = match llm_ext_dispatch_once(
+            http,
+            &upstream.execute_url,
+            &upstream.api_key,
+            upstream.family,
+            &upstream.provider,
+            &merged,
+        )
+        .await
+        {
+            Ok(mut v) => {
+                stamp(&mut v, &model_requested, false);
+                return Ok(v);
+            }
+            Err(e) => e,
+        };
+    }
+    let tier2_eligible = matches!(&err, PluginError::LlmClassified(f) if f.retryable);
+    if tier2_eligible {
+        for fb in &fallbacks {
+            let Some(fb_route) = routes.and_then(|r| r.resolve(fb)) else {
+                continue;
+            };
+            let mut fb_body = merged.clone();
+            fb_body["model"] = json!(fb);
+            match llm_ext_dispatch_once(
+                http,
+                &fb_route.execute_url,
+                &fb_route.api_key,
+                fb_route.family,
+                &fb_route.provider,
+                &fb_body,
+            )
+            .await
+            {
+                Ok(mut v) => {
+                    tracing::warn!(from = %model_requested, to = %fb, "failover succeeded");
+                    stamp(&mut v, fb, true);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    tracing::warn!(to = %fb, error = %e, "fallback attempt failed");
+                }
+            }
+        }
+    }
+    Err(err)
+}
 /// 传输类断链判定（聚合路径有界重试触发面）：provider 流完整性闸两态
 /// 判死——提前关闭（finish_reason 缺失）或零 data 帧。业务类错误（鉴权/
 /// 参数/base_resp 拒绝等）重试不会成功，不触发。
@@ -2337,6 +2514,7 @@ fn llm_ext_entry_checks(
             default_params: route.default_params.clone(),
             provider: route.provider.clone(),
             family: route.family,
+            fallback_models: route.fallback_models.clone(),
         });
     }
     let url = cfg.llm_execute_url.as_deref().ok_or_else(|| {
@@ -2352,6 +2530,7 @@ fn llm_ext_entry_checks(
         default_params: serde_json::Map::new(),
         provider: "legacy".to_string(),
         family: cfg.llm_family.unwrap_or(ProviderFamily::OpenAi),
+        fallback_models: Vec::new(),
     })
 }
 
@@ -2405,6 +2584,7 @@ fn synthesize_single_endpoint_routes(
             api_key: cfg.llm_api_key.clone(),
             default_params: serde_json::Map::new(),
             family: cfg.llm_family.unwrap_or(ProviderFamily::OpenAi),
+            fallback_models: Vec::new(),
         },
     );
     diags.push(format!(
@@ -4460,6 +4640,139 @@ mod tests {
         }
     }
 
+    // ---------- 回退（fallback）执行序与装载校验 ----------
+
+    #[tokio::test]
+    async fn call_llm_ext_fallback_fires_on_retryable_failure() {
+        let primary = spawn_app(Router::new().route(
+            "/exec",
+            post(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
+        ))
+        .await;
+        let backup = spawn_app(Router::new().route(
+            "/exec",
+            post(|| async {
+                (
+                    [("content-type", "application/json")],
+                    r#"{"choices":[{"message":{"content":"fb-ok"}}]}"#,
+                )
+            }),
+        ))
+        .await;
+        let cfg = PluginConfig::from_json_str(&format!(
+            r#"{{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "tools_enabled":[],
+                "llm_providers":[
+                    {{"name":"p1","execute_url":"http://{}/exec","api_key_env":"K1","api_key":"k1","models":["m1"],"fallback_models":["m2"]}},
+                    {{"name":"p2","execute_url":"http://{}/exec","api_key_env":"K2","api_key":"k2","models":["m2"]}}
+                ]}}"#,
+            primary,
+            backup
+        ))
+        .unwrap();
+        let allow = BTreeSet::from(["m1".to_string(), "m2".to_string()]);
+        let (routes, diags) = build_model_routes(&cfg, Some(&allow), &|_| None);
+        assert!(routes.is_some(), "diags={diags:?}");
+        let routes = routes.unwrap();
+        let out = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allow,
+            Some(&routes),
+            &json!({"model": "m1", "messages": []}),
+        )
+        .await
+        .unwrap();
+        // tier-2 命中：溯源三键如实（所见即所用）
+        assert_eq!(out["failover"], json!(true));
+        assert_eq!(out["model_served"], json!("m2"));
+        assert_eq!(out["model_requested"], json!("m1"));
+        assert_eq!(out["content"], "fb-ok");
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_non_retryable_skips_fallback() {
+        let primary = spawn_app(Router::new().route(
+            "/exec",
+            post(|| async {
+                (
+                    [("content-type", "application/json")],
+                    r#"{"base_resp":{"status_code":2013,"status_msg":"unknown model"}}"#,
+                )
+            }),
+        ))
+        .await;
+        let backup = spawn_app(Router::new().route(
+            "/exec",
+            post(|| async {
+                (
+                    [("content-type", "application/json")],
+                    r#"{"choices":[{"message":{"content":"should-not-serve"}}]}"#,
+                )
+            }),
+        ))
+        .await;
+        let cfg = PluginConfig::from_json_str(&format!(
+            r#"{{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "tools_enabled":[],
+                "llm_providers":[
+                    {{"name":"p1","execute_url":"http://{}/exec","api_key_env":"K1","api_key":"k1","models":["m1"],"fallback_models":["m2"]}},
+                    {{"name":"p2","execute_url":"http://{}/exec","api_key_env":"K2","api_key":"k2","models":["m2"]}}
+                ]}}"#,
+            primary,
+            backup
+        ))
+        .unwrap();
+        let allow = BTreeSet::from(["m1".to_string(), "m2".to_string()]);
+        let (routes, _) = build_model_routes(&cfg, Some(&allow), &|_| None);
+        let routes = routes.unwrap();
+        // 明示不可重试（model_unknown）：不烧 tier-1 重试、不走 fallback，立即失败
+        let err = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allow,
+            Some(&routes),
+            &json!({"model": "m1", "messages": []}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PluginError::LlmClassified(ref f)
+                    if f.code == LlmErrorCode::ModelUnknown && !f.retryable
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn build_model_routes_prunes_invalid_fallback_with_diag() {
+        let cfg = PluginConfig::from_json_str(
+            r#"{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "tools_enabled":[],
+                "llm_providers":[
+                    {"name":"p1","execute_url":"https://a.invalid/e","api_key_env":"K1","api_key":"k","models":["m1"],"fallback_models":["m2","m-ghost"]},
+                    {"name":"p2","execute_url":"https://b.invalid/e","api_key_env":"K2","api_key":"k","models":["m2"]}
+                ]}"#,
+        )
+        .unwrap();
+        let allow = BTreeSet::from(["m1".to_string(), "m2".to_string()]);
+        let (routes, diags) = build_model_routes(&cfg, Some(&allow), &|_| None);
+        let r = routes.expect("两 provider 均应装载");
+        let m1 = r.resolve("m1").unwrap();
+        assert_eq!(m1.fallback_models, vec!["m2".to_string()], "合法回退保留");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.contains("m-ghost") && d.contains("已剔除")),
+            "未收录回退应剔除留诊断: {diags:?}"
+        );
+    }
+
     // ---------- 分类器全族单测 ----------
 
     #[test]
@@ -5962,6 +6275,7 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
                 api_key: "sk-mock".to_string(),
                 default_params: serde_json::Map::new(),
                 family: ProviderFamily::OpenAi,
+                fallback_models: Vec::new(),
             },
         );
         let http = build_http_client().unwrap();
