@@ -2384,6 +2384,51 @@ fn stamp_provenance(v: &mut Value, requested: &str, served: &str, failover: bool
     }
 }
 
+/// 流式单次出站（send → 状态门 → SSE 内容门 → 聚合四键）；tier 逻辑在
+/// call_llm_ext 流式分支。聚合全程在响应下行前完成——换模型重放对调用方
+/// 无痕（failover 安全面）。
+async fn llm_ext_stream_once(
+    http: &reqwest::Client,
+    execute_url: &str,
+    api_key: &str,
+    family: ProviderFamily,
+    provider: &str,
+    merged: &Value,
+    inject_max_tokens: Option<u64>,
+) -> Result<Value, PluginError> {
+    let body_out = match inject_max_tokens {
+        Some(mt) => {
+            let mut b = merged.clone();
+            b["max_tokens"] = json!(mt);
+            b
+        }
+        None => merged.clone(),
+    };
+    let resp = http
+        .post(execute_url)
+        .bearer_auth(api_key)
+        .json(&body_out)
+        .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| {
+            let code = if e.is_timeout() {
+                LlmErrorCode::Timeout
+            } else {
+                LlmErrorCode::Network
+            };
+            PluginError::LlmClassified(LlmFailure::from_error(
+                code,
+                Some(provider),
+                format!("LLM 请求失败({execute_url}): {e}"),
+                &hint_for(code),
+            ))
+        })?;
+    let resp = check_llm_ext_response(resp, family, provider).await?;
+    let resp = check_sse_content_type(resp, family, provider).await?;
+    execute_stream_aggregate(resp, family, provider).await
+}
+
 /// 扩展执行体 LLM 调用 —— /llm/execute 端点的唯一出站路径。
 ///
 /// - 请求：`body` 透传到 provider（全量透传，不裁剪任何键；多 provider
@@ -2416,67 +2461,8 @@ pub async fn call_llm_ext(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-
-    // 流式：既有单模型路径（流断裂恰好一次重试；回退不覆盖流式——流一旦
-    // 开帧下行，换模型重放需上层重发请求，本层不做半流切换）
-    if is_stream {
-        let mut attempt = 0usize;
-        loop {
-            attempt += 1;
-            let result = async {
-                let resp = http
-                    .post(&upstream.execute_url)
-                    .bearer_auth(&upstream.api_key)
-                    .json(&merged)
-                    .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        let code = if e.is_timeout() {
-                            LlmErrorCode::Timeout
-                        } else {
-                            LlmErrorCode::Network
-                        };
-                        PluginError::LlmClassified(LlmFailure::from_error(
-                            code,
-                            Some(&upstream.provider),
-                            format!("LLM 请求失败({}): {e}", upstream.execute_url),
-                            &hint_for(code),
-                        ))
-                    })?;
-                let resp =
-                    check_llm_ext_response(resp, upstream.family, &upstream.provider).await?;
-                let resp =
-                    check_sse_content_type(resp, upstream.family, &upstream.provider).await?;
-                execute_stream_aggregate(resp, upstream.family, &upstream.provider).await
-            }
-            .await;
-            match result {
-                Ok(v) => return Ok(v),
-                Err(e) => {
-                    // 有界重试：provider 流完整性闸两态判死（提前关闭/零 data 帧）
-                    // = 传输类瞬断，聚合路径下行前可安全重放（单 Result，重放对
-                    // 调用方无重复）；业务类错误重试不会成功，不触发。恰好一次
-                    // 重试（两次出站封顶），终态保持 fail-visible。
-                    if attempt == 1 && is_premature_close_error(&e) {
-                        tracing::warn!(
-                            error = %e,
-                            "provider 流提前关闭,聚合路径出站重试一次"
-                        );
-                        continue;
-                    }
-                    return Err(e);
-                }
-            }
-        }
-    }
-
-    // 非流式：tier-1（同模型一次 retryable 退避重试）→ tier-2（fallback 序贯
-    // 各一次）。auth/model_unknown/context_length/config 类不重试不回退
-    //（fail-visible）；回退未配置 = 行为零变化（响应不带溯源键）。
     let fallbacks = upstream.fallback_models.clone();
     let has_fallback = !fallbacks.is_empty();
-    // 元数据兜底链（仅当请求体未显式带 max_tokens）：registry.max_output
     let body_has_max_tokens = merged.get("max_tokens").is_some();
     let reg = cfg.model_registry.clone();
     let reg_max = |model: &str| -> Option<u64> {
@@ -2492,6 +2478,93 @@ pub async fn call_llm_ext(
         }
     };
 
+    // 流式：tier-1（同模型一次 retryable 退避重试——含流完整性断裂既有语义，
+    // 分类态/旧消息态两形态都接）→ tier-2 fallback 序贯各一次。聚合全程在
+    // 响应下行前完成，换模型重放对调用方无痕（failover 安全面）。
+    if is_stream {
+        let mut err = match llm_ext_stream_once(
+            http,
+            &upstream.execute_url,
+            &upstream.api_key,
+            upstream.family,
+            &upstream.provider,
+            &merged,
+            reg_max(&model_requested),
+        )
+        .await
+        {
+            Ok(mut v) => {
+                stamp(&mut v, &model_requested, false);
+                return Ok(v);
+            }
+            Err(e) => e,
+        };
+        let retryable_failure = matches!(&err, PluginError::LlmClassified(f) if f.retryable)
+            || is_premature_close_error(&err);
+        if retryable_failure {
+            tracing::warn!(
+                provider = %upstream.provider,
+                error = %err,
+                "stream tier-1 retryable failure, backing off once"
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            err = match llm_ext_stream_once(
+                http,
+                &upstream.execute_url,
+                &upstream.api_key,
+                upstream.family,
+                &upstream.provider,
+                &merged,
+                reg_max(&model_requested),
+            )
+            .await
+            {
+                Ok(mut v) => {
+                    stamp(&mut v, &model_requested, false);
+                    return Ok(v);
+                }
+                Err(e) => e,
+            };
+        }
+        let tier2_eligible = matches!(&err, PluginError::LlmClassified(f) if f.retryable)
+            || is_premature_close_error(&err);
+        if tier2_eligible {
+            for fb in &fallbacks {
+                let Some(fb_route) = routes.and_then(|r| r.resolve(fb)) else {
+                    continue;
+                };
+                let mut fb_body = merged.clone();
+                fb_body["model"] = json!(fb);
+                match llm_ext_stream_once(
+                    http,
+                    &fb_route.execute_url,
+                    &fb_route.api_key,
+                    fb_route.family,
+                    &fb_route.provider,
+                    &fb_body,
+                    reg_max(fb),
+                )
+                .await
+                {
+                    Ok(mut v) => {
+                        tracing::warn!(
+                            from = %model_requested,
+                            to = %fb,
+                            "stream failover succeeded"
+                        );
+                        stamp(&mut v, fb, true);
+                        return Ok(v);
+                    }
+                    Err(e) => {
+                        tracing::warn!(to = %fb, error = %e, "stream fallback attempt failed");
+                    }
+                }
+            }
+        }
+        return Err(err);
+    }
+
+    // 非流式：tier-1（同模型一次 retryable 退避重试）→ tier-2 fallback 序贯
     let mut err = match llm_ext_dispatch_once(
         http,
         &upstream.execute_url,
@@ -2567,6 +2640,7 @@ pub async fn call_llm_ext(
     }
     Err(err)
 }
+
 /// 传输类断链判定（聚合路径有界重试触发面）：provider 流完整性闸两态
 /// 判死——提前关闭（finish_reason 缺失）或零 data 帧。业务类错误（鉴权/
 /// 参数/base_resp 拒绝等）重试不会成功，不触发。
@@ -2991,13 +3065,19 @@ async fn execute_stream_aggregate(
     if !saw_data_frame {
         let leftover = full.trim();
         if leftover.is_empty() {
-            return Err(PluginError::Llm(
+            return Err(PluginError::LlmClassified(LlmFailure::from_error(
+                LlmErrorCode::StreamIntegrity,
+                Some(provider),
                 "SSE 流不含任何 data 帧（空 body）".to_string(),
-            ));
+                &hint_for(LlmErrorCode::StreamIntegrity),
+            )));
         }
         let preview: String = leftover.chars().take(500).collect();
-        return Err(PluginError::Llm(format!(
-            "SSE 流不含任何 data 帧; raw body: {preview}"
+        return Err(PluginError::LlmClassified(LlmFailure::from_error(
+            LlmErrorCode::StreamIntegrity,
+            Some(provider),
+            format!("SSE 流不含任何 data 帧; raw body: {preview}"),
+            &hint_for(LlmErrorCode::StreamIntegrity),
         )));
     }
 
@@ -3029,9 +3109,12 @@ async fn execute_stream_aggregate(
     // MiniMax/OpenAI 实测恒在；缺失即异常。原「无 finish 时兜底 stop」已废——
     // 兜底会篡改语义（截断流伪装成正常收尾，审计面无从分辨）。
     let Some(finish_reason) = finish_reason else {
-        return Err(PluginError::Llm(
+        return Err(PluginError::LlmClassified(LlmFailure::from_error(
+            LlmErrorCode::StreamIntegrity,
+            Some(provider),
             "SSE 流提前关闭(finish_reason 缺失,增量可能不完整)".to_string(),
-        ));
+            &hint_for(LlmErrorCode::StreamIntegrity),
+        )));
     };
     // 五键：reasoning 仅非空携带（非思考模型响应保持原四键字节形状不变）
     let mut out = json!({
@@ -3061,12 +3144,16 @@ struct StreamRelayState {
     saw_data_frame: bool,
     errored: bool,
     finalized: bool,
+    family: ProviderFamily,
+    provider: String,
 }
 
 impl StreamRelayState {
-    fn new(resp: reqwest::Response) -> Self {
+    fn new(resp: reqwest::Response, family: ProviderFamily, provider: String) -> Self {
         Self {
             resp,
+            family,
+            provider,
             bytes_done: false,
             buffer: String::new(),
             pending: std::collections::VecDeque::new(),
@@ -3135,12 +3222,17 @@ impl StreamRelayState {
                     .get("status_msg")
                     .and_then(Value::as_str)
                     .unwrap_or("(no status_msg)");
+                let code = classify_body_value(&frame_json, self.family)
+                    .unwrap_or(LlmErrorCode::UpstreamServer);
                 self.errored = true;
                 self.push_frame(json!({
                     "type": "error",
                     "error": format!(
                         "LLM API business error (status_code={status_code:?}): {status_msg}"
                     ),
+                    "code": code.as_str(),
+                    "retryable": LlmFailure::retryable_of(code),
+                    "provider": self.provider,
                 }));
                 return;
             }
@@ -3215,6 +3307,8 @@ impl StreamRelayState {
                 self.push_frame(json!({
                     "type": "error",
                     "error": "SSE 流不含任何 data 帧（空 body）",
+                    "code": LlmErrorCode::StreamIntegrity.as_str(),
+                    "retryable": true,
                 }));
                 return;
             }
@@ -3249,6 +3343,8 @@ impl StreamRelayState {
                     self.push_frame(json!({
                         "type": "error",
                         "error": "SSE 流提前关闭(finish_reason 缺失,增量可能不完整)",
+                        "code": LlmErrorCode::StreamIntegrity.as_str(),
+                        "retryable": true,
                     }));
                     return;
                 }
@@ -3274,38 +3370,53 @@ impl StreamRelayState {
 /// error 帧下行，与 evo-agent 侧 executor_sse_frame_outcome 消费契约对齐）。
 fn llm_ext_stream_frames(
     resp: reqwest::Response,
+    family: ProviderFamily,
+    provider: String,
 ) -> impl futures_util::Stream<Item = Result<String, PluginError>> + Send {
-    futures_util::stream::try_unfold(StreamRelayState::new(resp), |mut st| async move {
-        loop {
-            if let Some(frame) = st.pending.pop_front() {
-                return Ok(Some((frame, st)));
-            }
-            if st.errored || st.finalized {
-                return Ok(None);
-            }
-            if st.bytes_done {
-                st.finish();
-                continue;
-            }
-            match st.resp.chunk().await {
-                Ok(Some(b)) => {
-                    let chunk = String::from_utf8_lossy(&b).into_owned();
-                    st.feed(&chunk);
+    futures_util::stream::try_unfold(
+        StreamRelayState::new(resp, family, provider),
+        |mut st| async move {
+            loop {
+                if let Some(frame) = st.pending.pop_front() {
+                    return Ok(Some((frame, st)));
                 }
-                Ok(None) => {
-                    st.bytes_done = true;
+                if st.errored || st.finalized {
+                    return Ok(None);
                 }
-                Err(e) => {
-                    st.errored = true;
-                    st.push_frame(json!({
-                        "type": "error",
-                        "error": format!("SSE 流读取失败: {e}"),
-                    }));
+                if st.bytes_done {
+                    st.finish();
+                    continue;
+                }
+                match st.resp.chunk().await {
+                    Ok(Some(b)) => {
+                        let chunk = String::from_utf8_lossy(&b).into_owned();
+                        st.feed(&chunk);
+                    }
+                    Ok(None) => {
+                        st.bytes_done = true;
+                    }
+                    Err(e) => {
+                        st.errored = true;
+                        st.push_frame(json!({
+                            "type": "error",
+                            "error": format!("SSE 流读取失败: {e}"),
+                        }));
+                    }
                 }
             }
-        }
-    })
+        },
+    )
 }
+
+/// 开帧前 failover 候选：（execute_url, api_key, family, provider, default_params, model）
+type StreamCandidate<'a> = (
+    &'a str,
+    &'a str,
+    ProviderFamily,
+    &'a str,
+    serde_json::Map<String, Value>,
+    &'a str,
+);
 
 /// 扩展执行体真流式调用 —— /llm/execute-stream 端点的唯一出站路径。
 ///
@@ -3327,33 +3438,102 @@ pub async fn call_llm_ext_stream(
     PluginError,
 > {
     let upstream = llm_ext_entry_checks(cfg, allowlist, routes, body)?;
-    let mut req_body = merge_default_params(body, &upstream.default_params);
-    if let Some(obj) = req_body.as_object_mut() {
-        obj.insert("stream".to_string(), Value::Bool(true));
+    let model_requested = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let reg = cfg.model_registry.clone();
+    let reg_max = |m: &str| reg.as_ref().and_then(|r| r.max_output(m));
+    // 候选序：主模型（既有路由）→ fallback（声明序）；开帧前判定——每候选
+    // 一次出站+预检，SSE 头下行前全部可换；Ok(frames) 即止，开帧后错误帧
+    // 下行不做半流切换
+    let mut candidates: Vec<StreamCandidate> = Vec::new();
+    candidates.push((
+        &upstream.execute_url,
+        &upstream.api_key,
+        upstream.family,
+        &upstream.provider,
+        upstream.default_params.clone(),
+        &model_requested,
+    ));
+    for fb in &upstream.fallback_models {
+        if let Some(r) = routes.and_then(|r| r.resolve(fb)) {
+            candidates.push((
+                &r.execute_url,
+                &r.api_key,
+                r.family,
+                &r.provider,
+                r.default_params.clone(),
+                fb,
+            ));
+        }
     }
-    let resp = http
-        .post(&upstream.execute_url)
-        .bearer_auth(&upstream.api_key)
-        .json(&req_body)
-        .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|e| {
-            let code = if e.is_timeout() {
-                LlmErrorCode::Timeout
-            } else {
-                LlmErrorCode::Network
-            };
-            PluginError::LlmClassified(LlmFailure::from_error(
-                code,
-                Some(&upstream.provider),
-                format!("LLM 请求失败({}): {e}", upstream.execute_url),
-                &hint_for(code),
-            ))
-        })?;
-    let resp = check_llm_ext_response(resp, upstream.family, &upstream.provider).await?;
-    let resp = check_sse_content_type(resp, upstream.family, &upstream.provider).await?;
-    Ok(llm_ext_stream_frames(resp))
+    let mut last_err: Option<PluginError> = None;
+    for (idx, (url, key, family, provider, params, model_name)) in candidates.iter().enumerate() {
+        let mut req_body = merge_default_params(body, params);
+        if let Some(obj) = req_body.as_object_mut() {
+            obj.insert("stream".to_string(), Value::Bool(true));
+            if !obj.contains_key("max_tokens") {
+                if let Some(mt) = reg_max(model_name) {
+                    obj.insert("max_tokens".to_string(), json!(mt));
+                }
+            }
+        }
+        let resp = match http
+            .post(*url)
+            .bearer_auth(key)
+            .json(&req_body)
+            .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let code = if e.is_timeout() {
+                    LlmErrorCode::Timeout
+                } else {
+                    LlmErrorCode::Network
+                };
+                let err = PluginError::LlmClassified(LlmFailure::from_error(
+                    code,
+                    Some(provider),
+                    format!("LLM 请求失败({url}): {e}"),
+                    &hint_for(code),
+                ));
+                let retryable = matches!(&err, PluginError::LlmClassified(f) if f.retryable);
+                if retryable && idx + 1 < candidates.len() {
+                    last_err = Some(err);
+                    continue;
+                }
+                return Err(err);
+            }
+        };
+        let resp = match check_llm_ext_response(resp, *family, provider).await {
+            Ok(r) => r,
+            Err(e) => {
+                let retryable = matches!(&e, PluginError::LlmClassified(f) if f.retryable);
+                if retryable && idx + 1 < candidates.len() {
+                    last_err = Some(e);
+                    continue;
+                }
+                return Err(e);
+            }
+        };
+        let resp = match check_sse_content_type(resp, *family, provider).await {
+            Ok(r) => r,
+            Err(e) => {
+                let retryable = matches!(&e, PluginError::LlmClassified(f) if f.retryable);
+                if retryable && idx + 1 < candidates.len() {
+                    last_err = Some(e);
+                    continue;
+                }
+                return Err(e);
+            }
+        };
+        return Ok(llm_ext_stream_frames(resp, *family, provider.to_string()));
+    }
+    Err(last_err.unwrap_or_else(|| PluginError::Llm("LLM 流式候选全部失败".to_string())))
 }
 
 /// 自编排审计回路结果：回复文本 + sidecar 会话 id（供审计对账：
@@ -4974,6 +5154,113 @@ mod tests {
                 .any(|d| d.contains("m-ghost") && d.contains("已剔除")),
             "未收录回退应剔除留诊断: {diags:?}"
         );
+    }
+
+    // ---------- 流式 tier 逻辑与帧分类（真机 J-STREAM） ----------
+
+    #[tokio::test]
+    async fn call_llm_ext_stream_failover_fires_on_retryable_failure() {
+        let primary = spawn_app(Router::new().route(
+            "/exec",
+            post(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
+        ))
+        .await;
+        let backup = spawn_app(
+            Router::new().route(
+                "/exec",
+                post(|| async {
+                    (
+                        [("content-type", "text/event-stream")],
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"sf-ok\"},\"finish_reason\":\"stop\"}]}\n\n".to_string(),
+                    )
+                }),
+            ),
+        )
+        .await;
+        let cfg = PluginConfig::from_json_str(&format!(
+            r#"{{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "tools_enabled":[],
+                "llm_providers":[
+                    {{"name":"minimax","execute_url":"http://{primary}/exec","api_key_env":"K1","api_key":"k1","models":["m1"],"fallback_models":["m2"]}},
+                    {{"name":"backup","execute_url":"http://{backup}/exec","api_key_env":"K2","api_key":"k2","models":["m2"]}}
+                ]}}"#,
+        ))
+        .unwrap();
+        let allow = BTreeSet::from(["m1".to_string(), "m2".to_string()]);
+        let (routes, _) = build_model_routes(&cfg, Some(&allow), &|_| None);
+        let routes = routes.unwrap();
+        let out = call_llm_ext(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allow,
+            Some(&routes),
+            &json!({"model": "m1", "messages": [{"role": "user", "content": "hi"}], "stream": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["failover"], json!(true));
+        assert_eq!(out["model_served"], json!("m2"));
+        assert_eq!(out["model_requested"], json!("m1"));
+        assert_eq!(out["content"], "sf-ok");
+    }
+
+    #[tokio::test]
+    async fn twin_error_frame_carries_classification_keys() {
+        let primary = spawn_app(
+            Router::new().route(
+                "/exec",
+                post(|| async {
+                    (
+                        [("content-type", "text/event-stream")],
+                        "data: {\"base_resp\":{\"status_code\":2013,\"status_msg\":\"unknown model\"}}\n\n".to_string(),
+                    )
+                }),
+            ),
+        )
+        .await;
+        let cfg = PluginConfig::from_json_str(&format!(
+            r#"{{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "tools_enabled":[],
+                "llm_providers":[
+                    {{"name":"minimax","execute_url":"http://{primary}/exec","api_key_env":"K1","api_key":"k1","models":["m1"]}}
+                ]}}"#,
+        ))
+        .unwrap();
+        let allow = BTreeSet::from(["m1".to_string()]);
+        let (routes, _) = build_model_routes(&cfg, Some(&allow), &|_| None);
+        let routes = routes.unwrap();
+        let frames = call_llm_ext_stream(
+            &cfg,
+            &build_http_client().unwrap(),
+            &allow,
+            Some(&routes),
+            &json!({"model": "m1", "messages": [{"role": "user", "content": "hi"}], "stream": true}),
+        )
+        .await
+        .unwrap();
+        use futures_util::StreamExt;
+        futures_util::pin_mut!(frames);
+        let mut error_frame: Option<Value> = None;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(item) = frames.next().await {
+                if let Ok(frame) = item {
+                    let payload = frame.strip_prefix("data: ").unwrap_or("").trim();
+                    if let Ok(v) = serde_json::from_str::<Value>(payload) {
+                        if v["type"] == "error" {
+                            error_frame = Some(v);
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .await;
+        let ef = error_frame.expect("错误帧应下行");
+        assert_eq!(ef["code"], json!("model_unknown"));
+        assert_eq!(ef["retryable"], json!(false));
+        assert_eq!(ef["provider"], json!("minimax"));
     }
 
     // ---------- 分类器全族单测 ----------
