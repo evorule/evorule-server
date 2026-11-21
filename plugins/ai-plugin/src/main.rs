@@ -774,15 +774,34 @@ fn error_response(e: &PluginError) -> Response {
         PluginError::ServerUnreachable(_)
         | PluginError::Protocol(_)
         | PluginError::Engine(_)
-        | PluginError::Llm(_) => StatusCode::BAD_GATEWAY,
+        | PluginError::Llm(_)
+        | PluginError::LlmClassified(_) => StatusCode::BAD_GATEWAY,
     };
-    (status, Json(json!({ "error": e.to_string() }))).into_response()
+    let mut body = json!({ "error": e.to_string() });
+    // 分类错误旁路字段：error 键原语义保留，机器可读字段并行过渡一版
+    // （消费者按字段在场与否分流，零迁移）
+    if let PluginError::LlmClassified(f) = e {
+        body["code"] = json!(f.code.as_str());
+        body["retryable"] = json!(f.retryable);
+        if let Some(p) = &f.provider {
+            body["provider"] = json!(p);
+        }
+        if let Some(s) = f.http_status {
+            body["http_status"] = json!(s);
+        }
+        if !f.hint.is_empty() {
+            body["hint"] = json!(f.hint);
+        }
+    }
+    (status, Json(body)).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     // 测试代码允许 unwrap/expect/panic（lib.rs tests 同先例：生产路径仍全量 deny）
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use evorule_ai_plugin::{LlmErrorCode, LlmFailure};
 
     use super::*;
     use axum::body::to_bytes;
@@ -1397,6 +1416,32 @@ mod tests {
             axum::serve(listener, app).await.expect("serve");
         });
         addr
+    }
+
+    #[tokio::test]
+    async fn error_response_classified_fields_shape() {
+        // 分类错误：error 键原语义保留 + code/retryable/provider/http_status/hint 旁路
+        let e = PluginError::LlmClassified(LlmFailure {
+            message: "LLM HTTP 429(限流): x".to_string(),
+            code: LlmErrorCode::RateLimit,
+            retryable: true,
+            provider: Some("zhipu".to_string()),
+            http_status: Some(429),
+            hint: "上游限流：稍后重试或降低并发".to_string(),
+        });
+        let resp = error_response(&e);
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let v = body_json(resp).await;
+        assert_eq!(v["error"], json!("LLM 执行失败: LLM HTTP 429(限流): x"));
+        assert_eq!(v["code"], json!("rate_limit"));
+        assert_eq!(v["retryable"], json!(true));
+        assert_eq!(v["provider"], json!("zhipu"));
+        assert_eq!(v["http_status"], json!(429));
+        assert!(!v["hint"].as_str().unwrap_or_default().is_empty());
+        // 旧形态（Llm(String)）不带分类字段——零迁移对照
+        let legacy = error_response(&PluginError::Llm("plain".to_string()));
+        let lv = body_json(legacy).await;
+        assert!(lv.get("code").is_none());
     }
 
     #[tokio::test]

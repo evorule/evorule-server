@@ -88,8 +88,228 @@ pub enum PluginError {
     Engine(String),
     /// LLM 执行失败（错误已先回写 io_response）
     Llm(String),
+    /// LLM 执行失败，带结构化分类：人话消息经 Display 原样输出（与
+    /// Llm(String) 同前缀同 message），code/retryable/provider/http_status/
+    /// hint 由 error_response 在 error 键旁新增下发（零迁移）
+    LlmClassified(LlmFailure),
 }
 
+/// 上游 LLM 失败分类码：serve 侧按码决定重试/直出，
+/// retryable 永真族=rate_limit/upstream_server/network/timeout/stream_integrity，
+/// auth/model_unknown/context_length/config 永假（fail-visible，绝不盲目重试）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmErrorCode {
+    Auth,
+    RateLimit,
+    ModelUnknown,
+    ContextLength,
+    UpstreamServer,
+    Network,
+    Timeout,
+    StreamIntegrity,
+    Config,
+}
+
+impl LlmErrorCode {
+    /// 机器可读形态（snake_case；错误响应 code 键值，零 serde derive 依赖）
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auth => "auth",
+            Self::RateLimit => "rate_limit",
+            Self::ModelUnknown => "model_unknown",
+            Self::ContextLength => "context_length",
+            Self::UpstreamServer => "upstream_server",
+            Self::Network => "network",
+            Self::Timeout => "timeout",
+            Self::StreamIntegrity => "stream_integrity",
+            Self::Config => "config",
+        }
+    }
+}
+
+/// 分类失败体：Display 只出 message（error 键兼容），结构化字段旁路下发。
+#[derive(Debug, Clone)]
+pub struct LlmFailure {
+    pub message: String,
+    pub code: LlmErrorCode,
+    pub retryable: bool,
+    pub provider: Option<String>,
+    pub http_status: Option<u16>,
+    pub hint: String,
+}
+
+impl fmt::Display for LlmFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl LlmFailure {
+    fn retryable_of(code: LlmErrorCode) -> bool {
+        matches!(
+            code,
+            LlmErrorCode::RateLimit
+                | LlmErrorCode::UpstreamServer
+                | LlmErrorCode::Network
+                | LlmErrorCode::Timeout
+                | LlmErrorCode::StreamIntegrity
+        )
+    }
+
+    fn new(
+        code: LlmErrorCode,
+        provider: Option<&str>,
+        http_status: Option<u16>,
+        message: String,
+        hint: String,
+    ) -> Self {
+        Self {
+            retryable: Self::retryable_of(code),
+            provider: provider.map(str::to_string),
+            code,
+            http_status,
+            message,
+            hint,
+        }
+    }
+
+    fn from_error(code: LlmErrorCode, provider: Option<&str>, message: String, hint: &str) -> Self {
+        Self::new(code, provider, None, message, hint.to_string())
+    }
+}
+
+/// 上游错误分类族：显式 family 缺省按 provider 名推断（不做 URL 猜测）——
+/// minimax=base_resp.status_code 业务码族；zhipu=error.code 族；其余按 OpenAI
+/// 兼容形态处理（HTTP 状态门 + error.type/message）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderFamily {
+    Minimax,
+    Zhipu,
+    OpenAi,
+}
+
+impl ProviderFamily {
+    fn infer(name: &str) -> Self {
+        let n = name.to_ascii_lowercase();
+        if n.contains("minimax") {
+            Self::Minimax
+        } else if n.contains("zhipu") || n.contains("glm") {
+            Self::Zhipu
+        } else {
+            Self::OpenAi
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "minimax" => Ok(Self::Minimax),
+            "zhipu" => Ok(Self::Zhipu),
+            "openai" => Ok(Self::OpenAi),
+            other => Err(format!(
+                "family '{other}' 未收录（允许 minimax/zhipu/openai）；缺省按 provider 名推断"
+            )),
+        }
+    }
+}
+
+/// HTTP 状态门（族无关层，所有族先过）：401/403→auth、429→rate_limit、
+/// 5xx→upstream_server；其余 None（交族内业务码/兜底）。
+fn classify_http_status(status: u16) -> Option<LlmErrorCode> {
+    match status {
+        401 | 403 => Some(LlmErrorCode::Auth),
+        429 => Some(LlmErrorCode::RateLimit),
+        s if s >= 500 => Some(LlmErrorCode::UpstreamServer),
+        _ => None,
+    }
+}
+
+/// minimax base_resp.status_code 业务码族：常见码收录（1004 鉴权/1008 余额/
+/// 1027·1039 限流/2013 未知模型），未收录走 upstream_server 兜底。
+fn classify_minimax_code(code: i64) -> LlmErrorCode {
+    match code {
+        1004 | 1008 => LlmErrorCode::Auth,
+        1027 | 1039 => LlmErrorCode::RateLimit,
+        2013 => LlmErrorCode::ModelUnknown,
+        _ => LlmErrorCode::UpstreamServer,
+    }
+}
+
+/// zhipu error.code 族：常见码收录（1301 鉴权/1302 余额/1214 未知模型/
+/// 1001-1003 上游），未收录走 upstream_server 兜底。
+fn classify_zhipu_code(code: i64) -> LlmErrorCode {
+    match code {
+        1301 | 1302 => LlmErrorCode::Auth,
+        1214 => LlmErrorCode::ModelUnknown,
+        1001..=1003 => LlmErrorCode::UpstreamServer,
+        _ => LlmErrorCode::UpstreamServer,
+    }
+}
+
+/// OpenAI 兼容 error.type/message 族：context_length_exceeded（或消息含
+/// context length/maximum）→context_length；model_not_found/does not exist→
+/// model_unknown；invalid_api_key/authentication→auth；无 error 体 →None。
+/// 族内业务码分类（对已解析 JSON 体）：minimax=base_resp.status_code、
+/// zhipu=error.code、openai=error.type/message。
+fn classify_body_value(v: &Value, family: ProviderFamily) -> Option<LlmErrorCode> {
+    match family {
+        ProviderFamily::Minimax => v
+            .get("base_resp")?
+            .get("status_code")
+            .and_then(Value::as_i64)
+            .map(classify_minimax_code),
+        ProviderFamily::Zhipu => v
+            .get("error")?
+            .get("code")
+            .and_then(Value::as_i64)
+            .map(classify_zhipu_code),
+        ProviderFamily::OpenAi => classify_openai_body(v),
+    }
+}
+
+/// 文本体形态（HTTP 错误响应体全文解析后同上）。
+fn classify_body_code(text: &str, family: ProviderFamily) -> Option<LlmErrorCode> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    classify_body_value(&v, family)
+}
+
+/// 分类码 → 自助指引（错误响应 hint 键；一句话可执行）。
+fn hint_for(code: LlmErrorCode) -> String {
+    match code {
+        LlmErrorCode::Auth => "检查该 provider 的 API key（环境变量或配置 api_key）".to_string(),
+        LlmErrorCode::RateLimit => "上游限流：稍后重试或降低并发".to_string(),
+        LlmErrorCode::ModelUnknown => {
+            "该 provider 不提供此模型：换路由表内的模型，或在 llm_providers 中补声明".to_string()
+        }
+        LlmErrorCode::ContextLength => {
+            "请求超出模型上下文窗口：缩减消息历史或 max_tokens".to_string()
+        }
+        LlmErrorCode::UpstreamServer => "上游故障：稍后重试".to_string(),
+        LlmErrorCode::Network => "网络不可达：检查网络与 provider 地址".to_string(),
+        LlmErrorCode::Timeout => "上游超时：稍后重试".to_string(),
+        LlmErrorCode::StreamIntegrity => "流提前断开：可重试；若复现请查 provider 状态".to_string(),
+        LlmErrorCode::Config => "检查 ai-plugin 配置".to_string(),
+    }
+}
+
+fn classify_openai_body(v: &Value) -> Option<LlmErrorCode> {
+    let err = v.get("error")?;
+    let ty = err.get("type").and_then(Value::as_str).unwrap_or("");
+    let msg = err.get("message").and_then(Value::as_str).unwrap_or("");
+    let lower_msg = msg.to_ascii_lowercase();
+    if ty == "context_length_exceeded"
+        || lower_msg.contains("context length")
+        || lower_msg.contains("maximum context")
+    {
+        return Some(LlmErrorCode::ContextLength);
+    }
+    if ty == "model_not_found" || lower_msg.contains("does not exist") {
+        return Some(LlmErrorCode::ModelUnknown);
+    }
+    if ty == "invalid_api_key" || lower_msg.contains("authentication") {
+        return Some(LlmErrorCode::Auth);
+    }
+    None
+}
 impl fmt::Display for PluginError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -98,6 +318,7 @@ impl fmt::Display for PluginError {
             PluginError::Protocol(m) => write!(f, "sidecar 协议失败: {m}"),
             PluginError::Engine(m) => write!(f, "evorule 引擎错误: {m}"),
             PluginError::Llm(m) => write!(f, "LLM 执行失败: {m}"),
+            PluginError::LlmClassified(f_) => write!(f, "LLM 执行失败: {f_}"),
         }
     }
 }
@@ -201,6 +422,10 @@ pub struct PluginConfig {
     /// 为保留）；false（缺省）= 合成单 provider 路由（model=llm_model），其余
     /// 模型显式拒并指名已配置模型（替换静默误转失败类）。
     pub llm_single_endpoint_passthrough: bool,
+    /// 单端点合成路由的分类族（可选 `llm_family`：minimax/zhipu/openai；
+    /// 缺省 openai——HTTP 状态门族无关层仍全量生效）。多 provider 路由的
+    /// family 声明在 llm_providers 各条目内。
+    pub llm_family: Option<ProviderFamily>,
     /// 每模型能力描述（可选 `model_descriptions` 配置节，纯展示元数据）。
     /// 键=模型名，值=展示文本；/llm/models 视图下发时过滤为清单内成员
     /// （未知键忽略）。不入白名单执法/路由判定；缺省 = 副标题不渲染。
@@ -274,6 +499,9 @@ pub struct ProviderRouteConfig {
     pub models: Vec<String>,
     /// 出站请求体缺省参数（可选；请求体同键字段优先，见 `merge_default_params`）
     pub default_params: serde_json::Map<String, Value>,
+    /// 上游错误分类族（可选 `family` 显式声明；缺省按 provider 名推断，
+    /// 不做 URL 猜测）
+    pub family: Option<ProviderFamily>,
 }
 
 fn require_str(v: &Value, key: &str) -> Result<String, PluginError> {
@@ -490,6 +718,15 @@ impl PluginConfig {
             .get("llm_single_endpoint_passthrough")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let llm_family = match v.get("llm_family") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(ProviderFamily::parse(s).map_err(PluginError::Config)?),
+            Some(_) => {
+                return Err(PluginError::Config(
+                    "字段 'llm_family' 须为字符串（minimax/zhipu/openai）".to_string(),
+                ))
+            }
+        };
         let model_descriptions = parse_model_descriptions(v)?;
         // 调用方令牌:env 优先 > 配置文件;None = /llm/execute 不鉴权(dev 兼容)。
         let caller_token = std::env::var("EVORULE_AI_PLUGIN_CALLER_TOKEN")
@@ -541,6 +778,7 @@ impl PluginConfig {
             model_allowlist_path,
             llm_providers,
             llm_single_endpoint_passthrough,
+            llm_family,
             model_descriptions,
             caller_token,
             web_search_provider,
@@ -635,6 +873,11 @@ fn parse_provider_route_configs(
                 None => return Err(at("'default_params' 须为对象".to_string())),
             },
         };
+        let family = match obj.get("family") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(ProviderFamily::parse(s).map_err(at)?),
+            Some(_) => return Err(at("'family' 须为字符串（minimax/zhipu/openai）".to_string())),
+        };
         out.push(ProviderRouteConfig {
             name: name.to_string(),
             execute_url: execute_url.to_string(),
@@ -642,6 +885,7 @@ fn parse_provider_route_configs(
             api_key,
             models,
             default_params,
+            family,
         });
     }
     let mut names = std::collections::BTreeSet::new();
@@ -1741,6 +1985,8 @@ pub struct ProviderRoute {
     pub api_key: String,
     /// 出站请求体缺省参数（请求体同键字段优先）
     pub default_params: serde_json::Map<String, Value>,
+    /// 上游错误分类族（业务码分类面）
+    pub family: ProviderFamily,
 }
 
 impl std::fmt::Debug for ProviderRoute {
@@ -1905,6 +2151,7 @@ pub fn build_model_routes(
                     execute_url: p.execute_url.clone(),
                     api_key: key.clone(),
                     default_params: p.default_params.clone(),
+                    family: p.family.unwrap_or_else(|| ProviderFamily::infer(&p.name)),
                 },
             );
         }
@@ -1933,6 +2180,10 @@ struct LlmUpstream {
     execute_url: String,
     api_key: String,
     default_params: serde_json::Map<String, Value>,
+    /// 来源 provider 名（错误响应 provider 键数据源；单端点=legacy）
+    provider: String,
+    /// 上游错误分类族（业务码分类面）
+    family: ProviderFamily,
 }
 
 /// 扩展执行体 LLM 调用 —— /llm/execute 端点的唯一出站路径。
@@ -1974,18 +2225,29 @@ pub async fn call_llm_ext(
                 .send()
                 .await
                 .map_err(|e| {
-                    PluginError::Llm(format!("LLM 请求失败({}): {e}", upstream.execute_url))
+                    let code = if e.is_timeout() {
+                        LlmErrorCode::Timeout
+                    } else {
+                        LlmErrorCode::Network
+                    };
+                    PluginError::LlmClassified(LlmFailure::from_error(
+                        code,
+                        Some(&upstream.provider),
+                        format!("LLM 请求失败({}): {e}", upstream.execute_url),
+                        &hint_for(code),
+                    ))
                 })?;
-            let resp = check_llm_ext_response(resp).await?;
+            let resp = check_llm_ext_response(resp, upstream.family, &upstream.provider).await?;
             if is_stream {
-                let resp = check_sse_content_type(resp).await?;
-                execute_stream_aggregate(resp).await
+                let resp =
+                    check_sse_content_type(resp, upstream.family, &upstream.provider).await?;
+                execute_stream_aggregate(resp, upstream.family, &upstream.provider).await
             } else {
                 let v: Value = resp
                     .json()
                     .await
                     .map_err(|e| PluginError::Llm(format!("LLM 响应 JSON 解析失败: {e}")))?;
-                completion_four_keys(&v)
+                completion_four_keys(&v, upstream.family, &upstream.provider)
             }
         }
         .await;
@@ -2015,6 +2277,8 @@ pub async fn call_llm_ext(
 fn is_premature_close_error(err: &PluginError) -> bool {
     matches!(err, PluginError::Llm(msg)
         if msg.starts_with("SSE 流提前关闭") || msg.starts_with("SSE 流不含任何 data 帧"))
+        || matches!(err, PluginError::LlmClassified(f_)
+            if f_.code == LlmErrorCode::StreamIntegrity)
 }
 
 /// 出站前执法段（/llm/execute 与 /llm/execute-stream 共用）：model 非空 +
@@ -2071,6 +2335,8 @@ fn llm_ext_entry_checks(
             execute_url: route.execute_url.clone(),
             api_key: route.api_key.clone(),
             default_params: route.default_params.clone(),
+            provider: route.provider.clone(),
+            family: route.family,
         });
     }
     let url = cfg.llm_execute_url.as_deref().ok_or_else(|| {
@@ -2084,6 +2350,8 @@ fn llm_ext_entry_checks(
         execute_url: url.to_string(),
         api_key: cfg.llm_api_key.clone(),
         default_params: serde_json::Map::new(),
+        provider: "legacy".to_string(),
+        family: cfg.llm_family.unwrap_or(ProviderFamily::OpenAi),
     })
 }
 
@@ -2136,6 +2404,7 @@ fn synthesize_single_endpoint_routes(
             execute_url: url.to_string(),
             api_key: cfg.llm_api_key.clone(),
             default_params: serde_json::Map::new(),
+            family: cfg.llm_family.unwrap_or(ProviderFamily::OpenAi),
         },
     );
     diags.push(format!(
@@ -2145,7 +2414,11 @@ fn synthesize_single_endpoint_routes(
     (Some(routes), std::mem::take(diags))
 }
 /// provider 响应状态门（共用）：非 2xx 显式转错（含 401/429 分类）。
-async fn check_llm_ext_response(resp: reqwest::Response) -> Result<reqwest::Response, PluginError> {
+async fn check_llm_ext_response(
+    resp: reqwest::Response,
+    family: ProviderFamily,
+    provider: &str,
+) -> Result<reqwest::Response, PluginError> {
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
@@ -2155,8 +2428,16 @@ async fn check_llm_ext_response(resp: reqwest::Response) -> Result<reqwest::Resp
             429 => "限流(429)",
             _ => "上游错误",
         };
-        return Err(PluginError::Llm(format!(
-            "LLM HTTP {status}({kind}): {snippet}"
+        let message = format!("LLM HTTP {status}({kind}): {snippet}");
+        let code = classify_body_code(&text, family)
+            .or_else(|| classify_http_status(status.as_u16()))
+            .unwrap_or(LlmErrorCode::UpstreamServer);
+        return Err(PluginError::LlmClassified(LlmFailure::new(
+            code,
+            Some(provider),
+            Some(status.as_u16()),
+            message,
+            hint_for(code),
         )));
     }
     Ok(resp)
@@ -2164,14 +2445,22 @@ async fn check_llm_ext_response(resp: reqwest::Response) -> Result<reqwest::Resp
 
 /// SSE 内容类型门（仅流式路径）：200+JSON 是 MiniMax 业务错误体形态——
 /// 按 SSE 解析会静默空响应，必须显式转错（首字节前判定）。
-async fn check_sse_content_type(resp: reqwest::Response) -> Result<reqwest::Response, PluginError> {
+async fn check_sse_content_type(
+    resp: reqwest::Response,
+    family: ProviderFamily,
+    provider: &str,
+) -> Result<reqwest::Response, PluginError> {
     if let Some(ct) = resp.headers().get(CONTENT_TYPE) {
         let ct_str = ct.to_str().unwrap_or("");
         if ct_str.contains("application/json") {
             let text = resp.text().await.unwrap_or_default();
             let preview: String = text.chars().take(300).collect();
-            return Err(PluginError::Llm(format!(
-                "LLM API returned JSON instead of SSE stream: {preview}"
+            let code = classify_body_code(&text, family).unwrap_or(LlmErrorCode::UpstreamServer);
+            return Err(PluginError::LlmClassified(LlmFailure::from_error(
+                code,
+                Some(provider),
+                format!("LLM API returned JSON instead of SSE stream: {preview}"),
+                &hint_for(code),
             )));
         }
     }
@@ -2180,7 +2469,11 @@ async fn check_sse_content_type(resp: reqwest::Response) -> Result<reqwest::Resp
 
 /// 非流式 OpenAI 兼容响应 → 四键（与 agent `parse_success_response` 同构，
 /// 含 MiniMax 200+JSON 业务错误体检测与缺 choices 显式失败）。
-fn completion_four_keys(v: &Value) -> Result<Value, PluginError> {
+fn completion_four_keys(
+    v: &Value,
+    family: ProviderFamily,
+    provider: &str,
+) -> Result<Value, PluginError> {
     if let Some(base_resp) = v.get("base_resp") {
         let status_code = base_resp.get("status_code").and_then(Value::as_i64);
         let is_error = match status_code {
@@ -2192,8 +2485,14 @@ fn completion_four_keys(v: &Value) -> Result<Value, PluginError> {
                 .get("status_msg")
                 .and_then(Value::as_str)
                 .unwrap_or("(no status_msg)");
-            return Err(PluginError::Llm(format!(
-                "LLM API business error (status_code={status_code:?}): {status_msg}"
+            let code = status_code.map(classify_minimax_code).unwrap_or_else(|| {
+                classify_body_value(v, family).unwrap_or(LlmErrorCode::UpstreamServer)
+            });
+            return Err(PluginError::LlmClassified(LlmFailure::from_error(
+                code,
+                Some(provider),
+                format!("LLM API business error (status_code={status_code:?}): {status_msg}"),
+                &hint_for(code),
             )));
         }
     }
@@ -2204,8 +2503,12 @@ fn completion_four_keys(v: &Value) -> Result<Value, PluginError> {
         .unwrap_or(false);
     if !has_choices {
         let snippet: String = v.to_string().chars().take(300).collect();
-        return Err(PluginError::Llm(format!(
-            "LLM API response missing choices: {snippet}"
+        let code = classify_body_value(v, family).unwrap_or(LlmErrorCode::UpstreamServer);
+        return Err(PluginError::LlmClassified(LlmFailure::from_error(
+            code,
+            Some(provider),
+            format!("LLM API response missing choices: {snippet}"),
+            &hint_for(code),
         )));
     }
     let choice = v
@@ -2285,7 +2588,11 @@ struct SseToolAcc {
 /// 200+JSON 业务错误体已由调用侧 check_sse_content_type 显式转错；
 /// 流内 base_resp 错误帧显式转错（fail-visible，禁止错误被吞成空响应）；
 /// 零帧显式失败禁止静默空响应）。
-async fn execute_stream_aggregate(resp: reqwest::Response) -> Result<Value, PluginError> {
+async fn execute_stream_aggregate(
+    resp: reqwest::Response,
+    family: ProviderFamily,
+    provider: &str,
+) -> Result<Value, PluginError> {
     let full = resp
         .text()
         .await
@@ -2334,8 +2641,14 @@ async fn execute_stream_aggregate(resp: reqwest::Response) -> Result<Value, Plug
                     .get("status_msg")
                     .and_then(Value::as_str)
                     .unwrap_or("(no status_msg)");
-                return Err(PluginError::Llm(format!(
-                    "LLM API business error (status_code={status_code:?}): {status_msg}"
+                let code = status_code.map(classify_minimax_code).unwrap_or_else(|| {
+                    classify_body_value(&frame_json, family).unwrap_or(LlmErrorCode::UpstreamServer)
+                });
+                return Err(PluginError::LlmClassified(LlmFailure::from_error(
+                    code,
+                    Some(provider),
+                    format!("LLM API business error (status_code={status_code:?}): {status_msg}"),
+                    &hint_for(code),
                 )));
             }
         }
@@ -2726,9 +3039,21 @@ pub async fn call_llm_ext_stream(
         .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
         .send()
         .await
-        .map_err(|e| PluginError::Llm(format!("LLM 请求失败({}): {e}", upstream.execute_url)))?;
-    let resp = check_llm_ext_response(resp).await?;
-    let resp = check_sse_content_type(resp).await?;
+        .map_err(|e| {
+            let code = if e.is_timeout() {
+                LlmErrorCode::Timeout
+            } else {
+                LlmErrorCode::Network
+            };
+            PluginError::LlmClassified(LlmFailure::from_error(
+                code,
+                Some(&upstream.provider),
+                format!("LLM 请求失败({}): {e}", upstream.execute_url),
+                &hint_for(code),
+            ))
+        })?;
+    let resp = check_llm_ext_response(resp, upstream.family, &upstream.provider).await?;
+    let resp = check_sse_content_type(resp, upstream.family, &upstream.provider).await?;
     Ok(llm_ext_stream_frames(resp))
 }
 
@@ -4135,6 +4460,103 @@ mod tests {
         }
     }
 
+    // ---------- 分类器全族单测 ----------
+
+    #[test]
+    fn classify_minimax_business_codes() {
+        assert_eq!(classify_minimax_code(2013), LlmErrorCode::ModelUnknown);
+        assert_eq!(classify_minimax_code(1004), LlmErrorCode::Auth);
+        assert_eq!(classify_minimax_code(1027), LlmErrorCode::RateLimit);
+        assert_eq!(classify_minimax_code(1039), LlmErrorCode::RateLimit);
+        assert_eq!(classify_minimax_code(1008), LlmErrorCode::Auth);
+        assert_eq!(classify_minimax_code(9999), LlmErrorCode::UpstreamServer);
+    }
+
+    #[test]
+    fn classify_zhipu_business_codes() {
+        assert_eq!(classify_zhipu_code(1301), LlmErrorCode::Auth);
+        assert_eq!(classify_zhipu_code(1214), LlmErrorCode::ModelUnknown);
+        assert_eq!(classify_zhipu_code(1002), LlmErrorCode::UpstreamServer);
+        assert_eq!(classify_zhipu_code(4242), LlmErrorCode::UpstreamServer);
+    }
+
+    #[test]
+    fn classify_http_status_families() {
+        assert_eq!(classify_http_status(401), Some(LlmErrorCode::Auth));
+        assert_eq!(classify_http_status(403), Some(LlmErrorCode::Auth));
+        assert_eq!(classify_http_status(429), Some(LlmErrorCode::RateLimit));
+        assert_eq!(
+            classify_http_status(503),
+            Some(LlmErrorCode::UpstreamServer)
+        );
+        assert_eq!(classify_http_status(400), None);
+    }
+
+    #[test]
+    fn classify_openai_error_bodies() {
+        let ctx = json!({"error": {"type": "context_length_exceeded", "message": "reduce"}});
+        assert_eq!(
+            classify_openai_body(&ctx),
+            Some(LlmErrorCode::ContextLength)
+        );
+        let mnf = json!({"error": {"type": "model_not_found", "message": "nope"}});
+        assert_eq!(classify_openai_body(&mnf), Some(LlmErrorCode::ModelUnknown));
+        let auth = json!({"error": {"type": "invalid_api_key", "message": "bad key"}});
+        assert_eq!(classify_openai_body(&auth), Some(LlmErrorCode::Auth));
+        assert_eq!(classify_openai_body(&json!({"ok": 1})), None);
+    }
+
+    #[test]
+    fn classify_body_value_routes_by_family() {
+        let mm = json!({"base_resp": {"status_code": 2013, "status_msg": "unknown model"}});
+        assert_eq!(
+            classify_body_value(&mm, ProviderFamily::Minimax),
+            Some(LlmErrorCode::ModelUnknown)
+        );
+        let zp = json!({"error": {"code": 1214, "message": "model not exist"}});
+        assert_eq!(
+            classify_body_value(&zp, ProviderFamily::Zhipu),
+            Some(LlmErrorCode::ModelUnknown)
+        );
+        let oa = json!({"error": {"type": "context_length_exceeded", "message": "x"}});
+        assert_eq!(
+            classify_body_value(&oa, ProviderFamily::OpenAi),
+            Some(LlmErrorCode::ContextLength)
+        );
+    }
+
+    #[test]
+    fn llm_failure_retryable_families_and_family_inference() {
+        for code in [
+            LlmErrorCode::RateLimit,
+            LlmErrorCode::UpstreamServer,
+            LlmErrorCode::Network,
+            LlmErrorCode::Timeout,
+            LlmErrorCode::StreamIntegrity,
+        ] {
+            assert!(LlmFailure::retryable_of(code), "{code:?} 应可重试");
+        }
+        for code in [
+            LlmErrorCode::Auth,
+            LlmErrorCode::ModelUnknown,
+            LlmErrorCode::ContextLength,
+            LlmErrorCode::Config,
+        ] {
+            assert!(!LlmFailure::retryable_of(code), "{code:?} 不可盲重试");
+        }
+        assert_eq!(
+            ProviderFamily::infer("minimax-main"),
+            ProviderFamily::Minimax
+        );
+        assert_eq!(ProviderFamily::infer("zhipu"), ProviderFamily::Zhipu);
+        assert_eq!(ProviderFamily::infer("glm-relay"), ProviderFamily::Zhipu);
+        assert_eq!(ProviderFamily::infer("legacy"), ProviderFamily::OpenAi);
+        assert_eq!(LlmErrorCode::RateLimit.as_str(), "rate_limit");
+        assert_eq!(LlmErrorCode::ModelUnknown.as_str(), "model_unknown");
+        assert_eq!(ProviderFamily::parse("zhipu"), Ok(ProviderFamily::Zhipu));
+        assert!(ProviderFamily::parse("nope").is_err());
+    }
+
     #[test]
     fn routes_absent_when_not_configured() {
         // 语义化 A1 后的透传契约：显式启用 llm_single_endpoint_passthrough 的
@@ -4928,26 +5350,38 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
     #[test]
     fn completion_four_keys_reasoning_carried_only_when_non_empty() {
         // MiniMax 推理面：message.reasoning_content 非空 → 第五键携带
-        let with = completion_four_keys(&json!({
-            "choices": [{"message": {"content": "答", "reasoning_content": "思"}}],
-            "usage": {"total_tokens": 3}
-        }))
+        let with = completion_four_keys(
+            &json!({
+                "choices": [{"message": {"content": "答", "reasoning_content": "思"}}],
+                "usage": {"total_tokens": 3}
+            }),
+            ProviderFamily::OpenAi,
+            "mock",
+        )
         .unwrap();
         assert_eq!(with["reasoning"], "思");
         assert_eq!(with["content"], "答");
         assert_eq!(with["token_usage"], json!({"total_tokens": 3}));
         // 非思考模型缺键 → 原四键字节形状（键集恰四）
-        let without = completion_four_keys(&json!({
-            "choices": [{"message": {"content": "答"}}],
-            "usage": {"total_tokens": 3}
-        }))
+        let without = completion_four_keys(
+            &json!({
+                "choices": [{"message": {"content": "答"}}],
+                "usage": {"total_tokens": 3}
+            }),
+            ProviderFamily::OpenAi,
+            "mock",
+        )
         .unwrap();
         assert!(without.get("reasoning").is_none());
         assert_eq!(without.as_object().map(|m| m.len()), Some(4));
         // 空串 reasoning_content 同样不携带
-        let empty = completion_four_keys(&json!({
-            "choices": [{"message": {"content": "答", "reasoning_content": ""}}]
-        }))
+        let empty = completion_four_keys(
+            &json!({
+                "choices": [{"message": {"content": "答", "reasoning_content": ""}}]
+            }),
+            ProviderFamily::OpenAi,
+            "mock",
+        )
         .unwrap();
         assert!(empty.get("reasoning").is_none());
     }
@@ -5527,6 +5961,7 @@ data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name
                 execute_url: format!("{base}/llm/chat/completions"),
                 api_key: "sk-mock".to_string(),
                 default_params: serde_json::Map::new(),
+                family: ProviderFamily::OpenAi,
             },
         );
         let http = build_http_client().unwrap();
