@@ -347,7 +347,7 @@ fn classify_body_value(v: &Value, family: ProviderFamily) -> Option<LlmErrorCode
         ProviderFamily::Zhipu => v
             .get("error")?
             .get("code")
-            .and_then(Value::as_i64)
+            .and_then(|c| c.as_i64().or_else(|| c.as_str()?.parse::<i64>().ok()))
             .map(classify_zhipu_code),
         ProviderFamily::OpenAi => classify_openai_body(v),
     }
@@ -4992,6 +4992,13 @@ mod tests {
     fn classify_zhipu_business_codes() {
         assert_eq!(classify_zhipu_code(1301), LlmErrorCode::Auth);
         assert_eq!(classify_zhipu_code(1214), LlmErrorCode::ModelUnknown);
+        // 真机实测（2026-11-21）：zhipu error.code 是字符串形态（"1214"）——
+        // 字符串/数字双形态解析由 classify_body_value 的 body 值路径覆盖
+        let zp_str = json!({"error": {"code": "1214", "message": "输入不能为空"}});
+        assert_eq!(
+            classify_body_value(&zp_str, ProviderFamily::Zhipu),
+            Some(LlmErrorCode::ModelUnknown)
+        );
         assert_eq!(classify_zhipu_code(1002), LlmErrorCode::UpstreamServer);
         assert_eq!(classify_zhipu_code(4242), LlmErrorCode::UpstreamServer);
     }
