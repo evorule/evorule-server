@@ -412,6 +412,23 @@ jobs:
       - name: 哈希口径反绕行棘轮扫描
         run: python3 scripts/hash_bypass_scan.py --ratchet scripts/hash-bypass-baseline.txt
 
+  # Ecosystem dependency-graph guard (embedded constraint snapshot):
+  # validates this repository's Cargo.toml dependency edges against the
+  # embedded snapshot in tools/deps-guard/. Violations fail the run;
+  # migration-period exemptions surface as visible exemption hits.
+  deps-guard:
+    name: deps guard (embedded copy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: dependency-graph guard (self scan)
+        run: python tools/deps-guard/check_deps_graph.py --self --graph tools/deps-guard/deps-graph.json
+
   # Ecosystem license gate (reusable workflow, pinned to root-repo commit)
   license-gate:
     name: license gate
