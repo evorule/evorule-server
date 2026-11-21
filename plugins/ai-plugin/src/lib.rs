@@ -94,6 +94,93 @@ pub enum PluginError {
     LlmClassified(LlmFailure),
 }
 
+/// 模型元数据条目（运行能力面，非治理约束面）。
+#[derive(Debug, Clone, Default)]
+pub struct ModelMeta {
+    pub context_window: Option<u64>,
+    pub max_output: Option<u64>,
+    pub capabilities: Vec<String>,
+    pub family: Option<String>,
+}
+
+/// 模型元数据物料（独立于治理白名单：白名单管准入约束，registry 管运行
+/// 能力参数）。文件形态 `{"models": {"<名>": {"context_window":N,
+/// "max_output":N,"capabilities":[...],"family":"..."}}}`；缺文件/解析失败
+/// = 空 registry（fail-soft：元数据是建议面，绝不阻断 LLM 通路）。
+#[derive(Debug, Clone, Default)]
+pub struct ModelRegistry {
+    entries: std::collections::BTreeMap<String, ModelMeta>,
+}
+
+impl ModelRegistry {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 该模型的输出上限建议（消费链第三优先级：请求体显式 > 配置 > registry）
+    pub fn max_output(&self, model: &str) -> Option<u64> {
+        self.entries.get(model)?.max_output
+    }
+
+    pub fn from_value(v: &Value) -> Result<Self, String> {
+        let models = v
+            .get("models")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "缺 'models' 对象".to_string())?;
+        let mut entries = std::collections::BTreeMap::new();
+        for (name, meta) in models {
+            let max_output = meta.get("max_output").and_then(Value::as_u64);
+            let context_window = meta.get("context_window").and_then(Value::as_u64);
+            let capabilities = meta
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let family = meta
+                .get("family")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            entries.insert(
+                name.clone(),
+                ModelMeta {
+                    context_window,
+                    max_output,
+                    capabilities,
+                    family,
+                },
+            );
+        }
+        Ok(Self { entries })
+    }
+
+    /// 装载物料文件；缺文件 = None（零行为变化），解析失败 = warn 后 None。
+    pub fn load_file(path: &str) -> Option<Self> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let v: Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("模型元数据物料 JSON 非法（{path}）: {e}——按空 registry 继续");
+                return None;
+            }
+        };
+        match Self::from_value(&v) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!("模型元数据物料形态非法（{path}）: {e}——按空 registry 继续");
+                None
+            }
+        }
+    }
+}
+
 /// 上游 LLM 失败分类码：serve 侧按码决定重试/直出，
 /// retryable 永真族=rate_limit/upstream_server/network/timeout/stream_integrity，
 /// auth/model_unknown/context_length/config 永假（fail-visible，绝不盲目重试）。
@@ -408,6 +495,11 @@ pub struct PluginConfig {
     /// `https://api.minimaxi.com/v1/text/chatcompletion_v2`）。
     /// 未配置 = 扩展执行体未就绪（既有 /services/ai_plugin_chat 通道不受影响）。
     pub llm_execute_url: Option<String>,
+    /// 模型元数据物料路径（可选；缺省取白名单同目录 `model_registry.json`，
+    /// 缺文件 = 空 registry 零行为变化）。运行能力面独立于治理白名单。
+    pub model_registry_path: Option<String>,
+    /// 装载产物（main 装配期填入；config 解析恒 None——装载需要 fs 访问）
+    pub model_registry: Option<std::sync::Arc<ModelRegistry>>,
     /// 模型准入白名单物料路径（`00_constraint_model_allowlist.json` server 侧副本）。
     /// `llm_execute_url` 配置后为 fail-closed 执法面：物料缺失/解析空集 →
     /// 扩展执行体拒绝所有 /llm/execute 请求（显式自诊断，绝不静默放行）。
@@ -716,6 +808,7 @@ impl PluginConfig {
             require_http(u, "llm_execute_url")?;
         }
         let model_allowlist_path = optional_str(v, "model_allowlist_path");
+        let model_registry_path = optional_str(v, "model_registry_path");
         let llm_providers = parse_provider_route_configs(v)?;
         let llm_single_endpoint_passthrough = v
             .get("llm_single_endpoint_passthrough")
@@ -782,6 +875,8 @@ impl PluginConfig {
             llm_providers,
             llm_single_endpoint_passthrough,
             llm_family,
+            model_registry_path,
+            model_registry: None,
             model_descriptions,
             caller_token,
             web_search_provider,
@@ -2240,11 +2335,22 @@ async fn llm_ext_dispatch_once(
     family: ProviderFamily,
     provider: &str,
     merged: &Value,
+    inject_max_tokens: Option<u64>,
 ) -> Result<Value, PluginError> {
+    // 元数据注入链：请求体显式 max_tokens 优先（绝不覆盖调用方显式值）；
+    // 缺省时 registry.max_output 兜底（registry 未配 = None = 不注入零变化）
+    let body_out = match inject_max_tokens {
+        Some(mt) => {
+            let mut b = merged.clone();
+            b["max_tokens"] = json!(mt);
+            b
+        }
+        None => merged.clone(),
+    };
     let resp = http
         .post(execute_url)
         .bearer_auth(api_key)
-        .json(merged)
+        .json(&body_out)
         .timeout(Duration::from_secs(LLM_EXECUTE_TIMEOUT_SECS))
         .send()
         .await
@@ -2370,6 +2476,16 @@ pub async fn call_llm_ext(
     //（fail-visible）；回退未配置 = 行为零变化（响应不带溯源键）。
     let fallbacks = upstream.fallback_models.clone();
     let has_fallback = !fallbacks.is_empty();
+    // 元数据兜底链（仅当请求体未显式带 max_tokens）：registry.max_output
+    let body_has_max_tokens = merged.get("max_tokens").is_some();
+    let reg = cfg.model_registry.clone();
+    let reg_max = |model: &str| -> Option<u64> {
+        if body_has_max_tokens {
+            None
+        } else {
+            reg.as_ref().and_then(|r| r.max_output(model))
+        }
+    };
     let stamp = |v: &mut Value, served: &str, failover: bool| {
         if has_fallback {
             stamp_provenance(v, &model_requested, served, failover);
@@ -2383,6 +2499,7 @@ pub async fn call_llm_ext(
         upstream.family,
         &upstream.provider,
         &merged,
+        reg_max(&model_requested),
     )
     .await
     {
@@ -2407,6 +2524,7 @@ pub async fn call_llm_ext(
             upstream.family,
             &upstream.provider,
             &merged,
+            reg_max(&model_requested),
         )
         .await
         {
@@ -2432,6 +2550,7 @@ pub async fn call_llm_ext(
                 fb_route.family,
                 &fb_route.provider,
                 &fb_body,
+                reg_max(fb),
             )
             .await
             {
@@ -3465,6 +3584,12 @@ async fn run_loop(
                             });
                             if let Some(mt) = cfg.llm_max_tokens {
                                 body["max_tokens"] = json!(mt);
+                            } else if let Some(mo) = cfg
+                                .model_registry
+                                .as_ref()
+                                .and_then(|r| r.max_output(&model))
+                            {
+                                body["max_tokens"] = json!(mo);
                             }
                             call_llm_ext(cfg, http, allowlist, Some(rts), &body)
                                 .await
@@ -4638,6 +4763,84 @@ mod tests {
                 PluginConfig::from_value_with_env(&cfg_value, &|_| None::<String>).unwrap_err();
             assert!(err.to_string().contains(*expect), "case {i}: {err}");
         }
+    }
+
+    // ---------- 模型元数据（registry）注入链 ----------
+
+    #[test]
+    fn model_registry_parse_and_max_output() {
+        let v = json!({"models": {
+            "m1": {"context_window": 128000, "max_output": 8192, "capabilities": ["chat"]},
+            "m2": {}
+        }});
+        let reg = ModelRegistry::from_value(&v).unwrap();
+        assert_eq!(reg.len(), 2);
+        assert_eq!(reg.max_output("m1"), Some(8192));
+        assert_eq!(reg.max_output("m2"), None, "空条目无建议 = 不注入");
+        assert_eq!(reg.max_output("missing"), None);
+        assert!(ModelRegistry::from_value(&json!({"nope": 1})).is_err());
+    }
+
+    #[tokio::test]
+    async fn call_llm_ext_injects_registry_max_output_only_when_absent() {
+        let captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cap = captured.clone();
+        let addr = spawn_app(Router::new().route(
+            "/exec",
+            post(move |Json(body): Json<Value>| {
+                let cap = cap.clone();
+                async move {
+                    cap.lock().unwrap().push(body);
+                    (
+                        [("content-type", "application/json")],
+                        r#"{"choices":[{"message":{"content":"ok"}}]}"#,
+                    )
+                }
+            }),
+        ))
+        .await;
+        let mut cfg = PluginConfig::from_json_str(&format!(
+            r#"{{"listen_addr":"127.0.0.1:0","server_base_url":"http://127.0.0.1:1",
+                "llm_endpoint":"http://127.0.0.1:9/unbound","llm_api_key":"sk","llm_model":"m1",
+                "tools_enabled":[],
+                "llm_providers":[
+                    {{"name":"p1","execute_url":"http://{addr}/exec","api_key_env":"K1","api_key":"k1","models":["m1"]}}
+                ]}}"#
+        ))
+        .unwrap();
+        cfg.model_registry = Some(std::sync::Arc::new(
+            ModelRegistry::from_value(&json!({"models": {"m1": {"max_output": 777}}})).unwrap(),
+        ));
+        let allow = BTreeSet::from(["m1".to_string()]);
+        let (routes, _) = build_model_routes(&cfg, Some(&allow), &|_| None);
+        let routes = routes.unwrap();
+        let http = build_http_client().unwrap();
+
+        // 缺省：registry.max_output 注入
+        call_llm_ext(
+            &cfg,
+            &http,
+            &allow,
+            Some(&routes),
+            &json!({"model":"m1","messages":[]}),
+        )
+        .await
+        .unwrap();
+        // 请求体显式值优先（绝不覆盖调用方）
+        call_llm_ext(
+            &cfg,
+            &http,
+            &allow,
+            Some(&routes),
+            &json!({"model":"m1","messages":[],"max_tokens":5}),
+        )
+        .await
+        .unwrap();
+        let got = captured.lock().unwrap().clone();
+        assert_eq!(got.len(), 2, "两次出站");
+        assert_eq!(got[0]["max_tokens"], json!(777), "registry 兜底注入");
+        assert_eq!(got[1]["max_tokens"], json!(5), "显式值绝不覆盖");
     }
 
     // ---------- 回退（fallback）执行序与装载校验 ----------
