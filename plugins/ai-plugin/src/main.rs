@@ -49,8 +49,8 @@ use axum::Router;
 use evorule_ai_plugin::{
     build_http_client, build_llm_execute_client, build_model_routes, call_llm_ext,
     call_llm_ext_stream, load_model_allowlist_file, run_audited_chat_routed, web_search_relay,
-    ChatRequest, ModelRoutes, PluginConfig, PluginError, WebSearchError, WEB_SEARCH_DEFAULT_COUNT,
-    WEB_SEARCH_MAX_COUNT,
+    ChatRequest, ModelRegistry, ModelRoutes, PluginConfig, PluginError, WebSearchError,
+    WEB_SEARCH_DEFAULT_COUNT, WEB_SEARCH_MAX_COUNT,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -188,13 +188,30 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let cfg = match PluginConfig::from_json_str(&content) {
+    let mut cfg = match PluginConfig::from_json_str(&content) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[ai-plugin] 配置文件非法 {}: {e}", path_used.display());
             std::process::exit(1);
         }
     };
+    // 模型元数据物料：显式 model_registry_path 优先，缺省取白名单同目录
+    // model_registry.json；缺文件/解析失败 = 空 registry（零行为变化，建议面）
+    let registry_path = cfg.model_registry_path.clone().or_else(|| {
+        cfg.model_allowlist_path.as_deref().and_then(|ap| {
+            std::path::Path::new(ap)
+                .parent()
+                .map(|d| d.join("model_registry.json").to_string_lossy().into_owned())
+        })
+    });
+    if let Some(rp) = registry_path {
+        if let Some(reg) = ModelRegistry::load_file(&rp) {
+            if !reg.is_empty() {
+                tracing::info!("模型元数据物料装载: {rp}（{} 个模型）", reg.len());
+                cfg.model_registry = Some(std::sync::Arc::new(reg));
+            }
+        }
+    }
     tracing::info!(
         "ai-plugin 配置装载成功: {}（server={} llm_model={} 监听={} 凭据来源={:?}）",
         path_used.display(),
