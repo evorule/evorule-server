@@ -170,7 +170,7 @@ mod tests {
             ]))
             .expect_err("未知单位应报错");
         assert!(
-            unknown.contains("未知单位") && unknown.contains("lhs"),
+            unknown.contains("unknown unit") && unknown.contains("lhs"),
             "err = {unknown}"
         );
 
@@ -181,7 +181,7 @@ mod tests {
             ]))
             .expect_err("加减操作分量纲不等应报错");
         assert!(
-            additive.contains("加减两侧操作分量纲不一致"),
+            additive.contains("additive operand dimensional mismatch"),
             "err = {additive}"
         );
     }
