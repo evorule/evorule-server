@@ -383,8 +383,33 @@ const MAX_SSE_CONNECTIONS: u64 = 100;
 /// SSE 心跳间隔（每 15s 发送 `: ping` 保持连接活跃）
 const SSE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
-/// SSE 连接最大空闲时长（10 分钟无事件自动关闭）
-const SSE_MAX_IDLE: Duration = Duration::from_secs(600);
+/// SSE 连接最大空闲时长（缺省 600s；可经环境变量覆盖）
+///
+/// 空闲语义 = 该连接无任何下行字节（心跳 ping 计入活性）。此前 ping 不
+/// 重置空闲计时，导致「长 LLM 流式调用期间引擎无真实 Fact 流出」的健康
+/// 连接在 10 分钟后被服务端误关闭，runner 侧表现为最终回复流提前关闭
+/// （success=false 假失败）。ping 本身即连接与引擎存活信号；真死连接由
+/// 写侧错误/断开（hyper 感知）与本闸兜底回收，不再依赖「无真实事件」。
+const SSE_MAX_IDLE_DEFAULT_SECS: u64 = 600;
+
+/// 解析生效的空闲上限（进程内一次；非法值一次性告警回落缺省，fail-visible）
+fn sse_max_idle() -> Duration {
+    static RESOLVED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *RESOLVED.get_or_init(|| match std::env::var("EVORULE_SSE_MAX_IDLE_SECS") {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(secs) if (60..=86400).contains(&secs) => Duration::from_secs(secs),
+            _ => {
+                tracing::warn!(
+                    value = %raw,
+                    default_secs = SSE_MAX_IDLE_DEFAULT_SECS,
+                    "EVORULE_SSE_MAX_IDLE_SECS 非法或缺省域外(60..=86400)，回落缺省值"
+                );
+                Duration::from_secs(SSE_MAX_IDLE_DEFAULT_SECS)
+            }
+        },
+        Err(_) => Duration::from_secs(SSE_MAX_IDLE_DEFAULT_SECS),
+    })
+}
 
 /// HTTP 请求体大小上限（1MB，防止超大请求体攻击）
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
@@ -10510,19 +10535,25 @@ async fn session_events(
 
         heartbeat.tick().await; // 跳过第一次立即触发
 
-        let mut last_event_time = tokio::time::Instant::now();
+        let mut last_activity_time = tokio::time::Instant::now();
+
+        let sse_idle = sse_max_idle();
 
 
 
         loop {
 
-            let idle_deadline = last_event_time + SSE_MAX_IDLE;
+            let idle_deadline = last_activity_time + sse_idle;
 
             tokio::select! {
 
-                // 心跳：定期发送 : ping 保持连接活跃
+                // 心跳：定期发送 : ping 保持连接活跃（ping 计入活性——重置空闲计时；
+
+                // 真 LLM 流式调用期引擎无真实 Fact，不保活则健康连接被误杀）
 
                 _ = heartbeat.tick() => {
+
+                    last_activity_time = tokio::time::Instant::now();
 
                     yield Ok::<_, std::convert::Infallible>(
 
@@ -10540,7 +10571,7 @@ async fn session_events(
 
                         Ok(fact) => {
 
-                            last_event_time = tokio::time::Instant::now();
+                            last_activity_time = tokio::time::Instant::now();
 
                             let data = fact_to_sse_data(&fact);
 
@@ -10586,7 +10617,9 @@ async fn session_events(
 
                 }
 
-                // 空闲超时：10 分钟无实际事件自动关闭（心跳不重置计时）
+                // 空闲超时：无任何下行字节（含心跳 ping）达 sse_idle 自动关闭
+
+                // （正常态 ping 每 15s 重置计时，本分支仅在流任务自身停滞时兜底）
 
                 _ = tokio::time::sleep_until(idle_deadline) => {
 
@@ -10594,7 +10627,7 @@ async fn session_events(
 
                         session_id,
 
-                        idle_secs = SSE_MAX_IDLE.as_secs(),
+                        idle_secs = sse_idle.as_secs(),
 
                         "SSE 连接空闲超时，自动关闭"
 
@@ -16342,6 +16375,16 @@ mod tests {
         let serde = tcb_to_serde(&tcb);
 
         assert_eq!(serde, serde_json::Value::Object(expected));
+    }
+
+    #[test]
+
+    fn test_sse_max_idle_within_bounds() {
+        // 无论环境变量处于何种状态（未设/合法/非法），解析结果必须落在
+        // 合法域内（60..=86400s）——OnceLock 进程内一次解析，本测试只锁
+        // 域不变式，不锁具体值（env 状态依赖其他测试执行序）。
+        let d = sse_max_idle();
+        assert!(d.as_secs() >= 60 && d.as_secs() <= 86400);
     }
 
     #[test]
